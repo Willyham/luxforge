@@ -252,7 +252,7 @@ impl Limits {
         window_events: 512,
         batch_bytes: 64 * 1024,
         attempt_interval_s: 60,
-        flush_after_s: 600,
+        flush_after_s: 120,
         window_age_s: 30 * 60,
     };
 }
@@ -649,11 +649,19 @@ impl Usage {
     /// off, under the preferences lock, and answer `true` to the one claimant that wrote it. A
     /// record that was claimed, answered or enabled answers `false`, as does an ineligible launch,
     /// which writes nothing. A read or write failure is an error and the file is kept as it was.
+    #[cfg(test)]
     pub(crate) fn claim(&self, store: &PreferenceStore) -> Result<bool, Error> {
+        self.claim_published(store)?.finish()
+    }
+
+    pub(crate) fn claim_published(
+        &self,
+        store: &PreferenceStore,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         if !self.eligibility.is_eligible() {
-            return Ok(false);
+            return Ok(crate::atomic_file::Publication::confirmed(false));
         }
-        store.update_usage(|record| {
+        store.update_usage_published(|record| {
             if record
                 .as_ref()
                 .is_some_and(|record| record.prompt_shown || record.enabled)
@@ -678,6 +686,7 @@ impl Usage {
     /// leaves this process off and reports the stored state as it really is. Either saved choice
     /// also marks the notice as answered. A request ID this process already applied is answered
     /// with the current state and never applied again.
+    #[cfg(test)]
     pub(crate) fn set(
         &self,
         store: &PreferenceStore,
@@ -686,6 +695,18 @@ impl Usage {
         disclosure_version: Option<u32>,
         request_id: &str,
     ) -> Result<SetOutcome, Error> {
+        self.set_published(store, authority, enabled, disclosure_version, request_id)?
+            .finish()
+    }
+
+    pub(crate) fn set_published(
+        &self,
+        store: &PreferenceStore,
+        authority: ClientAuthority,
+        enabled: bool,
+        disclosure_version: Option<u32>,
+        request_id: &str,
+    ) -> Result<crate::atomic_file::Publication<SetOutcome>, Error> {
         if enabled {
             if authority != ClientAuthority::Permissions {
                 return Err(Error::forbidden(
@@ -718,12 +739,12 @@ impl Usage {
                     "request_id was already used with different input",
                 ));
             }
-            return Ok(SetOutcome {
+            return Ok(crate::atomic_file::Publication::confirmed(SetOutcome {
                 changed: false,
                 state: self.read(store),
-            });
+            }));
         }
-        let changed = if enabled {
+        let published = if enabled {
             self.enable(store)?
         } else {
             self.disable(store)?
@@ -734,10 +755,10 @@ impl Usage {
             runtime.applied.pop_front();
         }
         drop(runtime);
-        Ok(SetOutcome {
+        Ok(published.map(|changed| SetOutcome {
             changed,
             state: self.read(store),
-        })
+        }))
     }
 
     fn applied(&self, request_id: &str) -> Option<bool> {
@@ -748,7 +769,10 @@ impl Usage {
             .map(|(_, enabled)| *enabled)
     }
 
-    fn enable(&self, store: &PreferenceStore) -> Result<bool, Error> {
+    fn enable(
+        &self,
+        store: &PreferenceStore,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         if let Some(reason) = self.eligibility.reason() {
             return Err(Error::not_ready(format!(
                 "usage statistics cannot be enabled in this launch ({})",
@@ -761,7 +785,7 @@ impl Usage {
         let _writer = self.lock_writer();
         let revocations = self.revocations.load(Ordering::Acquire);
         let fresh = (InstallationId::random(), random_image_key()?);
-        let (changed, installation_id, image_key) = store.update_usage(|record| {
+        let published = store.update_usage_published(|record| {
             if let Some((id, key)) = record.as_ref().and_then(UsageRecord::current) {
                 return Ok((false, id, key));
             }
@@ -774,10 +798,14 @@ impl Usage {
             });
             Ok((true, fresh.0, fresh.1.clone()))
         })?;
+        let (changed, installation_id, image_key) = published.value;
         let mut runtime = self.lock();
         // A revocation that began while this was being written wins: it writes after this.
         if self.revocations.load(Ordering::Acquire) != revocations {
-            return Ok(changed);
+            return Ok(crate::atomic_file::Publication {
+                value: changed,
+                durability_error: published.durability_error,
+            });
         }
         let running = runtime.active.as_ref().is_some_and(|active| {
             self.gate.is_current(active.generation) && active.installation_id == installation_id
@@ -794,17 +822,23 @@ impl Usage {
             drop(runtime);
             self.changed();
         }
-        Ok(changed)
+        Ok(crate::atomic_file::Publication {
+            value: changed,
+            durability_error: published.durability_error,
+        })
     }
 
-    fn disable(&self, store: &PreferenceStore) -> Result<bool, Error> {
+    fn disable(
+        &self,
+        store: &PreferenceStore,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
         self.gate.disable();
         self.lock().active = None;
         // The supervisor stops producers and cancels the request in flight before the write.
         self.changed();
         let _writer = self.lock_writer();
-        let written = store.update_usage(|record| {
+        let written = store.update_usage_published(|record| {
             let next = UsageRecord {
                 prompt_shown: true,
                 enabled: false,

@@ -144,6 +144,9 @@ mod motion_tests;
 pub(crate) mod move_to_applications;
 #[cfg(test)]
 mod move_to_applications_tests;
+pub(crate) mod omarchy_current;
+#[cfg(test)]
+mod omarchy_current_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -173,6 +176,7 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+pub(crate) mod range_picker;
 mod relaunch;
 mod remembered;
 #[cfg(test)]
@@ -183,6 +187,9 @@ mod remove_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+pub(crate) mod residency;
+#[cfg(test)]
+mod residency_tests;
 // Consumed by the usage statistics supervisor, which a later task adds.
 #[cfg(test)]
 mod models_tests;
@@ -281,6 +288,9 @@ pub(crate) struct Activity {
     pub(crate) displayed: u64,
     /// An open request is in progress until its image is on screen or it fails.
     pub(crate) pending: bool,
+    /// The file import in flight, by its request's generation, until the owner answers it. Until
+    /// then the photograph on screen is the one before it, and its frames never end the request.
+    pub(crate) importing: Option<u64>,
     pub(crate) phase: &'static str,
     pub(crate) error_code: Option<String>,
     pub(crate) source_dimensions: Option<(u32, u32)>,
@@ -311,6 +321,7 @@ impl Activity {
             requested: 0,
             displayed: 0,
             pending: false,
+            importing: None,
             phase: "empty",
             error_code: None,
             source_dimensions: None,
@@ -510,6 +521,8 @@ pub(crate) struct Editor {
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
+    /// What the open photograph keeps resident while nobody looks at it, and when it lets go.
+    pub(crate) residency: residency::Residency,
     pub(crate) visibility: visibility::WindowVisibility,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
@@ -599,7 +612,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 34] = [
+const AFTER_MESSAGE: [AfterMessage; 35] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -630,6 +643,7 @@ const AFTER_MESSAGE: [AfterMessage; 34] = [
     develop::after_message,
     long_work::after_message,
     drawn_frames::after_message,
+    residency::after_message,
     themes::after_message,
     usage::after_message,
     update::after_message,
@@ -648,7 +662,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 19] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -656,6 +670,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 18] = [
     preview::subscription,
     sync::subscription,
     performance::subscription,
+    residency::subscription,
     evidence::subscription,
     capabilities::subscription,
     remove::subscription,
@@ -774,6 +789,7 @@ impl Editor {
             capability_started: Vec::new(),
             full_updates: 0,
             performance: performance::Sampler::new(expanded),
+            residency: residency::Residency::default(),
             visibility,
             export: Default::default(),
             select: Default::default(),
@@ -833,6 +849,13 @@ impl Editor {
             editor.status.text = note;
         }
         editor.view_state.memory.remember = config.remember_window;
+        // Omarchy's current theme, which the launch read already drew when the theme follows it;
+        // stored here as the active theme when it is not already.
+        let omarchy = editor.launch_omarchy(
+            config.omarchy_home.take(),
+            config.launch_omarchy.take(),
+            config.launch_follow.take(),
+        );
         // The first frame is drawn in the stored theme, read with the launch preferences; one that
         // cannot be shown leaves Luxforge Dark, and the status bar says why.
         editor.launch_theme(config.launch_theme.take());
@@ -921,6 +944,7 @@ impl Editor {
                 modules,
                 presets,
                 themes,
+                omarchy,
                 flags,
                 updates,
                 first,
@@ -984,9 +1008,7 @@ impl Editor {
             if self.performance.cancelling.is_empty()
                 && matches!(
                     &message,
-                    Message::Performance(
-                        PerformanceMessage::Tick | PerformanceMessage::Sampled { .. }
-                    )
+                    Message::Performance(PerformanceMessage::Sampled { .. })
                 )
             {
                 let task = self.dispatch(message);
@@ -1181,9 +1203,17 @@ impl Editor {
             session: &self.session,
             status: &self.status.text,
             busy: self.busy,
-            can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
+            can_open: !self.busy
+                && self.evidence.is_none()
+                && self
+                    .gesture_refusal(gesture::Starting::Photograph)
+                    .is_none(),
             can_export: self.can_export(),
             export_held: self.export.held.as_ref().map(|held| held.stale.as_slice()),
+            export_sheet: self.export.sheet.as_ref(),
+            export_presets: self.export.presets.as_deref(),
+            export_last: self.preferences.applied_export_last(),
+            export_progress: self.export_progress(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
             view_state: &self.view_state,
@@ -1267,6 +1297,7 @@ impl Editor {
             Message::CopySettings(message) => self.copy_settings_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
+            Message::Residency(message) => self.residency_update(message),
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Usage(message) => self.usage_update(message),
@@ -1329,6 +1360,7 @@ impl Editor {
             mask_draft: self.drawn_mask().map(|mask| &mask.shape),
             mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             mask_handles: self.session.workspace.mask_handles,
+            range_pick: self.range_pick_canvas(),
             corrections: self.correction_canvas(),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
@@ -1351,8 +1383,9 @@ impl Editor {
             // The evidence hook's identity plan is drawn in place of the frame it was held from,
             // untagged: no gesture's hold or revision is its.
         } else if let Some((plan, change)) = self.gpu_rest_plan() {
-            // At rest the committed stack's own view plan is the photograph, drawn in place of its
-            // frame, until its picture at rest in tiles is in, where it has one.
+            // At rest, and through a gesture's tick it holds, the committed stack's own view plan is
+            // the photograph, drawn in place of its frame, until its picture at rest in tiles is
+            // in, where it has one.
             surfaces.gpu = Some(plan);
             surfaces.gpu_hold = false;
             surfaces.gpu_tag = None;
@@ -1370,6 +1403,7 @@ impl Editor {
         surfaces.gpu_source = self.gpu_source_handed();
         surfaces.gpu_window = self.gpu_window_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
+        surfaces.gpu_rest_under = self.gpu_rest_under();
         surfaces.stage_rest = self
             .gpu_stage_handed()
             .filter(|_| self.crop_stage_gpu_shown());
@@ -1409,6 +1443,7 @@ impl Editor {
                 surfaces.gpu_source = surfaces.compare_source;
                 surfaces.gpu_window = None;
                 surfaces.gpu_rest = surfaces.compare_rest;
+                surfaces.gpu_rest_under = false;
                 surfaces.gpu_counts = None;
                 surfaces.gpu_hold = false;
                 surfaces.gpu_tag = None;
@@ -1508,6 +1543,7 @@ impl Editor {
             palette_open: self.palette.open,
             settings_open: self.settings.open.is_some(),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
+            export_sheet_open: self.export.sheet.is_some(),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(
@@ -1532,6 +1568,7 @@ impl Editor {
                     .collect();
                 (menu, letters)
             }),
+            range_picking: self.mask_mode_active() && self.mask_panel.picker.is_some(),
             mask_keys: self.mask_mode_active()
                 && self
                     .mask_shape()

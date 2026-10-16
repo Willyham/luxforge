@@ -25,7 +25,13 @@
 //! Export is judged over the whole output stage: the GPU's export of each stack, streamed in tiles
 //! by the desktop's GPU tile worker as the export lane streams it, against the reference export by
 //! the display limit of the stack's class, and a second GPU export, on a second device of the same
-//! adapter, the same bytes. A stack the GPU cannot export is a gap naming why.
+//! adapter, the same bytes. A stack the GPU cannot export is a gap naming why. Two more export kinds
+//! judge the resample sweep the same way: `export-resized`, the output stage resampled to its long
+//! edge 2048 pixels, or half the stage's when that is 4096 or less, at 8 bits; and `export-16bit`,
+//! the whole output stage at 16 bits, its ΔE00 taken from the 16-bit values. Each is held to the
+//! reference export of the same size and depth. `export-sharpened` judges output sharpening, the
+//! resize sweep's last pass: the resized output sharpened for Matte paper at High and 300 ppi,
+//! held to the reference's sharpened export by the spatial class's limit, whatever the stack's.
 //!
 //! The minimap's overview is judged over the whole output stage too: each stack's picture at rest
 //! planned at 200%, the minimap's threshold, its tiles carrying the overview's reduction, drawn as
@@ -122,7 +128,8 @@ fn selection(a: &mut Args, key: &str) -> Result<Option<Vec<String>>> {
 
 impl Options {
     /// `--output NEW_DIR [--manifest FILE] [--fixtures DIR] [--zoom fit|33|50|100|all]
-    /// [--kind picture-at-rest|picture-in-motion|histogram|sample|export|overview|all]
+    /// [--kind picture-at-rest|picture-in-motion|histogram|sample|export|export-resized|
+    /// export-16bit|export-sharpened|overview|all]
     /// [--families F,...]
     /// [--recipes ID,...] [--sources ID,...] [--frames missed|all]
     /// [--gate-motion against-rest|against-reference]`;
@@ -163,7 +170,8 @@ impl Options {
                         Kind::parse(name).ok_or_else(|| {
                             format!(
                                 "--kind is picture-at-rest, picture-in-motion, histogram, sample, \
-                                 export, overview or all, not {name}"
+                                 export, export-resized, export-16bit, export-sharpened, overview \
+                                 or all, not {name}"
                             )
                         })
                     })
@@ -1083,7 +1091,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                         counts.past += 1;
                         let mut exceeded = match (*kind, &figures) {
                             (Kind::Sample, _) => sample_exceeded(measured, class),
-                            (_, Some(figures)) => exceeded(figures, class),
+                            (_, Some(figures)) => exceeded(figures, kind.judged_class(class)),
                             (_, None) => Vec::new(),
                         };
                         if measured["repeatable"] == false {
@@ -1091,7 +1099,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                         }
                         missed.push(json!({
                             "kind": kind.name(), "cell": cell, "view": null,
-                            "class": class.name(), "exceeded": exceeded,
+                            "class": kind.judged_class(class).name(), "exceeded": exceeded,
                             "statistics": measured["statistics"], "figures": measured,
                         }));
                     }
@@ -1566,7 +1574,7 @@ pub fn markdown(report: &Value) -> String {
         })
         .collect();
     if !others.is_empty() {
-        text.push_str("\n## The other output kinds\n\nOver the whole output stage, each stack's statistics as the picture's are; for export, the GPU's export against the reference export by the display limit of the stack's class, and two GPU exports the same bytes; for the overview, the minimap's overview the picture at rest draws at 200% against the reference frame reduced to its size.\n\n| Kind | Measured | Within | Past a limit | Gaps | Not rendered by the GPU | Max | Mean | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
+        text.push_str("\n## The other output kinds\n\nOver the whole output stage, each stack's statistics as the picture's are; for export, the GPU's export against the reference export by the display limit of the stack's class, and two GPU exports the same bytes, export-resized and export-16bit at their output's size and depth, and export-sharpened by the spatial class's limit; for the overview, the minimap's overview the picture at rest draws at 200% against the reference frame reduced to its size.\n\n| Kind | Measured | Within | Past a limit | Gaps | Not rendered by the GPU | Max | Mean | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
         for result in &others {
             text.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
@@ -1682,7 +1690,7 @@ pub fn markdown(report: &Value) -> String {
         }
     }
     text.push_str(
-        "\nEvery figure is CIEDE2000 in f64 from 8-bit sRGB through linear light, XYZ and CIELAB under D65 (luxforge_reference::preview_error). The pixels are deterministic on one machine and driver; across machines the last digit may differ. A run's duration is not a measurement.\n",
+        "\nEvery figure is CIEDE2000 in f64 from 8-bit sRGB, export-16bit's from 16-bit sRGB, through linear light, XYZ and CIELAB under D65 (luxforge_reference::preview_error). The pixels are deterministic on one machine and driver; across machines the last digit may differ. A run's duration is not a measurement.\n",
     );
     text
 }
@@ -1730,6 +1738,9 @@ mod tests {
             "histogram": {"status": "not-rendered", "reason": "stage 2's"},
             "sample": {"status": "not-rendered", "reason": "stage 4's"},
             "export": {"status": "not-rendered", "reason": "stage 4's"},
+            "export-resized": {"status": "not-rendered", "reason": "stage 4's"},
+            "export-16bit": {"status": "not-rendered", "reason": "stage 4's"},
+            "export-sharpened": {"status": "not-rendered", "reason": "stage 4's"},
             "overview": {"status": "not-rendered", "reason": "stage 4's"},
         })
     }
@@ -1797,13 +1808,21 @@ mod tests {
             rest[0]["renderers"],
             json!(["the picture at rest in tiles"])
         );
-        for kind in [Kind::Histogram, Kind::Sample, Kind::Export, Kind::Overview] {
+        for kind in [
+            Kind::Histogram,
+            Kind::Sample,
+            Kind::Export,
+            Kind::ExportResized,
+            Kind::Export16,
+            Kind::ExportSharpened,
+            Kind::Overview,
+        ] {
             assert_eq!(
                 rows(&report, kind)[0]["verdict"],
                 "not rendered by the GPU yet"
             );
         }
-        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 4);
+        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 7);
         let summary = markdown(&report);
         assert!(summary.contains("**PASSED**") && summary.contains("No: stage 2's"));
         assert!(summary.contains("## The picture at rest, against the reference"));

@@ -9,6 +9,7 @@ use super::{
         sync_task,
     },
 };
+use crate::app::gesture::Starting;
 use crate::app::{Before, outcome::Outcome, waker};
 use crate::coalesce::Coalesce;
 use crate::state::{
@@ -16,7 +17,7 @@ use crate::state::{
     fields::{self, Fields},
 };
 use iced::{Subscription, Task};
-use luxforge_core::{ClientSession, HistoryRow, ModuleDescriptor};
+use luxforge_core::{ClientSession, HistoryRow, MaskId, ModuleDescriptor};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering, time::Instant};
 
@@ -67,6 +68,10 @@ impl Editor {
     pub(super) fn sync_update(&mut self, message: SyncMessage) -> Task<Message> {
         match message {
             SyncMessage::Open => {
+                if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
+                    self.status.text = reason;
+                    return Task::none();
+                }
                 if self.view_state.picker_open || self.busy || self.evidence.is_some() {
                     return Task::none();
                 }
@@ -98,6 +103,7 @@ impl Editor {
                 if self.open_generation.load(Ordering::Acquire) != generation {
                     return Task::none();
                 }
+                self.activity.importing = None;
                 // The poll that brought a preset change made while no photograph was open listed
                 // the library then; list it again beside the photo all the same, so the section
                 // a newly opened photograph shows is the library as it stands.
@@ -135,10 +141,14 @@ impl Editor {
                 // Overtaken by a selection or a state this desktop already holds: whatever
                 // overtook it ended the request it answered, and brought its own frame.
                 if matches!(&result, Ok(refresh) if self.superseded(refresh)) {
+                    // The typed create's selection belongs to this answer alone; the next mask
+                    // command's answer must not inherit it.
+                    self.mask_panel.typed_create = false;
                     return Task::none();
                 }
                 self.busy = false;
                 let mask_command = std::mem::take(&mut self.mask_panel.command_in_flight);
+                let typed = std::mem::take(&mut self.mask_panel.typed_create);
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
@@ -160,9 +170,25 @@ impl Editor {
                                     |(_, request)| request.get(luxforge_core::MASK_FIELD).is_none(),
                                 );
                         let before = self.listed_masks();
+                        // A typed add names the mask it adds to; the component it made is the one
+                        // the open mask gained.
+                        let added_to = self
+                            .mask_panel
+                            .last_request
+                            .as_ref()
+                            .and_then(|(_, request)| request.get(luxforge_core::MASK_FIELD))
+                            .and_then(Value::as_str)
+                            .and_then(|mask| MaskId::parse(mask).ok())
+                            .filter(|_| mask_command && typed);
+                        let before_components = added_to
+                            .as_ref()
+                            .map(|mask| self.listed_components(mask))
+                            .unwrap_or_default();
                         self.accept(*refresh);
                         if created_a_mask {
-                            self.open_created_mask(&before);
+                            self.open_created_mask(&before, mask_command && typed);
+                        } else if let Some(mask) = added_to {
+                            self.select_added_component(&mask, &before_components);
                         }
                     }
                     Err(error) => {
@@ -189,29 +215,37 @@ impl Editor {
                     }
                 }
             }
-            SyncMessage::RecipeDescribed(result) => match result {
-                Ok(read) => {
-                    let read = *read;
-                    self.document.recipe_failed = false;
-                    // Rows of the current entry, read when a preview returns to it, are also the
-                    // rows the section dot follows.
-                    if self
-                        .document
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
-                    {
-                        self.document.current_recipe = Some(read.recipe.clone());
+            SyncMessage::RecipeDescribed(entry, result) => {
+                // This payload read outlives the selection request's busy flag. Another selection,
+                // commit or photograph may have reached the screen before its answer, including
+                // a failure, so only the entry it was requested for may adopt it.
+                if self.displayed_entry().as_ref() != Some(&entry) {
+                    return Task::none();
+                }
+                match result {
+                    Ok(read) => {
+                        let read = *read;
+                        self.document.recipe_failed = false;
+                        // Rows of the current entry, read when a preview returns to it, are also the
+                        // rows the section dot follows.
+                        if self
+                            .document
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.current_entry.id == read.recipe.entry_id)
+                        {
+                            self.document.current_recipe = Some(read.recipe.clone());
+                        }
+                        self.document.recipe = Some(read.recipe);
+                        self.document.masks = Some(read.masks);
+                        self.seed_values();
                     }
-                    self.document.recipe = Some(read.recipe);
-                    self.document.masks = Some(read.masks);
-                    self.seed_values();
+                    Err(error) => {
+                        self.document.recipe_failed = true;
+                        self.status.text = format!("Recipe unavailable: {error}");
+                    }
                 }
-                Err(error) => {
-                    self.document.recipe_failed = true;
-                    self.status.text = format!("Recipe unavailable: {error}");
-                }
-            },
+            }
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
             SyncMessage::Changed => {
                 self.sync.poll.offer(());
@@ -268,6 +302,7 @@ impl Editor {
                             Task::none()
                         };
                         let flags = Task::batch([flags, updates]);
+                        self.develop_photos_moved(&sync.moved);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),
                             None => Task::none(),
@@ -306,9 +341,18 @@ impl Editor {
     pub(crate) fn begin_request(&mut self) {
         self.activity.requested += 1;
         self.activity.pending = true;
+        self.activity.importing = None;
         self.activity.phase = "loading";
         self.activity.error_code = None;
         self.activity.request_started = Instant::now();
+    }
+
+    /// The request in progress waits for its picture, so a frame presented or failed now is its
+    /// outcome. While a file's import is still in flight the frame is of the photograph already
+    /// on screen — a refit of the canvas the open resized, say — and ends nothing: an open that
+    /// then fails is still recorded as failed.
+    pub(crate) fn request_awaits_picture(&self) -> bool {
+        self.activity.pending && self.activity.importing.is_none()
     }
 
     /// Import a file through the same API call the Open button uses, tracked as one open request.
@@ -321,7 +365,7 @@ impl Editor {
         path: PathBuf,
         queued: Option<tasks::StartupImport>,
     ) -> Task<Message> {
-        if let Some(reason) = self.mask_tool_refusal() {
+        if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
             self.status.text = reason;
             self.develop.reopen = false;
             return Task::none();
@@ -333,6 +377,7 @@ impl Editor {
             self.activity.request_started = queued.started;
         }
         let generation = self.activity.requested;
+        self.activity.importing = Some(generation);
         // A file opened leaves the Develop folder for its own, once it answers.
         self.develop_file_opening(generation);
         self.open_generation.store(generation, Ordering::Release);

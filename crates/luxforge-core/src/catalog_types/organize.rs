@@ -3,7 +3,7 @@
 //!
 //! The functions themselves are in `crate::organize`: pure functions of these records,
 //! the gazetteer ([`PlaceNames`]) and the thresholds, with the preview-brightness bracket check
-//! plugged in through [`BracketProbe`] (the preview lane's). Nothing here is stored; changing a
+//! plugged in through [`MomentProbe`] (the preview lane's). Nothing here is stored; changing a
 //! threshold regroups at once.
 use super::{
     BodyKey, CameraBody, EventId, Exposure, GeoPosition, LocalDay, Month, VolumeId,
@@ -123,28 +123,33 @@ pub enum MomentKind {
     Burst,
     /// A run whose exposure steps: usually one photograph to merge.
     Bracket,
+    /// Frames that sweep across a scene, each overlapping the last: one panorama to merge.
+    Panorama,
 }
 
-/// Why a run is called a bracket: its recorded exposure steps, or its previews' measured brightness.
+/// Why a run is called a bracket or a panorama: a bracket's recorded exposure steps or its
+/// previews' measured brightness; a panorama's folder (a camera's panorama folder) or its
+/// previews' measured overlap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum BracketEvidence {
+pub enum MomentEvidence {
     Metadata,
     Previews,
+    Folder,
 }
 
-/// One burst or bracket in a view: the frames `start..start + len` of the view's order. A view's
-/// summary lists bursts and brackets only; a frame no moment covers is a single.
+/// One burst, bracket or panorama in a view: the frames `start..start + len` of the view's order.
+/// A view's summary lists those only; a frame no moment covers is a single.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Moment {
     pub kind: MomentKind,
-    /// Present exactly for a bracket.
+    /// Present exactly for a bracket (metadata or previews) and a panorama (folder or previews).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<BracketEvidence>,
+    pub evidence: Option<MomentEvidence>,
     /// A bracket's per-frame exposure in stops relative to its metered frame (the frame with no
     /// bias, or the median frame), brighter positive, in view order: `[-2, 0, 2]`. Empty for a
-    /// burst.
+    /// burst and a panorama.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps_ev: Vec<f32>,
     /// From the first frame's capture to the last's, in milliseconds.
@@ -380,22 +385,50 @@ impl PlaceNames for NoPlaces {
     }
 }
 
-/// The preview-brightness bracket check as organizing asks it, for a run the metadata
-/// cannot classify: each frame's measured exposure in stops relative to the first frame (brighter
-/// positive, the first `0`), one value per frame, and only when the framing is confirmed unchanged;
-/// `None` when it cannot tell — previews not decoded yet, or the framing moved. It must answer from
-/// previews already decoded, in microseconds, and never read a photograph's file. The preview
-/// lane's is `previews::PreviewProbe` (`previews::bracket_probe`), which reads a run's stored
-/// fingerprints in one indexed query when it is asked about that run, and nothing for a run it is
-/// not asked about.
-pub trait BracketProbe {
-    fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>>;
+/// How far the view moved from one frame to the next, in shares of the frame's width and height:
+/// `across` positive when the next frame shows what lay to the right of the first, `down` positive
+/// when it shows what lay below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pan {
+    pub across: f32,
+    pub down: f32,
 }
 
-/// No preview check: a run the metadata cannot classify is a burst.
+impl Pan {
+    /// Whether `next` carries on this pan's sweep rather than turning back on it: their directions
+    /// at most a right angle apart, as a panorama's rows and columns are.
+    pub fn continued_by(&self, next: &Pan) -> bool {
+        self.across * next.across + self.down * next.down >= 0.0
+    }
+}
+
+/// The preview checks organizing asks about runs, answered from previews already decoded, in
+/// microseconds, never reading a photograph's file. The preview lane's is
+/// `previews::PreviewProbe` (`previews::bracket_probe`), which reads a run's stored fingerprints
+/// in one indexed query when it is asked about that run, and nothing for a run it is not asked
+/// about.
+pub trait MomentProbe {
+    /// The bracket check, for a run the metadata cannot classify: each frame's measured exposure
+    /// in stops relative to the first frame (brighter positive, the first `0`), one value per
+    /// frame, and only when the framing is confirmed unchanged; `None` when it cannot tell —
+    /// previews not decoded yet, or the framing moved.
+    fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>>;
+
+    /// The panorama check: for each consecutive pair of `frames`, one answer fewer than the
+    /// frames, the [`Pan`] from the first to the second when their previews show the second
+    /// overlapping the first, moved by a clear shift; `None` for a pair it cannot tell — no
+    /// preview yet, the same view, no overlap, or too little structure to say. None of them by
+    /// default.
+    fn pans(&self, frames: &[ViewItem]) -> Vec<Option<Pan>> {
+        vec![None; frames.len().saturating_sub(1)]
+    }
+}
+
+/// No preview check: a run the metadata cannot classify is a burst, and only a panorama folder
+/// makes a panorama.
 pub struct NoProbe;
 
-impl BracketProbe for NoProbe {
+impl MomentProbe for NoProbe {
     fn measure(&self, _: &[ViewItem]) -> Option<Vec<f32>> {
         None
     }

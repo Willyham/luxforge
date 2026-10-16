@@ -1356,12 +1356,18 @@ impl Fixture {
         let read = self.read_items(&query.source);
         let items = self.source_items(&query.source);
         let decided = decided(&read, &items, &query.thresholds);
-        let kept: Vec<Item> = items
+        let mut kept: Vec<Item> = items
             .into_iter()
             .zip(decided)
             .filter(|(item, decided)| passes(item, &query.filter, *decided))
             .map(|(item, _)| item)
             .collect();
+        // A pair the filter keeps both files of shows as its RAW file, unless its JPEG is picked.
+        let pairs: Vec<(ViewItem, ViewItem)> = pairs(&kept)
+            .into_iter()
+            .filter(|(_, jpeg)| !kept.iter().any(|item| item.item == *jpeg && item.picked))
+            .collect();
+        kept.retain(|item| !pairs.iter().any(|(_, jpeg)| *jpeg == item.item));
         let grouping = query.effective_grouping();
         let (mut frames, tables) = frames(&read, &kept);
         let ordered: Vec<Item> = match query.sort.key {
@@ -1408,6 +1414,7 @@ impl Fixture {
                 .count() as u32,
             items: ordered,
             layout,
+            pairs,
         }
     }
 }
@@ -1419,6 +1426,8 @@ pub(crate) struct Expected {
     pub picked: u32,
     pub in_catalog: u32,
     pub unavailable: u32,
+    /// Each pair shown as its RAW file, `(raw, jpeg)`.
+    pub pairs: Vec<(ViewItem, ViewItem)>,
 }
 
 impl Expected {
@@ -1452,9 +1461,63 @@ pub(crate) fn frames(read: &[Item], items: &[Item]) -> (Vec<FrameFacts>, FrameTa
     (frames, tables)
 }
 
-/// Which items Moments without a pick leaves out: the source grouped Day › Camera › Moment, and a
-/// frame decided when it is picked or in a moment with a picked frame.
+/// The RAW+JPEG pairs among `items`, `(raw, jpeg)`: a JPEG file and a RAW file in one folder of
+/// one name but for the extension, ignoring case, dated at most 2 s apart or either undated, each
+/// file in one pair at most.
+pub(crate) fn pairs(items: &[Item]) -> Vec<(ViewItem, ViewItem)> {
+    let stem = |item: &Item| {
+        let name = item.name.to_lowercase();
+        name.rsplit_once('.')
+            .map_or(name.clone(), |(stem, _)| stem.to_string())
+    };
+    let file = |item: &Item| matches!(item.item, ViewItem::File(_));
+    let mut found: Vec<(ViewItem, ViewItem)> = Vec::new();
+    for jpeg in items
+        .iter()
+        .filter(|item| file(item) && item.kind == SourceTag::Jpeg)
+    {
+        let raw = items.iter().find(|raw| {
+            file(raw)
+                && raw.kind == SourceTag::Raw
+                && raw.folder == jpeg.folder
+                && stem(raw) == stem(jpeg)
+        });
+        let Some(raw) = raw else { continue };
+        let close = match (raw.instant(), jpeg.instant()) {
+            (Some(a), Some(b)) => a.abs_diff(b) <= 2_000,
+            _ => true,
+        };
+        if close && !found.iter().any(|(paired, _)| *paired == raw.item) {
+            found.push((raw.item, jpeg.item));
+        }
+    }
+    found
+}
+
+/// Which items Moments without a pick leaves out: the source grouped Day › Camera › Moment with
+/// each pair's JPEG left out, and a frame decided when it or its JPEG is picked or it is in a
+/// moment with a picked frame; a pair's JPEG decided as its RAW file is.
 fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> {
+    let pairs = pairs(items);
+    let jpeg_of = |raw: ViewItem| {
+        pairs
+            .iter()
+            .find(|(candidate, _)| *candidate == raw)
+            .map(|(_, jpeg)| *jpeg)
+    };
+    let raw_of = |jpeg: ViewItem| {
+        pairs
+            .iter()
+            .find(|(_, candidate)| *candidate == jpeg)
+            .map(|(raw, _)| *raw)
+    };
+    let grouped: Vec<Item> = items
+        .iter()
+        .filter(|item| raw_of(item.item).is_none())
+        .cloned()
+        .collect();
+    let items_all = items;
+    let items = &grouped[..];
     let (mut frames, tables) = frames(read, items);
     organize::order(
         &mut frames,
@@ -1470,11 +1533,14 @@ fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> 
         &NoProbe,
     );
     let picked = |item: ViewItem| {
-        items
-            .iter()
-            .find(|candidate| candidate.item == item)
-            .unwrap()
-            .picked
+        let picked = |item: ViewItem| {
+            items_all
+                .iter()
+                .find(|candidate| candidate.item == item)
+                .unwrap()
+                .picked
+        };
+        picked(item) || jpeg_of(item).is_some_and(picked)
     };
     let mut decided: Vec<(ViewItem, bool)> = frames
         .iter()
@@ -1488,12 +1554,13 @@ fn decided(read: &[Item], items: &[Item], thresholds: &Thresholds) -> Vec<bool> 
             }
         }
     }
-    items
+    items_all
         .iter()
         .map(|item| {
+            let item = raw_of(item.item).unwrap_or(item.item);
             decided
                 .iter()
-                .find(|(candidate, _)| *candidate == item.item)
+                .find(|(candidate, _)| *candidate == item)
                 .unwrap()
                 .1
         })

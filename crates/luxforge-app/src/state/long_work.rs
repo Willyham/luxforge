@@ -129,6 +129,9 @@ pub(crate) struct LongWorkModel {
     /// The in-view progress sheet: only for a Select view with nothing to show yet, such as the
     /// first look at a card or folder before its headers are read.
     pub(crate) sheet: Option<ProgressSheet>,
+    /// This window's export, while its progress shows (from the start when warned, else after a
+    /// second): the status bar shows it ahead of catalog work.
+    pub(crate) export: Option<BusiestJob>,
 }
 
 /// The status bar's job: what the busiest job is doing, how far it has got when its total is known,
@@ -196,6 +199,7 @@ pub(crate) fn model(
     LongWorkModel {
         busiest,
         sheet: select_shown.then(|| sheet(state)).flatten(),
+        export: None,
     }
 }
 

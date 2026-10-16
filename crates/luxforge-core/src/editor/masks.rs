@@ -1,14 +1,21 @@
 use super::{
-    AssetRecord, EditorService, PixelInput,
+    AreaInput, AreaRect, AreaStage, AssetRecord, EditorService, PixelInput,
     source::{Evaluated, validate_source_recipe},
 };
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    AssetId, EntryId, Error, MaskId, ModuleRegistry, Recipe,
-    mask::commands::{MaskCommand, MaskListing, MaskOutcome, MaskTarget, ModelStale},
+    AssetId, EntryId, Error, MaskId, ModuleRegistry, Recipe, Region, Stage, StageQuestions,
+    mask::commands::{
+        AREA_POINTS, HostRead, MaskCommand, MaskListing, MaskOutcome, MaskTarget, ModelStale,
+        SAMPLE_INPUT, SAMPLE_INPUT_AREA,
+    },
+    tiles::{
+        Answered,
+        region::{MAX_REDUCTION, RegionRequest, RegionStage, aligned},
+    },
 };
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 impl EditorService {
     /// What one checked `mask.*` command does to `recipe`, the stack of `asset` it is planned
@@ -16,11 +23,12 @@ impl EditorService {
     /// drafted gesture share, so a draft equals its commit by construction.
     ///
     /// Unlike a module's plan it compiles nothing up front: it reads no pixel unless a stroke asks
-    /// to be limited to a colour, and that one is seeded here, by the host, from the pixel the
-    /// operation this mask modulates receives at the position the stroke began. The request named
-    /// the limit and never the colour, so nothing a client sends can put a colour in a stroke that
-    /// the photograph does not have at that position, and the command family's planner stays pure —
-    /// it is handed the pixel rather than reading one.
+    /// to be limited to a colour or the command is a pick. A limited stroke is seeded here, by the
+    /// host, from the pixel the operation this mask modulates receives at the position the stroke
+    /// began, and a pick reads that input at the point or over the area it names
+    /// ([`Self::mask_pick_read`]). The request names a position and never a colour, so nothing a
+    /// client sends can put a colour in a mask that the photograph does not have there, and the
+    /// command family's planner stays pure — it is handed the pixels rather than reading them.
     ///
     /// A painted stroke is checked against the occupancy cap here, where the asset gives the content
     /// stage its mask is drawn on: the component the stroke would leave behind is indexed at that
@@ -37,8 +45,14 @@ impl EditorService {
     ) -> Result<MaskOutcome, Error> {
         validate_source_recipe(&self.registry, asset, recipe)?;
         let seed = self.mask_colour_seed(asset, command, recipe, target, parameters)?;
+        let picked = self.mask_pick_read(asset, command, recipe, target, parameters)?;
+        let read = match (&seed, &picked) {
+            (Some(seed), _) => HostRead::Seed(*seed),
+            (None, Some(picked)) => HostRead::Picked(picked.as_picked()),
+            (None, None) => HostRead::Nothing,
+        };
         let outcome =
-            crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, seed)?;
+            crate::mask::commands::plan(command, recipe, target, parameters, &self.registry, read)?;
         if command.op == crate::mask::commands::MaskOp::AddStroke
             && let MaskOutcome::Change(change) = &outcome
             && let (Some(mask), Some(component)) = (&change.mask, &change.component)
@@ -54,8 +68,14 @@ impl EditorService {
     }
 
     /// One of the host's own reads about its own objects, from one entry's stack, with its
-    /// parameters already checked against the host descriptor's query: `mask.list` or
-    /// `mask.sample-input`. It writes nothing, emits nothing and touches no session state.
+    /// parameters already checked against the host descriptor's query: `mask.list`,
+    /// `mask.sample-input` or `mask.sample-input-area`. It writes nothing, emits nothing and
+    /// touches no session state.
+    ///
+    /// The two pixel reads are answered by [`input_read`], here over the host's own stage
+    /// questions: off the catalog owner from the reference, and on it by deferring the read, which
+    /// the dispatcher then asks of the tile service whole, where [`input_read`] answers it again
+    /// over that service's reads.
     pub(super) fn host_query(
         &self,
         asset_id: &AssetId,
@@ -63,35 +83,93 @@ impl EditorService {
         query_id: &str,
         parameters: &Map<String, Value>,
     ) -> Result<Value, Error> {
-        fn encode(value: Result<impl serde::Serialize, Error>) -> Result<Value, Error> {
-            value.and_then(|value| {
-                serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
+        if query_id == crate::mask::commands::LIST {
+            return self
+                .mask_listing(asset_id, entry_id)
+                .and_then(|listing| encode(&listing));
+        }
+        let state = self.state(asset_id)?;
+        let entry = self.entry(asset_id, entry_id)?;
+        let asset = &state.asset;
+        let recipe = &entry.snapshot.recipe;
+        validate_source_recipe(&self.registry, asset, recipe)?;
+        let answered = self.bound(recipe).and_then(|bound| {
+            self.with_stage_context(asset, &bound, None, |context| {
+                input_read(
+                    &self.registry,
+                    &bound,
+                    query_id,
+                    parameters,
+                    context.questions,
+                    &|| None,
+                )
             })
-        }
-        match query_id {
-            crate::mask::commands::LIST => encode(self.mask_listing(asset_id, entry_id)),
-            crate::mask::commands::SAMPLE_INPUT => {
-                // Its declared parameters, which the generic check has required and checked.
-                #[derive(serde::Deserialize)]
-                struct SampleInput {
-                    mask: MaskId,
-                    x: u32,
-                    y: u32,
-                }
-                let SampleInput { mask, x, y } =
-                    serde_json::from_value(Value::Object(parameters.clone()))
-                        .map_err(|error| Error::internal(error.to_string()))?;
-                encode(self.mask_input_sample(asset_id, entry_id, &mask, x, y))
-            }
-            other => Err(Error::validation(format!("unknown query {other}"))),
-        }
+        });
+        self.needing(Evaluated::exactly(asset, &entry.id, recipe), answered)
+    }
+
+    /// What one `mask.pick-<kind>` read at its mask's input site, or `None` for any other command.
+    ///
+    /// The **rule** — which component, which site, click or drag — is the command family's
+    /// ([`crate::mask::commands::pick_request`]); the **pixels** are read here through the stage
+    /// context's deferred query seam, as Corrections' automatic source is: on the catalog owner the
+    /// read is parked and answered by the tile service, and the command is planned again with the
+    /// answer once ([`super::pixels`]). A click reads `mask.sample-input` at the content pixel
+    /// holding the point; a drag reads `mask.sample-input-area` over the rectangle, so the pick
+    /// measures exactly what those reads answer a client.
+    fn mask_pick_read(
+        &self,
+        asset: &AssetRecord,
+        command: &MaskCommand,
+        recipe: &Recipe,
+        target: &MaskTarget,
+        parameters: &Map<String, Value>,
+    ) -> Result<Option<PickedPixels>, Error> {
+        let Some(request) = crate::mask::commands::pick_request(
+            command,
+            recipe,
+            target,
+            parameters,
+            &self.registry,
+        )?
+        else {
+            return Ok(None);
+        };
+        let recipe = self.bound(recipe)?;
+        self.with_stage_context(asset, &recipe, None, |context| {
+            let questions = context.questions;
+            let mask = request.mask.as_str();
+            let Some((width, height)) = request.area else {
+                let stage = questions.stage_before(request.site.index)?;
+                let outside = || {
+                    Error::validation(format!(
+                        "outside the stage: a pick at ({:.4}, {:.4}) is not inside the {}x{} \
+                         stage the masked layer receives",
+                        request.x, request.y, stage.width, stage.height
+                    ))
+                };
+                let x = content_pixel(request.x, stage.width).ok_or_else(outside)?;
+                let y = content_pixel(request.y, stage.height).ok_or_else(outside)?;
+                let answer = questions
+                    .query(SAMPLE_INPUT, &object(json!({"mask": mask, "x": x, "y": y})))?;
+                let point: PixelInput = decode(answer)?;
+                return Ok(Some(PickedPixels::Point([point.r, point.g, point.b])));
+            };
+            let answer = questions.query(
+                SAMPLE_INPUT_AREA,
+                &object(json!({"mask": mask, "x": request.x, "y": request.y,
+                               "width": width, "height": height})),
+            )?;
+            let area: AreaInput = decode(answer)?;
+            Ok(Some(PickedPixels::Area(area.points)))
+        })
     }
 
     /// The pixel a limited stroke is seeded on, as the three sRGB codes the host sampled, or `None`
     /// when the command asks for no limit.
     ///
-    /// The **rule** — which layer's input, and what a mask no layer is bound to means — is the
-    /// command family's, stated once in `mask::commands::input_layer_index`; the **pixel** is read
+    /// The **rule** — which position's input, and what a mask no layer is bound to means — is the
+    /// command family's, stated once in [`crate::mask::commands::input_site`]; the **pixel** is read
     /// here, because the editor is the only thing that can evaluate one. That split is what makes a
     /// stored seed a colour the photograph has: a request carries a flag and a path, never a colour,
     /// so no client can put anything else in a stroke.
@@ -103,17 +181,22 @@ impl EditorService {
         target: &MaskTarget,
         parameters: &Map<String, Value>,
     ) -> Result<Option<[u8; 3]>, Error> {
-        let Some(request) =
-            crate::mask::commands::colour_limit_request(command, recipe, target, parameters)?
+        let Some(request) = crate::mask::commands::colour_limit_request(
+            command,
+            recipe,
+            target,
+            parameters,
+            &self.registry,
+        )?
         else {
             return Ok(None);
         };
         // Reading the pixel compiles the stack, so its artifacts are bound first.
         let recipe = self.bound(recipe)?;
         self.with_stage_context(asset, &recipe, None, |context| {
-            let stage = context.stage_before(request.layer)?;
+            let stage = context.stage_before(request.site.index)?;
             // The stroke's positions are normalized against the stage its mask is compiled against,
-            // which is the stage this layer receives, so the pixel is that stage's own. A stroke that
+            // which is the stage its site receives, so the pixel is that stage's own. A stroke that
             // began outside the picture — an ordinary gesture, which the stored range allows — has no
             // input pixel to read and is refused by name rather than clamped to an edge whose colour
             // nobody chose.
@@ -130,8 +213,10 @@ impl EditorService {
             };
             let x = pixel(request.x, stage.width).ok_or_else(outside)?;
             let y = pixel(request.y, stage.height).ok_or_else(outside)?;
+            // Codes are the stage's bytes whichever way an operation receives the stage, so the
+            // site's mode does not change them.
             let rgba = context
-                .sample_before(request.layer, x, y)?
+                .sample_before(request.site.index, x, y)?
                 .ok_or_else(outside)?;
             // The codes, not the decoded colour: a stroke is addressed by the hash of its bytes, and
             // an integer survives a JSON round trip exactly where an `f64` does not. Decoding is the
@@ -157,52 +242,8 @@ impl EditorService {
         x: u32,
         y: u32,
     ) -> Result<PixelInput, Error> {
-        let state = self.state(asset_id)?;
-        let entry = self.entry(asset_id, entry_id)?;
-        let asset = &state.asset;
-        let recipe = &entry.snapshot.recipe;
-        validate_source_recipe(&self.registry, asset, recipe)?;
-        let layer = crate::mask::commands::input_layer_index(recipe, mask)?;
-        let sampled = self
-            .bound(recipe)
-            .and_then(|bound| self.input_sample(asset, &bound, layer, x, y));
-        self.needing(Evaluated::exactly(asset, &entry.id, recipe), sampled)
-    }
-
-    /// The pixel the layer at `layer` of a bound stack receives at `(x, y)`, in linear sRGB.
-    fn input_sample(
-        &self,
-        asset: &AssetRecord,
-        recipe: &Recipe,
-        layer: usize,
-        x: u32,
-        y: u32,
-    ) -> Result<PixelInput, Error> {
-        self.with_stage_context(asset, recipe, None, |context| {
-            let stage = context.stage_before(layer)?;
-            if x >= stage.width || y >= stage.height {
-                return Err(Error::validation(format!(
-                    "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
-                         layer receives",
-                    stage.width, stage.height
-                )));
-            }
-            let [r, g, b] = context.input_before(layer, x, y)?.ok_or_else(|| {
-                Error::validation(format!(
-                    "outside the stage: ({x}, {y}) has no pixel to read"
-                ))
-            })?;
-            Ok(PixelInput {
-                r,
-                g,
-                b,
-                x,
-                y,
-                width: stage.width,
-                height: stage.height,
-                renderer: crate::Renderer::headless(),
-            })
-        })
+        let parameters = object(json!({"mask": mask.as_str(), "x": x, "y": y}));
+        decode(self.host_query(asset_id, entry_id, SAMPLE_INPUT, &parameters)?)
     }
 
     /// `mask.list`: every mask of one stored stack with its components, its values and the layers
@@ -302,6 +343,188 @@ impl EditorService {
                     .map(|resource| resource.version.clone())
             })
     }
+}
+
+/// What a pick read, owned: [`crate::mask::Picked`] borrows it for the planner.
+pub(super) enum PickedPixels {
+    Point([f64; 3]),
+    Area(Vec<[f64; 3]>),
+}
+
+impl PickedPixels {
+    fn as_picked(&self) -> crate::mask::Picked<'_> {
+        match self {
+            Self::Point(rgb) => crate::mask::Picked::Point(*rgb),
+            Self::Area(points) => crate::mask::Picked::Area(points),
+        }
+    }
+}
+
+/// The host's two pixel reads about a mask — `mask.sample-input` at one content pixel and
+/// `mask.sample-input-area` over one rectangle — answered over `questions` about `recipe`, a bound
+/// stack. **One implementation for every reader**: the host's own questions off the catalog owner,
+/// which read from the reference; the tile service's, which read from the GPU where it draws the
+/// stage; and the analysis worker's, which hold the region the tile service read. `answered` names
+/// the renderer of the latest point read where the questions record one; a region read carries its
+/// own.
+///
+/// Both read at the mask's input site ([`crate::mask::commands::input_site`]), so a mask no layer is
+/// bound to answers what a first adjustment through it would receive. A position outside the stage
+/// is refused rather than clamped. `O(layers)` to plan; the area's read holds one band of the region
+/// and at most [`AREA_POINTS`] reduced sums.
+pub(crate) fn input_read(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    query: &str,
+    parameters: &Map<String, Value>,
+    questions: &dyn StageQuestions,
+    answered: &dyn Fn() -> Option<Answered>,
+) -> Result<Value, Error> {
+    // The declared parameters, which the generic check has required and range-checked.
+    #[derive(serde::Deserialize)]
+    struct Point {
+        mask: MaskId,
+        x: u32,
+        y: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Area {
+        mask: MaskId,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+    let parameters = Value::Object(parameters.clone());
+    match query {
+        SAMPLE_INPUT => {
+            let Point { mask, x, y } = decode(parameters)?;
+            let site = crate::mask::commands::input_site(registry, recipe, &mask)?;
+            let stage = questions.stage_before(site.index)?;
+            let outside = || {
+                Error::validation(format!(
+                    "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked layer \
+                     receives",
+                    stage.width, stage.height
+                ))
+            };
+            if x >= stage.width || y >= stage.height {
+                return Err(outside());
+            }
+            let [r, g, b] = questions.input_at(site, x, y)?.ok_or_else(outside)?;
+            encode(&PixelInput {
+                r,
+                g,
+                b,
+                x,
+                y,
+                width: stage.width,
+                height: stage.height,
+                renderer: answered().map_or_else(crate::Renderer::headless, |answered| {
+                    crate::Renderer::from(&answered)
+                }),
+            })
+        }
+        SAMPLE_INPUT_AREA => {
+            let Area {
+                mask,
+                x,
+                y,
+                width,
+                height,
+            } = decode(parameters)?;
+            let site = crate::mask::commands::input_site(registry, recipe, &mask)?;
+            let stage = questions.stage_before(site.index)?;
+            let rect = area_rect(stage, [x, y, width, height])?;
+            let read = questions.region_before(&RegionRequest {
+                stage: RegionStage::Before(site.index),
+                rect,
+                reduction: area_reduction(rect, stage),
+                mode: Some(site.mode),
+            })?;
+            encode(&AreaInput {
+                stage: AreaStage {
+                    width: read.stage.width,
+                    height: read.stage.height,
+                },
+                rect: AreaRect {
+                    x0: read.rect.x0,
+                    y0: read.rect.y0,
+                    width: read.rect.width,
+                    height: read.rect.height,
+                },
+                reduction: read.reduction,
+                size: read.size,
+                points: read.linear,
+                renderer: crate::Renderer::from(&read.answered),
+            })
+        }
+        other => Err(Error::internal(format!("{other} reads no pixel"))),
+    }
+}
+
+/// The stage pixels a rectangle `[x, y, width, height]` of normalized content coordinates covers:
+/// widened to whole pixels — at least the one pixel its corner falls in — and clipped to `stage`. A
+/// rectangle that misses the stage is refused, not clamped onto its edge.
+fn area_rect(stage: Stage, [x, y, width, height]: [f64; 4]) -> Result<Region, Error> {
+    let span = |start: f64, extent: f64, side: u32| {
+        let side = f64::from(side);
+        let first = (start * side).floor();
+        let last = ((start + extent) * side).ceil().max(first + 1.0);
+        let (first, last) = (first.max(0.0), last.min(side));
+        (first < last).then_some((first as u32, (last - first) as u32))
+    };
+    match (span(x, width, stage.width), span(y, height, stage.height)) {
+        (Some((x0, width)), Some((y0, height))) => Ok(Region {
+            x0,
+            y0,
+            width,
+            height,
+        }),
+        _ => Err(Error::validation(format!(
+            "outside the stage: the area at ({x:.4}, {y:.4}) sized {width:.4} x {height:.4} misses \
+             the {}x{} stage the masked layer receives",
+            stage.width, stage.height
+        ))),
+    }
+}
+
+/// The smallest power-of-two block side that reduces `rect`, aligned to whole blocks of the stage's
+/// block grid as the region read aligns it, to at most [`AREA_POINTS`] points.
+fn area_reduction(rect: Region, stage: Stage) -> u32 {
+    let mut reduction = 1;
+    while reduction < MAX_REDUCTION {
+        let read = aligned(rect, reduction, stage);
+        let points =
+            u64::from(read.width.div_ceil(reduction)) * u64::from(read.height.div_ceil(reduction));
+        if points <= AREA_POINTS as u64 {
+            break;
+        }
+        reduction *= 2;
+    }
+    reduction
+}
+
+/// The content pixel holding normalized position `value` along a side of `side` pixels, or `None`
+/// outside it.
+fn content_pixel(value: f64, side: u32) -> Option<u32> {
+    let index = (value * f64::from(side)).floor();
+    (index >= 0.0 && index < f64::from(side)).then_some(index as u32)
+}
+
+fn object(value: Value) -> Map<String, Value> {
+    match value {
+        Value::Object(object) => object,
+        _ => Map::new(),
+    }
+}
+
+fn encode(value: &impl serde::Serialize) -> Result<Value, Error> {
+    serde_json::to_value(value).map_err(|error| Error::internal(error.to_string()))
+}
+
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
+    serde_json::from_value(value).map_err(|error| Error::internal(error.to_string()))
 }
 
 /// The host's one optional top-level request field on every action of a maskable effect.
@@ -436,6 +659,85 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
     use std::sync::Arc;
+
+    /// A dragged area is widened to whole pixels and clipped to the stage, a rectangle that misses
+    /// it is refused, and its reduction is the smallest power of two that leaves at most
+    /// `AREA_POINTS` points of the block-aligned read.
+    #[test]
+    fn an_area_is_reduced_by_the_smallest_power_of_two_within_its_point_bound() {
+        let stage = Stage {
+            width: 6000,
+            height: 4000,
+        };
+        let points = |rect: Region, reduction: u32| {
+            let read = aligned(rect, reduction, stage);
+            read.width.div_ceil(reduction) as usize * read.height.div_ceil(reduction) as usize
+        };
+        let whole = area_rect(stage, [0.0, 0.0, 1.0, 1.0]).unwrap();
+        assert_eq!(
+            whole,
+            Region {
+                x0: 0,
+                y0: 0,
+                width: 6000,
+                height: 4000
+            }
+        );
+        let side = |pixels: f64| pixels / 6000.0;
+        let tall = |pixels: f64| pixels / 4000.0;
+        for rect in [
+            whole,
+            area_rect(stage, [0.25, 0.25, 0.5, 0.5]).unwrap(),
+            // 64 x 64 pixels is exactly the bound; one more column needs a reduction.
+            area_rect(stage, [side(100.0), tall(100.0), side(64.0), tall(64.0)]).unwrap(),
+            area_rect(stage, [side(100.0), tall(100.0), side(65.0), tall(64.0)]).unwrap(),
+            // Off the block grid: a 64-pixel side starting at an odd pixel.
+            area_rect(stage, [side(101.0), tall(3.0), side(64.0), tall(64.0)]).unwrap(),
+        ] {
+            let reduction = area_reduction(rect, stage);
+            assert!(reduction.is_power_of_two(), "{rect:?}");
+            assert!(
+                points(rect, reduction) <= AREA_POINTS,
+                "{rect:?} at {reduction}"
+            );
+            if reduction > 1 {
+                assert!(
+                    points(rect, reduction / 2) > AREA_POINTS,
+                    "{rect:?} at {reduction}"
+                );
+            }
+        }
+        let exact = area_rect(stage, [side(100.0), tall(100.0), side(64.0), tall(64.0)]).unwrap();
+        assert_eq!(
+            (exact.width, exact.height, area_reduction(exact, stage)),
+            (64, 64, 1)
+        );
+        assert_eq!(area_reduction(whole, stage), 128);
+        // A zero-size area reads the one pixel its corner falls in.
+        assert_eq!(
+            area_rect(stage, [0.5, 0.5, 0.0, 0.0]).unwrap(),
+            Region {
+                x0: 3000,
+                y0: 2000,
+                width: 1,
+                height: 1
+            }
+        );
+        // A rectangle half off the frame is clipped; one wholly off it is refused.
+        assert_eq!(
+            area_rect(stage, [-0.5, 0.0, 0.75, 0.5]).unwrap(),
+            Region {
+                x0: 0,
+                y0: 0,
+                width: 1500,
+                height: 2000
+            }
+        );
+        let refused = area_rect(stage, [1.0, 0.0, 0.5, 0.5]).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Validation);
+        assert!(refused.detail.starts_with("outside the stage"), "{refused}");
+        assert!(area_rect(stage, [-0.6, -0.6, 0.5, 0.5]).is_err());
+    }
 
     /// A draft's target is the action's declared identity parameters by name, whichever action it
     /// is: a host command's identities are checked as a patch's are, a module action takes the
@@ -1198,6 +1500,124 @@ mod tests {
             labels.reverse();
             labels
         }
+    }
+
+    /// A pick on a mask no layer is bound to reads where a first adjustment through it would go and
+    /// commits one entry with the values its pixels derive: a luminance click centres the band on the
+    /// tone `mask.sample-input` answers at the clicked pixel, and a colour drag samples a point of the
+    /// area `mask.sample-input-area` answers, loosening Refine only.
+    #[test]
+    fn a_pick_on_an_unbound_mask_is_one_entry_set_from_the_pixels_it_read() {
+        let mut session = Session::open("mask-pick.sqlite");
+        let created = session
+            .run(
+                "mask.create-luminance-range",
+                &MaskTarget::default(),
+                json!({"low": 0.0, "low_feather": 5.0, "high": 100.0, "high_feather": 5.0}),
+                "create",
+            )
+            .unwrap();
+        let mask = MaskId::parse(created["mask"].as_str().unwrap()).unwrap();
+        let band = MaskTarget {
+            mask: Some(mask.clone()),
+            component: Some(
+                crate::ComponentId::parse(created["component"].as_str().unwrap()).unwrap(),
+            ),
+            ..MaskTarget::default()
+        };
+        let state = session.service.state(&session.asset).unwrap();
+        let (width, height) = (state.asset.width, state.asset.height);
+        let entry = state.current_entry.id.clone();
+        let (x, y) = (0.3, 0.6);
+        let input = session
+            .service
+            .mask_input_sample(
+                &session.asset,
+                &entry,
+                &mask,
+                (x * f64::from(width)).floor() as u32,
+                (y * f64::from(height)).floor() as u32,
+            )
+            .unwrap();
+        let before = session.labels().len();
+        session
+            .run(
+                "mask.pick-luminance-range",
+                &band,
+                json!({"x": x, "y": y}),
+                "pick-band",
+            )
+            .unwrap();
+        let labels = session.labels();
+        assert_eq!(labels.len(), before + 1, "one entry");
+        assert_eq!(
+            labels.last().unwrap(),
+            &json!(["mask.pick-luminance-range", "Pick Luminance range 1"])
+        );
+        let tone = 100.0
+            * crate::colour::srgb::encode(crate::colour::luma::rec709_f64([
+                input.r, input.g, input.b,
+            ]));
+        let listing = session.list();
+        let payload = &listing["masks"][0]["components"][0]["payload"];
+        assert_eq!(
+            payload,
+            &json!({"low": (tone - 10.0).clamp(0.0, 100.0), "low_feather": 10.0,
+                    "high": (tone + 10.0).clamp(0.0, 100.0), "high_feather": 10.0})
+        );
+        assert_eq!(listing["masks"][0]["layers"], json!([]), "still unbound");
+
+        let added = session
+            .run(
+                "mask.add-colour-range",
+                &MaskTarget {
+                    mask: Some(mask.clone()),
+                    ..MaskTarget::default()
+                },
+                json!({"mode": "intersect", "refine": 50.0}),
+                "add-colour",
+            )
+            .unwrap();
+        let colour = MaskTarget {
+            component: Some(
+                crate::ComponentId::parse(added["component"].as_str().unwrap()).unwrap(),
+            ),
+            ..band.clone()
+        };
+        let rect = json!({"x": 0.2, "y": 0.2, "width": 0.4, "height": 0.3});
+        let entry = session
+            .service
+            .state(&session.asset)
+            .unwrap()
+            .current_entry
+            .id;
+        let mut query = rect.clone();
+        query["mask"] = json!(mask.as_str());
+        let area = session
+            .service
+            .run_query(&session.asset, &entry, SAMPLE_INPUT_AREA, query)
+            .unwrap();
+        let area: AreaInput = serde_json::from_value(area).unwrap();
+        assert!(!area.points.is_empty() && area.points.len() <= AREA_POINTS);
+        assert_eq!(area.points.len(), (area.size[0] * area.size[1]) as usize);
+        let before = session.labels().len();
+        session
+            .run("mask.pick-colour-range", &colour, rect, "pick-colour")
+            .unwrap();
+        let labels = session.labels();
+        assert_eq!(labels.len(), before + 1, "one entry");
+        assert_eq!(
+            labels.last().unwrap(),
+            &json!(["mask.pick-colour-range", "Pick Colour range 1"])
+        );
+        let payload = session.list()["masks"][0]["components"][1]["payload"].clone();
+        let samples: Vec<[f64; 3]> = serde_json::from_value(payload["samples"].clone()).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert!(
+            area.points.contains(&samples[0]),
+            "the medoid is a point of the area"
+        );
+        assert!(payload["refine"].as_f64().unwrap() <= 50.0, "never raised");
     }
 
     /// The component of `mask` named `component`, resolved from the listing as a client resolves it.

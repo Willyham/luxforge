@@ -1,0 +1,52 @@
+[
+  {
+    "api": {
+      "method": "edit.set-basic",
+      "params": {
+        "exposure": 0.15,
+        "contrast": 10.0,
+        "highlights": -30.0,
+        "shadows": 15.0
+      }
+    }
+  },
+  {
+    "api": {
+      "method": "edit.set-mixer",
+      "params": {
+        "grade-shadows-hue": 200.0,
+        "grade-shadows-saturation": 25.0,
+        "grade-highlights-hue": 40.0,
+        "grade-highlights-saturation": 20.0
+      }
+    }
+  },
+  {
+    "section": {
+      "module": "luxforge.basic",
+      "expanded": false
+    }
+  },
+  {
+    "section": {
+      "module": "luxforge.mixer",
+      "expanded": true
+    }
+  },
+  {
+    "tab": {
+      "module": "luxforge.mixer",
+      "index": 1
+    }
+  },
+  {
+    "wait": {
+      "ms": 8000
+    }
+  },
+  {
+    "wait": {
+      "ms": 8000
+    }
+  }
+]

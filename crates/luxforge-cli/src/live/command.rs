@@ -734,7 +734,9 @@ fn batch(
     let mut input = BufReader::new(stdin);
     let mut worst = 0;
     loop {
-        let (id, outcome) = match next_line(&mut input) {
+        let next = next_line(&mut input);
+        let input_failed = next.is_err();
+        let (id, outcome) = match next {
             Ok(Line::End) => break,
             Ok(Line::Text(line)) if line.iter().all(u8::is_ascii_whitespace) => continue,
             Ok(Line::Text(line)) => match batch_request(&line) {
@@ -756,7 +758,7 @@ fn batch(
             ),
         };
         worst = worst.max(outcome.status());
-        let stop = outcome.ends_connection();
+        let stop = input_failed || outcome.ends_connection();
         let mut line = Map::new();
         if let Some(id) = id {
             line.insert("id".into(), id);

@@ -818,11 +818,7 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
                 "Moment {} of {} \u{b7} {}",
                 unit.moment.unwrap_or(0) + 1,
                 thousands(summary.groups.moments.len() as u32),
-                if moment.kind == MomentKind::Bracket {
-                    "bracket"
-                } else {
-                    "burst"
-                }
+                super::select::moment_title(moment.kind).to_lowercase()
             ),
             None => row.file_name.clone(),
         },
@@ -1049,6 +1045,7 @@ mod tests {
     /// A view of `count` items at `revision` whose moments are `(start, len, kind)`.
     fn summary(revision: u64, count: u32, moments: &[(u32, u32, MomentKind)]) -> ViewSummary {
         ViewSummary {
+            paired: 0,
             revision,
             query: ViewQuery::of(ViewSource::AllPhotographs),
             count,
@@ -1100,6 +1097,7 @@ mod tests {
     /// A file row at `position`, file `100 + position`, captured `ms` milliseconds into a second.
     fn row(position: u32, ms: u32) -> ViewRow {
         ViewRow {
+            pair: None,
             position,
             item: RowItem::File {
                 file_id: FileId(100 + i64::from(position)),

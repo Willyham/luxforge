@@ -337,6 +337,7 @@ fn preview_cache_owner_answers_the_thumbnail_stage_as_the_fallback() {
     assert_eq!(second["state"], "queued");
     assert_eq!(second["job_id"], first["job_id"], "the same task");
     assert_eq!(second["fallback"]["origin"], "exif-thumbnail");
+    assert_eq!(second["fallback_current"], true, "the file's own stage");
     assert_eq!(second["fallback"]["width"], 160);
     assert_eq!(second["fallback"]["height"], 107);
     assert_eq!(

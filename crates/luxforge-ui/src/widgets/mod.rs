@@ -34,6 +34,7 @@ mod notched_slider;
 mod notice_card;
 mod number_field;
 mod overlay_control;
+mod pick_bar;
 mod popover;
 mod range_slider;
 mod readout_card;
@@ -88,7 +89,9 @@ pub use color_swatch::{ColorSwatchModel, color_swatch};
 pub use coverage_thumbnail::CoverageThumbnailModel;
 pub use curve_editor::{CurveEditorEvent, CurveEditorModel, CurvePointRow, curve_editor};
 pub use disclosure_heading::disclosure_heading;
-pub use dropdown::{DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list};
+pub use dropdown::{
+    DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list, menu_list_with_width,
+};
 pub use field_grid::{GridField, field_grid};
 pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,
@@ -122,6 +125,7 @@ pub use number_field::{
     number_field, value_input,
 };
 pub use overlay_control::{OverlayControlModel, OverlayMode, OverlayTint, overlay_control};
+pub use pick_bar::{PickBarModel, PickButtonModel, pick_bar, pick_button};
 pub use popover::popover;
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::readout_card;

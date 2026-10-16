@@ -8,5 +8,5 @@ fn main() {
     let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest.join("../../../crates/luxforge-diffusion");
     println!("cargo:rerun-if-changed=build.rs");
-    native_build::build(&root.canonicalize().expect("crates/luxforge-diffusion"));
+    native_build::build_probe(&root.canonicalize().expect("crates/luxforge-diffusion"));
 }

@@ -3,19 +3,21 @@
 //!
 //! Pure functions of [`FrameFacts`] (header metadata, compact), the gazetteer ([`PlaceNames`]) and
 //! the view's [`Thresholds`]; nothing is stored, so changing a threshold regroups at once. The
-//! preview-brightness bracket check is the preview lane's and plugs in through [`BracketProbe`].
+//! preview checks for brackets and panoramas are the preview lane's and plug in through
+//! [`MomentProbe`].
 //!
 //! - [`order`] sorts a view's frames; [`group`] finds its days, cameras and moments in that order
-//!   (`moments.rs`: runs, bursts and brackets, P5); [`events`] splits every frame into events and
+//!   (`moments.rs`: panoramas, runs, bursts and brackets, P5); [`events`] splits every frame into events and
 //!   names them (`events.rs`, the P3 rule; `names.rs`, P4's names and [`Gazetteer`]).
-//! - `gazetteer.rs` is the bundled offline place table and its index.
+//! - `gazetteer.rs` is the bundled offline place table and its index; `pairs.rs` finds the RAW+JPEG
+//!   pairs a view shows as one row ([`pairs`]).
 //!
 //! The cost is a sort and a pass: `events` allocates its order vector and then per event, `group`
 //! per moment, and neither holds a string per frame.
 
 use crate::catalog_types::{
-    BracketProbe, CameraGroup, DayGroup, EventSet, Exposure, FrameFacts, FrameTables, GroupLayout,
-    Grouping, PlaceNames, Thresholds,
+    CameraGroup, DayGroup, EventSet, Exposure, FrameFacts, FrameTables, GroupLayout, Grouping,
+    MomentProbe, PlaceNames, Thresholds,
 };
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -23,10 +25,12 @@ mod events;
 pub(crate) mod gazetteer;
 mod moments;
 mod names;
+mod pairs;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use names::{Gazetteer, user_folder_name};
+pub(crate) use pairs::pairs;
 
 /// Sort `frames` into the order a view shows them under `grouping`, earliest first, or the reverse
 /// when `descending`; undated frames come last either way, by folder and file name.
@@ -148,13 +152,13 @@ fn caseless(a: &str, b: &str) -> Ordering {
 }
 
 /// The group layout of `frames`, already in [`order`]: their days, the camera groups of days with
-/// more than one body, and the bursts and brackets of each body's frames of a day (both under
-/// [`Grouping::DayCameraMoment`] only), a bracket from metadata ([`metadata_steps`]) or, when the
-/// metadata cannot say, from `probe`.
+/// more than one body, and the bursts, brackets and panoramas of each body's frames of a day (both
+/// under [`Grouping::DayCameraMoment`] only), a bracket from metadata ([`metadata_steps`]) or, when
+/// the metadata cannot say, from `probe`, and a panorama from its folder or `probe`'s pans.
 ///
 /// Undated frames are one group with no day, and have no camera groups or moments: they are ordered
-/// by folder and name, not by body. The moment rules (P5) are in `moments.rs`: runs of one body by
-/// time and settings; a run whose exposure steps in its metadata or its previews is a bracket, and
+/// by folder and name, not by body. The moment rules (P5) are in `moments.rs`: panoramas first, from
+/// a panorama folder or a sweep the previews measure; then runs of one body by time and settings; a run whose exposure steps in its metadata or its previews is a bracket, and
 /// a longer run that repeats one bracket's pattern is several; any other run of two or more frames
 /// is a burst. Frames may be in either direction ([`order`]'s `descending`).
 pub(crate) fn group(
@@ -162,13 +166,13 @@ pub(crate) fn group(
     tables: &FrameTables,
     grouping: Grouping,
     thresholds: &Thresholds,
-    probe: &dyn BracketProbe,
+    probe: &dyn MomentProbe,
 ) -> GroupLayout {
     let mut layout = GroupLayout::default();
     if grouping == Grouping::None || frames.is_empty() {
         return layout;
     }
-    let mut moments = moments::Finder::new(thresholds, probe);
+    let mut moments = moments::Finder::new(thresholds, tables, probe);
     let mut start = 0;
     while start < frames.len() {
         let day = frames[start].local_day;

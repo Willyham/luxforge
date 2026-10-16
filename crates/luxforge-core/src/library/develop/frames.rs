@@ -4,14 +4,14 @@
 //! folder (browse views' events and grouping read the same columns), and reads nothing but the
 //! index's rows.
 use crate::{
-    Error,
+    Error, SourceTag,
     catalog_types::{
         CameraBody, Exposure, FileId, FrameFacts, FrameTables, GeoPosition, LocalDay, ViewItem,
     },
 };
 use rusqlite::Connection;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -22,6 +22,8 @@ const DAY_MS: i64 = 86_400_000;
 pub(crate) struct Frames {
     pub frames: Vec<FrameFacts>,
     pub tables: FrameTables,
+    /// What each listed file is, by its item: a RAW file or a JPEG, which RAW+JPEG pairs need.
+    pub kinds: HashMap<ViewItem, SourceTag>,
 }
 
 impl Frames {
@@ -51,7 +53,7 @@ pub(crate) fn frames(
     let mut statement = index.prepare_cached(
         "SELECT id, name, capture_ms, offset_minutes, latitude, longitude, altitude_m, make, model,
              body_serial, exposure_time_s, f_number, iso, exposure_bias_ev, focal_mm,
-             focal_35mm_mm
+             focal_35mm_mm, kind
          FROM files WHERE folder = ?1",
     )?;
     let mut seen = HashSet::new();
@@ -86,9 +88,17 @@ pub(crate) fn frames(
                 }),
                 None => None,
             };
+            let item = ViewItem::File(FileId(row.get(0)?));
+            if let Some(kind) = row
+                .get::<_, Option<String>>(16)?
+                .as_deref()
+                .and_then(SourceTag::parse)
+            {
+                read.kinds.insert(item, kind);
+            }
             read.frames.push(FrameFacts {
                 merged: false,
-                item: ViewItem::File(FileId(row.get(0)?)),
+                item,
                 folder: index,
                 name: row.get::<_, String>(1)?.into(),
                 instant_ms: instant,

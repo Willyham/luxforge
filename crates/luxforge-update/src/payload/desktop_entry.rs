@@ -135,7 +135,7 @@ fn rewrite(
         } else if group.is_none() {
             out.push(line.to_owned());
         } else if let Some(value) = value(trimmed, "Exec") {
-            out.push(format!("Exec={}{}", quoted(program), arguments(value)));
+            out.push(format!("Exec={}", exec_value(program, value)));
         } else if value(trimmed, "TryExec").is_some() {
             out.push(format!("TryExec={program}"));
         } else if value(trimmed, VERSION_KEY).is_some() {
@@ -162,45 +162,82 @@ fn value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     Some(rest.strip_prefix('=')?.trim_start())
 }
 
-/// The program an `Exec` value runs: its first argument, unquoted.
-fn program(value: &str) -> Option<String> {
+/// A string value with the specification's string escapes (`\s`, `\n`, `\t`, `\r` and `\\`) read.
+/// Any other escape is kept as written, for the `Exec` quoting rule to read.
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
-    match chars.next()? {
-        '"' => {
-            let mut program = String::new();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => return Some(program),
-                    '\\' => program.push(chars.next()?),
-                    c => program.push(c),
-                }
-            }
-            None
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
         }
-        _ => value.split(' ').next().map(str::to_owned),
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
     }
+    out
 }
 
-/// Everything after an `Exec` value's first argument, with its leading space.
-fn arguments(value: &str) -> &str {
-    if let Some(rest) = value.strip_prefix('"') {
-        let mut escaped = false;
-        for (index, c) in rest.char_indices() {
-            match c {
-                _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => return &rest[index + 1..],
-                _ => {}
+/// `text` as a string value: a backslash, line break, tab or carriage return escaped.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// An `Exec` command line's first argument, unquoted and with `%%` read as `%`, and everything
+/// after it with its leading space. The command's string escapes are already read.
+fn split_command(command: &str) -> Option<(String, &str)> {
+    let (program, rest) = if let Some(quoted) = command.strip_prefix('"') {
+        let mut program = String::new();
+        let mut chars = quoted.char_indices();
+        loop {
+            match chars.next()? {
+                (index, '"') => break (program, &quoted[index + 1..]),
+                (_, '\\') => program.push(chars.next()?.1),
+                (_, c) => program.push(c),
             }
         }
-        ""
     } else {
-        value.find(' ').map_or("", |index| &value[index..])
-    }
+        let end = command.find(' ').unwrap_or(command.len());
+        (command[..end].to_owned(), &command[end..])
+    };
+    Some((program.replace("%%", "%"), rest))
+}
+
+/// The program an `Exec` value runs.
+fn program(value: &str) -> Option<String> {
+    split_command(&unescape(value)).map(|(program, _)| program)
+}
+
+/// The `Exec` value that runs `program` with the arguments of the `Exec` value `value`.
+fn exec_value(program: &str, value: &str) -> String {
+    let command = unescape(value);
+    let arguments = split_command(&command).map_or("", |(_, arguments)| arguments);
+    escape(&format!("{}{arguments}", quoted(program)))
 }
 
 /// `program` as an `Exec` argument: bare when it holds no character the specification reserves,
-/// otherwise double-quoted with `"`, `` ` `` and `$` escaped.
+/// otherwise double-quoted with `"`, `` ` `` and `$` escaped and `%` written `%%`. Writing it as a
+/// string value escapes each of those escapes again, as the specification requires.
 fn quoted(program: &str) -> String {
     let bare = program
         .bytes()
@@ -211,10 +248,14 @@ fn quoted(program: &str) -> String {
     let mut out = String::with_capacity(program.len() + 2);
     out.push('"');
     for c in program.chars() {
-        if matches!(c, '"' | '`' | '$') {
-            out.push('\\');
+        match c {
+            '"' | '`' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            c => out.push(c),
         }
-        out.push(c);
     }
     out.push('"');
     out

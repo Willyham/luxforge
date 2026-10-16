@@ -77,7 +77,8 @@ fn assert_layer_input(
     what: &str,
 ) {
     let context = RenderContext::new();
-    let (stage, input) = layer_input(registry, source, recipe, layer, &context).unwrap();
+    let mode = super::MaskInputMode::for_layer(registry, recipe, layer);
+    let (stage, input) = layer_input(registry, source, recipe, layer, mode, &context).unwrap();
     assert_eq!(frame.stage, stage, "{what}: the stage its layer receives");
     assert_eq!(frame.origin, (0, 0), "{what}");
     assert_eq!((frame.width, frame.height), (stage.width, stage.height));

@@ -46,4 +46,10 @@ pub(crate) enum ThemeMessage {
     Delete(String),
     /// `theme.delete` and the listing after it answered.
     Deleted(Result<Box<ThemeChange>, String>),
+    /// The window gained focus: read Omarchy's current theme again.
+    Focused,
+    /// Omarchy's current theme's slug was read, or Omarchy records none.
+    OmarchyRead(Option<String>),
+    /// Turn following Omarchy's theme on or off: the Appearance tab's switch.
+    Follow(bool),
 }

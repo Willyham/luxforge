@@ -488,15 +488,20 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: minify::SCENARIO,
-        about: "Before/After at Fit over the generated zone plate: After's exact raster drawn below its size shows no replica rings, and its mip levels are in the photo slots",
+        about: "Before/After at Fit over the generated zone plate on the reference renderer: the photograph's and After's exact raster drawn below its size shows no replica rings, and its mip levels are in the photo slots until the comparison ends",
         launches: &[LaunchSpec {
             plan: minify::plan,
+            no_gpu_render: true,
             ..APP
         }],
         verify: minify::verify,
         source: Source::Fixtures(&[minify::FIXTURE]),
         window: Some(PANELLED),
-        note: None,
+        note: Some(
+            "The launch passes `--no-gpu-render`: only the reference renderer draws a photograph \
+             at Fit from its exact raster in every run. Where the GPU draws the picture at rest, \
+             Compare's After at Fit is the GPU's picture at the view's size.",
+        ),
         own: None,
     },
     Scenario {
@@ -802,16 +807,16 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "export",
-        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one GPU export repeated byte for byte, and a refused one",
+        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one repeated byte for byte, and a refused one; then the Export sheet over the 24 MP and 60 MP JPEGs and a supplied RAW: Web, Print and Master, a preset saved, updated and deleted, Export again, a taken name, a refused WebP, a warned export's bar cancelled from Performance, and a batch with one photograph left out",
         launches: &[LaunchSpec {
             plan: export::plan,
             ..APP
         }],
         verify: export::verify,
-        source: Source::Fixtures(&[export::FIXTURE]),
+        source: Source::Default(&[export::FIXTURE]),
         window: Some(PANELLED),
         note: None,
-        own: None,
+        own: Some(export::run),
     },
     Scenario {
         name: mask::SCENARIO,
@@ -945,7 +950,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: mask_range::SCENARIO,
-        about: "Luminance and colour range selections typed, picked and combined, then their limits",
+        about: "Luminance and colour range selections created with the eyedropper armed, picked by click, Shift-click and drag, typed and combined, then their limits",
         launches: &[
             LaunchSpec {
                 name: "launch1",
@@ -1123,7 +1128,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: unsupported_catalog::SCENARIO,
-        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and format 1, the catalog unchanged and the releases page, then Start a new catalog creates and remembers catalog (format 1).sqlite beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
+        about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and the current format, the catalog unchanged and the releases page, then Start a new catalog creates and remembers a new catalog beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
         // Its one launch names a catalog the run seeds before it.
         launches: &[],
         verify: unsupported_catalog::verify,
@@ -1134,7 +1139,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 136 widget gallery states across twenty-one pages",
+        about: "All 137 widget gallery states across twenty-one pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,
@@ -2389,6 +2394,7 @@ mod tests {
                 "raw-detail",
                 "auto-tone",
                 "copy-settings",
+                "export",
                 "performance",
                 "filmstrip",
                 "raw-panel",

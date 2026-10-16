@@ -177,8 +177,8 @@ impl Harness {
         fs::create_dir_all(&out).unwrap();
         let destination = out.join(name);
         let started = self.prepared(
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": destination, "mutation": envelope(name)}),
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": destination, "mutation": envelope(name)}),
         );
         let settled = self.settle(&started["job_id"]);
         assert_eq!(settled["status"], "ready", "{settled}");
@@ -353,8 +353,8 @@ fn a_moved_original_is_located_and_exports_the_same_edits() {
     assert_eq!(data["availability"], "missing");
     assert_eq!(data["locator"], json!(original));
     let export = harness.refused(
-        "export.jpeg",
-        json!({"asset_id": asset, "destination": harness.dir.join("never.jpg"), "mutation": envelope("never")}),
+        "export.write",
+        json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": harness.dir.join("never.jpg"), "mutation": envelope("never")}),
     );
     assert_eq!(export.code, "source-unavailable");
     assert_eq!(export.data.unwrap()["availability"], "missing");
@@ -979,8 +979,8 @@ fn a_detached_disk_image_makes_its_photographs_offline() {
     for refusal in [
         harness.refused("source.prepare", json!({"asset_id": images[0]})),
         harness.refused(
-            "export.jpeg",
-            json!({"asset_id": images[0], "destination": harness.dir.join("x.jpg"), "mutation": envelope("offline-export")}),
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(), "asset_id": images[0], "destination": harness.dir.join("x.jpg"), "mutation": envelope("offline-export")}),
         ),
         harness.refused("render.sample", json!({"asset_id": images[1], "x": 0, "y": 0})),
     ] {

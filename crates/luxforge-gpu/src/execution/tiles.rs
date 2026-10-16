@@ -101,6 +101,7 @@
 //!   reason the stage cannot run it — `pipeline-failed`, `texture-limit`, `buffer-limit` or
 //!   `source-missing` for a window whose pixels were let go — exactly as the surface names them.
 use super::BoundaryTexture;
+use super::resample;
 use super::staged::StageHolder;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource,
@@ -183,6 +184,26 @@ pub enum TilePixels {
     Codes(Vec<u8>),
     /// Red, green and blue as the `f32` the last step returned.
     Linear(Vec<[f32; 3]>),
+    /// Four 16-bit codes a pixel, red, green, blue and an opaque 65,535: a resample cut's at 16
+    /// bits ([`TileRunner::submit_resample`]).
+    Codes16(Vec<u16>),
+}
+
+/// How a readback copy's texels are read: as a tile's end asks, or as a 16-bit resample cut's
+/// codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadAs {
+    End(TileEnd),
+    Codes16,
+}
+
+impl ReadAs {
+    fn texel_bytes(self) -> u32 {
+        match self {
+            Self::End(end) => end.texel_bytes(),
+            Self::Codes16 => 8,
+        }
+    }
 }
 
 /// Why a runner cannot draw on its GPU at all: the core's `tiles-unavailable` reasons.
@@ -327,6 +348,13 @@ pub struct TileRunner {
     /// and what they are charged.
     stages: Vec<StageHolder>,
     stage_bytes: u64,
+    /// The output stage a resampled stream's tiles write their linear values into and its cuts
+    /// read ([`TileRunner::hold_output`]).
+    held: Option<StageHolder>,
+    /// The resample sweep's pipelines, made by its first cut, or why they could not be; and the
+    /// 16-bit thresholds' buffer, made by the first 16-bit cut.
+    resampling: Option<Result<resample::Pipelines, String>>,
+    wide: Option<wgpu::Buffer>,
     /// The light a light sweep's tiles reduce, while one is drawn ([`TileRunner::begin_light`]).
     light_sweep: Option<LightSweep>,
     sequences: Lru<Key, Sequence>,
@@ -409,15 +437,28 @@ pub enum TileOutput {
     Light {
         rect: [u32; 4],
     },
+    /// A resampled stream's tile (`super::resample`): its output's linear values, as
+    /// [`TileEnd::Linear`] writes them, copied into the held output stage at `rect` (`[x0, y0, x1,
+    /// y1)` of the output stage, the tile's own rectangle), nothing read back. The output stage
+    /// must be held ([`TileRunner::hold_output`]).
+    Held {
+        rect: [u32; 4],
+    },
 }
 
 impl TileOutput {
-    /// What is read back, if anything.
+    /// What its last pass writes as: a tile's end, or `None` for a sweep's intermediate.
     fn end(self) -> Option<TileEnd> {
         match self {
             Self::Read(end) => Some(end),
+            Self::Held { .. } => Some(TileEnd::Linear),
             Self::Stage { .. } | Self::Light { .. } => None,
         }
+    }
+
+    /// Whether its output is read back.
+    fn reads_back(self) -> bool {
+        matches!(self, Self::Read(_))
     }
 }
 
@@ -439,7 +480,7 @@ struct Readback {
     mapped: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
     size: (u32, u32),
     padded: u32,
-    end: TileEnd,
+    end: ReadAs,
 }
 
 /// A tile's work on the GPU, submitted: its readback copy, when it has one, its submission, and
@@ -697,6 +738,9 @@ impl TileRunner {
             tickets: 0,
             stages: Vec::new(),
             stage_bytes: 0,
+            held: None,
+            resampling: None,
+            wide: None,
             light_sweep: None,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
             lights: Lru::new(TILE_LIGHTS),
@@ -787,11 +831,18 @@ impl TileRunner {
     fn holding(&self) -> u64 {
         self.window.as_ref().map_or(0, |(_, bytes)| *bytes)
             + self.slot.as_ref().map_or(0, |slot| slot.bytes)
-            + self.stage_bytes
+            + self.held_bytes()
             + self.light_sweep.as_ref().map_or(0, |sweep| sweep.bytes)
             + self.pinned()
             + self.spare()
             + self.repair_bytes()
+    }
+
+    /// What its stage textures, its held output stage and its 16-bit thresholds take, as charged.
+    fn held_bytes(&self) -> u64 {
+        self.stage_bytes
+            + self.held.as_ref().map_or(0, StageHolder::bytes)
+            + self.wide.as_ref().map_or(0, |_| resample::WIDE_BYTES)
     }
 
     /// What the repair steps' solved planes it keeps take, as charged.
@@ -847,6 +898,64 @@ impl TileRunner {
         (self.stages.len(), self.stage_bytes)
     }
 
+    /// What holding an output stage of `stage` for a resampled stream would be charged
+    /// ([`TileRunner::hold_output`]): its texels in `Rgba32Float`, at 16 bytes. Creates nothing;
+    /// `texture-limit` past 2 × 2 textures of the device's largest side.
+    pub fn output_charge(&self, stage: (u32, u32)) -> Result<u64, TileFailure> {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        StageHolder::charge(stage, wgpu::TextureFormat::Rgba32Float, limit)
+            .map_err(TileFailure::Plan)
+    }
+
+    /// Hold the output stage of a resampled stream (`super::resample`), `stage`, in `Rgba32Float`,
+    /// for its tiles to write their linear values into ([`TileOutput::Held`]) and its cuts to read
+    /// ([`TileRunner::submit_resample`]): charged to [`GPU_TILE_BUDGET`] beside everything the
+    /// runner holds before it is created, refused (`tiles-budget`, or `texture-limit` past 2 × 2)
+    /// having created nothing. One held before goes first. It stays until
+    /// [`TileRunner::release_output`].
+    pub fn hold_output(&mut self, stage: (u32, u32)) -> Result<(), TileFailure> {
+        self.release_output();
+        let each = self.output_charge(stage)?;
+        let requested = self.holding() + each;
+        if requested > GPU_TILE_BUDGET {
+            return Err(TileFailure::Budget {
+                requested,
+                budget: GPU_TILE_BUDGET,
+            });
+        }
+        let holder = StageHolder::create(
+            &self.device,
+            stage,
+            wgpu::TextureFormat::Rgba32Float,
+            |_| Ok::<(), GpuFallback>(()),
+        )
+        .map_err(TileFailure::Plan)?;
+        self.held = Some(holder);
+        self.figures.peak = self.figures.peak.max(self.holding());
+        self.account();
+        Ok(())
+    }
+
+    /// Let the held output stage go: a resampled stream ended, drawn whole, cancelled, abandoned
+    /// or fallen back. A tile or cut in flight that wrote or read it keeps it until the GPU is done.
+    pub fn release_output(&mut self) {
+        self.held = None;
+        self.account();
+    }
+
+    /// The cuts of an output whose columns' and rows' taps are `columns` and `rows`, each computed
+    /// `margin` output pixels wider for its sharpening, on this runner's device
+    /// ([`resample::resample_cuts`]).
+    pub fn resample_cuts(
+        &self,
+        columns: &[resample::ResampleTaps],
+        rows: &[resample::ResampleTaps],
+        margin: u32,
+    ) -> Result<Vec<resample::ResampleRange>, TileFailure> {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        resample::resample_cuts(columns, rows, limit, margin).map_err(TileFailure::Plan)
+    }
+
     /// The readback copies tiles read back left for the next to copy into.
     fn spare(&self) -> u64 {
         self.readbacks.iter().map(|(_, bytes)| *bytes).sum()
@@ -855,7 +964,7 @@ impl TileRunner {
     fn account(&mut self) {
         self.figures.in_use = self.holding();
         self.figures.in_flight = self.in_flight.len() as u32;
-        self.figures.stage_bytes = self.stage_bytes;
+        self.figures.stage_bytes = self.held_bytes();
     }
 
     /// Wait for every tile in flight to be done on the GPU, so what they held of a window or a slot
@@ -891,7 +1000,7 @@ impl TileRunner {
             .map(GpuSource::bytes)
             .sum();
         let held = held.bytes() + reads;
-        let run = held + self.slot_bytes(plan, Some(end))?;
+        let run = held + self.slot_bytes(plan, Some(end), true)?;
         // A light is computed on its own before the run, beside the window kept between runs.
         let mut most = run;
         for light in &plan.lights {
@@ -1003,6 +1112,11 @@ impl TileRunner {
         {
             return Err(TileFailure::PIPELINE_FAILED);
         }
+        if let TileOutput::Held { .. } = output
+            && self.held.is_none()
+        {
+            return Err(TileFailure::PIPELINE_FAILED);
+        }
         if self.lost() {
             // Nothing it held outlives its device.
             self.in_flight.clear();
@@ -1029,12 +1143,12 @@ impl TileRunner {
             light_us: micros(lit),
             ..TileTimes::default()
         };
-        let slot_bytes = self.slot_bytes(plan, end)?;
+        let slot_bytes = self.slot_bytes(plan, end, output.reads_back())?;
         let window_bytes = held.as_ref().map_or(0, GpuSource::bytes)
             + reads.iter().map(GpuSource::bytes).sum::<u64>();
         let single = window_bytes
             + slot_bytes
-            + self.stage_bytes
+            + self.held_bytes()
             + self.light_sweep.as_ref().map_or(0, |sweep| sweep.bytes);
         if single > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
@@ -1220,6 +1334,368 @@ impl TileRunner {
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
         }
         Ok((tile, wait_us))
+    }
+
+    /// Submit one cut of a resampled stream (`super::resample`), its codes read back by
+    /// [`TileRunner::finish`] as [`TilePixels::Codes`] or [`TilePixels::Codes16`], row by row: the
+    /// window of the held output stage its taps read copied out into a scratch texture, the sums
+    /// across and down, clamped, encoded at `cut.depth` and packed, and copied out, without waiting
+    /// for the device. The output stage must be held ([`TileRunner::hold_output`]), the window lie
+    /// inside it and at most [`TILES_IN_FLIGHT`] tiles and cuts be in flight; anything else is
+    /// `pipeline-failed`, as are passes that do not compile. Charged to [`GPU_TILE_BUDGET`] before
+    /// anything is created, beside everything the runner holds ([`resample::resample_charge`]);
+    /// what the cut creates but its readback copy goes as it is submitted, held by the tile in
+    /// flight until the GPU is done with it.
+    pub fn submit_resample(
+        &mut self,
+        cut: &resample::ResampleCut<'_>,
+    ) -> Result<Ticket, TileFailure> {
+        if self.lost() {
+            self.in_flight.clear();
+            self.release();
+            return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
+        }
+        if self.in_flight.len() >= TILES_IN_FLIGHT {
+            return Err(TileFailure::PIPELINE_FAILED);
+        }
+        let stage = self
+            .held
+            .as_ref()
+            .ok_or(TileFailure::PIPELINE_FAILED)?
+            .stage();
+        let window = cut.window().ok_or(TileFailure::PIPELINE_FAILED)?;
+        let [x, y, width, height] = window;
+        if u64::from(x) + u64::from(width) > u64::from(stage.0)
+            || u64::from(y) + u64::from(height) > u64::from(stage.1)
+        {
+            return Err(TileFailure::PIPELINE_FAILED);
+        }
+        let limits = self.device.limits();
+        let side = limits.max_texture_dimension_2d.min(8192);
+        if width > side || height > side {
+            return Err(TileFailure::Plan(GpuFallback::TextureLimit {
+                width,
+                height,
+                limit: side,
+            }));
+        }
+        let bytes = resample::cut_buffers(cut).ok_or(TileFailure::PIPELINE_FAILED)?;
+        if let Some(sharpen) = &cut.sharpen {
+            let [left, top, columns, rows] = sharpen.interior;
+            if sharpen.weights.len() % 2 == 0
+                || columns == 0
+                || rows == 0
+                || u64::from(left) + u64::from(columns) > cut.columns.len() as u64
+                || u64::from(top) + u64::from(rows) > cut.rows.len() as u64
+            {
+                return Err(TileFailure::PIPELINE_FAILED);
+            }
+        }
+        let binding = u64::from(limits.max_storage_buffer_binding_size);
+        for each in [bytes.across, bytes.codes] {
+            if each > binding {
+                return Err(TileFailure::Plan(GpuFallback::BufferLimit {
+                    bytes: each,
+                    limit: binding,
+                }));
+            }
+        }
+        let wide = match cut.depth {
+            resample::ResampleDepth::Sixteen if self.wide.is_none() => resample::WIDE_BYTES,
+            _ => 0,
+        };
+        let single = bytes.total() + wide;
+        if self.holding() + single > GPU_TILE_BUDGET {
+            self.settle();
+            self.readbacks.clear();
+        }
+        let requested = self.holding() + single;
+        if requested > GPU_TILE_BUDGET {
+            return Err(TileFailure::Budget {
+                requested,
+                budget: GPU_TILE_BUDGET,
+            });
+        }
+        if self.resampling.is_none() {
+            self.figures.compiles += 1;
+            self.resampling = Some(resample::Pipelines::new(&self.device));
+        }
+        if !matches!(self.resampling, Some(Ok(_))) {
+            return Err(TileFailure::PIPELINE_FAILED);
+        }
+        if cut.depth == resample::ResampleDepth::Sixteen && self.wide.is_none() {
+            let thresholds = resample::wide_encoding().ok_or(TileFailure::PIPELINE_FAILED)?;
+            let buffer =
+                storage_buffer(&self.device, "luxforge.resample.wide", resample::WIDE_BYTES);
+            self.queue
+                .write_buffer(&buffer, 0, &resample::float_bytes(thresholds));
+            self.wide = Some(buffer);
+        }
+        self.figures.peak = self.figures.peak.max(requested);
+        for filter in [
+            wgpu::ErrorFilter::Validation,
+            wgpu::ErrorFilter::OutOfMemory,
+            wgpu::ErrorFilter::Internal,
+        ] {
+            self.device.push_error_scope(filter);
+        }
+        let encoding = Instant::now();
+        let submitted = self.encode_resample(cut, window, bytes);
+        let answers: Vec<_> = (0..3)
+            .map(|_| answered(self.device.pop_error_scope()))
+            .collect();
+        let raised = answers.iter().any(|answer| !matches!(answer, Some(None)));
+        if self.lost() {
+            self.in_flight.clear();
+            self.release();
+            submitted?;
+            return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
+        }
+        let (index, buffer) = match (submitted, raised) {
+            (Ok(submitted), false) => submitted,
+            (Ok(_), true) => return Err(TileFailure::PIPELINE_FAILED),
+            (Err(failure), _) => return Err(failure),
+        };
+        let (sender, mapped) = mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        let (columns, rows) = cut.read_back();
+        self.tickets += 1;
+        let tile = InFlight {
+            ticket: self.tickets,
+            index,
+            readback: Some(Readback {
+                buffer,
+                bytes: bytes.readback,
+                mapped,
+                size: (columns, rows),
+                padded: columns * cut.depth.pixel_bytes(),
+                end: match cut.depth {
+                    resample::ResampleDepth::Eight => ReadAs::End(TileEnd::Codes),
+                    resample::ResampleDepth::Sixteen => ReadAs::Codes16,
+                },
+            }),
+            // Its scratch, sums, taps and codes are no slot's: held until the GPU is done.
+            window: (self.generations.0, 0),
+            slot: (u64::MAX, bytes.transient()),
+            done: false,
+            times: TileTimes {
+                encode_us: micros(encoding),
+                ..TileTimes::default()
+            },
+        };
+        let ticket = Ticket(tile.ticket);
+        self.in_flight.push_back(tile);
+        self.account();
+        Ok(ticket)
+    }
+
+    /// A resample cut's work over `window` of the held output stage, encoded and submitted: its
+    /// submission, and the readback copy its codes are copied into.
+    fn encode_resample(
+        &mut self,
+        cut: &resample::ResampleCut<'_>,
+        window: [u32; 4],
+        bytes: resample::CutBytes,
+    ) -> Result<(wgpu::SubmissionIndex, wgpu::Buffer), TileFailure> {
+        let Some(Ok(pipelines)) = &self.resampling else {
+            return Err(TileFailure::PIPELINE_FAILED);
+        };
+        let holder = self.held.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
+        let device = &self.device;
+        let [x, y, width, height] = window;
+        let scratch = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.resample.window"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let filled = |label, words: &[u8], usage| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (words.len() as u64).max(4),
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buffer, 0, words);
+            buffer
+        };
+        let storage = wgpu::BufferUsages::STORAGE;
+        let (columns, rows) = (cut.columns.len() as u32, cut.rows.len() as u32);
+        let params = filled(
+            "luxforge.resample.params",
+            &le_bytes(&[columns, rows, width, height]),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let (column_words, column_weights) = resample::packed(cut.columns, x);
+        let (row_words, row_weights) = resample::packed(cut.rows, y);
+        let column_words = filled(
+            "luxforge.resample.column_taps",
+            &le_bytes(&column_words),
+            storage,
+        );
+        let column_weights = filled(
+            "luxforge.resample.column_weights",
+            &resample::float_bytes(&column_weights),
+            storage,
+        );
+        let row_words = filled("luxforge.resample.row_taps", &le_bytes(&row_words), storage);
+        let row_weights = filled(
+            "luxforge.resample.row_weights",
+            &resample::float_bytes(&row_weights),
+            storage,
+        );
+        let across = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.resample.across"),
+            size: bytes.across,
+            usage: storage,
+            mapped_at_creation: false,
+        });
+        let codes = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.resample.codes"),
+            size: bytes.codes,
+            usage: storage | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = match self
+            .readbacks
+            .iter()
+            .position(|(_, held)| *held == bytes.readback)
+        {
+            Some(at) => self.readbacks.swap_remove(at).0,
+            None => device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("luxforge.resample.readback"),
+                size: bytes.readback,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        };
+        let view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+        let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
+        let across_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.resample.across"),
+            layout: &pipelines.across_layout,
+            entries: &[
+                entry(0, params.as_entire_binding()),
+                entry(1, wgpu::BindingResource::TextureView(&view)),
+                entry(2, column_words.as_entire_binding()),
+                entry(3, column_weights.as_entire_binding()),
+                entry(4, across.as_entire_binding()),
+            ],
+        });
+        // An 8-bit cut reads no thresholds: its rows' weights stand in for them.
+        let wide = match cut.depth {
+            resample::ResampleDepth::Eight => &row_weights,
+            resample::ResampleDepth::Sixteen => {
+                self.wide.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?
+            }
+        };
+        let down_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.resample.down"),
+            layout: &pipelines.down_layout,
+            entries: &[
+                entry(0, params.as_entire_binding()),
+                entry(1, row_words.as_entire_binding()),
+                entry(2, row_weights.as_entire_binding()),
+                entry(3, across.as_entire_binding()),
+                entry(4, codes.as_entire_binding()),
+                entry(5, wide.as_entire_binding()),
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.resample"),
+        });
+        holder.copy_out(&mut encoder, &scratch, window);
+        let groups = |count: u32| count.div_ceil(resample::GROUP);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("luxforge.resample.across"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipelines.across);
+            pass.set_bind_group(0, &across_group, &[]);
+            pass.dispatch_workgroups(groups(columns), groups(height), 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("luxforge.resample.down"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(match cut.depth {
+                resample::ResampleDepth::Eight => &pipelines.eight,
+                resample::ResampleDepth::Sixteen => &pipelines.sixteen,
+            });
+            pass.set_bind_group(0, &down_group, &[]);
+            pass.dispatch_workgroups(groups(columns), groups(rows), 1);
+        }
+        // A sharpened cut's interior, sharpened from the extended codes, is what it reads back.
+        let read = match &cut.sharpen {
+            None => codes,
+            Some(sharpen) => {
+                let [left, top, width, height] = sharpen.interior;
+                let params = filled(
+                    "luxforge.resample.sharpen.params",
+                    &le_bytes(&[
+                        columns,
+                        rows,
+                        left,
+                        top,
+                        width,
+                        height,
+                        sharpen.radius(),
+                        sharpen.amount.to_bits(),
+                    ]),
+                    wgpu::BufferUsages::UNIFORM,
+                );
+                let kernel = filled(
+                    "luxforge.resample.sharpen.kernel",
+                    &resample::float_bytes(sharpen.weights),
+                    storage,
+                );
+                let sharpened = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("luxforge.resample.sharpened"),
+                    size: bytes.readback,
+                    usage: storage | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("luxforge.resample.sharpen"),
+                    layout: &pipelines.sharpen_layout,
+                    entries: &[
+                        entry(0, params.as_entire_binding()),
+                        entry(1, kernel.as_entire_binding()),
+                        entry(2, codes.as_entire_binding()),
+                        entry(3, sharpened.as_entire_binding()),
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("luxforge.resample.sharpen"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(match cut.depth {
+                    resample::ResampleDepth::Eight => &pipelines.sharpen_eight,
+                    resample::ResampleDepth::Sixteen => &pipelines.sharpen_sixteen,
+                });
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(groups(width), groups(height), 1);
+                drop(pass);
+                sharpened
+            }
+        };
+        encoder.copy_buffer_to_buffer(&read, 0, &readback, 0, bytes.readback);
+        let index = self.queue.submit([encoder.finish()]);
+        Ok((index, readback))
     }
 
     /// Begin a light sweep of `light`, a light behind a spatial step whose stage texture does not
@@ -1532,8 +2008,13 @@ impl TileRunner {
     /// What the tile's slot takes beside the window of the source, as [`TileRunner::charge`] counts
     /// it: the slot's own figures ([`Shape`], [`super::chain_charge`], each buffer at the capacity
     /// the device gives it) with the output at its exact size in `end`'s format and its readback
-    /// copy, row by row padded as a copy lays it out.
-    fn slot_bytes(&self, plan: &GpuPlan, end: Option<TileEnd>) -> Result<u64, TileFailure> {
+    /// copy, row by row padded as a copy lays it out, when it `reads_back`.
+    fn slot_bytes(
+        &self,
+        plan: &GpuPlan,
+        end: Option<TileEnd>,
+        reads_back: bool,
+    ) -> Result<u64, TileFailure> {
         let device = &self.device;
         let shape = Shape::of(plan);
         let texels = u64::from(shape.boundary.0) * u64::from(shape.boundary.1);
@@ -1560,8 +2041,13 @@ impl TileRunner {
         let (width, height) = shape.output;
         let row = width * end_texel_bytes(end, shape.format);
         let output = u64::from(row) * u64::from(height);
-        // A stage sweep's output is copied into a stage texture: nothing is read back.
-        let readback = end.map_or(0, |_| u64::from(padded(row)) * u64::from(height));
+        // A stage sweep's output is copied into a stage texture, and a resampled stream's tile's
+        // into the held output stage: nothing is read back.
+        let readback = if reads_back {
+            u64::from(padded(row)) * u64::from(height)
+        } else {
+            0
+        };
         Ok(texels * shape.format.texel_bytes() as u64
             + held
             + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total()
@@ -1982,6 +2468,18 @@ impl TileRunner {
                 );
                 Some((buffer, readback_bytes, padded, end))
             }
+            // The tile's output, its own rectangle of the output stage, into the held stage.
+            TileOutput::Held { rect } => {
+                let holder = self.held.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
+                if [rect[2] - rect[0], rect[3] - rect[1]] != [output_size.0, output_size.1]
+                    || rect[2] > holder.stage().0
+                    || rect[3] > holder.stage().1
+                {
+                    return Err(TileFailure::PIPELINE_FAILED);
+                }
+                holder.copy_in(&mut encoder, &slot.output, (0, 0), rect);
+                None
+            }
             // The tile's rectangle of its last link's intermediate, which covers its boundary from
             // the cut's origin, into the stage texture at the rectangle.
             TileOutput::Stage { writes, rect } => {
@@ -2065,7 +2563,7 @@ impl TileRunner {
                 mapped,
                 size: output_size,
                 padded,
-                end,
+                end: ReadAs::End(end),
             }
         });
         times.encode_us = micros(encoding);
@@ -2097,14 +2595,24 @@ impl TileRunner {
             .take(height as usize)
             .map(|line| &line[..row]);
         let pixels = match tile.end {
-            TileEnd::Codes => {
+            ReadAs::Codes16 => {
+                let mut codes = Vec::with_capacity(row / 2 * height as usize);
+                for line in rows {
+                    codes.extend(
+                        line.chunks_exact(2)
+                            .map(|code| u16::from_le_bytes([code[0], code[1]])),
+                    );
+                }
+                TilePixels::Codes16(codes)
+            }
+            ReadAs::End(TileEnd::Codes) => {
                 let mut codes = Vec::with_capacity(row * height as usize);
                 for line in rows {
                     codes.extend_from_slice(line);
                 }
                 TilePixels::Codes(codes)
             }
-            TileEnd::Linear => {
+            ReadAs::End(TileEnd::Linear) => {
                 let mut values = Vec::with_capacity(width as usize * height as usize);
                 for line in rows {
                     values.extend(line.chunks_exact(16).map(|texel| {

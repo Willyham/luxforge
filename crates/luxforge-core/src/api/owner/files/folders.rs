@@ -72,11 +72,8 @@ fn add(
         return value(recorded(owner, answer)?);
     }
     let (canonical, volume) = found?;
-    let source = IndexSource::IndexedFolder {
-        path: canonical.clone(),
-    };
     if let Some(folder) = library_rows::indexed_folder(&owner.service.connection, &canonical)? {
-        return value(IndexFolderAnswer {
+        let answer = IndexFolderAnswer {
             folder: state(owner, folder, false)?,
             change: LibraryAnswer {
                 outcome: MutationOutcome::NoOp,
@@ -84,9 +81,16 @@ fn add(
                 items: 0,
                 deduplicated: false,
             },
-            job_id: owner.catalog.files.live_job(&source),
+            job_id: owner.catalog.files.live_job(&IndexSource::IndexedFolder {
+                path: canonical.clone(),
+            }),
             deduplicated: false,
-        });
+        };
+        let key = owner.service.catalog_request.clone();
+        crate::editor::write(&mut owner.service.connection, |tx| {
+            crate::editor::catalog_requests::record(tx, key.as_ref(), &answer)
+        })?;
+        return value(answer);
     }
     unnested(owner, &canonical)?;
     let folder = IndexedFolder {
@@ -98,28 +102,58 @@ fn add(
     let recorded = serde_json::to_value(&folder)
         .map_err(|error| Error::internal(format!("cannot encode an indexed folder: {error}")))?;
     let name = display_name(&canonical);
-    let answer = change(owner, origin, |tx| {
-        upsert_volume(tx, &volume)?;
-        journal::apply(
-            tx,
-            request,
-            vec![(
-                LibraryItem::IndexedFolder {
-                    path: canonical.clone(),
-                },
-                Desired::Value(Some(recorded)),
-            )],
-            |_| format!("Added {name} to indexed folders"),
-        )
-    })?;
-    // The change reached `indexed_folders_changed`, which queued the folder's listing.
-    let job_id = owner.catalog.files.live_job(&source);
-    value(IndexFolderAnswer {
-        folder: state(owner, folder, false)?,
-        deduplicated: answer.deduplicated,
-        change: answer,
-        job_id,
-    })
+    let source = IndexSource::IndexedFolder {
+        path: canonical.clone(),
+    };
+    let prepared = match super::prepare_refresh(
+        owner,
+        source,
+        vec![RootPlan {
+            path: canonical.clone(),
+            kind: RootKind::Indexed,
+            volume_id: Some(volume.id.clone()),
+        }],
+        canonical.display().to_string(),
+        origin,
+    ) {
+        Ok(prepared) => Some(prepared),
+        // A full maintenance queue leaves the folder unlisted until a later refresh, as before.
+        Err(error) if error.kind == crate::ErrorKind::ResourceLimit => None,
+        Err(error) => return Err(error),
+    };
+    let job_id = prepared.as_ref().map(|prepared| prepared.job_id.clone());
+    let folder = state(owner, folder, false)?;
+    let (outcome, answer) = owner.service.library_write_answer(
+        |tx| {
+            upsert_volume(tx, &volume)?;
+            journal::apply(
+                tx,
+                request,
+                vec![(
+                    LibraryItem::IndexedFolder {
+                        path: canonical.clone(),
+                    },
+                    Desired::Value(Some(recorded)),
+                )],
+                |_| format!("Added {name} to indexed folders"),
+            )
+        },
+        |outcome| {
+            let change = outcome.answer();
+            value(IndexFolderAnswer {
+                folder,
+                deduplicated: change.deduplicated,
+                change,
+                job_id,
+            })
+        },
+    )?;
+    if let Some(prepared) = prepared {
+        super::enqueue_refresh(owner, prepared);
+    }
+    super::super::library::changed(owner, origin, &outcome);
+    super::dispatch(owner);
+    Ok(answer)
 }
 
 /// The answer to a retried `index.add-folder`: the change its first attempt recorded, with the

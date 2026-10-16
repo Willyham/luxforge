@@ -1,24 +1,26 @@
 //! Export destinations: validation, the suggested name and a publish that never replaces.
 //!
 //! Contract (`docs/design/export.md#destination-rules` and step 5 of the behavior):
-//! - `Destination::check(path)` accepts an absolute path with a `.jpg`/`.jpeg` extension (any case)
-//!   whose parent is an existing directory and at which nothing exists (`symlink_metadata`, so a
-//!   dangling symlink counts). Refusals: `validation` for the shape, `file_access` for an unreadable
-//!   parent, `conflict` with `data: {"path": ...}` for anything already there.
-//! - `suggest(directory, stem)` returns `<stem>-edited.jpg`, else `-edited-2.jpg` … within 64
-//!   probes, else `None`.
+//! - `Destination::check(path, format)` accepts an absolute path with one of the format's
+//!   extensions (any case: `.jpg`/`.jpeg`, `.webp`, `.tif`/`.tiff`) whose parent is an existing
+//!   directory and at which nothing exists (`symlink_metadata`, so a dangling symlink counts).
+//!   Refusals: `validation` for the shape, `file_access` for an unreadable parent, `conflict` with
+//!   `data: {"path": ...}` for anything already there.
+//! - `suggest(directory, stem, suffix, format)` returns `<stem><suffix>.<extension>`, else
+//!   `<stem><suffix>-2.<extension>` … within 64 probes, else `None`.
 //! - `Destination::stage()` creates `.<file name>.<uuid>.luxforge-export` exclusively in the same
 //!   directory; `Staged` is a `Write` (buffered), and `Staged::publish()` flushes, syncs, publishes
 //!   under the final name without replacement (hard link, else exclusive create and copy), removes
 //!   the temporary file, syncs the directory and returns the byte length. Dropping a `Staged`
 //!   without publishing removes the temporary file.
 
+use super::settings::ExportFormat;
 use crate::Error;
 use crate::atomic_file::{file_error, flush, sync_dir};
 use serde_json::json;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -28,7 +30,7 @@ pub(crate) struct Destination {
 }
 
 impl Destination {
-    pub(crate) fn check(path: &Path) -> Result<Self, Error> {
+    pub(crate) fn check(path: &Path, format: ExportFormat) -> Result<Self, Error> {
         if !path.is_absolute() {
             return Err(Error::validation(
                 "export destination must be an absolute path",
@@ -37,16 +39,23 @@ impl Destination {
         if path.file_name().is_none() {
             return Err(Error::validation("export destination has no file name"));
         }
-        let has_jpeg_extension = path
+        let extensions = format.extensions();
+        let matches_format = path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg")
+                extensions
+                    .iter()
+                    .any(|allowed| extension.eq_ignore_ascii_case(allowed))
             });
-        if !has_jpeg_extension {
-            return Err(Error::validation(
-                "export destination must end in .jpg or .jpeg",
-            ));
+        if !matches_format {
+            let named: Vec<String> = extensions.iter().map(|ext| format!(".{ext}")).collect();
+            return Err(Error::validation(format!(
+                "export destination must end in {} for {}",
+                named.join(" or "),
+                format.as_str()
+            ))
+            .with_data(json!({"field": "destination"})));
         }
         // The shape is valid; anything from here on touches the file system.
         let parent = path
@@ -163,13 +172,14 @@ impl Staged {
             }
         }
 
-        // The final name now holds the whole, synced file, so the export has happened: reporting a
-        // failure from here on would leave a finished file behind a refusal. Removing the temporary
-        // name and syncing the directory entry are best effort.
+        // The final file is already visible. Keep it even if its directory sync fails, and
+        // report that precise publication phase so a retry cannot pretend nothing was written.
         self.published = true;
         let _ = fs::remove_file(&self.temp_path);
         if let Some(directory) = self.final_path.parent() {
-            let _ = sync_dir(directory);
+            sync_dir(directory).map_err(|error| {
+                crate::atomic_file::durability_error(&self.final_path, error.kind())
+            })?;
         }
         Ok(bytes)
     }
@@ -185,6 +195,13 @@ impl Write for Staged {
     }
 }
 
+/// A format written by strips with offsets patched afterwards, such as TIFF, seeks its own file.
+impl Seek for Staged {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.file.seek(position)
+    }
+}
+
 impl Drop for Staged {
     fn drop(&mut self) {
         if !self.published {
@@ -193,22 +210,52 @@ impl Drop for Staged {
     }
 }
 
-/// `<stem>-edited.jpg` in `directory`, else `-edited-2.jpg`, `-edited-3.jpg` and so on, probing at
-/// most 64 names; `None` once all 64 are taken. `stem` is used as-is: it comes from an existing
-/// file name, so nothing further needs sanitizing.
-pub(crate) fn suggest(directory: &Path, stem: &str) -> Option<PathBuf> {
-    const MAX_PROBES: u32 = 64;
+/// The most names [`suggest`] reads in one folder.
+pub(crate) const MAX_PROBES: u32 = 64;
+
+/// The export's name rule: `<stem><suffix>.<extension>` in `directory`, else
+/// `<stem><suffix>-2.<extension>`, `-3` and so on, probing at most [`MAX_PROBES`] names; `None`
+/// once all of them are taken. A name the editor gives has no spaces: each run of whitespace in the
+/// stem and suffix is one `-` ([`spaceless`]). The stem comes from an existing file name and the
+/// suffix is checked with the settings, so nothing further needs sanitizing.
+pub(crate) fn suggest(
+    directory: &Path,
+    stem: &str,
+    suffix: &str,
+    format: ExportFormat,
+) -> Option<PathBuf> {
+    let extension = format.extension();
+    let name = spaceless(&format!("{stem}{suffix}"));
     for n in 1..=MAX_PROBES {
         let candidate = if n == 1 {
-            directory.join(format!("{stem}-edited.jpg"))
+            directory.join(format!("{name}.{extension}"))
         } else {
-            directory.join(format!("{stem}-edited-{n}.jpg"))
+            directory.join(format!("{name}-{n}.{extension}"))
         };
         if fs::symlink_metadata(&candidate).is_err() {
             return Some(candidate);
         }
     }
     None
+}
+
+/// `name` with each run of whitespace made one `-`, so a suggested file name needs no quoting in a
+/// shell: `IMG 0001 edited` is `IMG-0001-edited`.
+pub(crate) fn spaceless(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut space = false;
+    for c in name.chars() {
+        if c.is_whitespace() {
+            if !space {
+                out.push('-');
+            }
+            space = true;
+        } else {
+            out.push(c);
+            space = false;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -224,49 +271,51 @@ mod tests {
     fn accepts_a_valid_destination() {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
-        let destination = Destination::check(&path).expect("valid destination");
+        let destination = Destination::check(&path, ExportFormat::Jpeg).expect("valid destination");
         assert_eq!(destination.path(), path);
     }
 
     #[test]
     fn refuses_a_relative_path() {
-        let error = Destination::check(Path::new("relative.jpg")).unwrap_err();
+        let error = Destination::check(Path::new("relative.jpg"), ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Validation);
     }
 
     #[test]
     fn refuses_a_path_with_no_file_name() {
         let dir = scratch();
-        let error = Destination::check(&dir.join("..")).unwrap_err();
+        let error = Destination::check(&dir.join(".."), ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Validation);
     }
 
     #[test]
     fn refuses_a_path_with_the_wrong_extension() {
         let dir = scratch();
-        let error = Destination::check(&dir.join("photo.png")).unwrap_err();
+        let error = Destination::check(&dir.join("photo.png"), ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Validation);
     }
 
     #[test]
     fn refuses_a_path_with_no_extension() {
         let dir = scratch();
-        let error = Destination::check(&dir.join("photo")).unwrap_err();
+        let error = Destination::check(&dir.join("photo"), ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Validation);
     }
 
     #[test]
     fn accepts_uppercase_extension() {
         let dir = scratch();
-        Destination::check(&dir.join("photo.JPG")).expect("uppercase extension accepted");
-        Destination::check(&dir.join("photo.JPEG")).expect("uppercase extension accepted");
+        Destination::check(&dir.join("photo.JPG"), ExportFormat::Jpeg)
+            .expect("uppercase extension accepted");
+        Destination::check(&dir.join("photo.JPEG"), ExportFormat::Jpeg)
+            .expect("uppercase extension accepted");
     }
 
     #[test]
     fn refuses_a_missing_parent_directory() {
         let dir = scratch();
         let path = dir.join("missing-parent").join("photo-edited.jpg");
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::FileAccess);
     }
 
@@ -276,7 +325,7 @@ mod tests {
         let parent_as_file = dir.join("not-a-directory");
         fs::write(&parent_as_file, b"x").unwrap();
         let path = parent_as_file.join("photo-edited.jpg");
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::FileAccess);
     }
 
@@ -285,7 +334,7 @@ mod tests {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
         fs::write(&path, b"already here").unwrap();
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
         assert_eq!(error.data.unwrap()["path"], json!(path));
     }
@@ -295,7 +344,7 @@ mod tests {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
         fs::create_dir(&path).unwrap();
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
     }
 
@@ -310,7 +359,7 @@ mod tests {
             // No portable symlink API without extra privileges; skip elsewhere.
             return;
         }
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
     }
 
@@ -322,7 +371,7 @@ mod tests {
         fs::write(&target, b"original").unwrap();
         let path = dir.join("photo-edited.jpg");
         std::os::unix::fs::symlink(&target, &path).unwrap();
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
     }
 
@@ -333,15 +382,38 @@ mod tests {
         fs::write(&original, b"original").unwrap();
         let path = dir.join("photo-edited.jpg");
         fs::hard_link(&original, &path).unwrap();
-        let error = Destination::check(&path).unwrap_err();
+        let error = Destination::check(&path, ExportFormat::Jpeg).unwrap_err();
         assert_eq!(error.kind, crate::ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn directory_sync_failure_retains_the_export_and_reports_visible_publication() {
+        let dir = scratch();
+        let path = dir.join("visible.jpg");
+        let mut staged = Destination::check(&path, ExportFormat::Jpeg)
+            .unwrap()
+            .stage()
+            .unwrap();
+        staged.write_all(b"whole export").unwrap();
+        crate::atomic_file::sync_faults::inject(&dir);
+        let error = staged.publish().unwrap_err();
+        assert_eq!(fs::read(&path).unwrap(), b"whole export");
+        assert_eq!(error.data.as_deref().unwrap()["published"], true);
+        assert_eq!(error.data.as_deref().unwrap()["durable"], false);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(
+            Destination::check(&path, ExportFormat::Jpeg)
+                .unwrap_err()
+                .kind,
+            crate::ErrorKind::Conflict
+        );
     }
 
     #[test]
     fn stage_and_publish_leaves_exactly_the_final_file() {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
-        let destination = Destination::check(&path).expect("valid destination");
+        let destination = Destination::check(&path, ExportFormat::Jpeg).expect("valid destination");
         let mut staged = destination.stage().expect("staged");
         staged.write_all(b"hello jpeg bytes").unwrap();
         let bytes = staged.publish().expect("published");
@@ -359,7 +431,7 @@ mod tests {
     fn a_race_at_publish_time_is_refused_and_leaves_the_winner_untouched() {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
-        let destination = Destination::check(&path).expect("valid destination");
+        let destination = Destination::check(&path, ExportFormat::Jpeg).expect("valid destination");
         let staged = destination.stage().expect("staged");
 
         // Something else creates the destination after `check` but before `publish`.
@@ -383,7 +455,7 @@ mod tests {
     fn dropping_an_unpublished_staged_file_removes_its_temp() {
         let dir = scratch();
         let path = dir.join("photo-edited.jpg");
-        let destination = Destination::check(&path).expect("valid destination");
+        let destination = Destination::check(&path, ExportFormat::Jpeg).expect("valid destination");
         {
             let mut staged = destination.stage().expect("staged");
             staged.write_all(b"never published").unwrap();
@@ -393,12 +465,60 @@ mod tests {
     }
 
     #[test]
-    fn suggest_counts_up_past_taken_names() {
+    fn a_destination_must_end_in_one_of_its_formats_extensions() {
         let dir = scratch();
+        for (format, accepted, refused) in [
+            (ExportFormat::Jpeg, ["a.jpg", "b.JPEG"], ["c.webp", "d.tif"]),
+            (
+                ExportFormat::Webp,
+                ["a.webp", "b.WEBP"],
+                ["c.jpg", "d.tiff"],
+            ),
+            (
+                ExportFormat::Tiff,
+                ["a.tif", "b.TIFF"],
+                ["c.jpeg", "d.webp"],
+            ),
+        ] {
+            for name in accepted {
+                Destination::check(&dir.join(name), format).expect(name);
+            }
+            for name in refused {
+                let error = Destination::check(&dir.join(name), format).unwrap_err();
+                assert_eq!(error.kind, crate::ErrorKind::Validation, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn suggest_names_a_file_with_no_spaces() {
+        let dir = scratch();
+        assert_eq!(
+            suggest(&dir, "IMG 0001  copy", " for web", ExportFormat::Jpeg),
+            Some(dir.join("IMG-0001-copy-for-web.jpg"))
+        );
+    }
+
+    #[test]
+    fn suggest_names_the_stem_suffix_and_extension_and_counts_up_past_taken_names() {
+        let dir = scratch();
+        assert_eq!(
+            suggest(&dir, "photo", "-web", ExportFormat::Webp),
+            Some(dir.join("photo-web.webp"))
+        );
+        assert_eq!(
+            suggest(&dir, "photo", "", ExportFormat::Tiff),
+            Some(dir.join("photo.tif"))
+        );
         fs::write(dir.join("photo-edited.jpg"), b"x").unwrap();
         fs::write(dir.join("photo-edited-2.jpg"), b"x").unwrap();
-        let suggested = suggest(&dir, "photo").expect("a free name");
+        let suggested = suggest(&dir, "photo", "-edited", ExportFormat::Jpeg).expect("a free name");
         assert_eq!(suggested, dir.join("photo-edited-3.jpg"));
+        // Another format's name is not taken by a JPEG of the same stem.
+        assert_eq!(
+            suggest(&dir, "photo", "-edited", ExportFormat::Tiff),
+            Some(dir.join("photo-edited.tif"))
+        );
     }
 
     #[test]
@@ -408,6 +528,6 @@ mod tests {
         for n in 2..=64 {
             fs::write(dir.join(format!("photo-edited-{n}.jpg")), b"x").unwrap();
         }
-        assert_eq!(suggest(&dir, "photo"), None);
+        assert_eq!(suggest(&dir, "photo", "-edited", ExportFormat::Jpeg), None);
     }
 }

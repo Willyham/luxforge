@@ -28,13 +28,34 @@ Open GitHub **Actions → Release builds** for logs and the public pre-release u
 
 - `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
-- `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices and help.
+- `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
+- `luxforge-VERSION-source.tar.gz`, the complete corresponding [source archive](#the-source-archive) of the same commit.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 
-The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the committed public key (none while `release/update.json` has none), daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
+Before publishing, the publish job attests the build provenance of the disk image, the ZIP and both tarballs with `actions/attest-build-provenance`, signed through Sigstore as this repository's Release builds workflow. `gh attestation verify FILE --repo Willyham/luxforge` checks a download against it.
 
-The Linux build uses Ubuntu 24.04/glibc 2.39. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
+The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the public key committed in `release/update.json`, daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
+
+The Linux build uses Ubuntu 24.04/glibc 2.39 and fails if an executable requires a newer glibc symbol version or links a library the packaged help does not name. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. The payload carries `packaging/icon/luxforge-256.png`, `luxforge-512.png` and `luxforge.svg` for the launcher icon; a build missing any of them, or the helper or its template under `packaging/linux/`, fails before compiling. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
+
+## The source archive
+
+`cargo xtask release-source --tag TAG --output NEW` writes `luxforge-VERSION-source.tar.gz` and `source.json` into a new directory. It makes the same source checks as `release-build`: without `--allow-dirty` the checkout must be clean, untracked files included, the tag must name HEAD and the Rust toolchain must be the pin. `--allow-dirty` labels a local rehearsal, which assembly refuses; it still archives the committed tree, never uncommitted changes. The release workflow builds it in its own `source` job, which receives no secrets, from the same commit as both downloads.
+
+The archive holds one directory, `luxforge-VERSION-source/`:
+
+- the tracked tree of the commit, exactly as `git archive` writes it, except that `.cargo/config.toml` keeps every original setting and gains the offline source replacement (`vendor/`) and `ORT_CACHE_DIR`;
+- `vendor/`, every crate `Cargo.lock` names, from `cargo vendor --locked --versioned-dirs`;
+- `third_party/onnxruntime-1.28.0/`, the prebuilt ONNX Runtime static libraries of both shipping targets, extracted from the archives `xtask/src/onnxruntime.rs` pins after their length and SHA-256 are checked, in the layout `ort-sys` reads, so its build script downloads nothing. The pinned archives are cached under `target/onnxruntime/`;
+- `notices/macos-arm64/` and `notices/linux-x86_64/`, each target's `cargo xtask inventory` output for its dependency graph;
+- `BUILD.md`, `INSTALL.md` and `RELINK.md`, rendered from `release/source/` with the commit, tag, lockfile hash and pinned toolchain, and `SOURCE.json`, the same identity with the archive's contents, exclusions and test-only omissions.
+
+Bundled native sources and patches (`crates/luxforge-raw`, `crates/luxforge-diffusion`), compiled-in data and their notices are already tracked. The archive leaves out ignored and untracked files: build, evidence and verification output, private inputs, owner originals and the licensed corpus, generated fixtures, catalogs, caches and environment files. A tracked path that looks like one of them (a top-level `artifacts/`, `dist/`, `private/` or `target/`, any `target/` directory, a camera original, a catalog, an environment file or a key, except the throwaway TLS test certificates of `luxforge-net`) refuses the archive rather than being dropped. After packing, the archive's paths, link targets and contents are scanned for the home directory, checkout, output and Cargo and rustup homes of the machine that made it; a match refuses it. The prebuilt ONNX Runtime libraries are not scanned: they were built upstream and are identified by their hashes. Entries carry no owner, group or modification time.
+
+`release-assemble` reads `source/source.json` and the archive beside it in its input when present, refuses another commit or lockfile, a dirty tree, a rehearsal or a size or hash mismatch, then copies the archive into the packet, names it in `release.json`'s `source_archive` and lists it in `SHA256SUMS`. Without a `source/` directory, `source_archive` stays null.
+
+To check the offline build, extract the archive into an empty directory and, with a new empty `CARGO_HOME` and target directory, run `cargo build --release --locked --offline -p luxforge-app -p luxforge-cli` there. A source archive is a build input, not a completed licence review: the distribution review remains a separate gate.
 
 ## One-time hosted macOS signing setup
 
@@ -53,7 +74,7 @@ In Xcode's **Manage Certificates**, export the **Developer ID Application** iden
 
 Then add the **repository variable** `LUXFORGE_SIGN_MACOS` with value `true`. Unset or `false` creates explicitly unsigned candidates; any other value is rejected. If `true`, missing credentials or a signing/notarization failure fail the macOS build and prevent publication. No unsigned fallback is uploaded as a successful signed build.
 
-Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs Sparkle's nested code, the CLI helpers, then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP. It then creates the disk image from the stapled app, signs it with the same identity and a timestamp, requires an **Accepted** submission for it too, staples/validates it and assesses it with `spctl --type open`, all before final checksums. `target.json` records both submissions and the final ZIP and disk image hashes. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, and it receives no Apple credentials. Workflows do not run on pull requests.
+Apple credentials reach only the macOS signing step, after compilation/checks. The runner imports them into a temporary Keychain, signs Sparkle's nested code, the CLI helpers, then the app with hardened runtime and timestamp, requires an **Accepted** notary submission, staples/validates the app and recreates its ZIP. It then creates the disk image from the stapled app, signs it with the same identity and a timestamp, requires an **Accepted** submission for it too, staples/validates it and assesses it with `spctl --type open`, all before final checksums. `target.json` records both submissions and the final ZIP and disk image hashes. The temporary Keychain and P12 are removed on success or failure. Build/cache/upload steps do not receive those secret values; credential files are outside artifact/cache directories. Only the final publication job has repository write permission, with the OIDC token and attestation permissions its provenance attestation needs, and it receives no Apple credentials. Workflows do not run on pull requests.
 
 
 ## Automatic updates
@@ -116,6 +137,14 @@ The key cannot be recovered from the public key, and anyone holding it can sign 
 
 To change keys, generate a new one under a new account name, commit its public key, replace `LUXFORGE_UPDATE_SIGNING_KEY` and its offline backup, and withdraw every release signed by the retired key, in the same change. Once the new key is committed, feed generation refuses a retired key's record unless its release is withdrawn, and macOS installations move to the first release signed by the new key.
 
+## OmaStore
+
+[OmaStore](https://github.com/KitsuneSemCalda/OmaStore), the Omarchy app store, lists repositories with an `omastore.toml` at the root of the default branch. Luxforge's [`omastore.toml`](../../omastore.toml) names the store's display name, summary, categories, icon and screenshots, and for x86-64 Linux the asset `luxforge-*-linux-x86_64.tar.gz` and the executable `Luxforge/luxforge` inside it. The asset is matched by a wildcard because OmaStore's `{version}` is the tag without its `v`, which is not the normalized version for a short tag such as `v0.1`. OmaStore checks a download against GitHub's digest and verifies the release workflow's [build provenance](#start-a-release) attestation.
+
+OmaStore installs only a repository's latest **stable** release. Every Luxforge release is published as a pre-release, so OmaStore lists Luxforge but cannot install it until a stable release exists; the release workflow does not change that. OmaStore installs a release into `$XDG_DATA_HOME/omastore/apps/<owner>__<repo>/<tag>/` and updates it itself, so the Linux updater stands down for a payload there and offers new versions as their release page ([auto-update](../design/auto-update.md#linux-the-payload-updater)).
+
+After changing `omastore.toml`, check it with OmaStore's strict lint, `omastore lint-manifest .`, and the whole listing with `omastore check --manifest omastore.toml Willyham/luxforge`. The repository's `omarchy` topic, which lets OmaStore find it without a GitHub token, is a repository setting.
+
 ## Retry and local rehearsal
 
 Use **Actions → Release builds → Run workflow** with an existing tag, or rerun a failed run. Both paths automatically publish on success. Assets are uploaded to a temporary draft before it is made public; an upload failure or a moved tag leaves that draft unpublished. Existing GitHub releases are never overwritten. Remove an unwanted failed draft deliberately before rerunning delivery; do not move a published tag or replace published assets. Any corrected public release uses a new version.
@@ -130,4 +159,32 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 
 ## Qualification status
 
-A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a complete corresponding-source/licence review. Those gates, the application icon/desktop integration and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run. Those gates and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+
+## Recording gate results and verifying readiness
+
+Download every asset of the candidate's pre-release into a new directory: the downloads, `release.json`, both platform records, `release-notes.md`, the source archive and `SHA256SUMS`. This local copy is the packet. Published assets are never changed.
+
+Record each gate's result as its qualification finishes ([shape](../design/release-v0.1.md#gate-results-and-readiness)):
+
+```sh
+cargo xtask release-gate --packet PACKET --gate qualification.macos-arm64.native_full_verification \
+  --status passed --evidence m4-full-2026-10-20/summary.json \
+  --scope "M4 full tier in the background test bundle; not Finder launch or Gatekeeper" \
+  --bundle background-test --executable-identity before-signing \
+  --executable luxforge=SHA256 --executable luxforge-json=SHA256 --executable luxforge-ctl=SHA256
+
+cargo xtask release-gate --packet PACKET --gate distribution.advisory_disposition \
+  --status passed --evidence distribution-review/advisories.md \
+  --scope "Fresh audit of the locked graph for both targets" --disposition distribution
+```
+
+Gates are `distribution.NAME` or `qualification.PLATFORM.NAME`, as `release.json` lists them. `--executable` gives the SHA-256 (`shasum -a 256`) of each executable the evidence ran; it must be the candidate's `final` hash, or on macOS its `before_signing` hash for evidence from before signing. Linux results take no `--bundle`. `--status not-run` with no other option withdraws a result. The command refuses an inconsistent packet, a malformed result, evidence from another build and evidence or scope text that looks like a private path, coordinates, a photo name, a secret or an email address. It rewrites only `release.json` and its `SHA256SUMS` line. Keep the evidence itself in the private evidence store.
+
+Check the packet and write its public summary, outside the packet:
+
+```sh
+cargo xtask release-verify --packet PACKET --summary artifacts/release-summary.json
+```
+
+It lists every reason the packet is not ready and fails unless it is ready. The summary is written either way, with `release_ready` and `status` (`release-ready` or `not-ready`), and states the identity, assets, signing and each gate's status and scope; evidence references other than `https` links become `private`. It is not written if anything in it still looks private. An unsigned candidate, a rehearsal, a one-platform packet or any gate other than `passed` is never ready.

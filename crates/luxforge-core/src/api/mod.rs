@@ -16,7 +16,7 @@ pub use methods::schemas;
 pub use owner::SyntheticFrame;
 pub use owner::{
     ClientId, EventWake, JobMonitorStats, MAX_EVENT_WAIT_MS, OwnerHandle, PIXEL_READ_REQUIRED,
-    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
+    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack, SourceRelease,
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 

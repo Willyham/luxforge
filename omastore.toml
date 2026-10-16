@@ -1,0 +1,20 @@
+# OmaStore's listing of Luxforge: https://github.com/KitsuneSemCalda/OmaStore/blob/master/docs/authors.md
+# OmaStore installs only the latest stable release; Luxforge's releases are pre-releases for now.
+# See docs/engineering/releases.md#omastore.
+kind = "app"
+name = "Luxforge"
+summary = "Open source, non-destructive photo editor"
+categories = ["Graphics", "Photography", "RasterGraphics"]
+icon = "packaging/icon/luxforge.svg"
+screenshots = [
+  "docs/screenshots/develop.png",
+  "docs/screenshots/select.png",
+  "docs/screenshots/masking.png",
+  "docs/screenshots/grading.png",
+  "docs/screenshots/corrections.png",
+]
+
+[linux.x86_64]
+# The tag's version is normalized (v0.1 builds 0.1.0), so the version is matched, not expanded.
+asset = "luxforge-*-linux-x86_64.tar.gz"
+exec = "Luxforge/luxforge"

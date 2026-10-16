@@ -118,6 +118,34 @@ fn update_record_signs_the_final_archives_as_sparkle_does() {
 }
 
 #[test]
+fn update_record_refuses_mixed_source_identity_even_when_macos_is_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = read_key(&key_file(dir.path(), SPARKLE_TEST_KEY)).unwrap();
+    for status in ["notarized", "unsigned"] {
+        for (field, value) in [
+            ("revision", json!("c".repeat(40))),
+            ("lock_sha256", json!("d".repeat(64))),
+            ("build_number", json!("2")),
+        ] {
+            let scenario = dir.path().join(format!("{status}-{field}"));
+            fs::create_dir(&scenario).unwrap();
+            let input = builds(&scenario, "v0.1", "1", status);
+            edit_target(&input, "macos-arm64", |record| record[field] = value);
+            let output = scenario.join("luxforge-0.1.0-updates.json");
+            let error = record(&config(None), &input, &output, "v0.1", &key)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(field), "{error}");
+            assert!(
+                !output.exists(),
+                "mixed candidates produced a signed record"
+            );
+        }
+    }
+}
+
+#[test]
 fn update_record_leaves_out_an_unnotarized_macos_archive() {
     let dir = tempfile::tempdir().unwrap();
     let key = read_key(&key_file(dir.path(), SPARKLE_TEST_KEY)).unwrap();
@@ -215,7 +243,7 @@ fn update_record_refuses_wrong_keys_outputs_and_builds() {
         (
             "linux-x86_64",
             (|v| v["build_number"] = json!("51")) as Change,
-            "build_number mismatch",
+            "build_number differs",
         ),
         (
             "linux-x86_64",

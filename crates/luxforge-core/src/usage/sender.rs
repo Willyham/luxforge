@@ -24,7 +24,7 @@ use crate::{
 use std::time::Duration;
 
 /// A fresh window is due this long after its first event.
-pub const FLUSH_AFTER: Duration = Duration::from_secs(10 * 60);
+pub const FLUSH_AFTER: Duration = Duration::from_secs(2 * 60);
 /// At most this much jitter is added to a window's due time.
 pub const FLUSH_JITTER: Duration = Duration::from_secs(60);
 /// Two attempts are at least this far apart, and the first is at least this long after the session

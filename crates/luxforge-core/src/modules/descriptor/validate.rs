@@ -302,6 +302,13 @@ impl ModuleDescriptor {
                 }
                 self.declared_action(action)?;
             }
+            // The host's pick into a mask: a module's pick is a point pick or a sample-apply.
+            Some(CanvasInteraction::AreaPick { .. }) => {
+                return Err(Error::validation(format!(
+                    "module {} declares an area-pick canvas, which only the host declares for a mask",
+                    self.id
+                )));
+            }
             Some(CanvasInteraction::CropFrame {
                 effect,
                 action,
@@ -1025,6 +1032,7 @@ impl ModuleDescriptor {
                     | Some(CanvasInteraction::SampleApply { .. }) => {}
                     Some(CanvasInteraction::CropFrame { .. })
                     | Some(CanvasInteraction::BrushMask { .. })
+                    | Some(CanvasInteraction::AreaPick { .. })
                     | None => {
                         return Err(Error::validation(format!(
                             "module {} declares a picker control without a point-pick or sample-apply canvas",

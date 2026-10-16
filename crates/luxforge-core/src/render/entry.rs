@@ -259,6 +259,44 @@ impl<'a> Render<'a> {
         }
     }
 
+    /// The whole frame's terminal values encoded once at 16 bits rather than 8: the values
+    /// [`Self::frame`] quantizes to its codes, quantized instead through the 16-bit output
+    /// quantizer ([`super::export_output::WideTerminal`]). What an export's 16-bit output is, and
+    /// what a resized output resamples, so neither is quantized to 8 bits first. Six bytes a pixel,
+    /// inside the evaluated-frame limit. A cancelled token answers
+    /// [`crate::ErrorKind::Cancelled`].
+    pub(crate) fn wide_frame(&self) -> Result<super::export_output::WideTerminal, Error> {
+        let cancel = &self.options.cancel;
+        match self.source {
+            RenderSource::Byte(image) => {
+                let (rgb, stage) = super::byte::rasterize_wide(
+                    image,
+                    &self.compiled,
+                    cancel,
+                    self.options.tiling,
+                    self.context,
+                )?;
+                Ok(super::export_output::WideTerminal::words(
+                    stage.width,
+                    stage.height,
+                    rgb,
+                ))
+            }
+            RenderSource::Linear { image, settings } => {
+                cancel.check()?;
+                let evaluation =
+                    self.evaluation(Linear::new(image, settings)?, SpatialMode::Frames)?;
+                let stage = evaluation.stage();
+                let bytes = linear::rasterize_wide(&evaluation, cancel, self.context)?;
+                Ok(super::export_output::WideTerminal::bytes(
+                    stage.width,
+                    stage.height,
+                    bytes,
+                ))
+            }
+        }
+    }
+
     /// The input of the layer that begins at `position` — a segment and an operation index of this
     /// render's compilation — held over the window of its received stage that the output stage's
     /// `rect` reads at full scale: the visible region and every margin the boundaries after it
@@ -697,12 +735,16 @@ impl<'a> Render<'a> {
 /// against, and the point query over it, in the domain the render's masked primitives blend in.
 /// A colour layer receives the final run's unclamped `f32` input, before JPEG encoding; a spatial
 /// layer receives the decoded, encoded boundary selected by the whole recipe. The overlay,
-/// colour-constrained seed and `mask.sample-input` read the same value in either domain.
+/// colour-constrained seed and `mask.sample-input` read the same value in either domain. `mode` is
+/// the caller's, not the layer's: an unbound mask's site is a position no layer of its own holds
+/// yet ([`crate::mask::commands::input_site`]), so the layer that holds it now cannot say how the
+/// operation that would go there receives it.
 pub(crate) fn layer_input<'a>(
     registry: &ModuleRegistry,
     source: RenderSource<'a>,
     recipe: &Recipe,
     layer: usize,
+    mode: MaskInputMode,
     context: &'a RenderContext,
 ) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
     let layers = crate::editor::prefix(&recipe.layers, layer)?;
@@ -715,7 +757,6 @@ pub(crate) fn layer_input<'a>(
         &recipe.strokes,
         &recipe.artifacts,
     )?;
-    let mode = MaskInputMode::for_layer(registry, recipe, layer);
     if compiled.evaluates_spatial() {
         return Err(Error::resource_limit(
             "a spatial layer before the masked one means reading the pixel it receives \
@@ -786,12 +827,20 @@ pub(crate) enum MaskInputMode {
     ColourRun,
 }
 impl MaskInputMode {
+    /// How the layer at `layer` receives its input: by its effect's stage.
     pub(crate) fn for_layer(registry: &ModuleRegistry, recipe: &Recipe, layer: usize) -> Self {
-        match recipe
-            .layers
-            .get(layer)
-            .and_then(|layer| registry.effect_stage(&layer.effect_id))
-        {
+        Self::for_stage(
+            recipe
+                .layers
+                .get(layer)
+                .and_then(|layer| registry.effect_stage(&layer.effect_id)),
+        )
+    }
+
+    /// How an operation of `stage` receives its input: a pointwise colour operation inside its
+    /// colour run, every other one — and a position no declared effect holds — at the boundary.
+    pub(crate) fn for_stage(stage: Option<crate::EffectStage>) -> Self {
+        match stage {
             Some(crate::EffectStage::Color) => Self::ColourRun,
             _ => Self::Boundary,
         }

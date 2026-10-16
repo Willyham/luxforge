@@ -1,6 +1,6 @@
 //! The event sync's and the owner's answers about the open photograph.
 use crate::app::tasks::{RecipeRead, Refresh, SyncResult};
-use luxforge_core::ModuleDescriptor;
+use luxforge_core::{EntryId, ModuleDescriptor};
 use std::path::PathBuf;
 
 /// Opening a photograph and the owner's answers the editor adopts as authoritative: a command's
@@ -17,7 +17,7 @@ pub(crate) enum SyncMessage {
     /// A source-open result tied to the generation that requested it.
     ImportRefreshed(u64, Result<Box<Refresh>, String>),
     /// The displayed entry's layers and masks as the panels read them.
-    RecipeDescribed(Result<Box<RecipeRead>, String>),
+    RecipeDescribed(EntryId, Result<Box<RecipeRead>, String>),
     /// Every tool control is generated from these; the desktop knows no tool by name.
     ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
     /// Another client's change reached the owner's event log, so the event sync reads it: the

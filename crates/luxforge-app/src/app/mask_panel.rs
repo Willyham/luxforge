@@ -479,13 +479,15 @@ fn move_refusal(name: &str, step: i8) -> String {
 
 /// After every message: the panel's selection follows the stack and the mode before anything is
 /// derived from it, so a section is never bound to a mask the recipe no longer holds, and the
-/// brush in hand follows the stack it paints on, and the selected gradient's handles rest on it.
+/// brush in hand follows the stack it paints on, the selected gradient's handles rest on it and the
+/// armed eyedropper follows it.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     if editor.follow_mask_selection() {
         editor.seed_values();
     }
     let armed = editor.follow_armed_brush();
-    Task::batch([armed, editor.follow_resting_handles()])
+    let resting = editor.follow_resting_handles();
+    Task::batch([armed, resting, editor.follow_range_picker()])
 }
 
 /// A reorder by drag ends wherever the button comes up, inside the panel or not, so its release is

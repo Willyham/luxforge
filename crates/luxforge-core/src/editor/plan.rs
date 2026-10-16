@@ -18,6 +18,7 @@ use crate::{
     },
     render::{Compiled, Render, RenderOptions},
     source::PreparedSource,
+    tiles::InputSite,
 };
 use serde_json::{Map, Value, json};
 use std::cell::{OnceCell, RefCell};
@@ -1308,7 +1309,7 @@ impl StageQuestions for HostStage<'_> {
                 sensor,
                 false,
                 super::pixels::PixelRead::Region {
-                    index: request.layer(),
+                    site: request.site(&self.service.registry, self.recipe),
                 },
             )?;
             return Err(Error::internal(super::pixels::DEFERRED));
@@ -1358,6 +1359,7 @@ impl StageQuestions for HostStage<'_> {
     /// samples several points — a masked seed, a coverage cell, the neutral picker's patch — pays
     /// `O(layers)` once rather than once per point, and nothing is rasterized either way.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        let site = InputSite::of_layer(&self.service.registry, self.recipe, index);
         let compiled = self.compiled_prefix(index)?;
         let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
@@ -1366,7 +1368,7 @@ impl StageQuestions for HostStage<'_> {
             preview.clone(),
             None,
             self.input_wide(&compiled)?,
-            super::pixels::PixelRead::Point { index, x, y },
+            super::pixels::PixelRead::Point { site, x, y },
         )? {
             return match answer.value {
                 super::pixels::PixelValue::Point { rgba, .. } => Ok(rgba),
@@ -1386,7 +1388,7 @@ impl StageQuestions for HostStage<'_> {
                 context,
                 &crate::Cancel::never(),
                 wide,
-                crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+                site.mode.into(),
             )?
             .rgba(x, y);
         }
@@ -1398,7 +1400,15 @@ impl StageQuestions for HostStage<'_> {
     }
 
     fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
-        let compiled = self.compiled_prefix(index)?;
+        self.input_at(
+            InputSite::of_layer(&self.service.registry, self.recipe, index),
+            x,
+            y,
+        )
+    }
+
+    fn input_at(&self, site: InputSite, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let compiled = self.compiled_prefix(site.index)?;
         let preview = self.preview_source()?;
         if let Some(answer) = self.service.deferred_read(
             self.asset,
@@ -1406,7 +1416,7 @@ impl StageQuestions for HostStage<'_> {
             preview.clone(),
             None,
             self.input_wide(&compiled)?,
-            super::pixels::PixelRead::Point { index, x, y },
+            super::pixels::PixelRead::Point { site, x, y },
         )? {
             return match answer.value {
                 super::pixels::PixelValue::Point { linear, .. } => Ok(linear),
@@ -1421,7 +1431,7 @@ impl StageQuestions for HostStage<'_> {
             self.service.render_context(),
             &crate::Cancel::never(),
             wide,
-            crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+            site.mode.into(),
         )?
         .linear(x, y)
     }

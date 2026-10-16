@@ -964,15 +964,16 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     let asset = current.asset_id.clone();
     let rows = |entry: &luxforge_core::HistoryEntry| testing::described(entry);
     let read = |entry: &luxforge_core::HistoryEntry| {
-        Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
-            crate::app::tasks::RecipeRead {
+        Message::Sync(SyncMessage::RecipeDescribed(
+            entry.id.clone(),
+            Ok(Box::new(crate::app::tasks::RecipeRead {
                 recipe: rows(entry),
                 masks: luxforge_core::mask::commands::MaskListing {
                     entry_id: entry.id.clone(),
                     masks: Vec::new(),
                 },
-            },
-        ))))
+            })),
+        ))
     };
     let current_rows = |editor: &Editor| {
         editor
@@ -987,6 +988,7 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     assert_eq!(current_rows(&editor), Some(current.id.clone()));
 
     let older = entry(&asset, 2, None);
+    editor.document.display_entry = Some(older.id.clone());
     let _ = editor.update(read(&older));
     assert_eq!(
         editor
@@ -1010,6 +1012,7 @@ fn the_current_entrys_rows_are_kept_whichever_entry_is_displayed() {
     )))));
     assert_eq!(current_rows(&editor), Some(current.id.clone()));
 
+    editor.document.display_entry = Some(current.id.clone());
     let _ = editor.update(read(&current));
     assert_eq!(current_rows(&editor), Some(current.id.clone()));
     finish(editor, catalog);
@@ -1043,6 +1046,9 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
             .current_entry
             .clone();
         let mut refresh = refresh_for(&asset, &current, vec![current.clone()], &[&current], false);
+        let displayed = editor.displayed_entry().unwrap();
+        refresh.recipe.entry_id = displayed.clone();
+        refresh.masks.entry_id = displayed;
         refresh.recipe.layers = vec![luxforge_core::LayerDescription {
             id: luxforge_core::LayerId::new(),
             effect: "test.effect".into(),
@@ -1079,12 +1085,13 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     );
     editor.document.display_entry = Some(older.id.clone());
     let historical = described(&mut editor, -1.0);
-    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
-        crate::app::tasks::RecipeRead {
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        historical.recipe.entry_id.clone(),
+        Ok(Box::new(crate::app::tasks::RecipeRead {
             recipe: historical.recipe,
             masks: historical.masks,
-        },
-    )))));
+        })),
+    )));
     assert_eq!(
         editor.controls.fields.get(&action, &parameter),
         Some("-1"),
@@ -1117,14 +1124,20 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
         editor.document.state.as_ref(),
         HistorySelection::Current,
     );
+    editor.document.display_entry = editor
+        .document
+        .state
+        .as_ref()
+        .map(|state| state.current_entry.id.clone());
     let current = described(&mut editor, 2.0);
     editor.document.display_entry = Some(current.state.current_entry.id.clone());
-    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
-        crate::app::tasks::RecipeRead {
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        current.recipe.entry_id.clone(),
+        Ok(Box::new(crate::app::tasks::RecipeRead {
             recipe: current.recipe,
             masks: current.masks,
-        },
-    )))));
+        })),
+    )));
     assert_eq!(
         editor.controls.fields.get(&action, &parameter),
         Some("2"),
@@ -1421,12 +1434,13 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         "an evidence frame waits for the displayed entry's own rows"
     );
     let read = raw_refresh(&asset, &historical);
-    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
-        tasks::RecipeRead {
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        read.recipe.entry_id.clone(),
+        Ok(Box::new(tasks::RecipeRead {
             recipe: read.recipe,
             masks: read.masks,
-        },
-    )))));
+        })),
+    )));
     assert!(editor.recipe_rows_shown());
     let [kelvin, tint] =
         luxforge_core::temperature_tint_from_gains(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
@@ -1448,12 +1462,13 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         },
     )))));
     let read = raw_refresh(&asset, &current);
-    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Ok(Box::new(
-        tasks::RecipeRead {
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        read.recipe.entry_id.clone(),
+        Ok(Box::new(tasks::RecipeRead {
             recipe: read.recipe,
             masks: read.masks,
-        },
-    )))));
+        })),
+    )));
     assert_eq!(editor.document.display_entry, Some(current.id));
     assert_eq!(
         shown(&editor),
@@ -1475,9 +1490,10 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         },
     )))));
     assert!(!editor.recipe_rows_shown());
-    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(Err(
-        "unavailable".into(),
-    ))));
+    let _ = editor.update(Message::Sync(SyncMessage::RecipeDescribed(
+        historical.id.clone(),
+        Err("unavailable".into()),
+    )));
     assert!(editor.recipe_rows_shown());
     assert_eq!(editor.status.text, "Recipe unavailable: unavailable");
     finish(editor, catalog);

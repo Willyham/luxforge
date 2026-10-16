@@ -131,12 +131,10 @@ impl Editor {
                 }
             }
             CatalogStep::ApplyPreset(name) => self.preset_press(&name),
-            // The native folder dialog answered with the step's folder.
-            CatalogStep::ExportInto(folder) => self.band_refusal().map(|()| {
-                vec![act(CatalogAction::ExportInto(Some(
-                    std::path::PathBuf::from(folder),
-                )))]
-            }),
+            // Export N…: the batch Export sheet, which the `export` steps drive.
+            CatalogStep::Export => self
+                .band_refusal()
+                .map(|()| vec![act(CatalogAction::Export)]),
             CatalogStep::Report => {
                 if self.workspace.select.catalog.status_report {
                     Ok(vec![act(CatalogAction::Report(true))])
@@ -228,7 +226,10 @@ impl Editor {
         }
         // A gesture that asked the owner for nothing (the Metadata browser opened over counts it
         // holds) is captured at once; any other once what it asked for has answered.
-        if self.select_quiet() && self.merge_reads_quiet() {
+        if self.sheet_planning() {
+            // Export N…'s sheet is captured with its plan.
+            self.await_step(Settle::ExportSheet);
+        } else if self.select_quiet() && self.merge_reads_quiet() {
             self.capture_next_frame();
         } else {
             self.await_step(Settle::Select);

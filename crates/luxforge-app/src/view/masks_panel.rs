@@ -38,10 +38,11 @@ use luxforge_ui::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
-    band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
-    dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control, overlay_control,
-    popover, slider, stroke_row, swatch_slots, theme, with_tooltip,
+    PickBarModel, PickButtonModel, RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel,
+    ToggleModel, ValueEdit, band_header, caption, compact_toggle, component_note, component_row,
+    drop_feedback, dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control,
+    overlay_control, pick_bar, pick_button, popover, slider, stroke_row, swatch_slots, theme,
+    with_tooltip,
 };
 use luxforge_ui::{Element, Token};
 
@@ -369,7 +370,15 @@ fn mask_row_view<'a>(
         Some(MenuTarget::MaskCopy(open)) if open == &id => Some(mask_copy_menu(row)),
         _ => None,
     };
-    popover(view, entries.map(menu_list), close_menu())
+    let view = popover(view, entries.map(menu_list), close_menu());
+    // Why this mask's overlay is not drawn, in the host's words, as the board's muted note.
+    match &row.coverage_note {
+        Some(note) => Column::new()
+            .push(view)
+            .push(component_note(note.clone()))
+            .into(),
+        None => view,
+    }
 }
 
 /// A mask's menu: Rename, Duplicate, Invert, Move up, Move down, Delete, and its requests.
@@ -783,6 +792,19 @@ fn component_view<'a>(
         return view;
     }
     let mut block = Column::new().push(view);
+    // The armed eyedropper's bar, straight under the row it picks into.
+    if component.picking
+        && let Some(picker) = &model.picker
+    {
+        block = block.push(pick_bar(
+            &PickBarModel {
+                hint: picker.hint.to_owned(),
+                count: picker.count.clone(),
+                enabled: true,
+            },
+            mask(MaskMessage::PickDone),
+        ));
+    }
     // The component's own fields: the gesture's while one is open on it, its stored geometry's
     // otherwise.
     match model.draft.as_ref().filter(|_| component.drafting) {
@@ -797,9 +819,19 @@ fn component_view<'a>(
         block = block.push(strokes(component, model.enabled, menu));
     }
     if component.can_pick {
-        block = block.push(swatches(component, model.enabled, menu));
-        if component.picking {
-            block = block.push(component_note("Click the photograph to sample a colour"));
+        // A colour range's Pick sits at the end of its swatch row; a band's under its fields.
+        let picks = if component.sample_limit > 0 {
+            swatches(component, model.enabled, menu)
+        } else {
+            pick_row(component, model.enabled)
+        };
+        // A right press offers the pick's request, as every control in the row offers its own.
+        block = block.push(mouse_area(picks).on_right_press(toggle_menu(
+            menu,
+            MenuTarget::ComponentCopy(component.id.as_str().to_owned()),
+        )));
+        if let Some(note) = component.sample_note {
+            block = block.push(component_note(note));
         }
     }
     // What this kind does not select and why a pick cannot be taken, in the host's own words, on
@@ -924,6 +956,9 @@ pub(crate) fn component_copy_menu(
             Some(copy(RowEdit::DeleteComponent(id.clone()))),
         ),
     });
+    if component.can_pick {
+        entries.push(item("Copy pick request", Some(mask(MaskMessage::CopyPick))));
+    }
     entries.push(item(
         "Copy rename request",
         Some(copy(RowEdit::RenameComponent {
@@ -1162,7 +1197,6 @@ fn swatches<'a>(
         }) if open == &id => Some(*index),
         _ => None,
     };
-    let held = component.samples.len();
     let slots = swatch_slots(
         &SwatchSlotsModel {
             swatches: component
@@ -1174,7 +1208,6 @@ fn swatches<'a>(
             selected: chosen,
             picking: component.picking,
             pick_label: component.pick_label.clone(),
-            count: format!("{held} of {}", component.sample_limit),
             pick_enabled: component.pick_reason.is_none(),
             enabled,
         },
@@ -1225,6 +1258,27 @@ fn swatches<'a>(
     popover(slots, entries.map(menu_list), close_menu())
 }
 
+/// A band's Pick, at the right under its fields, lit while the eyedropper is armed on it.
+fn pick_row(component: &ComponentRow, enabled: bool) -> Element<'_, Message> {
+    let button = pick_button(
+        &PickButtonModel {
+            label: component.pick_label.clone(),
+            armed: component.picking,
+            enabled: enabled && component.pick_reason.is_none(),
+        },
+        mask(MaskMessage::Pick),
+    );
+    let button = with_tooltip(
+        button,
+        component.pick_title.clone(),
+        iced::widget::tooltip::Position::Top,
+    );
+    container(row![Space::new().width(Length::Fill), button])
+        .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
+        .width(Length::Fill)
+        .into()
+}
+
 // ---- the brush -----------------------------------------------------------------------------------
 
 /// The brush, while it is in hand or a painted component is selected: Size, Feather and Flow as
@@ -1273,16 +1327,15 @@ fn brush_section(model: &MasksModel) -> Element<'_, Message> {
         &ToggleModel {
             label: brush.limit_label.clone(),
             on: brush.limit,
-            enabled: live && brush.limit_reason.is_none(),
+            enabled: live,
         },
         Some(brush.refine.clone()),
         |on| mask(MaskMessage::Brush(BrushEdit::LimitToColour(on))),
     );
     block = block.push(with_tooltip(
         limit,
-        brush.limit_reason.clone().unwrap_or_else(|| {
-            "Holds the colour under the brush where the stroke starts · a colour test, not edge detection".to_owned()
-        }),
+        "Holds the colour under the brush where the stroke starts · a colour test, not edge detection"
+            .to_owned(),
         iced::widget::tooltip::Position::Top,
     ));
     if brush.limit {

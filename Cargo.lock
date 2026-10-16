@@ -1290,6 +1290,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "151665d9be52f9bb40fc7966565d39666f2d1e69233571b71b87791c7e0528b3"
 
 [[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
 name = "glow"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1695,6 +1701,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2049,6 +2065,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libwebp-sys"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b3a87b44e34d17161e4f17d92a463d596cb13825dcd1758ed18fd3a721e189c"
+dependencies = [
+ "cc",
+ "glob",
+ "pkg-config",
+]
+
+[[package]]
 name = "lilt"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2117,6 +2144,7 @@ dependencies = [
  "luxforge-install",
  "luxforge-net",
  "luxforge-onnx",
+ "luxforge-process",
  "luxforge-reference",
  "luxforge-sparkle",
  "luxforge-test-macros",
@@ -2153,10 +2181,12 @@ dependencies = [
 name = "luxforge-core"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "getrandom 0.4.3",
  "half",
  "idna_adapter",
  "image",
+ "image-webp",
  "kamadak-exif",
  "luxforge-core",
  "luxforge-gpu-types",
@@ -2167,6 +2197,7 @@ dependencies = [
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-watch",
+ "luxforge-webp",
  "moxcms",
  "naga",
  "rayon",
@@ -2175,6 +2206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tiff",
  "tokio",
  "toml_edit",
  "url",
@@ -2407,6 +2439,16 @@ dependencies = [
  "objc2-core-services",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "luxforge-webp"
+version = "0.0.0"
+dependencies = [
+ "image-webp",
+ "libwebp-sys",
+ "luxforge-process",
+ "luxforge-test-macros",
 ]
 
 [[package]]
@@ -3370,6 +3412,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3683,9 +3731,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -4288,6 +4336,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tiff"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52"
+dependencies = [
+ "flate2",
+ "half",
+ "quick-error",
 ]
 
 [[package]]
@@ -5413,6 +5472,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "image",
+ "image-webp",
  "kamadak-exif",
  "luxforge-core",
  "luxforge-evidence",
@@ -5422,6 +5482,7 @@ dependencies = [
  "luxforge-testbase",
  "luxforge-testkit",
  "luxforge-update",
+ "lzma-rust2",
  "percent-encoding",
  "regex",
  "roxmltree",
@@ -5430,6 +5491,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "tiff",
  "time",
  "xtask-cli",
  "zip",

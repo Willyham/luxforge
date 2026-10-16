@@ -179,28 +179,6 @@ pub(crate) fn find(
         .optional()?)
 }
 
-/// Every change a request recorded, oldest first, with its rows: the parts of a request that
-/// records its change in parts ([`apply_part`]), which a retry of it is answered from.
-pub(crate) fn parts(
-    connection: &Connection,
-    request: Request<'_>,
-) -> Result<Vec<LibraryChangeDetail>, Error> {
-    let sequences: Vec<i64> = connection
-        .prepare_cached(
-            "SELECT sequence FROM library_changes
-             WHERE request_id = ?1 AND client_key = ?2 AND method = ?3 ORDER BY sequence",
-        )?
-        .query_map(
-            params![request.request_id, request.actor, request.method],
-            |row| row.get(0),
-        )?
-        .collect::<Result<_, _>>()?;
-    sequences
-        .into_iter()
-        .map(|sequence| inspect(connection, sequence as u64))
-        .collect()
-}
-
 /// Record one library change in the caller's transaction: set each item to what it is to become,
 /// leaving out the ones that already are, and record the rest with their values before and after,
 /// labelled by `label` from the rows it records. An item named twice counts once, as first named;

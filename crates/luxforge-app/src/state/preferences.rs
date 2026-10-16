@@ -12,8 +12,8 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, HdrMergePreference, INTERFACE_SIZES,
-        PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
+        BrushPreference, CanvasBackground, CatalogSelection, ExportLast, HdrMergePreference,
+        INTERFACE_SIZES, PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -97,8 +97,10 @@ preferences! {
     brush: Option<BrushPreference>,
     /// The remembered window frame, or `None` for the system's placement.
     window: Option<WindowFrame>,
-    /// The folder `export.plan` suggests, or `None` for the original's.
-    export_folder: Option<PathBuf>,
+    /// The last export the person started, whose folder `export.plan` suggests, or `None`.
+    /// Boxed: the settings would otherwise more than double the size of every message that
+    /// carries the preferences.
+    export_last: Option<Box<ExportLast>>,
     /// The last HDR merge's alignment and deghosting, which ⌥-click merges with, or `None` for
     /// the defaults.
     hdr_merge: Option<HdrMergePreference>,
@@ -108,6 +110,9 @@ preferences! {
     /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
     /// palette's theme entries set it; the desktop draws the theme it names.
     theme: String,
+    /// Where Omarchy runs, the active theme is Omarchy's current one whenever the library holds
+    /// it: the Appearance tab's switch, which choosing a theme there turns off.
+    theme_follows_omarchy: bool,
     /// A release build checks for updates at launch and then daily: Settings › General's Updates
     /// group.
     update_checks: bool,
@@ -120,9 +125,10 @@ preferences! {
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
-/// shows, the theme the Appearance tab chooses, the Updates group's two switches and the move
-/// question's Don't ask again. The rest are the desktop's own bookkeeping and announce nothing.
-pub(crate) const ANNOUNCED: [&str; 11] = [
+/// shows, the theme the Appearance tab chooses and whether it follows Omarchy's, the Updates
+/// group's two switches and the move question's Don't ask again. The rest are the desktop's own
+/// bookkeeping and announce nothing.
+pub(crate) const ANNOUNCED: [&str; 12] = [
     "auto_collapse_history",
     "auto_lens_profile",
     "raw_look",
@@ -131,6 +137,7 @@ pub(crate) const ANNOUNCED: [&str; 11] = [
     "interface_size",
     "catalog",
     "theme",
+    "theme_follows_omarchy",
     "update_checks",
     "update_install_automatically",
     "update_ask_to_move",
@@ -161,6 +168,9 @@ pub(crate) struct PreferenceWriter {
     waiting: Option<PreferenceChange>,
     /// Why the last read or write failed, until the next one succeeds.
     pub(crate) error: Option<String>,
+    /// A mask-colour write failed after its session colour changed: the next successful read
+    /// reconciles the session even when the stored preference has not changed.
+    pub(crate) restore_mask_colour: bool,
     /// The window asked to close while a write was outstanding; it closes once the last lands.
     pub(crate) closing: bool,
     /// The catalog this launch opened and why, which the Catalog row shows beside the stored
@@ -244,6 +254,31 @@ impl PreferenceWriter {
             .chain(&self.writing)
             .find_map(|change| change.theme.as_deref())
             .or_else(|| self.stored.as_ref().map(|stored| stored.theme.as_str()))
+    }
+
+    /// Whether the theme follows Omarchy's in [`Self::applied`], as [`Self::applied_theme`] reads
+    /// the theme.
+    pub(crate) fn applied_follows_omarchy(&self) -> Option<bool> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.theme_follows_omarchy)
+            .or_else(|| {
+                self.stored
+                    .as_ref()
+                    .map(|stored| stored.theme_follows_omarchy)
+            })
+    }
+
+    /// The last export [`Self::applied`] holds, without cloning the rest, as
+    /// [`Self::applied_theme`] reads the theme.
+    pub(crate) fn applied_export_last(&self) -> Option<&ExportLast> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.export_last.as_ref())
+            .or_else(|| self.stored.as_ref().map(|stored| &stored.export_last))?
+            .as_deref()
     }
 
     /// A change to the field named `field` has not been answered yet.
@@ -715,10 +750,11 @@ mod tests {
                           "clip_shadows": false, "clip_highlights": false},
             "brush": null,
             "window": null,
-            "export_folder": null,
+            "export_last": null,
             "hdr_merge": null,
             "panorama_merge": null,
             "theme": "luxforge.dark",
+            "theme_follows_omarchy": true,
             "update_checks": true,
             "update_install_automatically": false,
             "update_ask_to_move": true

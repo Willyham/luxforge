@@ -289,6 +289,15 @@ impl ModuleRegistry {
             .is_some_and(|(_, effect)| effect.maskable)
     }
 
+    /// Every effect a layer may carry a mask on whose provider is registered and available, in
+    /// registration order: the operations a mask can be applied through.
+    pub(crate) fn maskable_effects(&self) -> impl Iterator<Item = &EffectDescriptor> {
+        self.providers()
+            .filter(|provider| provider.descriptor().is_available())
+            .flat_map(|provider| provider.descriptor().effects.iter())
+            .filter(|effect| effect.maskable)
+    }
+
     /// Whether a stack holds at most one layer of this effect per target, as the effect's own
     /// descriptor declares.
     pub(crate) fn effect_single(&self, effect_id: &str) -> bool {

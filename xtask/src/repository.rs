@@ -321,6 +321,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
+    "crates/luxforge-webp/src",
     "crates/luxforge-install/src",
     "crates/luxforge-sparkle/src",
 ];
@@ -342,6 +343,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
+    "crates/luxforge-webp",
     "crates/luxforge-install",
     "crates/luxforge-sparkle",
 ];
@@ -535,6 +537,18 @@ const SOURCE_RULES: &[SourceRule] = &[
         tests: false,
         once: false,
         reason: "shipped code decodes JPEG only through crates/luxforge-jpeg, never through image",
+    },
+    // One WebP codec path: in shipped code only `luxforge-webp` names libwebp's bindings.
+    SourceRule {
+        name: "webp-codec-name",
+        tokens: &["libwebp_sys"],
+        scope: SHIPPED_SOURCES,
+        types: &["rs"],
+        allowed: &["crates/luxforge-webp"],
+        mode: Match::Prefix,
+        tests: false,
+        once: false,
+        reason: "only the WebP codec crate (crates/luxforge-webp) may name libwebp_sys",
     },
     // The RAW development's identity belongs to the RAW module alone: every other surface decides
     // whether a module applies to a photo from the source kinds its effects declare, and the host's
@@ -1013,6 +1027,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
             "crates/luxforge-core/src/previews/region.rs",
+            // Production cancellation/completion waits for active DNS and resource-lock work.
+            "crates/luxforge-core/src/jobs.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
             // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
@@ -1060,7 +1076,8 @@ const SOURCE_RULES: &[SourceRule] = &[
     // does the generative fill's robust grain estimate (a median absolute deviation over a ring's
     // samples), whose test restates it by sorting as its independent reference; the HDR exposure
     // resolution's median reference and robust pairwise fit are production estimators, not timing
-    // figures.
+    // figures, and so are a range mask pick's tonal span and colour spread (`mask/range.rs`), which
+    // interpolate between order statistics of at most the area query's 4,096 points.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1081,6 +1098,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/modules/ai/fill/grain.rs",
             "crates/luxforge-core/src/modules/ai/fill/tests.rs",
             "crates/luxforge-core/src/merge/hdr/exposure.rs",
+            "crates/luxforge-core/src/mask/range.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",
@@ -1111,6 +1129,10 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/tiles/analysis.rs",
             // The one usage statistics worker, alive only while collection is effective.
             "crates/luxforge-core/src/usage/supervisor.rs",
+            // Permission observation is lazy and stops when the owner's last relevant job ends.
+            "crates/luxforge-core/src/capabilities/permission_watch.rs",
+            // Four lazy process-level DNS workers with bounded queued and retained admissions.
+            "crates/luxforge-net/src/transport/resolver.rs",
             // The catalog's bounded workers: the index lane and its watchers, the preview lane,
             // and the develop lane (`docs/design/catalog.md`, "Architecture").
             "crates/luxforge-core/src/index",
@@ -1528,6 +1550,32 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    DependencyRule {
+        name: "libwebp-links",
+        refuses: Depends::Prefixed("libwebp"),
+        manifests: SHIPPED_CRATES,
+        tables: &[Table::Normal],
+        allowed: &["crates/luxforge-webp"],
+        reason: "only luxforge-webp links the WebP codec",
+    },
+    // The WebP codec crate is a leaf behind the core, like the JPEG one. Its tests read the
+    // process's footprint through luxforge-process, which is a leaf too.
+    DependencyRule {
+        name: "webp-codec-users",
+        refuses: Depends::On("luxforge-webp"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-core"],
+        reason: "only luxforge-core may depend on luxforge-webp",
+    },
+    DependencyRule {
+        name: "webp-codec-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-webp"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-webp may depend on no workspace crate and no path but in its tests",
     },
     // The watcher's platform code is a leaf the core's index uses: it builds against no workspace
     // crate. Its tests may use the test base, which reaches no workspace crate either.
