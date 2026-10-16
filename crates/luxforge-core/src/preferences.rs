@@ -10,7 +10,7 @@ use crate::{
     Error, MaskOverlayColour, WorkspaceState,
     capabilities::document::JsonDocument,
     mask::commands::ADD_STROKE,
-    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_ID},
+    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_ID, OmarchyTheme},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -155,6 +155,17 @@ pub struct HdrMergePreference {
     pub deghost: crate::merge::hdr::DeghostMode,
 }
 
+/// The remembered last export (`docs/design/export-settings.md`, API): the settings the person last
+/// exported with and the preset they came from, if any. The desktop stores it only after an export
+/// the person started succeeds; Export again reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportLast {
+    pub settings: crate::export::settings::ExportSettings,
+    /// The preset the settings came from, unchanged, or `None`.
+    pub preset_id: Option<String>,
+}
+
 /// The remembered settings of the person's last panorama merge, which the desktop's ⌥-click merges
 /// with: the projection and the Boundary Warp amount (0 to 100). The folder and the reference
 /// belong to one set of frames and are not remembered.
@@ -200,9 +211,9 @@ pub(crate) struct Preferences {
     pub(crate) brush: Option<BrushPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) window: Option<WindowFrame>,
-    /// The folder `export.plan` suggests while it exists; the original's folder when absent.
+    /// The last export's settings and preset; nothing until an export succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) export_folder: Option<PathBuf>,
+    pub(crate) export_last: Option<ExportLast>,
     /// The last HDR merge's alignment and deghosting; the defaults when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) hdr_merge: Option<HdrMergePreference>,
@@ -217,6 +228,11 @@ pub(crate) struct Preferences {
     /// theme library holds, and Luxforge Dark's as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) theme: Option<String>,
+    /// Whether the desktop makes Omarchy's current theme the active one, where Omarchy runs and the
+    /// library holds that theme ([design](../../../docs/design/ui-themes.md#following-omarchy)).
+    /// On unless the person turned it off, which choosing a theme in the desktop does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) theme_follows_omarchy: Option<bool>,
     /// The protected usage statistics consent ([`crate::usage::consent`]). Only
     /// [`crate::usage::consent::Usage`] writes it, through [`PreferenceStore::update_usage`]: no
     /// [`PreferenceChange`] names it, so `preferences.set`, its `null` and every reset keep it.
@@ -305,6 +321,10 @@ impl Preferences {
         self.theme.as_deref().unwrap_or(LUXFORGE_DARK_ID)
     }
 
+    pub(crate) fn theme_follows_omarchy(&self) -> bool {
+        self.theme_follows_omarchy.unwrap_or(true)
+    }
+
     /// The values the General rows show, defaults filled in.
     pub(crate) fn general(&self) -> GeneralRows<'_> {
         (
@@ -383,18 +403,28 @@ impl Preferences {
             crate::update::check_version(version)
                 .map_err(|reason| format!("update_skipped_version: {reason}"))?;
         }
-        for (name, path) in [
-            ("catalog", &self.catalog),
-            ("export_folder", &self.export_folder),
-        ] {
-            match path {
-                Some(path) if path.as_os_str().is_empty() => {
-                    return Err(format!("{name} must not be empty"));
-                }
-                Some(path) if !path.is_absolute() => {
-                    return Err(format!("{name} must be an absolute path"));
-                }
-                _ => {}
+        match &self.catalog {
+            Some(path) if path.as_os_str().is_empty() => {
+                return Err("catalog must not be empty".into());
+            }
+            Some(path) if !path.is_absolute() => {
+                return Err("catalog must be an absolute path".into());
+            }
+            _ => {}
+        }
+        if let Some(last) = &self.export_last {
+            last.settings
+                .check()
+                .map_err(|error| format!("export_last.{}", error.detail))?;
+            if let Some(preset_id) = &last.preset_id
+                && (preset_id.is_empty()
+                    || preset_id.len() > crate::export::presets::MAX_ID
+                    || preset_id.chars().any(char::is_control))
+            {
+                return Err(format!(
+                    "export_last.preset_id must be a preset id of 1..={} printable characters",
+                    crate::export::presets::MAX_ID
+                ));
             }
         }
         Ok(())
@@ -441,10 +471,11 @@ pub(crate) struct PreferenceChange {
     pub(crate) workspace: Option<Option<WorkspacePreference>>,
     pub(crate) brush: Option<Option<BrushPreference>>,
     pub(crate) window: Option<Option<WindowFrame>>,
-    pub(crate) export_folder: Option<Option<PathBuf>>,
+    pub(crate) export_last: Option<Option<ExportLast>>,
     pub(crate) hdr_merge: Option<Option<HdrMergePreference>>,
     pub(crate) panorama_merge: Option<Option<PanoramaMergePreference>>,
     pub(crate) theme: Option<Option<String>>,
+    pub(crate) theme_follows_omarchy: Option<Option<bool>>,
     pub(crate) update_checks: Option<Option<bool>>,
     pub(crate) update_install_automatically: Option<Option<bool>>,
     pub(crate) update_ask_to_move: Option<Option<bool>>,
@@ -477,10 +508,14 @@ impl PreferenceChange {
         put(&mut preferences.workspace, self.workspace);
         put(&mut preferences.brush, self.brush);
         put(&mut preferences.window, self.window);
-        put(&mut preferences.export_folder, self.export_folder);
+        put(&mut preferences.export_last, self.export_last);
         put(&mut preferences.hdr_merge, self.hdr_merge);
         put(&mut preferences.panorama_merge, self.panorama_merge);
         put(&mut preferences.theme, self.theme);
+        put(
+            &mut preferences.theme_follows_omarchy,
+            self.theme_follows_omarchy,
+        );
         put(&mut preferences.update_checks, self.update_checks);
         put(
             &mut preferences.update_install_automatically,
@@ -490,13 +525,21 @@ impl PreferenceChange {
     }
 }
 
-pub(crate) struct PreferenceStore(Option<JsonDocument<Preferences>>);
+pub(crate) struct PreferenceStore(Option<JsonDocument<Preferences>>, Option<PathBuf>);
 
 impl PreferenceStore {
     pub(crate) fn new(dir: Option<PathBuf>) -> Self {
-        Self(dir.map(|dir| {
-            JsonDocument::new(dir, "preferences.json", MAX_BYTES, 1).checked(Preferences::check)
-        }))
+        Self(
+            dir.clone().map(|dir| {
+                JsonDocument::new(dir, "preferences.json", MAX_BYTES, 1).checked(Preferences::check)
+            }),
+            dir,
+        )
+    }
+
+    /// The person's export presets, in the same configuration directory.
+    pub(crate) fn export_presets(&self) -> crate::export::presets::ExportPresetStore {
+        crate::export::presets::ExportPresetStore::new(self.1.clone())
     }
 
     pub(crate) fn read(&self) -> Result<Preferences, Error> {
@@ -509,14 +552,22 @@ impl PreferenceStore {
     /// Store the preferences `change` names, leaving the rest as they were, and answer them all
     /// as they were before the write and as they are after it. A value that breaks a rule is
     /// refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set(
         &self,
         change: PreferenceChange,
     ) -> Result<(Preferences, Preferences), Error> {
+        self.set_published(change)?.finish()
+    }
+
+    pub(crate) fn set_published(
+        &self,
+        change: PreferenceChange,
+    ) -> Result<crate::atomic_file::Publication<(Preferences, Preferences)>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.clone();
                 change.apply(preferences);
                 preferences.check().map_err(Error::validation)?;
@@ -527,14 +578,14 @@ impl PreferenceStore {
     /// One locked read-modify-write of the protected usage statistics record alone, leaving every
     /// preference as it was. `apply` sees the record as stored (`None` when absent); a file that
     /// cannot be read, an `apply` that fails, or a result that breaks a rule writes nothing.
-    pub(crate) fn update_usage<R>(
+    pub(crate) fn update_usage_published<R>(
         &self,
         apply: impl FnOnce(&mut Option<crate::usage::consent::UsageRecord>) -> Result<R, Error>,
-    ) -> Result<R, Error> {
+    ) -> Result<crate::atomic_file::Publication<R>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let answer = apply(&mut preferences.usage_statistics)?;
                 preferences.check().map_err(Error::validation)?;
                 Ok(answer)
@@ -544,11 +595,19 @@ impl PreferenceStore {
     /// One locked read-modify-write of the skipped update version alone, leaving every preference
     /// as it was: `update.skip`'s write. Returns whether the stored version changed; an unchanged
     /// one writes nothing. A version that breaks the rule is refused by name and nothing is written.
+    #[cfg(test)]
     pub(crate) fn set_skipped_version(&self, version: &str) -> Result<bool, Error> {
+        self.set_skipped_version_published(version)?.finish()
+    }
+
+    pub(crate) fn set_skipped_version_published(
+        &self,
+        version: &str,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 if preferences.update_skipped_version.as_deref() == Some(version) {
                     return Ok(false);
                 }
@@ -560,11 +619,20 @@ impl PreferenceStore {
 
     /// Store one flag's value, or remove it for `None`, leaving every other stored flag as it
     /// was. Returns whether the stored value changed; an unchanged one writes nothing.
+    #[cfg(test)]
     pub(crate) fn set_flag(&self, id: &str, value: Option<Value>) -> Result<bool, Error> {
+        self.set_flag_published(id, value)?.finish()
+    }
+
+    pub(crate) fn set_flag_published(
+        &self,
+        id: &str,
+        value: Option<Value>,
+    ) -> Result<crate::atomic_file::Publication<bool>, Error> {
         self.0
             .as_ref()
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
-            .transact(|preferences| {
+            .transact_published(|preferences| {
                 let before = preferences.flags.get(id).cloned();
                 match &value {
                     Some(value) => preferences.flags.insert(id.to_owned(), value.clone()),
@@ -576,8 +644,9 @@ impl PreferenceStore {
 }
 
 /// The preferences the desktop needs before its catalog owner starts: which catalog to open, the
-/// window's frame, the interface size and the theme it draws from its first frame. Read once at
-/// launch, beside [`crate::flags::LaunchFlags::resolve`].
+/// window's frame, the interface size and the theme it draws from its first frame, which is
+/// Omarchy's current one when it follows it. Read once at launch, beside
+/// [`crate::flags::LaunchFlags::resolve`].
 #[derive(Clone, Debug)]
 pub struct LaunchPreferences {
     /// The stored catalog file, or `None` for the default catalog. Whether its folder exists is
@@ -591,6 +660,12 @@ pub struct LaunchPreferences {
     /// chosen, and in place of a chosen one that is missing or unreadable, whose own problem
     /// names it. The stored choice is not changed.
     pub theme: LaunchTheme,
+    /// Omarchy's current theme, when the desktop found one, and the library theme that is it.
+    pub omarchy: Option<OmarchyTheme>,
+    /// The theme to store as the active one because the active theme follows Omarchy's: the one
+    /// [`Self::omarchy`] found, when it is not already the stored choice. [`Self::theme`] is
+    /// already that theme; the stored choice is the desktop's to write.
+    pub follow: Option<String>,
     /// Why the preferences could not be read, when they could not: every field took its default,
     /// and nothing was written.
     pub problem: Option<Error>,
@@ -599,14 +674,25 @@ pub struct LaunchPreferences {
 impl LaunchPreferences {
     /// Read the launch preferences from `preferences.json` under `preferences_dir`, if any. A file
     /// that cannot be read leaves every field at its default and is kept as [`Self::problem`].
-    /// `themes.json` is read only when a theme other than Luxforge Dark is chosen.
-    pub fn read(preferences_dir: Option<PathBuf>) -> Self {
+    /// `omarchy` is Omarchy's current theme's slug, where the desktop found one: while the theme
+    /// follows Omarchy and the library holds that theme, it is drawn in place of the stored
+    /// choice. `themes.json` is read only when a theme other than Luxforge Dark is chosen, or to
+    /// find Omarchy's.
+    pub fn read(preferences_dir: Option<PathBuf>, omarchy: Option<&str>) -> Self {
         let (preferences, problem) = match PreferenceStore::new(preferences_dir.clone()).read() {
             Ok(preferences) => (preferences, None),
             Err(error) => (Preferences::default(), Some(error)),
         };
+        let omarchy = omarchy.map(|slug| OmarchyTheme::find(preferences_dir.clone(), slug));
+        let follow = omarchy
+            .as_ref()
+            .and_then(|omarchy| omarchy.theme.clone())
+            .filter(|id| preferences.theme_follows_omarchy() && id != preferences.theme());
+        let chosen = follow.as_deref().or(preferences.theme.as_deref());
         Self {
-            theme: LaunchTheme::read(preferences_dir, preferences.theme.as_deref()),
+            theme: LaunchTheme::read(preferences_dir, chosen),
+            omarchy,
+            follow,
             interface_size: preferences.interface_size(),
             catalog: preferences.catalog,
             window: preferences.window,
@@ -634,6 +720,8 @@ impl CatalogSelection {
     /// stored catalog whose folder is missing, as with an unplugged drive, selects the default and
     /// is kept as [`Self::missing`]; a folder without a catalog is still selected, since the
     /// desktop creates one there. `None` when nothing names a catalog and there is no default.
+    /// Only a missing parent selects the default. An inaccessible or non-directory parent keeps
+    /// the stored path, so opening the selected catalog reports its actual error.
     /// Selecting creates nothing.
     pub fn select(
         explicit: Option<PathBuf>,
@@ -647,8 +735,16 @@ impl CatalogSelection {
             });
         }
         let (path, missing) = match stored {
-            Some(stored) if stored.parent().is_some_and(Path::is_dir) => (stored, None),
-            Some(stored) => (default?, Some(stored)),
+            Some(stored)
+                if stored.parent().is_some_and(|parent| {
+                    parent
+                        .metadata()
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                }) =>
+            {
+                (default?, Some(stored))
+            }
+            Some(stored) => (stored, None),
             None => (default?, None),
         };
         Some(Self { path, missing })
@@ -689,7 +785,17 @@ mod tests {
                 x: -40.5,
                 y: 25.0,
             })),
-            export_folder: Some(Some(PathBuf::from("/Users/someone/Exports"))),
+            export_last: Some(Some(ExportLast {
+                settings: crate::export::settings::ExportSettings {
+                    folder: crate::export::settings::ExportFolder::Path(PathBuf::from(
+                        "/Users/someone/Exports",
+                    )),
+                    ..crate::export::settings::ExportSettings::baseline(
+                        crate::export::settings::MetadataLevel::All,
+                    )
+                },
+                preset_id: Some("luxforge.print".into()),
+            })),
             hdr_merge: Some(Some(HdrMergePreference {
                 alignment: crate::merge::hdr::AlignmentMode::Off,
                 deghost: crate::merge::hdr::DeghostMode::Auto,
@@ -699,6 +805,7 @@ mod tests {
                 boundary_warp: 40,
             })),
             theme: Some(Some(STORED_THEME.to_owned())),
+            theme_follows_omarchy: Some(Some(false)),
             update_checks: Some(Some(false)),
             update_install_automatically: Some(Some(true)),
             update_ask_to_move: Some(Some(false)),
@@ -763,7 +870,7 @@ mod tests {
             assert!(store.set(PreferenceChange::default()).is_err());
             assert!(store.set(every_field()).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
-            let launch = LaunchPreferences::read(Some(root.clone()));
+            let launch = LaunchPreferences::read(Some(root.clone()), None);
             assert_eq!(
                 launch.problem.map(|problem| problem.kind),
                 Some(ErrorKind::Incompatible)
@@ -820,8 +927,16 @@ mod tests {
         assert_eq!(reopened.brush.unwrap().feather, 20.0);
         assert_eq!(reopened.window.unwrap().x, -40.5);
         assert_eq!(
-            reopened.export_folder.as_deref(),
-            Some(Path::new("/Users/someone/Exports"))
+            reopened
+                .export_last
+                .as_ref()
+                .map(|last| (&last.settings.folder, last.preset_id.as_deref())),
+            Some((
+                &crate::export::settings::ExportFolder::Path(PathBuf::from(
+                    "/Users/someone/Exports"
+                )),
+                Some("luxforge.print")
+            ))
         );
         assert_eq!(
             reopened.hdr_merge.map(|last| last.alignment),
@@ -830,7 +945,7 @@ mod tests {
         assert_eq!(reopened.theme(), STORED_THEME);
         assert!(!reopened.update_checks() && reopened.update_install_automatically());
         assert!(!reopened.update_ask_to_move());
-        let launch = LaunchPreferences::read(Some(root.clone()));
+        let launch = LaunchPreferences::read(Some(root.clone()), None);
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
         assert_eq!(launch.window, reopened.window);
@@ -866,10 +981,11 @@ mod tests {
             workspace: Some(None),
             brush: Some(None),
             window: Some(None),
-            export_folder: Some(None),
+            export_last: Some(None),
             hdr_merge: Some(None),
             panorama_merge: Some(None),
             theme: Some(None),
+            theme_follows_omarchy: Some(None),
             update_checks: Some(None),
             update_install_automatically: Some(None),
             update_ask_to_move: Some(None),
@@ -884,7 +1000,7 @@ mod tests {
                 .unwrap(),
             serde_json::json!({"format": 1})
         );
-        let launch = LaunchPreferences::read(Some(root.clone()));
+        let launch = LaunchPreferences::read(Some(root.clone()), None);
         assert_eq!(
             (launch.catalog, launch.window, launch.interface_size),
             (None, None, DEFAULT_INTERFACE_SIZE)
@@ -892,7 +1008,7 @@ mod tests {
         assert_eq!(launch.theme.id, LUXFORGE_DARK_ID);
         assert!(launch.theme.problem.is_none());
         std::fs::remove_dir_all(root).unwrap();
-        let unconfigured = LaunchPreferences::read(None);
+        let unconfigured = LaunchPreferences::read(None, None);
         assert!(unconfigured.problem.is_none() && unconfigured.catalog.is_none());
         assert_eq!(
             unconfigured.theme.resolved.tokens,
@@ -989,17 +1105,32 @@ mod tests {
             ),
             (
                 PreferenceChange {
-                    export_folder: Some(Some(PathBuf::from("Exports"))),
+                    export_last: Some(Some(ExportLast {
+                        settings: crate::export::settings::ExportSettings {
+                            folder: crate::export::settings::ExportFolder::Path(PathBuf::from(
+                                "Exports",
+                            )),
+                            ..crate::export::settings::ExportSettings::baseline(
+                                crate::export::settings::MetadataLevel::All,
+                            )
+                        },
+                        preset_id: None,
+                    })),
                     ..PreferenceChange::default()
                 },
-                "export_folder must be an absolute path",
+                "export_last.settings.folder must be",
             ),
             (
                 PreferenceChange {
-                    export_folder: Some(Some(PathBuf::new())),
+                    export_last: Some(Some(ExportLast {
+                        settings: crate::export::settings::ExportSettings::baseline(
+                            crate::export::settings::MetadataLevel::All,
+                        ),
+                        preset_id: Some(String::new()),
+                    })),
                     ..PreferenceChange::default()
                 },
-                "export_folder must not be empty",
+                "export_last.preset_id must be",
             ),
             (
                 PreferenceChange {
@@ -1060,7 +1191,12 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
             })),
-            export_folder: Some(Some(PathBuf::from("/tmp"))),
+            export_last: Some(Some(ExportLast {
+                settings: crate::export::settings::ExportSettings::baseline(
+                    crate::export::settings::MetadataLevel::All,
+                ),
+                preset_id: None,
+            })),
             // A default chosen explicitly shows the same as the default.
             auto_lens_profile: Some(Some(true)),
             raw_look: Some(Some(RawLook::Standard)),
@@ -1214,6 +1350,29 @@ mod tests {
         assert_eq!(select(None, None).unwrap().path, default);
         // Nowhere to keep the default and nothing naming a catalog.
         assert_eq!(CatalogSelection::select(None, None, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_non_directory_catalog_parent_keeps_the_stored_path_for_the_opening_error() {
+        let root = luxforge_testbase::paths::temp_dir("catalog-parent-is-file");
+        let parent = root.join("Photos");
+        std::fs::write(&parent, b"keep this file").unwrap();
+        let stored = parent.join(CATALOG_FILE);
+        let default = root.join("default").join(CATALOG_FILE);
+        assert_eq!(
+            CatalogSelection::select(None, Some(default.clone()), Some(stored.clone())),
+            Some(CatalogSelection {
+                path: stored,
+                missing: None
+            }),
+            "a non-directory parent is an opening failure, not a missing drive"
+        );
+        assert!(
+            !default.parent().unwrap().exists(),
+            "selection creates no default catalog"
+        );
+        assert_eq!(std::fs::read(&parent).unwrap(), b"keep this file");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -460,7 +460,7 @@
                 "default": false,
                 "kind": "boolean",
                 "name": "limit_to_colour",
-                "notes": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. A mask no layer is bound to has no operation to read an input from and is refused by name",
+                "notes": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. On a mask no layer is bound to, a new one included, the pixel is the one a first adjustment through the mask would receive",
                 "precision": null,
                 "required": true,
                 "step": null,
@@ -1961,6 +1961,198 @@
             "patch": false,
             "preset": false,
             "title": "Remove colour range sample"
+          },
+          {
+            "id": "mask.pick-luminance-range",
+            "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "mask",
+                "notes": "the mask this command addresses",
+                "of": "mask",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "component",
+                "notes": "the component inside that mask",
+                "of": "component",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "x",
+                "notes": "the picked point, or the left edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "y",
+                "notes": "the picked point, or the top edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "width",
+                "notes": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": false,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "height",
+                "notes": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": false,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Pick luminance range"
+          },
+          {
+            "id": "mask.pick-colour-range",
+            "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "mask",
+                "notes": "the mask this command addresses",
+                "of": "mask",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "component",
+                "notes": "the component inside that mask",
+                "of": "component",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "x",
+                "notes": "the picked point, or the left edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "y",
+                "notes": "the picked point, or the top edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "width",
+                "notes": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": false,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "height",
+                "notes": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": false,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": false,
+                "kind": "boolean",
+                "name": "add",
+                "notes": "keep the colours the component already holds and add the picked one, up to 5, rather than replacing them; a colour already held changes nothing",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Pick colour range"
           }
         ],
         "availability": {
@@ -2154,7 +2346,7 @@
           },
           {
             "id": "mask.sample-input",
-            "notes": "the pixel the operation this mask modulates receives, at one content position, as linear-sRGB r, g and b, each an f32 value, with the renderer that read it, {record: gpu or reference, reason}, the reason naming why the GPU did not; read off the catalog owner by its tile service. Read-only: it writes no history and emits no event. It is where a canvas pick gets the colour a colour range's swatch is, because a range selection is evaluated on the operation's input while the frame a client can see holds that operation's output — so a colour read from the picture would be a different colour. The position is a pixel of the stage that operation's layer receives, and one outside it is refused rather than clamped",
+            "notes": "the pixel the operation this mask modulates receives, at one content position, as linear-sRGB r, g and b, each an f32 value, with the renderer that read it, {record: gpu or reference, reason}, the reason naming why the GPU did not; read off the catalog owner by its tile service. Read-only: it writes no history and emits no event. It is where a canvas pick gets the colour a colour range's swatch is, because a range selection is evaluated on the operation's input while the frame a client can see holds that operation's output — so a colour read from the picture would be a different colour. The position is a pixel of the stage that operation's layer receives, and one outside it is refused rather than clamped. A mask no layer is bound to answers the pixel a first adjustment through it would receive",
             "parameters": [
               {
                 "default": null,
@@ -2194,6 +2386,85 @@
             ],
             "patch": false,
             "title": "Sample input"
+          },
+          {
+            "id": "mask.sample-input-area",
+            "notes": "the input the operation this mask modulates receives over one rectangle of normalized content coordinates, as {stage: {width, height}, rect: {x0, y0, width, height}, reduction, size: [columns, rows], points: [[r, g, b], …], renderer}: the rectangle is widened to whole pixels, then to whole blocks of the reduction, and clipped to the stage, rect naming those stage pixels; reduction is the smallest power of two that leaves at most 4096 points; each point is the linear-sRGB mean of the stage pixels of its block, in reading order; renderer is {record: gpu or reference, reason}. Read at the mask's input site, as mask.sample-input is, and off the catalog owner by its tile service. A rectangle that misses the stage is refused rather than clamped. Read-only: it writes no history and emits no event. It is what a drag of mask.pick-<kind> measures",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "mask",
+                "notes": "the mask this command addresses",
+                "of": "mask",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "x",
+                "notes": "the rectangle's left edge, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 2.0,
+                "min": -1.0,
+                "name": "y",
+                "notes": "the rectangle's top edge, in the content stage's normalized coordinates; 0..1 is the frame",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "width",
+                "notes": "the rectangle's width, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              },
+              {
+                "default": null,
+                "fine_step": 0.001,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.0,
+                "name": "height",
+                "notes": "the rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+                "precision": 3,
+                "required": true,
+                "soft_max": 1.0,
+                "soft_min": 0.0,
+                "step": 0.01,
+                "unit": "frame"
+              }
+            ],
+            "patch": false,
+            "title": "Sample input area"
           }
         ],
         "reset": null,
@@ -3776,7 +4047,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.presence.adjust",
             "maskable": true,
             "order": 0,
@@ -5589,7 +5860,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 2,
+            "format": 3,
             "id": "luxforge.mixer.hsl",
             "maskable": true,
             "order": 10,
@@ -5966,7 +6237,7 @@
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.vignette.postcrop",
             "order": 0,
             "single": true,
@@ -9080,7 +9351,7 @@
         "optional": {
           "colour_refine": "how tight the colour limit is, on the colour range's own refine axis and with the same meaning: a higher refine is always a narrower hold, geometrically between a whole colour family at 0 and one flat patch at 100. Ignored, and stored nowhere, by a stroke that carries no limit",
           "component": "the component inside that mask; without it the command puts a new one on the mask",
-          "limit_to_colour": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. A mask no layer is bound to has no operation to read an input from and is refused by name",
+          "limit_to_colour": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. On a mask no layer is bound to, a new one included, the pixel is the one a first adjustment through the mask would receive",
           "mask": "the mask this command addresses; without it the command draws a new one",
           "mode": "how the brush this stroke creates joins the components before it; only a stroke that makes a component on an existing mask may carry one, and a mask's first component is always add"
         },
@@ -9170,7 +9441,7 @@
             "default": false,
             "kind": "boolean",
             "name": "limit_to_colour",
-            "notes": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. A mask no layer is bound to has no operation to read an input from and is refused by name",
+            "notes": "limit this stroke to the colour under the brush where it began: the host reads the pixel the operation this mask modulates receives at the stroke's first position, stores it with the stroke, and multiplies the stroke's coverage by the similarity to it. No colour is sent — a request names the limit, never the colour, so what is stored is always a colour the photograph has at that position. It is a per-pixel colour test and not Lightroom's Auto Mask: it knows nothing about edges or connectivity, so it also paints a matching colour anywhere else the stroke passes over. On a mask no layer is bound to, a new one included, the pixel is the one a first adjustment through the mask would receive",
             "precision": null,
             "required": true,
             "step": null,
@@ -9825,6 +10096,223 @@
           "asset_id"
         ]
       },
+      "mask.pick-colour-range": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+        "optional": {
+          "add": "keep the colours the component already holds and add the picked one, up to 5, rather than replacing them; a colour already held changes nothing",
+          "height": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+          "width": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "mask",
+            "notes": "the mask this command addresses",
+            "of": "mask",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "component",
+            "notes": "the component inside that mask",
+            "of": "component",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "x",
+            "notes": "the picked point, or the left edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "y",
+            "notes": "the picked point, or the top edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "width",
+            "notes": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": false,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "height",
+            "notes": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": false,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "add",
+            "notes": "keep the colours the component already holds and add the picked one, up to 5, rather than replacing them; a colour already held changes nothing",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "mask",
+          "component",
+          "x",
+          "y"
+        ],
+        "revision_of": "asset"
+      },
+      "mask.pick-luminance-range": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+        "optional": {
+          "height": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+          "width": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "mask",
+            "notes": "the mask this command addresses",
+            "of": "mask",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "component",
+            "notes": "the component inside that mask",
+            "of": "component",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "x",
+            "notes": "the picked point, or the left edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "y",
+            "notes": "the picked point, or the top edge of the dragged rectangle, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "width",
+            "notes": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": false,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "height",
+            "notes": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": false,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "mask",
+          "component",
+          "x",
+          "y"
+        ],
+        "revision_of": "asset"
+      },
       "mask.rename": {
         "mutates": true,
         "mutation": "revision",
@@ -10005,7 +10493,7 @@
       },
       "mask.sample-input": {
         "mutates": false,
-        "notes": "the pixel the operation this mask modulates receives, at one content position, as linear-sRGB r, g and b, each an f32 value, with the renderer that read it, {record: gpu or reference, reason}, the reason naming why the GPU did not; read off the catalog owner by its tile service. Read-only: it writes no history and emits no event. It is where a canvas pick gets the colour a colour range's swatch is, because a range selection is evaluated on the operation's input while the frame a client can see holds that operation's output — so a colour read from the picture would be a different colour. The position is a pixel of the stage that operation's layer receives, and one outside it is refused rather than clamped",
+        "notes": "the pixel the operation this mask modulates receives, at one content position, as linear-sRGB r, g and b, each an f32 value, with the renderer that read it, {record: gpu or reference, reason}, the reason naming why the GPU did not; read off the catalog owner by its tile service. Read-only: it writes no history and emits no event. It is where a canvas pick gets the colour a colour range's swatch is, because a range selection is evaluated on the operation's input while the frame a client can see holds that operation's output — so a colour read from the picture would be a different colour. The position is a pixel of the stage that operation's layer receives, and one outside it is refused rather than clamped. A mask no layer is bound to answers the pixel a first adjustment through it would receive",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection"
         },
@@ -10051,6 +10539,94 @@
           "mask",
           "x",
           "y"
+        ]
+      },
+      "mask.sample-input-area": {
+        "mutates": false,
+        "notes": "the input the operation this mask modulates receives over one rectangle of normalized content coordinates, as {stage: {width, height}, rect: {x0, y0, width, height}, reduction, size: [columns, rows], points: [[r, g, b], …], renderer}: the rectangle is widened to whole pixels, then to whole blocks of the reduction, and clipped to the stage, rect naming those stage pixels; reduction is the smallest power of two that leaves at most 4096 points; each point is the linear-sRGB mean of the stage pixels of its block, in reading order; renderer is {record: gpu or reference, reason}. Read at the mask's input site, as mask.sample-input is, and off the catalog owner by its tile service. A rectangle that misses the stage is refused rather than clamped. Read-only: it writes no history and emits no event. It is what a drag of mask.pick-<kind> measures",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "mask",
+            "notes": "the mask this command addresses",
+            "of": "mask",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "x",
+            "notes": "the rectangle's left edge, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 2.0,
+            "min": -1.0,
+            "name": "y",
+            "notes": "the rectangle's top edge, in the content stage's normalized coordinates; 0..1 is the frame",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "width",
+            "notes": "the rectangle's width, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          },
+          {
+            "default": null,
+            "fine_step": 0.001,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.0,
+            "name": "height",
+            "notes": "the rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
+            "precision": 3,
+            "required": true,
+            "soft_max": 1.0,
+            "soft_min": 0.0,
+            "step": 0.01,
+            "unit": "frame"
+          }
+        ],
+        "required": [
+          "asset_id",
+          "mask",
+          "x",
+          "y",
+          "width",
+          "height"
         ]
       },
       "mask.set-amount": {

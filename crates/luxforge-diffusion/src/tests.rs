@@ -23,6 +23,50 @@ const AI: &str = "luxforge.ai";
 const GENERATOR: &str = "generative-klein-4b";
 const ENCODER: &str = "generative-klein-text-encoder";
 
+/// The editor build cannot retain inspection copies of prompts and conditioning tensors. The
+/// qualification probe builds its own shim with inspection enabled and keeps its save API.
+#[test]
+#[cfg(luxforge_sdcpp)]
+fn the_production_runtime_disables_conditioning_capture() {
+    let error = crate::native::save_condition("never encoded", &std::env::temp_dir())
+        .expect_err("production has no conditioning inspection store");
+    assert!(error.contains("capture is disabled"), "{error}");
+}
+
+#[test]
+#[cfg(luxforge_sdcpp)]
+fn conditioning_admission_bounds_dimensions_and_requires_the_payload_before_allocation() {
+    let root = temp("conditioning-parser");
+    let file = |name: &str, dimensions: &[i64], values: &[f32]| {
+        let mut bytes = b"LFSDCOND".to_vec();
+        bytes.extend(1_u32.to_le_bytes());
+        bytes.extend(1_u32.to_le_bytes());
+        let field = b"c_crossattn";
+        bytes.extend((field.len() as u32).to_le_bytes());
+        bytes.extend(field);
+        bytes.extend((dimensions.len() as u32).to_le_bytes());
+        for dimension in dimensions {
+            bytes.extend(dimension.to_le_bytes());
+        }
+        for value in values {
+            bytes.extend(value.to_le_bytes());
+        }
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    };
+    crate::native::validate_condition(&file("valid", &[2, 2], &[0.0, 0.25, 0.5, 1.0])).unwrap();
+    // Each dimension is legal alone; their product would overflow signed 64-bit arithmetic.
+    let oversized =
+        crate::native::validate_condition(&file("overflow", &[1 << 24; 3], &[])).unwrap_err();
+    assert!(oversized.contains("field too large"), "{oversized}");
+    // This declared 1 GiB payload must be refused from its length, without allocating it.
+    let truncated =
+        crate::native::validate_condition(&file("truncated", &[1 << 24, 16], &[])).unwrap_err();
+    assert!(truncated.contains("truncated"), "{truncated}");
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn identity(id: &str) -> ModelIdentity {
     ModelIdentity {
         id: id.into(),

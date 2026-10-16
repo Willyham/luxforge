@@ -150,7 +150,9 @@ pub fn repair_stack(steps: Vec<QualStep>, after: Vec<Layer>) -> Recipe {
 /// content stage, as a GPU Fit frame draws the repair stage smaller than its patches were placed
 /// (`docs/design/corrections.md`, "The composite at a reduced stage"): the layer compiled at that
 /// stage against the full one, as the host compiles a proxy, and every operation run in order over
-/// `pixels`, the reduced frame's linear values row by row. The CPU's output, row by row.
+/// `pixels`, the reduced frame's linear values row by row. The CPU's output, row by row. Only the
+/// desktop's GPU tests call it, so the core's own test build leaves it out.
+#[cfg(feature = "qualification")]
 pub fn reduced(
     stack: &Recipe,
     stage: (u32, u32),

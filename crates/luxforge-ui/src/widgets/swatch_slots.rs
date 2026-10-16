@@ -1,17 +1,15 @@
 //! Small colour chips pressed to choose or remove a colour: the overlay's two tint swatches, and a
 //! colour range's held swatches with their empty slots and its Pick button, as the mask-panels
-//! board draws `.sw2` and the colour range's swatch row.
+//! board draws `.sw2` and the range-masks board the colour range's swatch row.
 //!
 //! Every chip is drawn inside a [`theme::OVERLAY_SWATCH_RING`] margin whether or not it is chosen,
 //! so choosing one draws its accent ring without moving its neighbours; the rows' spacing takes
 //! the two margins off the board's gap.
 
-use super::button_row::ButtonSize;
-use super::icon_button::{Icon, icon};
+use super::pick_bar::{PickButtonModel, pick_button};
 use crate::theme;
-use crate::{Element, Theme, Token};
-use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{Row, Space, button, canvas, row, text};
+use crate::{Element, Theme};
+use iced::widget::{Row, Space, button, canvas, row};
 use iced::{Alignment, Color, Length, Padding, Point, Rectangle, Renderer, Size};
 
 /// One chip: a colour, or an empty dashed slot when `fill` is `None`.
@@ -135,12 +133,11 @@ pub struct SwatchSlotsModel {
     pub limit: usize,
     /// A held swatch drawn chosen, such as the one a menu is open on.
     pub selected: Option<usize>,
-    /// The picker is armed: the Pick button is drawn selected.
+    /// The picker is armed: the Pick button is drawn lit.
     pub picking: bool,
-    /// The Pick button's label and its trailing count (`3 of 5`).
+    /// The Pick button's label.
     pub pick_label: String,
-    pub count: String,
-    /// Pick is refused, such as at the limit; the button is disabled.
+    /// Pick is refused, such as on a historical preview; the button is disabled.
     pub pick_enabled: bool,
     pub enabled: bool,
 }
@@ -182,49 +179,20 @@ pub fn swatch_slots<'a, M: Clone + 'a>(
     for _ in 0..empty_slots(model.swatches.len(), model.limit) {
         slots = slots.push(chip(None, false).element());
     }
-    let pick = pick_button(model, on_pick);
+    let pick = pick_button(
+        &PickButtonModel {
+            label: model.pick_label.clone(),
+            armed: model.picking,
+            enabled: model.enabled && model.pick_enabled,
+        },
+        on_pick,
+    );
     let content = row![slots, Space::new().width(Length::Fill), pick]
         .align_y(Alignment::Center)
         .width(Length::Fill);
     iced::widget::container(content)
         .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
         .width(Length::Fill)
-        .into()
-}
-
-/// The Pick button: the picker icon, the label and the count, compact, on the Control surface or
-/// the accent tint while picking.
-fn pick_button<'a, M: Clone + 'a>(model: &SwatchSlotsModel, on_pick: M) -> Element<'a, M> {
-    let enabled = model.enabled && model.pick_enabled;
-    let ink = match (enabled, model.picking) {
-        (false, _) => Token::TextTertiary,
-        (true, true) => Token::Accent,
-        (true, false) => Token::Text,
-    };
-    let content = row![
-        icon(Icon::Picker, theme::DROPDOWN_ICON_SIZE, ink),
-        text(model.pick_label.clone())
-            .size(theme::SIZE_CONTROL)
-            .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
-            .wrapping(Wrapping::None)
-            .style(theme::ink(ink)),
-        text(model.count.clone())
-            .size(theme::SIZE_SMALL_CAPTION)
-            .wrapping(Wrapping::None)
-            .style(theme::ink(Token::TextTertiary)),
-    ]
-    .spacing(theme::BUTTON_ICON_SPACING)
-    .align_y(Alignment::Center)
-    .height(Length::Fill);
-    button(content)
-        .padding([0.0, theme::COMPACT_DROPDOWN_PADDING])
-        .height(Length::Fixed(ButtonSize::Compact.height()))
-        .style(if model.picking {
-            theme::button_selected
-        } else {
-            theme::button_control
-        })
-        .on_press_maybe(enabled.then_some(on_pick))
         .into()
 }
 
@@ -263,7 +231,6 @@ mod tests {
                     selected: Some(1),
                     picking,
                     pick_label: "Pick".into(),
-                    count: "3 of 5".into(),
                     pick_enabled,
                     enabled,
                 },

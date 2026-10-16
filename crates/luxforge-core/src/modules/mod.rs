@@ -26,6 +26,7 @@ mod processing;
 mod raw;
 mod registry;
 mod repair;
+pub(crate) mod response;
 mod selection_proof;
 mod spatial;
 mod vignette;
@@ -55,6 +56,8 @@ const BUILTIN_FORMATS: &[(&str, u32)] = &[
     raw::RAW_BUILTIN_FORMAT,
     (BASIC_EFFECT, basic::BASIC_EFFECT_FORMAT),
     (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
+    (PRESENCE_EFFECT, presence::PRESENCE_EFFECT_FORMAT),
+    (VIGNETTE_EFFECT, vignette::VIGNETTE_EFFECT_FORMAT),
 ];
 
 /// The current payload format marker of a built-in effect ([`BUILTIN_FORMATS`]). What
@@ -74,6 +77,18 @@ pub(crate) use basic::BasicModule;
 pub use basic::auto as auto_tone;
 /// Basic's slider responses, public for the Lightroom alignment's fold.
 pub use basic::response::{Response as BasicResponse, response as basic_response};
+
+/// The frozen response of the slider `field` that `action` patches, if it is realigned
+/// ([`response`]): Basic's, Presence's, the colour mixer's or the vignette's.
+pub fn slider_response(action: &str, field: &str) -> Option<&'static BasicResponse> {
+    match action {
+        "set-basic" => basic::response::response(field),
+        "set-presence" => presence::response(field),
+        "set-mixer" => mixer::response(field),
+        "set-vignette" => vignette::response(field),
+        _ => None,
+    }
+}
 pub(crate) use candidate_proof::CandidateProofModule;
 #[cfg(test)]
 pub(crate) use candidate_proof::{
@@ -94,6 +109,8 @@ pub use controls::{CONTROLS_EFFECT, controls_module};
 pub(crate) use corrections::patch_testing as corrections_patch_testing;
 #[cfg(feature = "qualification")]
 pub use corrections::qualification as corrections_qualification;
+#[cfg(all(test, not(feature = "qualification")))]
+pub(crate) use corrections::qualification as corrections_qualification;
 pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
@@ -394,6 +411,18 @@ pub trait StageQuestions {
         Ok(self.sample_before(index, x, y)?.map(|rgba| {
             crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]).map(f64::from)
         }))
+    }
+    /// The input of `site` in linear light, read as `site.mode` says rather than as whichever
+    /// layer holds `site.index` now: how a mask no layer is bound to reads where a first
+    /// adjustment through it would go ([`crate::mask::commands::input_site`]). Questions that
+    /// read no mask answer it as [`Self::input_before`]; the host's own read in the site's mode.
+    fn input_at(
+        &self,
+        site: crate::tiles::InputSite,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[f64; 3]>, Error> {
+        self.input_before(site.index, x, y)
     }
     /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
     /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a

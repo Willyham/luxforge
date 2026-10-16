@@ -764,6 +764,41 @@ pub(super) fn rasterize(
     })
 }
 
+/// The whole frame of a frames-mode evaluation, its terminal encoded once at 16 bits instead of 8:
+/// [`rasterize`]'s pass with [`LinearOutput::Wide`], so every value is the one the 8-bit terminal
+/// quantizes, encoded through [`srgb::Quantizer16`]. Answers [`WIDE_TERMINAL_BYTES`] a pixel, row by
+/// row, red, green and blue in native byte order, inside the evaluated-frame limit.
+pub(super) fn rasterize_wide(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    let stage = evaluation.stage();
+    output_len(stage.width, stage.height)?;
+    let mut frame = vec![0u8; super::wide_terminal_len(stage.width, stage.height)?];
+    let index = evaluation.compiled.segments.len() - 1;
+    let segment = &evaluation.compiled.segments[index];
+    segment_pass(
+        &LinearRows {
+            evaluation,
+            index,
+            segment,
+            area: Region::whole(segment.stage()),
+            planes: Linear::entry_planes(evaluation, index),
+            output: LinearOutput::Wide(srgb::quantizer16()),
+            #[cfg(test)]
+            context,
+        },
+        segment,
+        &mut frame,
+        Region::whole(segment.stage()),
+        0..stage.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
+    Ok(frame)
+}
+
 /// The terminal bytes of `area` of the output stage of a windowed evaluation
 /// ([`Evaluation::windowed`]), row by row, RGBA: the reference's banded mode's half of
 /// [`rasterize`], whose pass it is over the area's rows alone, with every pixel the byte
@@ -775,13 +810,49 @@ pub(super) fn rasterize_area(
     cancel: &Cancel,
     context: &RenderContext,
 ) -> Result<Vec<u8>, Error> {
+    rasterize_area_as(
+        evaluation,
+        area,
+        LinearOutput::Terminal(srgb::quantizer()),
+        cancel,
+        context,
+    )
+}
+
+/// [`rasterize_area`] with the terminal encoded once at 16 bits instead of 8, as
+/// [`rasterize_wide`] encodes the whole frame: [`WIDE_TERMINAL_BYTES`] a pixel, every value the one
+/// [`rasterize_wide`] writes there, so a banded 16-bit or resized export reads the whole frame's
+/// wide terminal band by band.
+pub(super) fn rasterize_area_wide(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    area: Region,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    rasterize_area_as(
+        evaluation,
+        area,
+        LinearOutput::Wide(srgb::quantizer16()),
+        cancel,
+        context,
+    )
+}
+
+/// The last segment's pass over `area` of a windowed evaluation, each pixel written as `output`.
+fn rasterize_area_as(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    area: Region,
+    output: LinearOutput,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
     let stage = evaluation.stage();
     if area.is_empty() || area.x1() > stage.width || area.y1() > stage.height {
         return Err(Error::internal(
             "a band's rectangle lies outside its output stage",
         ));
     }
-    let bytes = area.pixels().saturating_mul(4);
+    let bytes = area.pixels().saturating_mul(output.bytes() as u64);
     if bytes > crate::render::limits::MAX_FRAME_BYTES {
         return Err(Error::resource_limit(format!(
             "a band of {}x{} exceeds the {} MiB evaluated-frame limit",
@@ -800,7 +871,7 @@ pub(super) fn rasterize_area(
             segment,
             area,
             planes: Linear::entry_planes(evaluation, index),
-            output: LinearOutput::Terminal(srgb::quantizer()),
+            output,
             #[cfg(test)]
             context,
         },
@@ -844,13 +915,31 @@ pub(super) struct LinearRows<'e, 'x, 's> {
 }
 
 /// What a pass of [`LinearRows`] writes: terminal bytes through the output quantizer, taken once
-/// for the pass rather than once per channel, or the `f32` texels a GPU preview's boundary holds
-/// ([`super::boundary`]), unquantized.
+/// for the pass rather than once per channel; the wide terminal, the same values encoded once at
+/// 16 bits ([`WIDE_TERMINAL_BYTES`], [`wide_f32`]); or the `f32` texels a GPU preview's boundary
+/// holds ([`super::boundary`]), unquantized.
 #[derive(Clone, Copy)]
 pub(super) enum LinearOutput {
     Terminal(&'static srgb::Quantizer),
+    Wide(&'static srgb::Quantizer16),
     #[cfg(any(test, feature = "qualification"))]
     Boundary,
+}
+
+/// Bytes a pixel of the wide terminal takes: red, green and blue 16-bit codes, native byte order.
+pub(super) const WIDE_TERMINAL_BYTES: usize = 6;
+
+/// The wide terminal of one pixel whose values are `f32`: the same refusal of a non-finite value
+/// as [`terminal_f32`], then [`srgb::Quantizer16::pixel`], written over `bytes` in native order.
+#[inline]
+fn wide_f32(quantizer: &srgb::Quantizer16, bytes: &mut [u8], pixel: [f32; 3]) -> Result<(), Error> {
+    if !pixel.iter().all(|value| value.is_finite()) {
+        return Err(Error::render(NON_FINITE_TERMINAL));
+    }
+    for (channel, code) in quantizer.pixel(pixel).into_iter().enumerate() {
+        bytes[channel * 2..channel * 2 + 2].copy_from_slice(&code.to_ne_bytes());
+    }
+    Ok(())
 }
 
 impl LinearOutput {
@@ -858,6 +947,7 @@ impl LinearOutput {
     fn bytes(self) -> usize {
         match self {
             Self::Terminal(_) => 4,
+            Self::Wide(_) => WIDE_TERMINAL_BYTES,
             #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => super::boundary::BoundaryFormat::Float.texel_bytes(),
         }
@@ -869,6 +959,13 @@ impl LinearOutput {
         match self {
             Self::Terminal(quantizer) => {
                 bytes[..4].copy_from_slice(&terminal_pixel_in(quantizer, pixel)?);
+            }
+            Self::Wide(quantizer) => {
+                // Refused before it is narrowed, as the 8-bit terminal refuses it.
+                if !pixel.iter().all(|value| value.is_finite()) {
+                    return Err(Error::render(NON_FINITE_TERMINAL));
+                }
+                wide_f32(quantizer, bytes, pixel.map(|value| value as f32))?;
             }
             #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => {
@@ -999,6 +1096,13 @@ impl LinearRows<'_, '_, '_> {
                     Ok(())
                 })
             }
+            (false, None, LinearOutput::Wide(quantizer)) => reader.visit(walk, |offset, rgb| {
+                wide_f32(
+                    quantizer,
+                    &mut chunk[offset * bytes..(offset + 1) * bytes],
+                    rgb,
+                )
+            }),
             #[cfg(any(test, feature = "qualification"))]
             (false, None, LinearOutput::Boundary) => reader.visit(walk, |offset, rgb| {
                 super::boundary::write_texel(
@@ -1161,6 +1265,14 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                 LinearOutput::Terminal(quantizer) => {
                     for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.rows.iter()) {
                         rgba.copy_from_slice(&terminal_f32(quantizer, *pixel)?);
+                    }
+                }
+                LinearOutput::Wide(quantizer) => {
+                    for (rgb, pixel) in chunk
+                        .chunks_exact_mut(WIDE_TERMINAL_BYTES)
+                        .zip(scratch.rows.iter())
+                    {
+                        wide_f32(quantizer, rgb, *pixel)?;
                     }
                 }
                 #[cfg(any(test, feature = "qualification"))]
@@ -2463,7 +2575,7 @@ mod tests {
             layers: vec![Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: crate::EFFECT_FORMAT,
+                effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
                 payload,
                 artifacts: Vec::new(),
                 mask: None,

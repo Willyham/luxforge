@@ -157,6 +157,11 @@ enum OwnerMessage {
     AnalysisReady,
     JobChanges,
     JobMonitorStats(SyncSender<JobMonitorStats>),
+    /// The host lets one photograph's prepared pixels go ([`OwnerHandle::release_source`]).
+    ReleaseSource {
+        asset_id: AssetId,
+        reply: SyncSender<SourceRelease>,
+    },
     /// A report the desktop's preview worker already produced for this identity, so an API request
     /// for the same identity is a cache hit and no second render happens.
     AnalysisSubmitted {
@@ -251,6 +256,25 @@ pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 /// result is committed. A test that panics in it proves the owner contains the panic.
 #[cfg(test)]
 type Fault = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What [`OwnerHandle::release_source`] let go of one photograph's pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SourceRelease {
+    /// Whether the source cache held the photograph's prepared source and let it go.
+    pub released: bool,
+    /// The bytes it held: a decoded frame, or a RAW's mosaic with its developments.
+    pub source_bytes: u64,
+    /// Whether what a Develop kept of the photograph's file was let go too.
+    pub read: bool,
+    /// The bytes of the verified artifacts the owner kept ready, let go with it: a model mask's
+    /// raster, a repair patch. Read again by the next evaluation that references them.
+    pub artifact_bytes: u64,
+    /// The bytes the drawn-patch cache held, let go with it.
+    pub drawn_bytes: u64,
+    /// Nothing was let go: a preparation or development in flight would adopt a source into the
+    /// cache, so the release waits for a later moment instead.
+    pub busy: bool,
+}
 
 /// Job monitoring counters for correlated native evidence; no job results are retained here.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -716,7 +740,7 @@ impl SourceQueue {
             ),
         };
         let kind = SourceTaskKind::Prepare(work);
-        self.submit(jobs, client, key, kind, artifacts, sensor, true)
+        self.submit(jobs, client, key, kind, artifacts, sensor, true, None)
     }
 
     /// Refuse a development of a mosaic no queued development pins yet once they pin
@@ -751,6 +775,17 @@ impl SourceQueue {
         path: PathBuf,
         kind: SourceTaskKind,
     ) -> Result<JobId, Error> {
+        self.enqueue_maintenance_with_id(jobs, client, path, kind, None)
+    }
+
+    fn enqueue_maintenance_with_id(
+        &mut self,
+        jobs: &mut Jobs,
+        client: ClientId,
+        path: PathBuf,
+        kind: SourceTaskKind,
+        id: Option<JobId>,
+    ) -> Result<JobId, Error> {
         let key = SourceFlightKey {
             path,
             signature: None,
@@ -758,7 +793,7 @@ impl SourceQueue {
             gains_bits: None,
             artifacts: Vec::new(),
         };
-        self.submit(jobs, client, key, kind, Vec::new(), None, false)
+        self.submit(jobs, client, key, kind, Vec::new(), None, false, id)
     }
 
     /// Queue one task on the source worker and record its job, or join the queued or running job
@@ -773,12 +808,13 @@ impl SourceQueue {
         artifacts: Vec<ArtifactRead>,
         sensor: Option<Weak<luxforge_raw::RawSource>>,
         shared: bool,
+        id: Option<JobId>,
     ) -> Result<JobId, Error> {
         let joined = JoinKey::Source(key.clone());
         if shared && let Some(id) = jobs.join(&joined, client) {
             return Ok(id);
         }
-        let id = JobId::new();
+        let id = id.unwrap_or_default();
         let control = JobControl::new();
         let (job_kind, asset_id) = kind.job();
         let task = SourceTask {
@@ -1133,6 +1169,30 @@ impl OwnerHandle {
         self.runtime.release_all()
     }
 
+    /// The host's release of one photograph's prepared pixels while nobody is looking at them, or
+    /// under memory pressure: the source cache's decoded frame or RAW mosaic and developments, what
+    /// a Develop kept of its file, its sample grids, the verified artifacts kept ready and the
+    /// drawn-patch cache. The next evaluation
+    /// that needs them prepares the original again, as an open does; the recipe, history and
+    /// drafts are untouched. While any preparation or development is in flight nothing is let go
+    /// (`busy`), since its adoption would put a source back; messages reach the owner in order, so
+    /// an open asked for after this call prepares afresh. A desktop-internal path, not a JSON
+    /// method; it emits no event. Blocks until the owner answers: call it off the interface thread.
+    pub fn release_source(&self, asset_id: &AssetId) -> SourceRelease {
+        let (reply, answer) = sync_channel(1);
+        if self
+            .sender
+            .send(OwnerMessage::ReleaseSource {
+                asset_id: asset_id.clone(),
+                reply,
+            })
+            .is_err()
+        {
+            return SourceRelease::default();
+        }
+        answer.recv().unwrap_or_default()
+    }
+
     pub fn start(catalog: &Path) -> Result<(Self, JoinHandle<()>), Error> {
         Self::start_with(catalog, Arc::new(ModuleRegistry::builtin()))
     }
@@ -1254,6 +1314,11 @@ impl OwnerHandle {
         let completions = sender.clone();
         let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
+        let permission_wake = sender.clone();
+        host.set_permission_wake(Arc::new(move || {
+            // Invalidation is retained by the observer and drained after every message.
+            let _ = permission_wake.try_send(OwnerMessage::Update);
+        }));
         let runtime = host.runtime().clone();
         // Every usage producer records into the host's one collector.
         service.usage = crate::usage::produce::Producer::new(host.usage().clone());
@@ -1714,6 +1779,10 @@ fn owner_loop(
         // transaction and the entry cache moves only after a commit, so nothing is left half done.
         let owed = Owed::of(&message);
         let served = catch_unwind(AssertUnwindSafe(|| {
+            owner
+                .host
+                .reconcile_permissions(&mut owner.jobs, &mut owner.announced);
+            owner.record_announced();
             match message {
                 OwnerMessage::Stop => return ControlFlow::Break(()),
                 OwnerMessage::Call(call) => owner.call(call),
@@ -1799,6 +1868,17 @@ fn owner_loop(
                 OwnerMessage::SourceStarted(id) => owner.jobs.start(&id),
                 OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
                 OwnerMessage::JobChanges => {}
+                OwnerMessage::ReleaseSource { asset_id, reply } => {
+                    let release = if owner.source_release_waits(&asset_id) {
+                        SourceRelease {
+                            busy: true,
+                            ..SourceRelease::default()
+                        }
+                    } else {
+                        owner.service.release_source(&asset_id)
+                    };
+                    let _ = reply.send(release);
+                }
                 OwnerMessage::JobMonitorStats(reply) => {
                     let _ = reply.send(JobMonitorStats {
                         held: owner.job_waits.len(),
@@ -2242,10 +2322,32 @@ impl Owner {
         // A retried mutation whose method declares the owner answers it is answered from the
         // request table, and its handler does not run again; the catalog answers the others.
         let key = match method.retries() {
-            Retries::Owner => RequestKey::of(&request.method, &request.params),
+            Retries::Owner | Retries::Durable => RequestKey::of(&request.method, &request.params)
+                .map(|mut key| {
+                    key.cache = method.retries() == Retries::Owner;
+                    key
+                }),
             Retries::Catalog | Retries::None => None,
         };
-        if let Some(key) = &key
+        if method.retries() == Retries::Durable {
+            // Authority is current even when the requested work was completed by an older owner.
+            if request.method == "catalog.empty-removed"
+                && self.authority(client) != ClientAuthority::Permissions
+            {
+                return Err(Error::forbidden(
+                    "emptying Removed needs permission authority",
+                ));
+            }
+            if let Some(key) = &key
+                && let Some(mut first) =
+                    library::durable_retry(self, &key.durable(), request, client)?
+            {
+                usage::deduplicated(self, &request.method, &mut first);
+                return Ok(Planned::Value(first));
+            }
+        }
+        if method.retries() != Retries::Durable
+            && let Some(key) = &key
             && let Some(mut first) = self.requests.answered(key)?
         {
             usage::deduplicated(self, &request.method, &mut first);
@@ -2304,52 +2406,58 @@ impl Owner {
             let parks = self.call_parks;
             return accept::begin(self, &call, action_id, parks).map(Planned::Value);
         }
-        let result = match method.route() {
-            Route::Owner(handler) => {
-                let call = Call {
-                    client,
-                    request,
-                    origin,
-                };
-                handler(self, &call).map(Planned::Value)
-            }
-            // A task queues a capability job and announces nothing: the task is announced when it
-            // succeeds. It samples its asset's current entry before it is queued, so an
-            // unprepared source or artifact is refused naming what it needs, as below.
-            Route::Task(task_id) => self
-                .host
-                .task(
-                    &mut self.jobs,
-                    &self.service,
-                    task_id,
-                    &request.params,
-                    &origin,
-                )
-                .map(Planned::Value),
-            Route::Service => {
-                let session = self.sessions.entry(client).or_default();
-                // Read only for a method that can change something, so a read or a draft's
-                // `draft.set` pays nothing for it.
-                let subject = method
-                    .mutates()
-                    .then(|| subject(session, &request.params))
-                    .flatten();
-                // The handler reports what it changed: a no-op and a retry answered from a
-                // store's request log changed nothing, and an asset's change names its revision.
-                method
-                    .plan_taking(&mut self.service, session, &mut request.params)
-                    .map(|(planned, changed)| {
-                        if let Changed::Something { revision } = changed {
-                            let origin = match subject {
-                                Some(asset_id) => origin.changed(asset_id, revision),
-                                None => origin,
-                            };
-                            announce_once(&mut self.announced, &origin);
-                        }
-                        planned
-                    })
-            }
-        };
+        self.service.catalog_request = (method.retries() == Retries::Durable)
+            .then(|| key.as_ref().map(RequestKey::durable))
+            .flatten();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match method.route() {
+                Route::Owner(handler) => {
+                    let call = Call {
+                        client,
+                        request,
+                        origin,
+                    };
+                    handler(self, &call).map(Planned::Value)
+                }
+                // A task queues a capability job and announces nothing: the task is announced when it
+                // succeeds. It samples its asset's current entry before it is queued, so an
+                // unprepared source or artifact is refused naming what it needs, as below.
+                Route::Task(task_id) => self
+                    .host
+                    .task(
+                        &mut self.jobs,
+                        &self.service,
+                        task_id,
+                        &request.params,
+                        &origin,
+                    )
+                    .map(Planned::Value),
+                Route::Service => {
+                    let session = self.sessions.entry(client).or_default();
+                    // Read only for a method that can change something, so a read or a draft's
+                    // `draft.set` pays nothing for it.
+                    let subject = method
+                        .mutates()
+                        .then(|| subject(session, &request.params))
+                        .flatten();
+                    // The handler reports what it changed: a no-op and a retry answered from a
+                    // store's request log changed nothing, and an asset's change names its revision.
+                    method
+                        .plan_taking(&mut self.service, session, &mut request.params)
+                        .map(|(planned, changed)| {
+                            if let Changed::Something { revision } = changed {
+                                let origin = match subject {
+                                    Some(asset_id) => origin.changed(asset_id, revision),
+                                    None => origin,
+                                };
+                                announce_once(&mut self.announced, &origin);
+                            }
+                            planned
+                        })
+                }
+            }))
+            .unwrap_or_else(|_| Err(Error::internal("the call could not be answered")));
+        self.service.catalog_request = None;
         // A stack whose source or artifacts are not prepared queues exactly what the refusal
         // names and answers with the job to wait for, whichever handler evaluated it.
         // A deferred pixel read takes precedence, even when a handler swallowed its internal error.
@@ -2375,7 +2483,11 @@ impl Owner {
                 Ok(Planned::Value(value))
             }
             (Ok(Planned::Value(mut value)), Some(key)) => {
-                self.requests.record(key, &mut value);
+                if key.cache {
+                    self.requests.record(key, &mut value);
+                } else {
+                    requests::mark_first(&mut value);
+                }
                 Ok(Planned::Value(value))
             }
             (result, _) => result,
@@ -2757,6 +2869,22 @@ impl Owner {
     /// Forget a client's session. A gone client leaves every source, analysis and shared catalog
     /// job it wanted exactly as a cancel does, and the work nobody else wants is stopped; its
     /// capability and export jobs run on, since they belong to no client.
+    /// Whether letting `asset_id`'s prepared source go now would be undone or would undo an open:
+    /// a preparation or development is in flight, whose adoption puts a source in the cache, or a
+    /// client's preparation of it is finished and not yet adopted, whose `job.adopt` reads it.
+    fn source_release_waits(&self, asset_id: &AssetId) -> bool {
+        self.jobs.development_in_flight().is_some()
+            || self.latest_preparation.iter().any(|(client, job_id)| {
+                match self.jobs.outcome_for(job_id, *client) {
+                    Ok((JobStatus::Ready, Some(Output::Asset(state, _)), _)) => {
+                        state.asset.id == *asset_id
+                    }
+                    Ok((JobStatus::Queued | JobStatus::Running, ..)) => true,
+                    _ => false,
+                }
+            })
+    }
+
     fn disconnect(&mut self, client: ClientId) {
         self.sessions.remove(&client);
         for (job_id, kind) in self.jobs.disconnect(client) {
@@ -2827,6 +2955,21 @@ impl Owner {
                 .job(id.clone())
                 .changed(state.asset.id.clone(), Some(state.revision));
             self.log.record(&origin);
+        }
+        if self.jobs.kind(id) == Some(JobKind::Collect) {
+            let recorded = match &outcome {
+                Ok(Completed::Value(value)) => Ok(value.clone()),
+                Ok(_) => Err(Error::internal("collection returned an unexpected result")),
+                Err(error) => Err(error.clone()),
+            };
+            if let Err(error) =
+                crate::editor::catalog_requests::finish(&self.service.connection, id, &recorded)
+            {
+                self.jobs.finish(id, Err(error));
+                self.sources.complete(id);
+                self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+                return;
+            }
         }
         self.jobs.finish(
             id,
@@ -3113,16 +3256,29 @@ pub(super) fn artifact_collect(
     call: &Call<'_>,
     _: Collect,
 ) -> Result<Value, Error> {
-    let collection = owner.service.plan_collection()?;
+    let job = JobId::new();
+    let collection = owner.service.plan_collection_for(Some(&job))?;
     let root = collection.root.clone();
-    let id = owner.sources.enqueue_maintenance(
+    announce_once(&mut owner.announced, &call.origin);
+    let result = owner.sources.enqueue_maintenance_with_id(
         &mut owner.jobs,
         call.client,
         root,
         SourceTaskKind::Collect(collection),
-    )?;
-    announce_once(&mut owner.announced, &call.origin);
-    Ok(json!({"job_id": id, "status": JobStatus::Queued}))
+        Some(job.clone()),
+    );
+    match result {
+        Ok(id) => Ok(json!({"job_id":id,"status":JobStatus::Queued})),
+        Err(error) => {
+            let error = error.with_data(json!({"rows_committed":true}));
+            crate::editor::catalog_requests::finish(
+                &owner.service.connection,
+                &job,
+                &Err(error.clone()),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 /// `flags.list`: the flags this host lists, read from the preferences file now.
@@ -3151,18 +3307,20 @@ pub(super) fn flags_set(
     params: FlagsSet,
 ) -> Result<Value, Error> {
     let developer = owner.service.registry().serves_test_modules();
-    if crate::flags::set(
+    let published = crate::flags::set_published(
         &owner.host.preferences,
         &params.flag,
         params.value,
         developer,
-    )? {
+    )?;
+    if published.value {
         announce_once(&mut owner.announced, &call.origin);
         // The pre-release channel reaches the update port at once.
         if params.flag == crate::flags::PRERELEASE_CHANNEL {
             update::applied(owner);
         }
     }
+    published.finish()?;
     flags_list(owner, call, NoParams {})
 }
 
@@ -3179,10 +3337,11 @@ host_params! {
         workspace: Option<Option<Value>> = json("{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, all booleans; null resets it to the workspace's defaults"),
         brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
-        export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
+        export_last: Option<Option<Value>> = json("{settings, preset_id}: the last export the person started that succeeded, ExportSettings as schema.list's export_settings describes and the preset it came from or null; stored by the desktop after such an export, never by the export itself; null forgets it"),
         hdr_merge: Option<Option<Value>> = json("{alignment, deghost}, each auto or off: the remembered settings of the last HDR merge, which the desktop's option-click merges with; null resets it to the defaults"),
         panorama_merge: Option<Option<Value>> = json("{projection, boundary_warp}: projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100, the remembered settings of the last panorama merge, which the desktop's option-click merges with; null resets it to the defaults"),
         theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
+        theme_follows_omarchy: Option<Option<bool>> = boolean().notes("where Omarchy runs, the desktop makes Omarchy's current theme the active one at launch, when its window gains focus and when this turns on, if the library holds a theme from that Omarchy folder; the desktop turns it off when the person chooses a theme there, and a client choosing a theme should too; null resets it to on"),
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
         update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
         update_ask_to_move: Option<Option<bool>> = boolean().notes("on macOS, a release build launched outside Applications asks to move itself there (update.move-to-applications); false is the question's Don't ask again; null resets it to on"),
@@ -3192,7 +3351,7 @@ host_params! {
 /// `preferences.set`: one checked write of the preferences named, where `null` removes a stored
 /// value. The lens and auto-collapse switches and the RAW look reach the catalog writer at once,
 /// for the next import and edit. A theme must be one the library holds, read before the write. A change to
-/// anything the Settings sheet's General rows show, or to the theme, is announced, so a client
+/// anything the Settings sheet's General rows show, to the theme or to following Omarchy's, is announced, so a client
 /// showing them reads them again; the desktop's remembered state announces nothing.
 pub(super) fn preferences_set(
     owner: &mut Owner,
@@ -3223,7 +3382,7 @@ pub(super) fn preferences_set(
         workspace: decoded("workspace", params.workspace)?,
         brush: decoded("brush", params.brush)?,
         window: decoded("window", params.window)?,
-        export_folder: params.export_folder,
+        export_last: decoded("export_last", params.export_last)?,
         hdr_merge: decoded("hdr_merge", params.hdr_merge)?,
         panorama_merge: decoded("panorama_merge", params.panorama_merge)?,
         theme: match params.theme {
@@ -3235,11 +3394,13 @@ pub(super) fn preferences_set(
             }
             theme => theme,
         },
+        theme_follows_omarchy: params.theme_follows_omarchy,
         update_checks: params.update_checks,
         update_install_automatically: params.update_install_automatically,
         update_ask_to_move: params.update_ask_to_move,
     };
-    let (before, stored) = owner.host.preferences.set(change)?;
+    let published = owner.host.preferences.set_published(change)?;
+    let (before, stored) = published.value;
     // The update preferences reach the update port at once.
     if (
         before.update_checks(),
@@ -3257,8 +3418,14 @@ pub(super) fn preferences_set(
         .service
         .set_auto_lens_profile(stored.auto_lens_profile());
     owner.service.set_raw_look(stored.raw_look());
-    if before.general() != stored.general() || before.theme() != stored.theme() {
+    if before.general() != stored.general()
+        || before.theme() != stored.theme()
+        || before.theme_follows_omarchy() != stored.theme_follows_omarchy()
+    {
         announce_once(&mut owner.announced, &call.origin);
+    }
+    if let Some(error) = published.durability_error {
+        return Err(error);
     }
     Ok(methods::preference_values(&stored))
 }
@@ -4514,6 +4681,97 @@ mod tests {
             .recv_timeout(luxforge_testbase::HANG)
             .expect("the worker finishing the job makes room")
             .unwrap();
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    /// The host's release lets a photograph's prepared source go, and its pixels are prepared
+    /// again by the next evaluation that needs them; while a preparation is in flight, whose
+    /// adoption would put a source back, nothing is let go.
+    #[test]
+    fn a_released_source_is_prepared_again_and_none_is_released_during_a_preparation() {
+        let catalog = temp("release-source.sqlite");
+        let photo = temp("release-source.jpg");
+        let _ = std::fs::remove_file(&catalog);
+        std::fs::copy(fixture(), &photo).unwrap();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        let hold = gate.clone();
+        let (owner, join) = OwnerHandle::start_observed(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            ActivityBoard::new(),
+            Some(Arc::new(move || hold.pass())),
+        )
+        .unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &photo);
+        let asset = AssetId::parse(state["asset"]["id"].as_str().unwrap()).unwrap();
+        let readiness = || {
+            ok(
+                &owner,
+                client,
+                "inspect",
+                "source.inspect",
+                json!({"asset_id": asset}),
+            )["readiness"]
+                .clone()
+        };
+        assert_eq!(readiness(), "ready");
+        let (width, height) = (
+            state["asset"]["width"].as_u64().unwrap(),
+            state["asset"]["height"].as_u64().unwrap(),
+        );
+        let released = owner.release_source(&asset);
+        assert!(released.released && !released.busy, "{released:?}");
+        assert_eq!(
+            released.source_bytes,
+            width * height * 4,
+            "the decoded frame"
+        );
+        assert_eq!(readiness(), "preparation-required");
+        assert_eq!(
+            owner.release_source(&asset),
+            SourceRelease::default(),
+            "nothing more is held"
+        );
+
+        gate.shut();
+        let queued = ok(
+            &owner,
+            client,
+            "prepare",
+            "source.prepare",
+            json!({"asset_id": asset}),
+        );
+        let busy = owner.release_source(&asset);
+        assert!(busy.busy && !busy.released, "{busy:?}");
+        gate.open();
+        let record = luxforge_testbase::wait_for("the preparation to end", || {
+            let read = ok(
+                &owner,
+                client,
+                "read",
+                "job.read",
+                json!({"job_id": queued["job_id"]}),
+            );
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(record["status"], "ready", "{record}");
+        assert!(
+            owner.release_source(&asset).busy,
+            "prepared and not yet adopted: the open reads it"
+        );
+        ok(
+            &owner,
+            client,
+            "adopt",
+            "job.adopt",
+            json!({"job_id": queued["job_id"]}),
+        );
+        assert_eq!(readiness(), "ready", "prepared again");
+        assert!(owner.release_source(&asset).released, "adopted, it can go");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -6140,8 +6398,8 @@ mod tests {
             &owner,
             client,
             "export",
-            "export.jpeg",
-            json!({
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(),
                 "asset_id": asset,
                 "destination": exports.join("agree.jpg"),
                 "mutation": envelope(),
@@ -6739,7 +6997,25 @@ mod tests {
             assert_eq!(retried["deduplicated"], json!(true), "{method}");
             let mut original = retried.clone();
             original["deduplicated"] = json!(false);
-            assert_eq!(original, first, "{method}: the retry is the first answer");
+            if first["job_id"].is_string() && first.get("status").is_some() {
+                assert_eq!(
+                    retried["job_id"], first["job_id"],
+                    "{method}: a live retry reuses its job"
+                );
+                let initial: JobStatus = serde_json::from_value(first["status"].clone()).unwrap();
+                let current: JobStatus = serde_json::from_value(retried["status"].clone()).unwrap();
+                if initial.is_finished() {
+                    assert_eq!(current, initial);
+                }
+                if initial == JobStatus::Running {
+                    assert_ne!(current, JobStatus::Queued);
+                }
+                original["status"] = first["status"].clone();
+            }
+            assert_eq!(
+                original, first,
+                "{method}: synchronous fields retain the first answer"
+            );
             assert_eq!(
                 after_retry, after_first,
                 "{method}: the retry records no event"
@@ -6782,7 +7058,10 @@ mod tests {
         let retried = ok(&owner, client, "develop", "pick.develop", develop);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], json!(job_id));
-        assert_eq!(retried["status"], queued["status"], "the first answer");
+        assert_eq!(
+            retried["status"], ready["status"],
+            "the admitted job's current status"
+        );
         assert_eq!(events_after(&owner, client, 0).1, developed_at);
         conflict(
             "pick.develop",
@@ -6896,9 +7175,8 @@ mod tests {
         // export: the event is recorded when the job has written its file, so the retry is sent
         // after that, and answers with the same job rather than a conflict on the file it wrote.
         let exported = temp("retry-families-export.jpg");
-        let export =
-            json!({"asset_id": asset, "destination": exported, "mutation": request("export-1")});
-        let first = ok(&owner, client, "export", "export.jpeg", export.clone());
+        let export = json!({"asset_id": asset, "settings": crate::export::settings::baseline_json(), "destination": exported, "mutation": request("export-1")});
+        let first = ok(&owner, client, "export", "export.write", export.clone());
         assert_eq!(first["deduplicated"], json!(false));
         luxforge_testbase::wait_until("the export to finish", || {
             ok(
@@ -6913,15 +7191,15 @@ mod tests {
         let (events, exported_at) = events_after(&owner, client, 0);
         assert_eq!(
             events.last(),
-            Some(&("export.jpeg".to_owned(), "export".to_owned()))
+            Some(&("export.write".to_owned(), "export".to_owned()))
         );
-        let retried = ok(&owner, client, "export", "export.jpeg", export);
+        let retried = ok(&owner, client, "export", "export.write", export);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], first["job_id"]);
         assert_eq!(events_after(&owner, client, 0).1, exported_at);
         conflict(
-            "export.jpeg",
-            json!({"asset_id": asset, "destination": temp("retry-families-other.jpg"), "mutation": request("export-1")}),
+            "export.write",
+            json!({"settings": crate::export::settings::baseline_json(), "asset_id": asset, "destination": temp("retry-families-other.jpg"), "mutation": request("export-1")}),
         );
         std::fs::remove_file(exported).unwrap();
 
@@ -7101,7 +7379,8 @@ mod tests {
             },
         )
         .unwrap();
-        let client = owner.register();
+        // Exercise the parsers of permission-only methods too; authorization has separate tests.
+        let client = owner.register_with(ClientAuthority::Permissions);
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
         let listed = schema["methods"].as_object().expect("the methods");
         assert!(listed.keys().any(|name| name.starts_with("task.")));
@@ -7354,7 +7633,7 @@ mod tests {
         for name in [
             "pick.develop",
             "artifact.collect",
-            "export.jpeg",
+            "export.write",
             "draft.commit",
         ] {
             assert!(checked.contains(&name), "{name}");
@@ -8313,7 +8592,8 @@ mod tests {
         let recipe = evaluation.recipe();
         let source = evaluation.source().input();
         let (width, height) = source.dimensions();
-        let layer = crate::mask::commands::input_layer_index(recipe, mask).unwrap();
+        let site = crate::mask::commands::input_site(evaluation.registry(), recipe, mask).unwrap();
+        let layer = site.index;
         let prefix = evaluation
             .registry()
             .compile_layers(
@@ -8337,7 +8617,7 @@ mod tests {
             evaluation.context(),
             &crate::Cancel::never(),
             wide,
-            crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, layer),
+            site.mode.into(),
         )
         .unwrap();
         // A read's linear values are `f32`, the GPU's and the reference's alike.

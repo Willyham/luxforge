@@ -623,7 +623,8 @@ impl Context<'_> {
                 return Ok(None);
             }
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let tiff = crate::tiff::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let tiff =
+                crate::tiff_reader::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             drop(bytes);
             let xmp = tiff.xmp.as_deref().map(parse_xmp).unwrap_or_default();
             let subject = self.subject(&read.subject);
@@ -3670,7 +3671,7 @@ fn measure(
             "kept": ledger.quantization,
         },
         "behaviour_threshold": {"residual_de2000": BEHAVIOUR_RESIDUAL, "share_of_range_from_default": THRESHOLD_SHARE},
-        "basic_responses": super::fold::build_responses(),
+        "slider_responses": super::fold::build_responses(),
         "exports": exports_json,
         "base_rendering": base,
         "families": entries,
@@ -3885,7 +3886,9 @@ mod tests {
     fn a_round_of_its_own_renders_measures_as_the_identity() {
         let directory = tempfile::tempdir().unwrap();
         let round = directory.path().join("round");
-        let keep = ["-50", "+25", "+100"];
+        // Values on the dense grid: between its samples a realigned slider's response bends, so the
+        // blend of the two around a value is not its own render.
+        let keep = ["-50", "+50", "+100"];
         let families: Vec<rounds::Family> = rounds::round_one()
             .into_iter()
             .filter(|f| matches!(f.id.as_str(), "saturation" | "vignette-amount"))
@@ -3936,7 +3939,7 @@ mod tests {
             let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
             fs::write(
                 exports.join(format!("{id}.tif")),
-                crate::tiff::write(study.width, study.height, &study.rgb, Some(xmp)),
+                crate::tiff_reader::write(study.width, study.height, &study.rgb, Some(xmp)),
             )
             .unwrap();
         };
@@ -4113,7 +4116,7 @@ mod tests {
             let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
             fs::write(
                 exports.join(format!("{id}.tif")),
-                crate::tiff::write(study.width, study.height, &study.rgb, Some(xmp)),
+                crate::tiff_reader::write(study.width, study.height, &study.rgb, Some(xmp)),
             )
             .unwrap();
         };
@@ -4262,7 +4265,7 @@ mod tests {
             let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
             fs::write(
                 exports.join(format!("{id}.tif")),
-                crate::tiff::write(study.width, study.height, &study.rgb, Some(xmp)),
+                crate::tiff_reader::write(study.width, study.height, &study.rgb, Some(xmp)),
             )
             .unwrap();
         };

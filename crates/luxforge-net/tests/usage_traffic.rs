@@ -320,9 +320,9 @@ fn usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_or_da
     for pair in captured[..accepted].windows(2) {
         assert_eq!(pair[1].batch_seq, pair[0].batch_seq + 1, "{pair:?}");
     }
-    // Typical editing: a window every ten minutes and a little.
+    // Typical editing: a window every two minutes and a little.
     assert!(
-        (5..=6).contains(&typical.len()),
+        (25..=30).contains(&typical.len()),
         "{} requests in an hour of editing",
         typical.len()
     );

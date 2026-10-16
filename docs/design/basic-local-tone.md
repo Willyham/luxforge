@@ -193,9 +193,11 @@ Measured again on the refitted build through the CPU reference renderer at full 
 
 Round 2's photograph pairs, worst median: Exposure + Highlights 1.45 (4.95 before), Contrast + Blacks 3.75 (12.69), Contrast + Whites 5.87 (12.28), Exposure + Whites 6.13 (5.91), whose worst point is Whites +100 a stop darker, the re-stretch; its other points improved. Dehaze + Contrast on the photographs fell from 9.92 to 7.94. On the charts Contrast + Blacks fell from 4.60 to 3.85 and the other pairs are unchanged within 0.1.
 
+Round 3, the confirming round, was measured on this build after the refit and never fitted. Its photographs hold Contrast for the first time. Worst median at ±35 and beyond, on the build before the split → this build: on the photographs Contrast 7.62 → 2.41, Highlights 2.44 → 1.08, Shadows 3.56 → 1.39, Blacks 4.96 → 2.06, Whites 5.04 → 4.45 (+75, the re-stretch); on the charts Shadows 2.47 → 1.77 and Blacks 3.28 → 2.22, the rest within 0.07. Contrast's best value on the photographs is now about Lightroom's own (−35 at −37.5, +75 at +71.9), where before it was a third.
+
 ## Acceptance
 
-Status against the criteria below, from the refit's measurements: 1 to 4 are met, with Blacks −75 and −100 and Highlights +75 within 0.05 of their floors; in 5, Contrast and Saturation on the charts are within 0.03 of before, inside the fit's 0.1 resolution, and a rendered payload without Blacks is the single curve to `1e-12` (`a_rendered_payload_without_blacks_is_the_single_curve`); 6 is met on the CPU, with the WGSL unqualified; 7 remains.
+Status against the criteria below, from the refit's measurements: 1 to 4 are met, with Blacks −75 and −100 and Highlights +75 within 0.05 of their floors; in 5, Contrast and Saturation on the charts are within 0.03 of before, inside the fit's 0.1 resolution, and a rendered payload without Blacks is the single curve to `1e-12` (`a_rendered_payload_without_blacks_is_the_single_curve`); 6 is met on the CPU, with the WGSL unqualified; of 7, the confirming round is measured (above), and the owner's review, M4 qualification and the performance checklist's development-path cost remain.
 
 Measured through the CPU reference renderer at full size with `lr-align measure` after the fold, on rounds 1, 1b and 2:
 

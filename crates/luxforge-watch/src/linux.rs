@@ -1,6 +1,7 @@
 //! Linux: inotify, one watch per folder (the tree in `inotify.rs`), and `/proc/self/mountinfo`,
 //! which reports a mount or unmount as a priority event, both read by one thread blocking in
-//! `poll` beside an eventfd that stops it. It blocks with no timeout unless an event is owed to a
+//! `poll` beside eventfds for stopping and waking initial delivery. It blocks with no timeout
+//! unless an event is owed to a
 //! full channel, when it wakes after [`RETRY`] to send it. inotify keeps no history, so every root
 //! is listed when it is added ([`RescanReason::NoReplay`]) and a cursor is never given.
 //!
@@ -48,6 +49,8 @@ const _: () = {
 /// What the caller's thread and the watcher's thread share.
 struct Shared {
     inotify: OwnedFd,
+    /// Wakes an idle poll when a caller leaves initial root events owed to a full channel.
+    wake: OwnedFd,
     /// Held while events are mapped and sent, so a root removed sends nothing after.
     tree: Mutex<Tree>,
     delivery: Delivery,
@@ -95,6 +98,7 @@ impl Watcher {
             .unwrap_or_default();
         let shared = Arc::new(Shared {
             inotify,
+            wake: eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?,
             tree: Mutex::default(),
             delivery: Delivery::new(sink, table),
         });
@@ -126,7 +130,13 @@ impl Watcher {
                 cursor: None,
             },
         ];
-        self.shared.delivery.root(root.id, &root.path, first);
+        self.shared
+            .delivery
+            .initial_root(root.id, &root.path, first, || {
+                // A thread already polling without a timeout must recheck the retry state even
+                // when the new root stays quiet. The eventfd coalesces concurrent wakes.
+                let _ = rustix::io::write(&self.shared.wake, &1_u64.to_ne_bytes());
+            });
         Ok(())
     }
 
@@ -166,6 +176,7 @@ fn run(shared: &Shared, stop: &OwnedFd, mut mountinfo: Option<File>) {
         let mut fds = vec![
             PollFd::new(&shared.inotify, PollFlags::IN),
             PollFd::new(stop, PollFlags::IN),
+            PollFd::new(&shared.wake, PollFlags::IN),
         ];
         if let Some(file) = &mountinfo {
             fds.push(PollFd::new(file, PollFlags::PRI));
@@ -177,10 +188,13 @@ fn run(shared: &Shared, stop: &OwnedFd, mut mountinfo: Option<File>) {
             Err(_) => return,
         }
         let ready = |at: usize| fds.get(at).map_or(PollFlags::empty(), PollFd::revents);
-        let (events, stopping, mounts) = (ready(0), ready(1), ready(2));
+        let (events, stopping, waking, mounts) = (ready(0), ready(1), ready(2), ready(3));
         drop(fds);
         if !stopping.is_empty() {
             return;
+        }
+        if waking.contains(PollFlags::IN) {
+            let _ = rustix::io::read(&shared.wake, &mut [0_u8; 8]);
         }
         if events.contains(PollFlags::IN) {
             drain(shared, &mut buffer);
@@ -225,4 +239,50 @@ fn read_table(file: &mut File) -> io::Result<Vec<Mount>> {
     let mut text = String::new();
     file.read_to_string(&mut text)?;
     Ok(parse_mountinfo(&text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_test_macros::slow;
+
+    #[test]
+    #[slow]
+    fn native_watch_initial_overflow_wakes_an_indefinite_poll() {
+        let path = luxforge_testbase::paths::temp_dir("watch-initial-wake")
+            .canonicalize()
+            .unwrap();
+        // Own the backend without its thread so it cannot consume the wake before the test.
+        // The full sink stands for an index lane busy registering its remaining roots.
+        let shared = Arc::new(Shared {
+            inotify: sys::init(sys::CreateFlags::CLOEXEC | sys::CreateFlags::NONBLOCK).unwrap(),
+            wake: eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).unwrap(),
+            tree: Mutex::default(),
+            delivery: Delivery::new(Box::new(|_| crate::delivery::Sent::Full), Vec::new()),
+        });
+        let mut watcher = Watcher {
+            shared: shared.clone(),
+            stop: Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).unwrap()),
+            thread: None,
+        };
+        watcher
+            .add_root(WatchRoot {
+                id: 1,
+                path: path.clone(),
+                resume: None,
+            })
+            .unwrap();
+        assert!(shared.delivery.owed());
+        // This descriptor is also present in an indefinite production poll. Use a bounded
+        // wait here so a missing wake fails instead of hanging the native gate.
+        let mut fds = [PollFd::new(&shared.wake, PollFlags::IN)];
+        let bound = Timespec {
+            tv_sec: 0,
+            tv_nsec: 100_000_000,
+        };
+        assert_eq!(poll(&mut fds, Some(&bound)).unwrap(), 1);
+        assert!(fds[0].revents().contains(PollFlags::IN));
+        watcher.remove_root(1);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

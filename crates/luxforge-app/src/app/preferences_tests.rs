@@ -220,6 +220,61 @@ fn a_refused_preference_write_says_why_and_puts_the_stored_value_back() {
     finish(editor, root);
 }
 
+#[test]
+fn a_failed_mask_colour_save_reconciles_the_session_with_the_preference_read() {
+    for newer_choice in [false, true] {
+        let (mut editor, root) = launch();
+        let _ = editor.update(Message::Settings(SettingsMessage::Open(
+            SettingsTab::General,
+        )));
+        answer_read(&mut editor);
+        let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::White);
+        // The workspace change succeeds at the owner before the independent preference write
+        // fails. Its answer leaves the real session white while storage is still green.
+        let (session, _) = call(
+            &editor.owner,
+            editor.client,
+            "workspace.set",
+            json!({"mask_overlay_colour": "white"}),
+        )
+        .unwrap();
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            serde_json::from_value(session).unwrap(),
+        ))));
+        assert_eq!(
+            editor.session.workspace.mask_overlay_colour,
+            MaskOverlayColour::White
+        );
+        assert_eq!(read(&editor)["mask_overlay_colour"], "green");
+        if newer_choice {
+            let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::Green);
+            let _ = editor.choose_mask_overlay_colour(MaskOverlayColour::White);
+        }
+        let _ = editor.update(Message::Preferences(PreferenceMessage::Saved(Err(
+            "storage unavailable".into(),
+        ))));
+        assert!(editor.preferences.restore_mask_colour);
+        answer_preferences_read(&mut editor);
+        let expected = if newer_choice {
+            MaskOverlayColour::White
+        } else {
+            MaskOverlayColour::Green
+        };
+        assert_eq!(
+            editor.preferences.applied().unwrap().mask_overlay_colour,
+            expected
+        );
+        assert_eq!(editor.session.workspace.mask_overlay_colour, expected);
+        assert_eq!(
+            editor.workspace.settings.general[3].control.value(),
+            json!(expected.as_str())
+        );
+        assert!(!editor.preferences.restore_mask_colour);
+        assert_eq!(editor.preferences.writing().is_some(), newer_choice);
+        finish(editor, root);
+    }
+}
+
 /// Closing the window waits for the write in flight and the one waiting behind it.
 #[test]
 fn closing_the_window_waits_for_the_last_preference_write() {
@@ -574,5 +629,29 @@ fn the_editor_hands_iced_its_own_luxforge_dark_theme() {
     assert_eq!(*theme.palette(), luxforge_ui::Palette::luxforge_dark());
     assert_eq!(theme.mode(), luxforge_ui::Mode::Dark);
     assert_eq!(theme.generation(), editor.theme().generation());
+    finish(editor, root);
+}
+
+#[test]
+fn published_preference_failure_reads_the_visible_value_without_a_saved_message() {
+    let (mut editor, root) = launch();
+    answer_read(&mut editor);
+    general(
+        &mut editor,
+        GeneralPreference::CanvasBackground,
+        GeneralValue::Choice(1),
+    );
+    let params = editor.preferences.writing().unwrap().params();
+    // The host committed these bytes before it reported a durability failure to the writer.
+    call(&editor.owner, editor.client, "preferences.set", params).unwrap();
+    let reason = "read-error: the replacement is visible but durability is unconfirmed".to_owned();
+    let _ = editor.update(Message::Preferences(PreferenceMessage::Saved(Err(
+        reason.clone()
+    ))));
+    assert!(editor.preferences.reading.in_flight());
+    answer_preferences_read(&mut editor);
+    assert_eq!(editor.view_state.canvas_background, CanvasBackground::Black);
+    assert!(editor.status.text.contains(&reason));
+    assert!(!editor.status.text.contains("Saved"));
     finish(editor, root);
 }

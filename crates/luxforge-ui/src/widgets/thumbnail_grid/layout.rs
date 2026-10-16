@@ -37,13 +37,14 @@ pub struct GridHeading {
 pub enum MomentKind {
     Burst,
     Bracket,
+    Panorama,
 }
 
 /// A moment row's header: its kind, its title and detail on the left ("Burst", "6 frames in
-/// 1.4 s"), and on the right how many are picked, the evidence of a bracket as a neutral tag
-/// ("from metadata", "from previews") and small action buttons ("Pick all 3", "Merge HDR"), left
-/// to right. Text that does not fit ends in an ellipsis; when even the
-/// right-hand parts do not fit, the tag goes first, then the pick count, then the ordinary actions
+/// 1.4 s"), and on the right how many are picked, the evidence of a bracket or a panorama as a
+/// neutral tag ("from metadata", "from previews") and small action buttons ("Pick all 3", "Merge
+/// HDR"), left to right. Text that does not fit ends in an ellipsis; when even the right-hand
+/// parts do not fit, the tag goes first, then the pick count, then the ordinary actions
 /// from the left, then the primary one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MomentHeader {

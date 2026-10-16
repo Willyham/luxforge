@@ -1,6 +1,6 @@
 //! A paged derived photograph exported and analysed through the catalog owner on the reference
 //! renderer's banded mode (`docs/design/panorama-merge.md`, "The reference on paged sources"):
-//! `analysis.request` and `export.jpeg` render its output in bands from windows of its level 0,
+//! `analysis.request` and `export.write` render its output in bands from windows of its level 0,
 //! and their answers are the banded reference's of the same pixels generated in memory; and a
 //! source above 128 MP exports a valid JPEG and analyses with no whole frame.
 use super::*;
@@ -8,8 +8,19 @@ use crate::{
     Cancel, RenderContext,
     analysis::reduce_bands,
     artifacts::derived_source::ChunkRect,
+    export::{
+        encode::{JpegOptions, encode_jpeg_rows},
+        presets,
+        settings::{
+            Chroma, ExportFolder, ExportSettings, FormatSettings, MetadataLevel, OutputSize,
+        },
+    },
     modules::Region,
-    render::bands::{BandSource, Banded},
+    render::{
+        bands::{BandSource, Banded},
+        bands_output::output_bands,
+    },
+    tiles::{Pixels, Sharpen, SharpenAmount, SharpenMedium},
 };
 use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
@@ -193,13 +204,19 @@ impl Opened {
         analysed["result"].clone()
     }
 
-    /// The current entry exported to `name` in the catalog's directory: the file and the job's
-    /// result.
+    /// The current entry exported to `name` in the catalog's directory with today's settings (a
+    /// full-size quality-90 JPEG): the file and the job's result.
     fn exported(&self, name: &str) -> (PathBuf, Value) {
+        self.exported_with(name, crate::export::settings::baseline_json_in(&self.dir))
+    }
+
+    /// The current entry exported to `name` in the catalog's directory with `settings`: the file
+    /// and the job's result.
+    fn exported_with(&self, name: &str, settings: Value) -> (PathBuf, Value) {
         let destination = self.dir.join(name);
         let accepted = self.ok(
-            "export.jpeg",
-            json!({"asset_id": self.asset, "destination": destination,
+            "export.write",
+            json!({"asset_id": self.asset, "destination": destination, "settings": settings,
                    "mutation": {"request_id": name, "actor": "test"}}),
         );
         let exported = self.settled(&accepted["job_id"]);
@@ -276,6 +293,7 @@ fn reference_bands_export_and_analyse_a_paged_photograph_through_the_owner() {
         &mut expected,
         (stage.width, stage.height),
         banded.bands(),
+        &crate::export::encode::BASELINE_90,
         None,
         None,
         &mut |_| {},
@@ -348,4 +366,188 @@ fn reference_bands_export_and_analyse_a_paged_source_above_128_megapixels() {
             .sum::<f64>()
     };
     assert!(column_mean(width - 10) > column_mean(10));
+    drop(rgb);
+
+    // The Web preset's JPEG of it: a 2,048-pixel long edge resampled and sharpened band by band,
+    // never through a whole stage, whose wide terminal alone (six bytes a pixel) would pass the
+    // whole-frame reference's 512 MiB evaluated-frame limit.
+    assert!(pixels * 6 > crate::render::limits::MAX_FRAME_BYTES);
+    let web = preset_in(presets::WEB, &opened.dir);
+    let (path, result) = opened.exported_with("large-web.jpg", web.to_json());
+    assert_eq!(result["renderer"]["record"], "reference");
+    let peak = luxforge_process::Sampler::new()
+        .read_opening_nothing()
+        .memory
+        .peak_bytes;
+    eprintln!("reference_bands: peak process footprint after its Web export: {peak:?}");
+    let decoder =
+        image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(fs::read(&path).unwrap()))
+            .unwrap();
+    let output = (
+        2048,
+        (2048.0 * f64::from(height) / f64::from(width)).round() as u32,
+    );
+    assert_eq!(decoder.dimensions(), output);
+    assert_eq!(
+        (result["width"].clone(), result["height"].clone()),
+        (json!(output.0), json!(output.1))
+    );
+}
+
+/// A built-in preset's settings (`luxforge.web` or `luxforge.master`), saving into `folder` with
+/// no metadata, so the file holds only what the pixels decide.
+fn preset_in(preset_id: &str, folder: &std::path::Path) -> ExportSettings {
+    let preset = presets::builtin()
+        .into_iter()
+        .find(|preset| preset.preset_id == preset_id)
+        .expect("a built-in preset");
+    ExportSettings {
+        folder: ExportFolder::Path(folder.to_path_buf()),
+        metadata: MetadataLevel::None,
+        ..preset.settings
+    }
+}
+
+/// The export of a paged photograph with every kind of output — the Web preset (resized to a
+/// 2,048-pixel long edge, sharpened for the screen, optimised at 4:2:0), the Master preset (a
+/// full-size 16-bit TIFF), a resized 16-bit TIFF sharpened for Matte paper at 720 ppi (the widest
+/// kernel) and a resized WebP (a held format) — through the owner, on an owner with no GPU
+/// provider: each names the reference with no reason, and each file is the banded reference's
+/// output of the scene generated in memory, encoded: the JPEG byte for byte, the TIFFs' decoded
+/// codes exactly, the WebP at its size.
+#[test]
+#[slow]
+fn reference_bands_export_a_paged_photograph_with_every_setting_through_the_owner() {
+    let opened = Opened::new("settings", 16_500, 300);
+    opened.edit(
+        "edit.set-basic",
+        json!({"exposure": -0.4, "contrast": 20.0, "shadows": 30.0}),
+    );
+    opened.edit(
+        "edit.set-presence",
+        json!({"clarity": 20.0, "dehaze": 25.0}),
+    );
+    let registry = ModuleRegistry::builtin();
+    let compiled = registry
+        .compile(opened.width, opened.height, &opened.recipe())
+        .unwrap();
+    let context = RenderContext::new();
+    let generated = Generated {
+        width: opened.width,
+        height: opened.height,
+    };
+    let banded = Banded::new(&generated, &compiled, &context, &Cancel::never()).unwrap();
+    let stage = banded.stage();
+    let cancel = Cancel::never();
+    let expected = |settings: &ExportSettings| {
+        let output = settings.output_spec((stage.width, stage.height));
+        (output, output_bands(&banded, output, &cancel).unwrap())
+    };
+
+    // Web: resized, sharpened and optimised, encoded as the bands arrive.
+    let web = preset_in(presets::WEB, &opened.dir);
+    let (path, result) = opened.exported_with("web.jpg", web.to_json());
+    let (output, bands) = expected(&web);
+    assert_eq!(
+        (output.width, output.height),
+        (2048, (2048.0 * 300.0 / 16_500.0_f64).round() as u32)
+    );
+    assert_eq!(
+        (result["width"].clone(), result["height"].clone()),
+        (json!(output.width), json!(output.height))
+    );
+    assert_eq!(
+        result["renderer"],
+        json!({"record": "reference", "reason": null})
+    );
+    let FormatSettings::Jpeg {
+        quality, chroma, ..
+    } = web.format
+    else {
+        panic!("the Web preset is a JPEG");
+    };
+    assert_eq!(chroma, Chroma::Half);
+    let mut encoded = Vec::new();
+    encode_jpeg_rows(
+        &mut encoded,
+        (output.width, output.height),
+        bands.map(|band| {
+            band.map(|(rows, pixels)| match pixels {
+                Pixels::Eight(rgba) => (rows, rgba),
+                Pixels::Sixteen(_) => panic!("an 8-bit output"),
+            })
+        }),
+        &JpegOptions {
+            quality,
+            chroma,
+            optimise: true,
+        },
+        None,
+        None,
+        &mut |_| {},
+        &|| Ok(()),
+    )
+    .unwrap();
+    assert!(
+        fs::read(&path).unwrap() == encoded,
+        "the Web export is the encoding of the banded reference's output"
+    );
+
+    // Master, and a resized TIFF sharpened with the widest kernel: 16-bit codes, decoded exactly.
+    let master = preset_in(presets::MASTER, &opened.dir);
+    let matte = ExportSettings {
+        size: OutputSize::LongEdge { pixels: 6000 },
+        sharpen: Some(Sharpen {
+            medium: SharpenMedium::Matte,
+            amount: SharpenAmount::High,
+        }),
+        pixels_per_inch: Some(720),
+        ..master.clone()
+    };
+    for (name, settings) in [("master.tif", master), ("matte.tif", matte)] {
+        let (path, result) = opened.exported_with(name, settings.to_json());
+        assert_eq!(result["renderer"]["record"], "reference", "{name}");
+        let (output, bands) = expected(&settings);
+        let mut codes = Vec::new();
+        for band in bands {
+            let Pixels::Sixteen(rgba) = band.unwrap().1 else {
+                panic!("{name}: a 16-bit output");
+            };
+            codes.extend(
+                rgba.chunks_exact(4)
+                    .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]),
+            );
+        }
+        let mut decoder =
+            tiff::decoder::Decoder::new(std::io::Cursor::new(fs::read(&path).unwrap())).unwrap();
+        assert_eq!(
+            decoder.dimensions().unwrap(),
+            (output.width, output.height),
+            "{name}"
+        );
+        let tiff::decoder::DecodingResult::U16(decoded) = decoder.read_image().unwrap() else {
+            panic!("{name}: a 16-bit TIFF");
+        };
+        assert!(
+            decoded == codes,
+            "{name}: the banded reference's 16-bit output"
+        );
+    }
+
+    // A held format: a WebP assembled from the banded reference's resized bands.
+    let webp = ExportSettings {
+        format: FormatSettings::Webp {
+            quality: 80,
+            limit_bytes: None,
+        },
+        ..preset_in(presets::WEB, &opened.dir)
+    };
+    let (path, result) = opened.exported_with("web.webp", webp.to_json());
+    let (output, _) = expected(&webp);
+    assert_eq!(result["renderer"]["record"], "reference");
+    let mut decoder =
+        image_webp::WebPDecoder::new(std::io::Cursor::new(fs::read(&path).unwrap())).unwrap();
+    assert_eq!(decoder.dimensions(), (output.width, output.height));
+    let mut rgb = vec![0; decoder.output_buffer_size().unwrap()];
+    decoder.read_image(&mut rgb).unwrap();
 }

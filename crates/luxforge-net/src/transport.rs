@@ -10,6 +10,7 @@
 mod address;
 mod agent;
 mod connect;
+mod resolver;
 #[cfg(test)]
 mod tests;
 mod tls;
@@ -94,6 +95,8 @@ pub struct HttpTransport {
     trust: TlsTrust,
     tls: Mutex<Option<Arc<ClientConfig>>>,
     resolver: Arc<dyn Resolve>,
+    /// Tests can isolate held lookups from the fixed process service. Production uses `None`.
+    resolver_service: Option<Arc<resolver::ResolverService>>,
     connector: Arc<dyn Connect>,
 }
 
@@ -120,6 +123,7 @@ impl HttpTransport {
             trust: config.trust,
             tls: Mutex::new(None),
             resolver: config.resolver,
+            resolver_service: None,
             connector: config.connector,
         }
     }
@@ -217,7 +221,7 @@ impl Transport for HttpTransport {
             let agent = agent::agent(
                 &endpoint,
                 &tls,
-                &self.resolver,
+                (&self.resolver, &self.resolver_service),
                 &self.connector,
                 connect_timeout,
                 &pace,

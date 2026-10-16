@@ -340,6 +340,7 @@ mod tests {
             stale: false,
             hidden: Vec::new(),
             badges: Default::default(),
+            pairs: Default::default(),
         };
         assert_eq!(selected_items(&view), [item(6), item(3)]);
         let gone = carry_over(&old, &selection, &[item(9)]);

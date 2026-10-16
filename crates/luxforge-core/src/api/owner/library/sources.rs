@@ -1,12 +1,12 @@
 //! `source.check` and `source.locate` on the owner: each plans on the owner, runs its disk work on
 //! the lane's worker ([`LibraryLane`](super::LibraryLane)) and commits on the owner when the worker
 //! posts back. The library side is `crate::library::availability` and `crate::library::locate`.
-use super::{Call, Owner, Task, change, retried, selected};
+use super::{Call, Owner, Task, change, selected};
 use crate::{
     Error, JobId,
     api::{Origin, announce_once, methods::value},
     catalog_types::{
-        AvailabilityReport, AvailabilityRow, FileAvailability,
+        AvailabilityReport,
         api::{SourceCheck, SourceLocate},
         jobs::{SOURCE_CHECK, SOURCE_LOCATE},
     },
@@ -93,17 +93,15 @@ fn checked(
         let relinks = availability::relinks(tx, &found)?;
         let relinked: HashSet<_> = relinks.iter().map(|found| &found.asset_id).collect();
         for observation in &observations {
-            let availability = if relinked.contains(&observation.asset_id) {
-                FileAvailability::Available
-            } else {
-                observation.availability
-            };
-            changed |= availability != observation.stored;
-            rows.push(AvailabilityRow {
-                asset_id: observation.asset_id.clone(),
-                availability,
+            if let Some((row, differs)) = availability::checked_row(
+                tx,
+                observation,
                 checked_ms,
-            });
+                relinked.contains(&observation.asset_id),
+            )? {
+                changed |= differs;
+                rows.push(row);
+            }
         }
         availability::record(tx, &rows)?;
         if relinks.is_empty() {
@@ -131,18 +129,8 @@ pub(in crate::api) fn source_locate(
     call: &Call<'_>,
     params: SourceLocate,
 ) -> Result<Value, Error> {
-    let request = Request::new(&call.request.method, &params.mutation);
-    if let Some(answer) = retried(owner, request)? {
-        return value(super::LibraryLane::answered(
-            &mut owner.jobs,
-            &SOURCE_LOCATE,
-            Some(params.asset_id),
-            call.origin.clone(),
-            serde_json::to_value(answer)
-                .map_err(|error| Error::internal(format!("cannot encode an answer: {error}")))?,
-        ));
-    }
     let candidate = locate::plan(&owner.service.connection, &params.asset_id, &params.path)?;
+    let resolved = serde_json::json!({"asset_id":candidate.asset_id,"path":candidate.path,"fingerprint":candidate.fingerprint});
     let origin = call.origin.clone();
     let method = call.request.method.clone();
     let mutation = params.mutation;
@@ -163,7 +151,7 @@ pub(in crate::api) fn source_locate(
             })
         }),
     };
-    value(owner.catalog.library.queue(&mut owner.jobs, task)?)
+    value(super::queue(owner, task, resolved)?)
 }
 
 /// Commit a verified Locate: the file must still be the one verified, and then the relocation is

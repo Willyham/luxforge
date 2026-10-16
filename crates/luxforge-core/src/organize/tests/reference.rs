@@ -77,7 +77,7 @@ impl PlaceNames for GridPlaces {
 #[derive(Default)]
 pub(in crate::organize) struct TableProbe(pub HashMap<ViewItem, (u32, f32)>);
 
-impl BracketProbe for TableProbe {
+impl MomentProbe for TableProbe {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>> {
         let known: Option<Vec<(u32, f32)>> = frames
             .iter()
@@ -673,7 +673,7 @@ fn reference_apart(values: &[f32], apart: f32) -> bool {
 fn reference_moments(
     view: &[&FrameFacts],
     thresholds: &Thresholds,
-    probe: &dyn BracketProbe,
+    probe: &dyn MomentProbe,
 ) -> Vec<Moment> {
     let mut moments = Vec::new();
     let joined = |a: &FrameFacts, b: &FrameFacts| {
@@ -729,7 +729,7 @@ fn reference_moments(
                 if fits && reference_apart(&steps, metadata_apart) {
                     moments.push(make(
                         MomentKind::Bracket,
-                        Some(BracketEvidence::Metadata),
+                        Some(MomentEvidence::Metadata),
                         steps,
                         run,
                         start,
@@ -745,7 +745,7 @@ fn reference_moments(
                             });
                         moments.push(make(
                             MomentKind::Bracket,
-                            Some(BracketEvidence::Metadata),
+                            Some(MomentEvidence::Metadata),
                             chunk_steps,
                             chunk,
                             start + k * p,
@@ -765,7 +765,7 @@ fn reference_moments(
                         let steps = values.iter().map(|v| v - middle).collect();
                         moments.push(make(
                             MomentKind::Bracket,
-                            Some(BracketEvidence::Previews),
+                            Some(MomentEvidence::Previews),
                             steps,
                             run,
                             start,
@@ -784,7 +784,7 @@ fn reference_layout(
     frames: &Frames,
     view: &[ViewItem],
     thresholds: &Thresholds,
-    probe: &dyn BracketProbe,
+    probe: &dyn MomentProbe,
 ) -> GroupLayout {
     let by_item: HashMap<ViewItem, &FrameFacts> =
         frames.frames.iter().map(|f| (f.item, f)).collect();
@@ -910,7 +910,7 @@ fn organize_equals_an_independent_grouping_of_random_frames() {
         for moment in &layout.moments {
             let at = match (moment.kind, moment.evidence) {
                 (MomentKind::Burst, _) => 2,
-                (_, Some(BracketEvidence::Metadata)) => 3,
+                (_, Some(MomentEvidence::Metadata)) => 3,
                 _ => 4,
             };
             tallies[at] += 1;

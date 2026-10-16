@@ -1,6 +1,7 @@
 //! Explicit signing of a built macOS candidate. Never reads or exports the operator's secrets.
 use crate::*;
 use xtask_cli::release_tag::ReleaseTag;
+mod input;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Program {
@@ -248,6 +249,10 @@ pub fn run(root: &Path, args: &mut Args) -> Result {
         release_build::disk_image_name(&tag, release_build::TARGETS[0].0)?
             .ok_or("macOS has a disk image")?,
     );
+    // The mutable expanded app is the signing input, while verify_record checked its archived
+    // predecessor. Bind every executable, resource and link to that verified predecessor before
+    // changing the signing state or invoking any credential-bearing tool.
+    input::verify(&archive, &out.join("Luxforge.app"), &record)?;
     record["signing"] = json!({"status":"pending"});
     write_json(&out.join("target.json"), &record)?;
     let outcome = (|| -> Result {

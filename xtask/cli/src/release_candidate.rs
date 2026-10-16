@@ -410,6 +410,7 @@ pub fn check_record(record: &Value, tag: &ReleaseTag, target: &str) -> Result {
                 && record["signing"].as_object().is_some_and(|s| s.len() == 1),
             "Apple signing and notarization are not applicable to Linux",
         )?;
+        crate::release_elf::check_record(&record["elf_imports"], EXECUTABLES)?;
     }
     check_executables(&record["executables"], macos, signing == Some("notarized"))
 }
@@ -570,6 +571,15 @@ pub(crate) fn fixture_record(
         "signing": {"status": if macos { signing } else { NOT_APPLICABLE }},
         "archive": archive_record(&archive).unwrap(),
     });
+    if !macos {
+        let imports = || json!({"needed": ["libgcc_s.so.1", "libm.so.6", "libc.so.6", "ld-linux-x86-64.so.2"], "versions": {"libc.so.6": ["GLIBC_2.2.5", "GLIBC_2.39"]}, "max_glibc": "2.39"});
+        record["elf_imports"] = json!({
+            "inspected_with": "GNU readelf (GNU Binutils for Ubuntu) 2.42 (-W --dynamic --version-info)",
+            "glibc_baseline": crate::release_elf::GLIBC_BASELINE,
+            "max_glibc": "2.39",
+            "executables": EXECUTABLES.iter().map(|name| ((*name).to_owned(), imports())).collect::<Map<_, _>>(),
+        });
+    }
     if let Some(name) = disk_image_name(tag, target).unwrap() {
         let image = directory.join(name);
         fs::write(&image, b"final disk image").unwrap();
@@ -739,6 +749,12 @@ mod tests {
                 let mut bad = record.clone();
                 bad[field] = value;
                 assert!(check_record(&bad, &tag, target).is_err(), "{field}");
+            }
+            // A Linux record names what its executables import, within the glibc baseline.
+            if !is_macos(target) {
+                let mut uninspected = record.clone();
+                uninspected.as_object_mut().unwrap().remove("elf_imports");
+                assert!(refused(&uninspected, &tag, target).contains("ELF"));
             }
             // A dirty tree is only a labelled rehearsal.
             let mut dirty = record.clone();

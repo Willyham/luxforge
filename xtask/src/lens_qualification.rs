@@ -228,7 +228,10 @@ fn source(
     let after: MappingDescriptor =
         serde_json::from_value(api.call("render.transform", json!({"asset_id":asset}))?)?;
     let mutation = api.envelope(None);
-    let export=api.call("export.jpeg",json!({"asset_id":asset,"destination":out.join(format!("{}.jpg",source.id)),"mutation":mutation}))?;
+    let export = api.call(
+        "export.write",
+        json!({"asset_id":asset,"settings":crate::export_smoke::export_settings(out),"destination":out.join(format!("{}.jpg",source.id)),"mutation":mutation}),
+    )?;
     let exported = api.ready(&export["job_id"])?;
     ensure(
         hash(path)? == source.sha256,

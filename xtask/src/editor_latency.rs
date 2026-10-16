@@ -1445,7 +1445,7 @@ pub struct Options<'a> {
     /// Paint mode only: show the selected mask's tint while the stroke is painted, so each drafted
     /// job fills the overlay's coverage grid beside its frame.
     pub mask_overlay: bool,
-    /// Drag mode only: queue this many JPEG exports of the committed stack (`export.jpeg`, the
+    /// Drag mode only: queue this many JPEG exports of the committed stack (`export.write`, the
     /// export lane's one running and four waiting jobs at most) just before the drag, so the GPU
     /// tile worker streams them on the window's adapter while the drag draws, as a person's
     /// exports run beside their next edit, and read the lane's windows back with `activity.list`
@@ -1820,8 +1820,8 @@ fn contention_steps(dir: &Path, count: usize) -> Vec<script::Step> {
     (0..count)
         .map(|index| {
             script::Step::call(
-                "export.jpeg",
-                json!({"destination": dir.join(format!("export-{index}.jpg"))}),
+                "export.write",
+                json!({"settings": crate::export_smoke::export_settings(dir), "destination": dir.join(format!("export-{index}.jpg"))}),
             )
         })
         .collect()
@@ -4149,7 +4149,7 @@ fn contention_windows(
     let method = |record: &Value| record["request"]["api"]["method"].clone();
     let accepted = script
         .iter()
-        .filter(|record| method(record) == "export.jpeg" && record["result"]["job_id"].is_string())
+        .filter(|record| method(record) == "export.write" && record["result"]["job_id"].is_string())
         .count();
     ensure(
         accepted == queued,
@@ -4160,7 +4160,7 @@ fn contention_windows(
         .find(|record| method(record) == "activity.list")
         .map(|record| &record["result"])
         .ok_or("The contended run recorded no activity.list answer")?;
-    let first = answered_ms(events, "export.jpeg")?;
+    let first = answered_ms(events, "export.write")?;
     let answered = answered_ms(events, "activity.list")?;
     let entries = |list: &str| {
         answer[list]
@@ -6407,8 +6407,7 @@ mod tests {
     /// back: the answer itself while one still runs, otherwise the latest finished export's end.
     #[test]
     fn a_contended_runs_window_runs_from_the_first_export_to_the_last_ones_end() {
-        let export =
-            |job: &str| json!({"request":{"api":{"method":"export.jpeg"}},"result":{"job_id":job}});
+        let export = |job: &str| json!({"request":{"api":{"method":"export.write"}},"result":{"job_id":job}});
         let mut app = json!({"script":[export("a"), export("b"),
             {"request":{"api":{"method":"activity.list"}},"result":{"active":[],"recent":[
                 {"kind":"export","duration_ms":300.0,"ended_ms_ago":100.0},
@@ -6421,8 +6420,8 @@ mod tests {
             ]
         };
         let events: Vec<Value> = [
-            step(100.0, "export.jpeg"),
-            step(150.0, "export.jpeg"),
+            step(100.0, "export.write"),
+            step(150.0, "export.write"),
             step(1000.0, "activity.list"),
         ]
         .into_iter()

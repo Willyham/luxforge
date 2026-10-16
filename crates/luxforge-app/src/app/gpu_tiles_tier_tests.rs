@@ -483,14 +483,19 @@ fn a_batch_export_names_each_files_renderer() {
         std::fs::create_dir_all(&out).unwrap();
         let started = tiers.call(
             "batch.export",
-            json!({"targets": {"kind": "assets", "asset_ids": [tiers.asset]}, "destination": out,
+            json!({"targets": {"kind": "assets", "asset_ids": [tiers.asset]},
+                   "settings": luxforge_core::ExportSettings {
+                       folder: luxforge_core::ExportFolder::Path(out.clone()),
+                       suffix: "-edited".into(),
+                       ..luxforge_core::ExportSettings::baseline(luxforge_core::MetadataLevel::None)
+                   },
                    "mutation": {"request_id": "batch", "actor": "test"}}),
         );
         let record = tiers.settled(&started["job_id"]);
         assert_eq!(record["status"], "ready", "{record}");
         assert_eq!(
             record["result"]["written"],
-            json!([{"asset_id": tiers.asset, "path": out.join("batch-edited.jpg"), "renderer": renderer}]),
+            json!([{"asset_id": tiers.asset, "path": out.join("batch-edited.jpg"), "renderer": renderer, "quality": 90}]),
             "{record}"
         );
     }

@@ -989,6 +989,15 @@ fn vignette_uses_final_output_coordinates_after_warps() {
         roundness: -35.0,
         feather: 70.0,
     };
+    // The reference takes the strengths the sliders' responses give.
+    let strength = |field: &str, value: f64| {
+        crate::modules::slider_response("set-vignette", field).map_or(value, |r| r.strength(value))
+    };
+    let strengths = VignetteParams {
+        amount: strength("amount", parameters.amount),
+        midpoint: strength("midpoint", parameters.midpoint),
+        ..parameters
+    };
     let p = recipe(vec![
         testing::frozen_lens(180, 120, 24.0),
         perspective(),
@@ -1034,10 +1043,10 @@ fn vignette_uses_final_output_coordinates_after_warps() {
             for x in 0..frame.width {
                 let expected = apply(
                     input,
-                    mask(x, y, frame.width, frame.height, &parameters),
-                    parameters.amount,
+                    mask(x, y, frame.width, frame.height, &strengths),
+                    strengths.amount,
                 );
-                let wrong = apply(input, mask(x, y, 180, 120, &parameters), parameters.amount);
+                let wrong = apply(input, mask(x, y, 180, 120, &strengths), strengths.amount);
                 let actual = frame.pixel(x, y).unwrap();
                 for (channel, actual_channel) in actual.iter().take(3).enumerate() {
                     assert!(

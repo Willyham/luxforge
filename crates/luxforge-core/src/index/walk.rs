@@ -18,14 +18,16 @@ use crate::{
     catalog_types::{FileSignature, born_ns},
 };
 use std::{
-    fs::Metadata,
+    fs::{DirEntry, Metadata},
+    io,
     path::{Path, PathBuf},
 };
 
 /// The most supported files one listing takes; past it the listing is refused with
 /// `resource-limit`. The design's first index of a large folder is 200,000 files.
 pub(crate) const MAX_INDEX_FILES: usize = 500_000;
-/// The most folders one listing visits; past it the listing is refused with `resource-limit`.
+/// The most folders one listing admits, visited and queued together; past it the listing is
+/// refused with `resource-limit` before retaining another folder.
 pub(crate) const MAX_WALK_FOLDERS: usize = 100_000;
 /// How far below its root a listing goes: folders deeper are not entered.
 pub(crate) const MAX_WALK_DEPTH: usize = 64;
@@ -148,68 +150,87 @@ impl<'a> Walk<'a> {
                     continue;
                 }
             };
-            let at_volume_root = path == self.mount_point;
-            let mut files = Vec::new();
-            let mut folders = Vec::new();
-            for (index, entry) in entries.enumerate() {
-                if index % CHECK_EVERY == CHECK_EVERY - 1 {
-                    checkpoint()?;
-                }
-                let Ok(entry) = entry else { continue };
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                let name = entry.file_name();
-                if file_type.is_dir() {
-                    if depth + 1 > self.limits.depth {
-                        continue;
-                    }
-                    let Ok(metadata) = entry.metadata() else {
-                        continue;
-                    };
-                    let child = entry.path();
-                    if device(&metadata) != self.device
-                        || self
-                            .exclusions
-                            .directory(&child, &name, &metadata, at_volume_root)
-                            .is_some()
-                    {
-                        continue;
-                    }
-                    folders.push(child);
-                } else if file_type.is_file() {
-                    let Some(kind) = kind_of(&name) else { continue };
-                    let Ok(metadata) = entry.metadata() else {
-                        continue;
-                    };
-                    if hidden(&name, &metadata) {
-                        continue;
-                    }
-                    files.push(ListedFile {
-                        name: name.to_string_lossy().into_owned(),
-                        kind,
-                        signature: FileSignature::of(&metadata),
-                        born_ns: born_ns(&metadata),
-                    });
-                }
-                // Symbolic links, and anything that is neither a file nor a directory, are never
-                // listed or followed.
-            }
-            self.files += files.len();
-            if self.files > self.limits.files {
-                return Err(Error::resource_limit(format!(
-                    "{} holds more than {} supported files; indexing stops there",
-                    self.root.display(),
-                    self.limits.files
-                )));
-            }
-            files.sort_by(|a, b| a.name.cmp(&b.name));
-            folders.sort();
-            self.stack
-                .extend(folders.into_iter().rev().map(|folder| (folder, depth + 1)));
-            return Ok(Some(ListedFolder { path, files }));
+            return self.read_folder(path, depth, entries, checkpoint).map(Some);
         }
         Ok(None)
+    }
+
+    /// Collect one readable folder. Admission checks happen before retaining each entry, so
+    /// even a single directory larger than the budget cannot allocate past the walk's limits.
+    fn read_folder(
+        &mut self,
+        path: PathBuf,
+        depth: usize,
+        entries: impl Iterator<Item = io::Result<DirEntry>>,
+        checkpoint: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<ListedFolder, Error> {
+        let at_volume_root = path == self.mount_point;
+        let mut files = Vec::new();
+        let mut folders = Vec::new();
+        for (index, entry) in entries.enumerate() {
+            if index % CHECK_EVERY == CHECK_EVERY - 1 {
+                checkpoint()?;
+            }
+            let Ok(entry) = entry else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name();
+            if file_type.is_dir() {
+                if depth + 1 > self.limits.depth {
+                    continue;
+                }
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                let child = entry.path();
+                if device(&metadata) != self.device
+                    || self
+                        .exclusions
+                        .directory(&child, &name, &metadata, at_volume_root)
+                        .is_some()
+                {
+                    continue;
+                }
+                if self.folders + self.stack.len() + folders.len() >= self.limits.folders {
+                    return Err(Error::resource_limit(format!(
+                        "{} holds more than {} folders; indexing stops there",
+                        self.root.display(),
+                        self.limits.folders
+                    )));
+                }
+                folders.push(child);
+            } else if file_type.is_file() {
+                let Some(kind) = kind_of(&name) else { continue };
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if hidden(&name, &metadata) {
+                    continue;
+                }
+                if self.files + files.len() >= self.limits.files {
+                    return Err(Error::resource_limit(format!(
+                        "{} holds more than {} supported files; indexing stops there",
+                        self.root.display(),
+                        self.limits.files
+                    )));
+                }
+                files.push(ListedFile {
+                    name: name.to_string_lossy().into_owned(),
+                    kind,
+                    signature: FileSignature::of(&metadata),
+                    born_ns: born_ns(&metadata),
+                });
+            }
+            // Symbolic links, and anything that is neither a file nor a directory, are never
+            // listed or followed.
+        }
+        self.files += files.len();
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        folders.sort();
+        self.stack
+            .extend(folders.into_iter().rev().map(|folder| (folder, depth + 1)));
+        Ok(ListedFolder { path, files })
     }
 }
 
@@ -229,6 +250,7 @@ fn device(_: &Metadata) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     fn walk_all(
         root: &Path,
@@ -246,6 +268,113 @@ mod tests {
     fn touch(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"x").unwrap();
+    }
+
+    #[test]
+    fn files_over_limit_stop_reading_at_the_first_rejected_entry() {
+        let root = luxforge_testbase::paths::temp_dir("walk-file-admission")
+            .canonicalize()
+            .unwrap();
+        for name in ["a.jpg", "b.jpg", "c.jpg"] {
+            touch(&root.join(name));
+        }
+        let exclusions = Exclusions::default();
+        let mut walk = Walk::new(
+            &root,
+            Path::new("/"),
+            &exclusions,
+            WalkLimits {
+                files: 2,
+                ..WalkLimits::default()
+            },
+        )
+        .unwrap();
+        let read = Cell::new(0);
+        let entries = std::fs::read_dir(&root)
+            .unwrap()
+            .inspect(|_| read.set(read.get() + 1))
+            .chain(std::iter::once_with(|| {
+                panic!("read past the first refused file")
+            }));
+        let error = walk
+            .read_folder(root.clone(), 0, entries, &|| Ok(()))
+            .unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
+        assert_eq!(
+            read.get(),
+            3,
+            "two admitted files and the first refused one"
+        );
+        assert!(walk.files() <= walk.limits.files);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folders_over_limit_stop_reading_at_the_first_rejected_entry() {
+        let root = luxforge_testbase::paths::temp_dir("walk-folder-admission")
+            .canonicalize()
+            .unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        let exclusions = Exclusions::default();
+        let mut walk = Walk::new(
+            &root,
+            Path::new("/"),
+            &exclusions,
+            WalkLimits {
+                folders: 3,
+                ..WalkLimits::default()
+            },
+        )
+        .unwrap();
+        let read = Cell::new(0);
+        let entries = std::fs::read_dir(&root)
+            .unwrap()
+            .inspect(|_| read.set(read.get() + 1))
+            .chain(std::iter::once_with(|| {
+                panic!("read past the first refused folder")
+            }));
+        let error = walk
+            .read_folder(root.clone(), 0, entries, &|| Ok(()))
+            .unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
+        assert_eq!(
+            read.get(),
+            3,
+            "the root and two children fit; the third is refused"
+        );
+        assert!(walk.folders + walk.stack.len() <= walk.limits.folders);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn visited_and_pending_folders_share_the_admission_budget() {
+        let root = luxforge_testbase::paths::temp_dir("walk-pending-folders")
+            .canonicalize()
+            .unwrap();
+        std::fs::create_dir_all(root.join("a/child")).unwrap();
+        std::fs::create_dir(root.join("z")).unwrap();
+        let exclusions = Exclusions::default();
+        let mut walk = Walk::new(
+            &root,
+            Path::new("/"),
+            &exclusions,
+            WalkLimits {
+                folders: 3,
+                ..WalkLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(walk.next_folder(&|| Ok(())).unwrap().unwrap().path, root);
+        let error = walk.next_folder(&|| Ok(())).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
+        assert_eq!(
+            walk.folders + walk.stack.len(),
+            3,
+            "root, a and pending z already fill the budget"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Every supported file in name order, depth first; links, hidden entries, packages, caches,

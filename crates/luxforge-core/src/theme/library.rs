@@ -833,7 +833,16 @@ impl ThemeStore {
     /// `theme.import`: store what [`Self::inspect`] answers, with a new id, `actor` and the time.
     /// A name another theme holds is a `conflict`, and a full library or a record past
     /// [`MAX_THEME_BYTES`] a `resource-limit` error; nothing is renamed, replaced or stored then.
+    #[cfg(test)]
     pub(crate) fn import(&self, input: ThemeInput<'_>, actor: &str) -> Result<Theme, Error> {
+        self.import_published(input, actor)?.finish()
+    }
+
+    pub(crate) fn import_published(
+        &self,
+        input: ThemeInput<'_>,
+        actor: &str,
+    ) -> Result<crate::atomic_file::Publication<Theme>, Error> {
         checked_actor(actor)?;
         let document = self.document()?;
         let mut theme = self.inspect(input)?;
@@ -843,7 +852,7 @@ impl ThemeStore {
         theme.created_ms = Some(now);
         theme.updated_ms = Some(now);
         let record = Stored::of(&theme).encode()?;
-        document.transact(|library| {
+        let publication = document.transact_published(|library| {
             if library.themes.len() >= MAX_THEMES {
                 return Err(Error::resource_limit(format!(
                     "the theme library holds at most {MAX_THEMES} themes; delete one first"
@@ -853,13 +862,22 @@ impl ThemeStore {
             library.themes.push(record);
             Ok(())
         })?;
-        Ok(theme)
+        Ok(publication.map(|()| theme))
     }
 
     /// `theme.delete`: remove a stored theme, or a stored record this build cannot read, by id:
     /// `Applied` when it was there and `NoOp` when it was not. A built-in theme and `active`, the
     /// theme the preferences choose, are refused by name.
+    #[cfg(test)]
     pub(crate) fn delete(&self, theme_id: &str, active: &str) -> Result<MutationOutcome, Error> {
+        self.delete_published(theme_id, active)?.finish()
+    }
+
+    pub(crate) fn delete_published(
+        &self,
+        theme_id: &str,
+        active: &str,
+    ) -> Result<crate::atomic_file::Publication<MutationOutcome>, Error> {
         if let Some(theme) = built_in_themes()
             .iter()
             .find(|theme| theme.id() == theme_id)
@@ -875,9 +893,11 @@ impl ThemeStore {
             )));
         }
         let Some(document) = &self.0 else {
-            return Ok(MutationOutcome::NoOp);
+            return Ok(crate::atomic_file::Publication::confirmed(
+                MutationOutcome::NoOp,
+            ));
         };
-        document.transact(|library| {
+        document.transact_published(|library| {
             let before = library.themes.len();
             library
                 .themes
@@ -897,6 +917,48 @@ impl ThemeStore {
             file_name: safe_file_name(&theme.name, "theme", DOCUMENT_EXTENSION),
             content: theme.document().write(),
         })
+    }
+}
+
+/// Whether a theme read from an Omarchy folder is the Omarchy theme `slug` names
+/// (`docs/design/ui-themes.md#following-omarchy`): its folder and the slug give the same name,
+/// ignoring case, by [`omarchy::theme_name`], so a cloned repository's `omarchy-` prefix and
+/// `-theme` suffix do not matter. A bundled theme's folder is its slug.
+pub fn follows_omarchy(origin: &ThemeOrigin, slug: &str) -> bool {
+    let ThemeOrigin::Omarchy { folder, .. } = origin else {
+        return false;
+    };
+    match (omarchy::theme_name(folder), omarchy::theme_name(slug)) {
+        (Some(theme), Some(current)) => theme.to_lowercase() == current.to_lowercase(),
+        _ => false,
+    }
+}
+
+/// Omarchy's current theme, as the desktop found it at launch, and the library theme that is it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OmarchyTheme {
+    /// Omarchy's own name for it, its folder's slug.
+    pub slug: String,
+    /// The id of the first theme in the library's order that [`follows_omarchy`] the slug: a
+    /// bundled theme before an imported one. `None` when the library holds none.
+    pub theme: Option<String>,
+}
+
+impl OmarchyTheme {
+    /// The library theme under `dir` that is Omarchy's `slug`. A library that cannot be read
+    /// offers only the built-in themes; its own problem is the launch read's to report.
+    pub(crate) fn find(dir: Option<PathBuf>, slug: &str) -> Self {
+        let listing = ThemeStore::new(dir).list();
+        let themes = listing
+            .as_ref()
+            .map_or(built_in_themes(), |listing| listing.themes.as_slice());
+        Self {
+            slug: slug.to_owned(),
+            theme: themes
+                .iter()
+                .find(|theme| follows_omarchy(&theme.origin, slug))
+                .map(|theme| theme.id().to_owned()),
+        }
     }
 }
 

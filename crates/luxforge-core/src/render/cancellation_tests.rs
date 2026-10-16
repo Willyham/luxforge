@@ -87,20 +87,29 @@ fn a_pre_cancelled_token_stops_a_render_before_it_allocates_a_frame() {
     }
 }
 
+/// The threads of the pool [`a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservation`]
+/// renders on: fewer than the 15 chunks of its smaller colour pass, whatever the host has.
+const CANCEL_POOL_THREADS: usize = 4;
+
 /// A colour pass cancelled while a chunk holds its scratch yields the cancelled kind, no frame,
 /// and no reservation left behind, on both pixel domains, serially and on the pool. The held
-/// layer stops the render in
-/// its colour pass, inside a chunk that has reserved its scratch, so where the cancel lands is
-/// decided by the gate and not by how fast this host renders. The turned stage is 150 colour
-/// chunks tall and the cropped output over a hundred (the linear domain reads the colour through
-/// the resample's rows), far more than the pool runs at once, so a chunk not yet started sees the
-/// cancel on both paths. The photo-sized stop latency is the release timing in
+/// layer stops the render in its colour pass, inside a chunk that has reserved its scratch, so
+/// where the cancel lands is decided by the gate and not by how fast this host renders. Every
+/// chunk that has started waits at the gate, so a chunk not yet started, which sees the cancel,
+/// must exist: the render runs on a pool of [`CANCEL_POOL_THREADS`] whatever the host has, fewer
+/// than the chunks of either pass. The turned stage is 150 colour chunks tall; the linear domain
+/// reads the colour through the cropped output's rows, 15 chunks of 16 rows, which a host's own
+/// pool can match and start at once. The photo-sized stop latency is the release timing in
 /// `tests/cancellation.rs`.
 #[test]
 fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservation() {
     let (width, height) = (2400, 64);
     let source = cancellation_source(width, height);
     let planes = varied(width, height);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(CANCEL_POOL_THREADS)
+        .build()
+        .expect("a test pool");
     let mut recipe = cancellation_stack(width, height);
     recipe.layers.insert(
         2,
@@ -132,15 +141,19 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
         gate.shut();
         let outcome = std::thread::scope(|scope| {
             let render = scope.spawn(|| {
-                parallel::force(Some(pooled));
-                frame_in(
-                    &context,
-                    &registry,
-                    input,
-                    SnapshotId::new(),
-                    &recipe,
-                    RenderOptions::exact(&cancel),
-                )
+                pool.install(|| {
+                    let previous = parallel::force(Some(pooled));
+                    let outcome = frame_in(
+                        &context,
+                        &registry,
+                        input,
+                        SnapshotId::new(),
+                        &recipe,
+                        RenderOptions::exact(&cancel),
+                    );
+                    parallel::force(previous);
+                    outcome
+                })
             });
             gate.wait_reached(1, "the colour pass to reach the held layer");
             assert_ne!(
@@ -152,7 +165,14 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
             gate.open();
             render.join().expect("the render thread does not panic")
         });
-        let error = outcome.expect_err("a cancelled render yields no frame, partial or otherwise");
+        let error = match outcome {
+            Ok(frame) => panic!(
+                "{domain}, pooled {pooled}: a cancelled render yields no frame, partial or \
+                 otherwise, but a {} × {} frame came back",
+                frame.width, frame.height
+            ),
+            Err(error) => error,
+        };
         assert_eq!(
             error.kind,
             ErrorKind::Cancelled,

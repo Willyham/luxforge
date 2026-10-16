@@ -13,10 +13,7 @@ pub(crate) enum PerformanceMessage {
         job_id: JobId,
         result: Result<serde_json::Value, String>,
     },
-    /// One tick of the section's sampler. It exists only while the section is expanded and the
-    /// state panel is shown, which is also when the timer that produces it exists.
-    Tick,
-    /// `resources.read` and `activity.list` answered, with the sampling epoch that asked, so a read
+    /// `resources.read` answered, with the sampling epoch that asked, so a read
     /// that was in flight when the section stopped or restarted sampling is dropped.
     Sampled {
         epoch: u64,

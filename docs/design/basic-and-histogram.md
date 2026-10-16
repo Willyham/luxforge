@@ -124,7 +124,7 @@ Tone, white balance and colour equations, ranges and tolerances were frozen by t
 
 ## Basic controls and interaction
 
-The Tone header declares **Auto**, a parameterless analysis action. `edit.auto-tone` sets the eight tone/colour fields absolutely, preserving white balance; `query.auto-tone` explains the same calculation without a commit. The [Auto tone design](auto-tone.md) owns the solver, bounded worker sample, refusals and preset semantics.
+The Tone header declares **Auto**, a parameterless analysis action. `edit.auto-tone` sets the eight tone/colour fields absolutely, preserving white balance; `query.auto-tone` explains the same calculation without a commit. Auto sets only the global Basic layer, so a Basic section bound to a mask does not show it. The [Auto tone design](auto-tone.md) owns the solver, bounded worker sample, refusals and preset semantics.
 
 Every Basic control in the table below is implemented — Temperature and Tint, Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation — at the ranges, steps and precisions shown, together with the `neutral-sample` picker query behind the White Balance group.
 

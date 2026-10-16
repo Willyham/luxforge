@@ -463,14 +463,7 @@ impl Editor {
                 let params = model::batch_preset_params(&id, &request());
                 return self.start_batch(BatchKind::Preset { name }, params);
             }
-            CatalogAction::Export => return self.ask_export_folder(),
-            CatalogAction::ExportInto(folder) => {
-                self.view_state.picker_open = false;
-                if let Some(folder) = folder {
-                    let params = model::batch_export_params(&folder, &request());
-                    return self.start_batch(BatchKind::Export { folder }, params);
-                }
-            }
+            CatalogAction::Export => return self.open_batch_export(),
             CatalogAction::Remove => {
                 // Over files the one thing Remove takes away is a merge, its result active.
                 if self.select_shown() && !self.select.state.over_catalog() {
@@ -552,31 +545,31 @@ impl Editor {
         (self.catalog_selection().count == 0).then(|| "Select photographs first".into())
     }
 
-    /// Export…: the native folder dialog, which answers [`CatalogAction::ExportInto`]. An evidence
-    /// run names its folder with that action instead.
-    fn ask_export_folder(&mut self) -> Task<Message> {
+    /// Export N…: the Export sheet in batch mode over the selection.
+    fn open_batch_export(&mut self) -> Task<Message> {
         self.close_catalog_menus();
         if let Some(reason) = self.batch_refusal() {
             self.status.text = reason;
             return Task::none();
         }
-        if self.view_state.picker_open || self.evidence.is_some() {
-            return Task::none();
-        }
-        self.view_state.picker_open = true;
-        let title = format!(
-            "Export {} into",
-            crate::state::select::photographs(self.catalog_selection().count)
-        );
-        Task::perform(
-            async move {
-                rfd::AsyncFileDialog::new()
-                    .set_title(title)
-                    .pick_folder()
-                    .await
-                    .map(|folder| folder.path().to_path_buf())
+        let target = model::export_target(&self.select.state, &self.catalog_selection());
+        self.open_export_sheet_over(target, false)
+    }
+
+    /// The batch sheet's Export: `batch.export` of the selection with its settings, sent as
+    /// [`Self::start_batch`] sends every batch. Its progress, Cancel and report are the batch's.
+    pub(crate) fn start_batch_export(
+        &mut self,
+        settings: luxforge_core::ExportSettings,
+        remember: luxforge_core::preferences::ExportLast,
+    ) -> Task<Message> {
+        let params = model::batch_export_params(&settings, &request());
+        self.start_batch(
+            BatchKind::Export {
+                settings: Box::new(settings),
+                preset_id: remember.preset_id,
             },
-            |folder| catalog(CatalogMessage::Act(CatalogAction::ExportInto(folder))),
+            params,
         )
     }
 
@@ -585,7 +578,7 @@ impl Editor {
     /// owner named ([`model::export_anyway_params`]), as a request of its own. A commit to one of
     /// them since makes the owner skip it again with what is stale now, never export it silently.
     fn export_anyway_batch(&mut self) -> Task<Message> {
-        let Some((folder, params, names)) =
+        let Some((kind, params, names)) =
             model::export_anyway_params(&self.select.state.catalog, &request())
         else {
             return Task::none();
@@ -596,7 +589,7 @@ impl Editor {
         }
         let count = names.len() as u32;
         let result = batch_call(&self.owner, self.client, "batch.export", params.clone());
-        self.adopt_batch_start(BatchKind::Export { folder }, params, count, names, result)
+        self.adopt_batch_start(kind, params, count, names, result)
     }
 
     /// Start a batch of the selection: `batch.apply-settings` or `batch.export`, sent synchronously
@@ -785,9 +778,24 @@ impl Editor {
         let home = self.select.state.home.clone();
         let sentence = batch.sentence(home.as_deref()).unwrap_or_default();
         self.select.catalog.batch_record = result.ok();
+        // A batch export that wrote a file is remembered as the last export, as one photograph's
+        // is.
+        let remember = match (&batch.kind, &batch.end) {
+            (
+                BatchKind::Export {
+                    settings,
+                    preset_id,
+                },
+                Some(BatchEnd::Done(report)),
+            ) if !report.written.is_empty() => Some(luxforge_core::preferences::ExportLast {
+                settings: (**settings).clone(),
+                preset_id: preset_id.clone(),
+            }),
+            _ => None,
+        };
         self.status.text = sentence;
         if !preset {
-            return Task::none();
+            return self.remember_export_last(remember);
         }
         // Each photograph the preset reached has a new entry: the view says which are edited, and
         // an open photograph among them is read again by the event sync, since this desktop's own

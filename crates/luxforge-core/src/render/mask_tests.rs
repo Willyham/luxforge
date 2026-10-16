@@ -980,8 +980,10 @@ fn a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it() {
                         let points = |skip: UnitSkip| {
                             let previous = set_unit_skip(skip);
                             let context = RenderContext::new();
+                            let mode = super::MaskInputMode::for_layer(&registry, &recipe, last);
                             let (_, input) =
-                                layer_input(&registry, source, &recipe, last, &context).unwrap();
+                                layer_input(&registry, source, &recipe, last, mode, &context)
+                                    .unwrap();
                             let bits: Vec<u64> = (0..height)
                                 .flat_map(|y| (0..width).map(move |x| (x, y)))
                                 .flat_map(|(x, y)| input.linear(x, y).unwrap().unwrap())

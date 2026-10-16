@@ -1,6 +1,7 @@
-//! The preview check for brackets the metadata cannot show (P5; `docs/design/catalog.md`,
-//! "Grouping inside a view"): a small fingerprint of each file's grid tier, kept beside the tier's
-//! row, and a measure over a run's fingerprints that organizing asks through [`BracketProbe`].
+//! The preview checks for brackets the metadata cannot show and for panoramas (P5;
+//! `docs/design/catalog.md`, "Grouping inside a view"): a small fingerprint of each file's grid
+//! tier, kept beside the tier's row, and measures over a run's fingerprints that organizing asks
+//! through [`MomentProbe`]: the bracket's here, the panorama's pans in `bracket/pan.rs`.
 //!
 //! - **The fingerprint** ([`Fingerprint`], [`FINGERPRINT_BYTES`] = 581 bytes, fixed). A complete
 //!   grid tier (embedded or developed, never the thumbnail stage) decoded at the DCT scale that
@@ -26,10 +27,11 @@
 //!   step is the weighted mean difference of the cells that agree with the weighted median one.
 //!   A run is `O(frames × cells)`: for 9 frames, 8 comparisons of 576 cells, with every working
 //!   array on the stack (under 10 KB) and the answer its one allocation.
-//! - **The probe** ([`PreviewProbe`], [`bracket_probe`]). Organizing asks it only about runs the
-//!   metadata cannot classify, and it reads just that run's fingerprints, in one indexed query
-//!   through a cached statement, so a view whose runs the metadata classifies reads none; it never
-//!   reads a photograph's file or decodes.
+//! - **The probe** ([`PreviewProbe`], [`bracket_probe`]). Organizing asks it for a bracket's
+//!   measure only about runs the metadata cannot classify, and for pans only about chains of
+//!   frames that could be a panorama (seconds apart at one focal length); it reads just that run's
+//!   or chain's fingerprints, in one indexed query through a cached statement, so a view with
+//!   neither reads none; it never reads a photograph's file or decodes.
 //!
 //! **Calibration** (the tests' `bracket_preview_calibration`: six synthetic scenes through their
 //! grid tiers' JPEGs, brackets within ±2 EV). Without a tone curve, as the generated folders
@@ -47,7 +49,7 @@
 use super::{FILE_GRID_SIDE, cache};
 use crate::{
     Error,
-    catalog_types::{BracketProbe, FileId, PreviewOrigin, ViewItem},
+    catalog_types::{FileId, MomentProbe, Pan, PreviewOrigin, ViewItem},
     colour::{luma::rec709, srgb},
 };
 use luxforge_jpeg::{Decoder, Limits, Scale};
@@ -424,11 +426,12 @@ fn framing(a: &Fingerprint, b: &Fingerprint, usable: &[bool; CELLS]) -> Option<f
     (pairs > 0 && aa >= structure && bb >= structure).then(|| dot / (aa * bb).sqrt())
 }
 
-/// What organizing asks about a run the metadata cannot classify ([`BracketProbe`]), answered
-/// from the run's grid fingerprints. It reads them lazily, one run at a time: organizing asks only
-/// about runs of 2 to [`MAX_FRAMES`] frames whose metadata does not vary, so a view whose runs the
-/// metadata classifies reads none, and a burst's run reads its own frames' fingerprints and no
-/// others, in one indexed query ([`bracket_probe`]).
+/// What organizing asks about a run the metadata cannot classify and a chain that could be a
+/// panorama ([`MomentProbe`]), answered from their grid fingerprints. It reads them lazily, one
+/// run or chain at a time: organizing asks a bracket's measure only about runs of 2 to
+/// [`MAX_FRAMES`] frames whose metadata does not vary, and pans only about chains of 3 or more
+/// frames seconds apart, so a view with neither reads none, and a burst's run reads its own
+/// frames' fingerprints and no others, in one indexed query ([`bracket_probe`]).
 pub(crate) struct PreviewProbe<'c> {
     fingerprints: Fingerprints<'c>,
     /// Frames looked up so far, whatever was found.
@@ -522,7 +525,7 @@ impl PreviewProbe<'_> {
     }
 }
 
-impl BracketProbe for PreviewProbe<'_> {
+impl MomentProbe for PreviewProbe<'_> {
     /// [`measure`] over the frames' fingerprints, read for this run alone, when every frame is a
     /// file with a fingerprint and all of one origin: a camera's embedded preview and a neutral
     /// development differ in brightness by more than a bracket's step. A photograph, or an index
@@ -551,6 +554,79 @@ impl BracketProbe for PreviewProbe<'_> {
             .collect::<Option<Vec<&Fingerprint>>>()?;
         measure(&fingerprints)
     }
+
+    /// [`pan::pan`] over each consecutive pair of the frames' fingerprints, read for this chain
+    /// alone in one query; a pair with a photograph or a frame without a fingerprint, or an index
+    /// that cannot be read, answers `None`.
+    fn pans(&self, frames: &[ViewItem]) -> Vec<Option<Pan>> {
+        let mut answers = vec![None; frames.len().saturating_sub(1)];
+        let files: Vec<FileId> = frames
+            .iter()
+            .filter_map(|item| match item {
+                ViewItem::File(file) => Some(*file),
+                _ => None,
+            })
+            .collect();
+        let Ok(found) = self.load(&files) else {
+            return answers;
+        };
+        let mut found = found.into_iter();
+        let prints: Vec<Option<Fingerprint>> = frames
+            .iter()
+            .map(|item| match item {
+                ViewItem::File(_) => found.next().flatten().map(|(_, print)| print),
+                _ => None,
+            })
+            .collect();
+        let mut cache = PANS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (answer, pair) in answers.iter_mut().zip(prints.windows(2)) {
+            if let [Some(a), Some(b)] = pair {
+                *answer = cache.pan(a, b);
+            }
+        }
+        answers
+    }
+}
+
+/// The most pairs [`PanCache`] keeps: 65,536 entries of 24 bytes, about 2 MB with the map's
+/// overhead, enough for every link of a view at the design scale of 10,000 files several times.
+const PAN_CACHE_ENTRIES: usize = 65_536;
+
+/// Every pan answer the probes measured in this process, keyed by the two fingerprints' contents,
+/// so evaluating a view again, or another view of the same files, searches no pair it searched
+/// before, and a changed grid tier, whose fingerprint differs, is searched afresh. Bounded at
+/// [`PAN_CACHE_ENTRIES`]: full, it starts again empty.
+struct PanCache {
+    answers: std::collections::HashMap<(u64, u64), Option<Pan>, ContentHasher>,
+}
+
+type ContentHasher = std::hash::BuildHasherDefault<std::hash::DefaultHasher>;
+
+static PANS: std::sync::Mutex<PanCache> = std::sync::Mutex::new(PanCache {
+    answers: std::collections::HashMap::with_hasher(ContentHasher::new()),
+});
+
+impl PanCache {
+    fn pan(&mut self, a: &Fingerprint, b: &Fingerprint) -> Option<Pan> {
+        let key = (content_key(a), content_key(b));
+        if let Some(answer) = self.answers.get(&key) {
+            return *answer;
+        }
+        let answer = pan::pan(a, b);
+        if self.answers.len() >= PAN_CACHE_ENTRIES {
+            self.answers.clear();
+        }
+        self.answers.insert(key, answer);
+        answer
+    }
+}
+
+/// A fingerprint's contents hashed to 64 bits.
+fn content_key(print: &Fingerprint) -> u64 {
+    use std::hash::BuildHasher;
+    ContentHasher::new().hash_one(print.as_bytes())
 }
 
 /// The preview bracket probe over the index behind `connection`, for `browse.view` to hand to
@@ -563,6 +639,9 @@ pub(crate) fn bracket_probe(connection: &Connection) -> PreviewProbe<'_> {
         asked: Cell::new(0),
     }
 }
+
+#[path = "bracket/pan.rs"]
+pub(super) mod pan;
 
 #[cfg(test)]
 #[path = "bracket/tests.rs"]

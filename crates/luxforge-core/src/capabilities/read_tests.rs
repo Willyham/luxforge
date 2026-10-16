@@ -216,7 +216,12 @@ impl TileService for RefusingTiles {
         call.refuse(Error::internal("the refusing provider reads no pixels"));
     }
     fn disconnect(&self, _: crate::ClientId) {}
-    fn stream(&self, _: &crate::Evaluation, _: &Cancel) -> Result<BandStream, TileFallback> {
+    fn stream(
+        &self,
+        _: &crate::Evaluation,
+        _: crate::tiles::OutputSpec,
+        _: &Cancel,
+    ) -> Result<BandStream, TileFallback> {
         Err(TileFallback::Budget {
             requested: 1,
             budget: 0,
@@ -407,6 +412,7 @@ fn a_read_is_the_reference_renderers_own_and_reports_the_identity_accept_checks(
                 height: 16,
             },
             reduction: 1,
+            mode: None,
         },
         &ReferenceReads,
         &Cancel::never(),

@@ -88,6 +88,7 @@ fn queued(id: i64, job: &JobId) -> Result<PreviewAnswer, Refusal> {
             512,
             341,
         )),
+        fallback_current: true,
     })
 }
 
@@ -581,6 +582,7 @@ fn photo_answer(slot: &Slot, rendered: bool, job: &JobId) -> Result<PreviewAnswe
         PreviewAnswer::Queued {
             job_id: job.clone(),
             fallback: Some(photo_info(id, PreviewTier::Grid, PreviewOrigin::Embedded)),
+            fallback_current: true,
         }
     })
 }
@@ -858,4 +860,138 @@ fn loupe_frames_a_real_owner_renders_a_photographs_strip_thumbnail() {
     owner.stop();
     let _ = join.join();
     let _ = fs::remove_dir_all(&root);
+}
+
+/// Photograph `id`'s large preview of `entry`: its render, or its camera preview made while that
+/// entry was current.
+fn entry_info(id: u32, entry: &EntryId, origin: PreviewOrigin) -> PreviewInfo {
+    let PreviewItem::Photo { asset_id, .. } = photo(id) else {
+        unreachable!("a photograph")
+    };
+    PreviewInfo {
+        renderer: None,
+        item: PreviewItem::Photo {
+            asset_id: asset_id.clone(),
+            entry_id: Some(entry.clone()),
+        },
+        tier: PreviewTier::Large,
+        path: PathBuf::from(format!("/c.index/previews/photos/{id}-{entry}.jpg")),
+        width: 2048,
+        height: 1365,
+        origin,
+        approximate: false,
+        bytes: 400_000,
+        key: format!("photo:{asset_id}:{entry}:large:{}", origin.as_str()),
+    }
+}
+
+/// Photograph `id`'s frame, on screen.
+fn photo_frame(id: u32) -> Want {
+    Want {
+        slot: Slot::frame(photo(id)),
+        pixels: SCREEN,
+        shown: true,
+    }
+}
+
+/// Answer `batch`'s one read with `answer`, and adopt the decode it plans: the next batch the
+/// answer planned.
+fn answer_and_decode(
+    frames: &mut LoupeFrames,
+    batch: &ReadBatch,
+    answer: PreviewAnswer,
+) -> Option<ReadBatch> {
+    let next = frames.answered(photo_answers(batch, |_| Ok(answer.clone())));
+    let decode = frames.planned().first().cloned().expect("a decode");
+    frames.adopt(decoded(&decode));
+    next
+}
+
+/// A photograph's held picture is current only as its newest answer says: its ready tier, or a
+/// fallback the owner marks `fallback_current` (the Original's camera preview); an earlier entry's
+/// render or an edited photograph's camera preview is held as a stand-in and never current.
+#[test]
+fn loupe_frames_a_photographs_picture_is_current_only_as_its_answer_says() {
+    let (original, edited) = (EntryId::new(), EntryId::new());
+    for (fallback, fallback_current) in [
+        (entry_info(1, &original, PreviewOrigin::Embedded), true),
+        (entry_info(1, &original, PreviewOrigin::Embedded), false),
+        (entry_info(1, &original, PreviewOrigin::Rendered), false),
+    ] {
+        let mut frames = paused(DECODED_BUDGET_BYTES);
+        let batch = frames.want(vec![photo_frame(1)]).unwrap();
+        let queued = PreviewAnswer::Queued {
+            job_id: JobId::new(),
+            fallback: Some(fallback.clone()),
+            fallback_current,
+        };
+        answer_and_decode(&mut frames, &batch, queued);
+        let held = frames.photo(&Slot::frame(photo(1))).expect("held");
+        assert!(held.picture.stand_in);
+        assert_eq!(held.current, fallback_current, "{fallback:?}");
+        // Its render lands: current whatever stood in for it.
+        let again = frames.woken(true).expect("read again");
+        let ready = PreviewAnswer::Ready {
+            preview: entry_info(1, &edited, PreviewOrigin::Rendered),
+        };
+        answer_and_decode(&mut frames, &again, ready);
+        let held = frames.photo(&Slot::frame(photo(1))).expect("held");
+        assert!(held.current && !held.picture.stand_in);
+        assert_eq!(held.entry, Some(&edited));
+    }
+}
+
+/// A photograph that may have moved to another entry is no longer current and is read again,
+/// unless its ready answer is of the entry it is at; the picture held stays, as a stand-in, until
+/// the next answer names another. A read in flight when it moves is read again once it answers,
+/// and a queued read's job, a render of the entry before, is cancelled.
+#[test]
+fn loupe_frames_a_photograph_that_moved_is_read_again_and_not_current_until_answered() {
+    let (before, after) = (EntryId::new(), EntryId::new());
+    let slot = Slot::frame(photo(1));
+    let mut frames = paused(DECODED_BUDGET_BYTES);
+    let batch = frames.want(vec![photo_frame(1)]).unwrap();
+    let ready = |entry: &EntryId| PreviewAnswer::Ready {
+        preview: entry_info(1, entry, PreviewOrigin::Rendered),
+    };
+    answer_and_decode(&mut frames, &batch, ready(&before));
+    assert!(frames.photo(&slot).unwrap().current);
+
+    // Still at the entry its answer is of: nothing is read again.
+    frames.moved(&slot, Some(&before));
+    assert!(frames.photo(&slot).unwrap().current);
+    assert!(frames.want(vec![photo_frame(1)]).is_none());
+
+    // Moved on: not current, and read again.
+    frames.moved(&slot, Some(&after));
+    assert!(!frames.photo(&slot).unwrap().current);
+    let again = frames.want(vec![photo_frame(1)]).expect("read again");
+    assert_eq!(again.reads, vec![slot.clone()]);
+    let job = JobId::new();
+    frames.answered(photo_answers(&again, |_| {
+        Ok(PreviewAnswer::Queued {
+            job_id: job.clone(),
+            fallback: Some(entry_info(1, &before, PreviewOrigin::Rendered)),
+            fallback_current: false,
+        })
+    }));
+    let held = frames.photo(&slot).unwrap();
+    assert!(!held.current, "the entry before's render is not current");
+    assert_eq!(held.entry, Some(&before), "and stays held meanwhile");
+
+    // Moved again while queued: the render of the entry before is cancelled and read again.
+    frames.moved(&slot, None);
+    let cancelled = frames.want(vec![photo_frame(1)]).expect("read again");
+    assert_eq!(cancelled.cancel, vec![job.as_str().to_owned()]);
+    assert_eq!(cancelled.reads, vec![slot.clone()]);
+
+    // Moved while that read is in flight: its answer, even ready, is not taken as current.
+    frames.moved(&slot, None);
+    let last = answer_and_decode(&mut frames, &cancelled, ready(&after)).expect("read once more");
+    assert!(!frames.photo(&slot).unwrap().current);
+    assert_eq!(last.reads, vec![slot.clone()]);
+    frames.answered(photo_answers(&last, |_| Ok(ready(&after))));
+    let held = frames.photo(&slot).unwrap();
+    assert!(held.current && held.entry == Some(&after));
+    assert_accounted(&frames);
 }

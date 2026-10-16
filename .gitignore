@@ -17,6 +17,7 @@
 Thumbs.db
 /.tools/
 __pycache__/
+.claude/worktrees
 
 # Owner RAW originals used only for local verification.
 /fixtures/raw/

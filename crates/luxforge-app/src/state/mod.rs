@@ -8,6 +8,7 @@ pub(crate) mod copy_settings;
 pub(crate) mod corrections;
 pub(crate) mod develop;
 pub(crate) mod document;
+pub(crate) mod export_sheet;
 pub(crate) mod fields;
 pub(crate) mod fill_setup;
 pub(crate) mod histogram;
@@ -393,6 +394,14 @@ pub(crate) struct Inputs<'a> {
     pub(crate) can_export: bool,
     /// The stale frozen patches an export is held for, until Export anyway or Cancel.
     pub(crate) export_held: Option<&'a [luxforge_core::StaleCorrection]>,
+    /// The open Export sheet.
+    pub(crate) export_sheet: Option<&'a export_sheet::ExportSheet>,
+    /// The export presets as `export.presets.list` last answered, or `None` before it has.
+    pub(crate) export_presets: Option<&'a [luxforge_core::ExportPreset]>,
+    /// The last export the person started, which Export again repeats.
+    pub(crate) export_last: Option<&'a luxforge_core::preferences::ExportLast>,
+    /// This window's export, while the status bar shows its progress.
+    pub(crate) export_progress: Option<long_work::BusiestJob>,
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
@@ -509,6 +518,8 @@ pub(crate) struct Workspace {
     pub(crate) long_work: long_work::LongWorkModel,
     /// Develop N's confirmation and progress, the filmstrip and the cached preview's words.
     pub(crate) develop: develop::DevelopModel,
+    /// The Export sheet, while it is open.
+    pub(crate) export_sheet: Option<export_sheet::ExportSheetModel>,
 }
 
 impl Workspace {
@@ -533,6 +544,12 @@ impl Workspace {
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
+        self.long_work.export = inputs.export_progress.clone();
+        self.export_sheet = export_sheet::model(
+            inputs.export_sheet,
+            inputs.export_presets,
+            inputs.select.home.as_deref(),
+        );
         let progress = inputs
             .develop
             .developing
@@ -567,6 +584,7 @@ impl Workspace {
     pub(crate) fn covers_canvas(&self) -> bool {
         self.palette.open
             || self.settings.open.is_some()
+            || self.export_sheet.is_some()
             || self.tools.menu.is_some()
             || self.copy_settings.menu.is_some()
             || self.copy_settings.report.is_some()
@@ -903,6 +921,10 @@ mod tests {
                 can_open: true,
                 can_export: true,
                 export_held: None,
+                export_sheet: None,
+                export_presets: None,
+                export_last: None,
+                export_progress: None,
                 developer: self.developer,
                 compare_held: false,
                 view_state: &self.view_state,
@@ -2396,16 +2418,25 @@ mod tests {
             })
             .collect();
         assert!(labels[0].iter().any(|(_, label)| label == "As shot"));
-        for (at, (name, ..)) in derived.iter().enumerate().skip(1) {
+        // A mask's section leaves out Auto, which sets only the global layer.
+        let global_only = ("action".to_owned(), "Auto".to_owned());
+        assert!(labels[0].contains(&global_only));
+        for (at, (name, _, target, ..)) in derived.iter().enumerate().skip(1) {
+            let expected: Vec<_> = labels[0]
+                .iter()
+                .filter(|shown| target.is_none() || **shown != global_only)
+                .cloned()
+                .collect();
             assert_eq!(
-                labels[at], labels[0],
+                labels[at], expected,
                 "{name}: the same labels in the same order"
             );
         }
 
         for (name, kind, target, section, shortcuts) in &derived {
-            let declared: Vec<&Control> =
-                crate::state::control_tree::walk(&basic.controls).collect();
+            let declared: Vec<&Control> = crate::state::control_tree::walk(&basic.controls)
+                .filter(|control| tools::offered(&modules, control, target.as_ref()))
+                .collect();
             let models: Vec<&ControlModel> =
                 crate::state::control_tree::walk(&section.controls).collect();
             assert_eq!(declared.len(), models.len(), "{name}");
@@ -4480,9 +4511,50 @@ mod tests {
             tools::analysis_refusal(&comparing).as_deref(),
             Some(NOT_CURRENT)
         );
+    }
+
+    /// Bound to a mask, Basic edits that mask's layer, and Auto sets the global one: the section
+    /// and the palette leave it out, as Lightroom's mask panels do, and its chord, which still
+    /// reaches the action, is refused with the reason. The global section keeps it.
+    #[test]
+    fn a_mask_bound_basic_section_offers_no_auto() {
+        fn offers_auto(scene: &Scene) -> bool {
+            let workspace = scene.derive();
+            control_tree::walk(&section(&workspace, "luxforge.basic").controls).any(
+                |control| matches!(control, ControlModel::Action(action) if action.action == "auto-tone"),
+            )
+        }
+        fn palette_offers_auto(scene: &Scene, target: Option<&MaskId>) -> bool {
+            tools::palette_entries(&scene.modules, false, scene.document.state.as_ref(), target)
+                .iter()
+                .any(|(_, _, action)| {
+                    matches!(action, palette::PaletteAction::Run { action, .. } if action == "auto-tone")
+                })
+        }
+        let mask = MaskId::new();
+        let mut scene = masked_scene(&[(&mask, "Sky")]);
+        assert!(offers_auto(&scene));
+        assert!(palette_offers_auto(&scene, None));
+        assert_eq!(tools::analysis_refusal(&scene.inputs()), None);
+
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
-        scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
-        assert!(action(&scene).reason.unwrap().contains("global Basic"));
+        scene.mask_panel.selected_mask = Some(mask.clone());
+        let workspace = scene.derive();
+        let basic = section(&workspace, "luxforge.basic");
+        assert_eq!(basic.scope.as_deref(), Some("Sky"), "Basic edits the mask");
+        assert!(
+            control_tree::walk(&basic.controls).any(
+                |control| matches!(control, ControlModel::Slider(slider) if slider.parameter == "exposure")
+            ),
+            "the mask's Basic sliders stay"
+        );
+        assert!(!offers_auto(&scene));
+        assert!(!palette_offers_auto(&scene, Some(&mask)));
+        assert!(
+            tools::analysis_refusal(&scene.inputs())
+                .expect("the chord is refused")
+                .contains("global Basic")
+        );
     }
 }
 

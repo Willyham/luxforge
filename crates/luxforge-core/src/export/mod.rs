@@ -3,8 +3,9 @@
 //!
 //! - [`metadata`] reads the original's supported EXIF fields once, when the source is prepared, and
 //!   writes the export's own EXIF segment when Keep metadata is on.
-//! - [`encode`] turns a rendered frame into a baseline quality-90 JPEG with an embedded sRGB
-//!   profile, streaming into any writer.
+//! - [`encode`] turns a rendered frame into a JPEG with an embedded sRGB profile at a quality,
+//!   chroma sampling and Optimise, streaming into any writer.
+//! - [`limit`] finds the highest quality whose file fits a byte limit, for any format's encode.
 //! - [`publish`] checks a destination, stages a temporary file beside it and publishes it without
 //!   replacing anything.
 //!
@@ -12,8 +13,13 @@
 //! lives with the owner's other jobs.
 
 pub(crate) mod encode;
+pub(crate) mod limit;
 pub(crate) mod metadata;
+pub(crate) mod presets;
 pub(crate) mod publish;
+pub(crate) mod settings;
+pub(crate) mod tiff;
+pub(crate) mod webp;
 
 pub use metadata::{CaptureInfo, CaptureMetadata};
 

@@ -439,11 +439,23 @@ def editor(args):
             if destination.exists():
                 destination.unlink()
             exported = client.call(
-                "export.jpeg",
+                "export.write",
                 {
                     "asset_id": asset,
                     "destination": str(destination.resolve()),
-                    "keep_metadata": False,
+                    "settings": {
+                        "format": "jpeg",
+                        "size": {"fit": "full"},
+                        "quality": 90,
+                        "optimise": False,
+                        "chroma": "444",
+                        "limit_bytes": None,
+                        "sharpen": None,
+                        "metadata": "none",
+                        "pixels_per_inch": None,
+                        "folder": {"path": str(destination.parent.resolve())},
+                        "suffix": "-edited",
+                    },
                     "mutation": mutation("export"),
                 },
             )

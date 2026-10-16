@@ -664,147 +664,65 @@ fn pixel_of(fixture: &Fixture, mask: &luxforge_core::MaskId, value: f64, horizon
     (value * f64::from(side)).floor() as u32
 }
 
-/// A limit on a mask no layer is bound to is **refused by name**, and so is one on the stroke that
-/// draws a new mask.
+/// A limit on a mask no layer is bound to — the stroke that draws a new mask included — is seeded
+/// where a first adjustment through the mask would read, so a stroke held to a colour before any
+/// adjustment holds the colour it holds once Basic is applied through the mask.
 ///
-/// Refusing is the honest answer: the limit reads the pixel the operation a mask modulates receives,
-/// and a mask with no operation has no such pixel. Seeding from the source or from the finished frame
-/// instead would put the seed in a different domain from the one the similarity is evaluated in — the
-/// range study measures a `+0.75 EV` layer taking a sky from fully selected to not selected at all —
-/// so the stroke would quietly paint nothing.
+/// The global `+0.75 EV` lift ahead of that position is what makes the site matter: the source, or
+/// the finished frame, would put the seed in another domain from the one the similarity is
+/// evaluated in, and the stroke would quietly paint nothing.
 #[test]
-fn a_limit_without_an_operation_to_read_is_refused_by_name() {
-    let mut fixture = Fixture::open("refused");
-    // The stroke that draws a mask cannot be limited: there is no mask yet, so no layer either.
-    let error = fixture
-        .mask_command(
-            commands::ADD_STROKE,
-            MaskTarget::default(),
-            json!({
-                "points": [[0.3, 0.4], [0.6, 0.6]],
-                "size": 0.18,
-                "feather": 55.0,
-                "flow": 100.0,
-                "erase": false,
-                "limit_to_colour": true,
-            }),
-        )
-        .expect_err("a new mask has no operation to read an input from");
-    assert!(error.to_string().contains("draws a new mask"), "{error}");
+fn a_new_masks_first_limited_stroke_seeds_where_a_first_adjustment_reads() {
+    let mut fixture = Fixture::open("unbound-seed");
+    fixture.edit("set-basic", json!({"exposure": 0.75}));
+    let stroke = json!({
+        "points": [[0.42, 0.37], [0.7, 0.5]],
+        "size": 0.12,
+        "feather": 40.0,
+        "flow": 90.0,
+        "erase": false,
+        "limit_to_colour": true,
+        "colour_refine": 64.0,
+    });
+    let drawn = fixture
+        .mask_command(commands::ADD_STROKE, MaskTarget::default(), stroke.clone())
+        .expect("the stroke that draws a new mask may be held to a colour");
+    let mask = drawn.mask.clone().expect("a mask was drawn");
+    let seeds = |fixture: &Fixture| -> Vec<[f64; 3]> {
+        let recipe = fixture.recipe();
+        luxforge_core::path::references(&recipe.masks[0].components[0].payload, "the brush")
+            .expect("the reserved field")
+            .iter()
+            .map(|id| {
+                recipe
+                    .strokes
+                    .get::<Stroke>(id)
+                    .expect("a stored stroke")
+                    .colour_limit()
+                    .expect("the stroke carries its limit")
+                    .seed()
+            })
+            .collect()
+    };
+    let unbound = seeds(&fixture);
+    assert_eq!(unbound.len(), 1);
 
-    // A mask that exists but carries no layer is refused too, and the refusal names it.
-    let target = painted(&mut fixture);
-    let mask = target.mask.clone().expect("a mask was drawn");
-    let error = fixture
+    // Apply Basic through the mask, then hold the same stroke again: it reads the same pixel.
+    fixture.edit(
+        "set-basic",
+        json!({"mask": mask.as_str(), "exposure": -0.5}),
+    );
+    fixture
         .mask_command(
             commands::ADD_STROKE,
             MaskTarget {
-                mask: Some(mask.clone()),
-                component: target.component.clone(),
+                mask: Some(mask),
+                component: drawn.component,
                 ..MaskTarget::default()
             },
-            json!({
-                "points": [[0.4, 0.4], [0.6, 0.6]],
-                "size": 0.12,
-                "feather": 40.0,
-                "flow": 90.0,
-                "erase": false,
-                "limit_to_colour": true,
-            }),
+            stroke,
         )
-        .expect_err("a mask with no layer has no operation");
-    let message = error.to_string();
-    assert!(message.contains("Mask 1"), "{message}");
-    assert!(message.contains("no layer is bound"), "{message}");
-
-    // `mask.sample-input` refuses the same case, by the same rule and in the same words.
-    let entry = fixture
-        .service
-        .state(&fixture.asset)
-        .unwrap()
-        .current_entry
-        .id;
-    let error = fixture
-        .service
-        .mask_input_sample(&fixture.asset, &entry, &mask, 4, 4)
-        .expect_err("no layer is bound to the mask");
-    assert!(error.to_string().contains("no layer is bound"), "{error}");
-
-    // Bind a layer and both work, which is what makes the refusal a state and not a wall.
-    fixture.edit("set-basic", json!({"mask": mask.as_str(), "exposure": 1.0}));
-    let entry = fixture
-        .service
-        .state(&fixture.asset)
-        .unwrap()
-        .current_entry
-        .id;
-    let answered = fixture
-        .service
-        .mask_input_sample(&fixture.asset, &entry, &mask, 4, 4)
-        .expect("the host answers once there is an operation");
-    assert!(answered.r.is_finite() && answered.g.is_finite() && answered.b.is_finite());
-    assert!(answered.width > 0 && answered.height > 0);
-}
-
-/// The host's own canvas pick is declared for every sampling kind, targets host methods, and submits
-/// exactly the fields that kind's sample command declares.
-///
-/// This is proposal P17's mechanism, asserted as a property of the tables rather than of a list of
-/// names: registering a sampling kind is what gives it a pick, and the delivered "every top-level
-/// number field of the result whose name is a parameter of the action" rule needs no exception
-/// because `mask.sample-input` answers `r`, `g` and `b` and `mask.add-<kind>-sample` declares them.
-#[test]
-fn the_hosts_canvas_pick_runs_a_host_query_into_a_host_command() {
-    let kinds: Vec<&str> = luxforge_core::mask::sampling_kinds().collect();
-    assert!(!kinds.is_empty(), "some kind samples colours");
-    assert_eq!(commands::canvas().len(), kinds.len());
-    for (kind, pick) in kinds.iter().zip(commands::canvas()) {
-        let luxforge_core::CanvasInteraction::SampleApply {
-            query,
-            x,
-            y,
-            action,
-            title,
-            shortcut,
-            icon,
-        } = pick
-        else {
-            panic!("a mask's pick is a sample-apply");
-        };
-        assert_eq!(query, commands::SAMPLE_INPUT);
-        assert_eq!(action, &format!("mask.add-{kind}-sample"));
-        assert!(shortcut.is_none(), "a mask's pick is offered by its panel");
-        assert!(
-            icon.is_none(),
-            "a mask's pick has no mode strip entry to draw"
-        );
-        assert!(title.starts_with("Pick"), "{title}");
-        // The query declares the two coordinates the pick fills.
-        // The query is one of the host descriptor's reads, never one of its actions.
-        assert!(
-            commands::find(query).is_none(),
-            "a pick's query writes nothing"
-        );
-        let sample_input = commands::find_query(query).expect("the query is a declared host read");
-        for name in [x, y] {
-            let declared = sample_input
-                .parameter(name)
-                .unwrap_or_else(|| panic!("{query} declares {name}"));
-            assert!(matches!(
-                declared.kind,
-                luxforge_core::ParameterKind::Integer { .. }
-            ));
-        }
-        // And the action declares exactly the fields the query answers with.
-        let add = commands::find(action).expect("the action is a declared host command");
-        for name in ["r", "g", "b"] {
-            assert!(
-                add.action.parameter(name).is_some(),
-                "{action} declares {name}"
-            );
-        }
-        // The pick's mode is its action's method, so a client needs no second table.
-        assert!(commands::canvas_pick(action).is_some());
-        assert!(commands::canvas_pick("mask.list").is_none());
-    }
+        .expect("a limited stroke on the bound mask commits");
+    let bound = seeds(&fixture);
+    assert_eq!(bound, [unbound[0], unbound[0]]);
 }

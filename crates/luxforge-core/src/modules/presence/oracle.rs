@@ -14,8 +14,8 @@
 
 use super::{PRESENCE_EFFECT, PresenceModule, presence_halo};
 use crate::{
-    Cancel, EFFECT_FORMAT, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe,
-    RenderContext, RenderOptions, SnapshotId, SourceImage,
+    Cancel, Error, Layer, LayerId, ModuleRegistry, RECIPE_FORMAT, Recipe, RenderContext,
+    RenderOptions, SnapshotId, SourceImage,
     modules::{Global, Parallelism, Region, SpatialOperation, Stage, ToolModule},
     render::{
         spatial::{
@@ -202,35 +202,34 @@ fn evaluate(
     Ok(output)
 }
 
-/// The operation a case's amounts compile to at its stage long side. The payload goes through the
-/// module's own `compile`, so the unit order, the omission of amount-0 units and the radii all come
-/// from production rather than from the test.
+/// The operation a case's amounts make at its stage long side: the units built at those
+/// strengths, in the order and with the omission of amount-0 units that the module's `compile`
+/// follows (`compile_orders_the_units_dehaze_texture_clarity`). The cases are strengths, which a
+/// slider reaches through its response; some lie beyond any slider value.
 fn compiled(case: &Value) -> SpatialOperation {
     let long_side = case["long_side"].as_u64().expect("a stage long side") as u32;
     let params = &case["params"];
-    let mut payload = serde_json::Map::new();
-    for field in ["texture", "clarity", "dehaze"] {
-        let value = params[field].as_f64().expect("an amount");
-        if value != 0.0 {
-            payload.insert(field.to_owned(), json!(value));
-        }
+    let amount = |field: &str| params[field].as_f64().expect("an amount");
+    let mut units: Vec<std::sync::Arc<dyn crate::modules::SpatialUnit>> = Vec::new();
+    if amount("dehaze") != 0.0 {
+        units.push(std::sync::Arc::new(super::dehaze::Dehaze::new(
+            amount("dehaze"),
+            long_side,
+        )));
     }
-    let stage = Stage {
-        width: long_side,
-        height: 1,
-    };
-    match PresenceModule::new()
-        .compile(
-            PRESENCE_EFFECT,
-            1,
-            &Value::Object(payload),
-            crate::CompileStage::exact(stage),
-        )
-        .expect("a compiled presence operation")
-    {
-        crate::modules::Processing::Spatial(operation) => operation,
-        other => panic!("expected a spatial operation, got {other:?}"),
+    if amount("texture") != 0.0 {
+        units.push(std::sync::Arc::new(super::texture::Texture::new(
+            amount("texture"),
+            long_side,
+        )));
     }
+    if amount("clarity") != 0.0 {
+        units.push(std::sync::Arc::new(super::clarity::Clarity::new(
+            amount("clarity"),
+            long_side,
+        )));
+    }
+    SpatialOperation::new(units).expect("a presence operation")
 }
 
 #[test]
@@ -320,7 +319,7 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
         let crate::modules::Processing::Spatial(operation) = module
             .compile(
                 PRESENCE_EFFECT,
-                1,
+                crate::current_effect_format(crate::PRESENCE_EFFECT),
                 &json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
                 crate::CompileStage::exact(stage),
             )
@@ -369,7 +368,7 @@ fn a_tile_slot_holds_less_than_the_working_set_it_is_charged() {
         let crate::modules::Processing::Spatial(operation) = module
             .compile(
                 PRESENCE_EFFECT,
-                1,
+                crate::current_effect_format(crate::PRESENCE_EFFECT),
                 &json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
                 crate::CompileStage::exact(stage),
             )
@@ -403,7 +402,7 @@ fn a_tiles_rectangles_follow_the_declared_halos() {
     let crate::modules::Processing::Spatial(operation) = module
         .compile(
             PRESENCE_EFFECT,
-            1,
+            crate::current_effect_format(crate::PRESENCE_EFFECT),
             &json!({"texture": 20.0, "clarity": 20.0, "dehaze": 20.0}),
             crate::CompileStage::exact(stage),
         )
@@ -467,7 +466,7 @@ fn presence_recipe(payload: Value) -> Recipe {
         layers: vec![Layer {
             id: LayerId::new(),
             effect_id: PRESENCE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
             payload,
             mask: None,
             artifacts: Vec::new(),
@@ -481,7 +480,7 @@ fn operation(payload: &Value, stage: Stage) -> SpatialOperation {
     match PresenceModule::new()
         .compile(
             PRESENCE_EFFECT,
-            EFFECT_FORMAT,
+            crate::current_effect_format(crate::PRESENCE_EFFECT),
             payload,
             crate::CompileStage::exact(stage),
         )
@@ -585,7 +584,7 @@ fn a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
         let crate::modules::Processing::Spatial(operation) = module
             .compile(
                 PRESENCE_EFFECT,
-                1,
+                crate::current_effect_format(crate::PRESENCE_EFFECT),
                 &payload,
                 crate::CompileStage::exact(stage),
             )
@@ -659,7 +658,7 @@ fn presence_timing() {
             let crate::modules::Processing::Spatial(operation) = module
                 .compile(
                     PRESENCE_EFFECT,
-                    1,
+                    crate::current_effect_format(crate::PRESENCE_EFFECT),
                     &payload,
                     crate::CompileStage::exact(stage),
                 )

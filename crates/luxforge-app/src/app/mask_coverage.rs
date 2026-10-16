@@ -430,6 +430,7 @@ impl Editor {
         worker.adopted = None;
         worker.unavailable = None;
         worker.queue.cancel();
+        self.mask_panel.coverage_refusal = None;
         self.presentation.presenter.clear_coverage();
     }
     fn coverage_spec(&self) -> Option<Spec> {
@@ -465,6 +466,8 @@ impl Editor {
         if self.coverage_worker.spec == spec {
             return false;
         }
+        let retargeted = self.coverage_worker.spec.as_ref().map(|spec| &spec.target)
+            != spec.as_ref().map(|spec| &spec.target);
         let worker = &mut self.coverage_worker;
         worker.epoch = worker.epoch.saturating_add(1);
         worker.spec = spec;
@@ -473,6 +476,11 @@ impl Editor {
         worker.adopted = None;
         worker.unavailable = None;
         worker.queue.cancel();
+        // A view change (zoom, region, tint) asks the same question of the same mask, so a
+        // refusal of it still stands; only another target, or none, drops the note.
+        if retargeted {
+            self.mask_panel.coverage_refusal = None;
+        }
         self.presentation.presenter.clear_coverage();
         true
     }
@@ -629,6 +637,8 @@ impl Editor {
         self.coverage_worker.waiting = None;
         self.coverage_worker.requested = Some(stamp.clone());
         self.coverage_worker.unavailable = None;
+        // The last refusal stays through a re-request: the same answer must not blink the row's
+        // note or rewrite the status line. A grid, or another target, ends it.
         self.coverage_worker.queue.request(Job {
             evaluation: job.evaluation.clone(),
             stamp,
@@ -667,6 +677,7 @@ impl Editor {
         let generation = self.presentation.presented_generation;
         let Feedback { grid, absent } = done.outcome.as_ref();
         if let Some(grid) = grid {
+            self.mask_panel.coverage_refusal = None;
             let mask = grid.mask.clone();
             let component = grid.component.clone();
             self.event("mask_coverage_ready", || json!({"epoch":done.stamp.epoch,

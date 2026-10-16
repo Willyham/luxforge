@@ -723,3 +723,420 @@ fn a_tile_runner_moves_to_its_thread() {
     fn sent<T: Send>() {}
     sent::<TileRunner>();
 }
+
+/// The CPU's sums of one cut, `Σ_y w_y · (Σ_x w_x · v)` in ascending order in `f32`, over `values`,
+/// a `width`-wide stage's linear values, each clamped to `[0, 1]` first, NaN taken to 0.
+fn resampled(
+    values: &[[f32; 3]],
+    width: u32,
+    columns: &[resample::ResampleTaps],
+    rows: &[resample::ResampleTaps],
+) -> Vec<[f32; 3]> {
+    let mut sums = Vec::new();
+    for row in rows {
+        for column in columns {
+            let mut sum = [0.0f32; 3];
+            for (dy, row_weight) in row.weights.iter().enumerate() {
+                let mut across = [0.0f32; 3];
+                for (dx, weight) in column.weights.iter().enumerate() {
+                    let at =
+                        (row.first as usize + dy) * width as usize + column.first as usize + dx;
+                    for channel in 0..3 {
+                        let value = values[at][channel];
+                        let held = if value > 0.0 { value.min(1.0) } else { 0.0 };
+                        across[channel] += weight * held;
+                    }
+                }
+                for channel in 0..3 {
+                    sum[channel] += row_weight * across[channel];
+                }
+            }
+            sums.push(sum);
+        }
+    }
+    sums
+}
+
+/// The 16-bit code of a linear value: the count of the test reference's thresholds at or below it,
+/// clamped first.
+fn code16(thresholds: &[f32], value: f32) -> u16 {
+    let value = if value > 0.0 { value.min(1.0) } else { 0.0 };
+    thresholds.partition_point(|threshold| *threshold <= value) as u16
+}
+
+/// Lanczos-3 taps of `to` output pixels along a side of `from`, narrowed to `f32`.
+fn lanczos_taps(from: u32, to: u32) -> Vec<resample::ResampleTaps> {
+    if from == to {
+        return (0..to)
+            .map(|first| resample::ResampleTaps {
+                first,
+                weights: vec![1.0],
+            })
+            .collect();
+    }
+    let scale = f64::from(from) / f64::from(to);
+    let kernel = |x: f64| {
+        if x == 0.0 {
+            1.0
+        } else if x.abs() >= 3.0 {
+            0.0
+        } else {
+            let pi = std::f64::consts::PI * x;
+            3.0 * pi.sin() * (pi / 3.0).sin() / (pi * pi)
+        }
+    };
+    (0..to)
+        .map(|index| {
+            let centre = (f64::from(index) + 0.5) * scale;
+            let first = (centre - 3.0 * scale).floor().max(0.0) as u32;
+            let end = ((centre + 3.0 * scale).ceil() as u32).min(from);
+            let weights: Vec<f64> = (first..end)
+                .map(|k| kernel((f64::from(k) + 0.5 - centre) / scale))
+                .collect();
+            let sum: f64 = weights.iter().sum();
+            resample::ResampleTaps {
+                first,
+                weights: weights.iter().map(|weight| (weight / sum) as f32).collect(),
+            }
+        })
+        .collect()
+}
+
+/// A resampled stream on the runner: identity tiles write a RAW's planes into the held output
+/// stage; cuts of it kept at its size read those values back encoded exactly at 8 and 16 bits, two
+/// in flight; and cuts of a reduction to odd sizes read back the CPU's `f32` sums within one code.
+/// The stage and every cut are charged within the budget, a cut is refused with no stage held, and
+/// letting the stage go lets go of its bytes.
+#[test]
+fn a_resampled_stream_reads_back_the_held_stage_resampled_and_encoded() {
+    let test = "a_resampled_stream_reads_back_the_held_stage_resampled_and_encoded";
+    let Some(mut runner) = runner(test) else {
+        return;
+    };
+    let thresholds = resample::reference_wide_encoding();
+    let (width, height) = (300u32, 200u32);
+    let value = |channel: usize, x: u32, y: u32| {
+        (channel as f32 + 1.0) * 0.0031 * (x as f32) + 0.0041 * (y as f32) - 0.05 * channel as f32
+    };
+    let plane = (width * height) as usize;
+    let mut planes = vec![0f32; 3 * plane];
+    let mut values = Vec::with_capacity(plane);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = [0, 1, 2].map(|channel| value(channel, x, y));
+            for (channel, value) in pixel.iter().enumerate() {
+                planes[channel * plane + (y * width + x) as usize] = *value;
+            }
+            values.push(pixel);
+        }
+    }
+    let source = GpuSource::planes(
+        1,
+        Arc::new(planes),
+        (width, height),
+        [0, 0, width, height],
+        1,
+    )
+    .expect("a source");
+    let full = [lanczos_taps(width, width), lanczos_taps(height, height)];
+    let cut = |columns, rows, depth| resample::ResampleCut {
+        columns,
+        rows,
+        depth,
+        sharpen: None,
+    };
+    assert_eq!(
+        runner.submit_resample(&cut(
+            &full[0],
+            &full[1][..4],
+            resample::ResampleDepth::Eight
+        )),
+        Err(TileFailure::PIPELINE_FAILED),
+        "no stage held"
+    );
+    runner.hold_output((width, height)).expect("the stage held");
+    let stage_bytes = u64::from(width * height) * 16;
+    assert_eq!(runner.figures().stage_bytes, stage_bytes);
+    let side = 64;
+    for y0 in (0..height).step_by(side as usize) {
+        for x0 in (0..width).step_by(side as usize) {
+            let size = (side.min(width - x0), side.min(height - y0));
+            let plan = cut_plan(&source, (x0, y0), size, 1);
+            let rect = [x0, y0, x0 + size.0, y0 + size.1];
+            let ticket = runner
+                .submit_to(
+                    &plan,
+                    &source,
+                    [x0, y0, size.0, size.1],
+                    TileInput::Source,
+                    TileOutput::Held { rect },
+                )
+                .expect("a tile into the held stage");
+            runner.finish_stage(ticket).expect("drawn");
+        }
+    }
+    // Kept at its size: the values themselves, encoded once.
+    let at = |x: u32, y: u32| values[(y * width + x) as usize];
+    for range in runner.resample_cuts(&full[0], &full[1], 0).expect("cuts") {
+        let (columns, rows) = (
+            &full[0][range.columns.start as usize..range.columns.end as usize],
+            &full[1][range.rows.start as usize..range.rows.end as usize],
+        );
+        let wide = runner
+            .submit_resample(&cut(columns, rows, resample::ResampleDepth::Sixteen))
+            .expect("a cut");
+        let narrow = runner
+            .submit_resample(&cut(columns, rows, resample::ResampleDepth::Eight))
+            .expect("a second cut in flight");
+        let Ok(TilePixels::Codes16(wide)) = runner.finish(wide) else {
+            panic!("16-bit codes");
+        };
+        let Ok(TilePixels::Codes(narrow)) = runner.finish(narrow) else {
+            panic!("8-bit codes");
+        };
+        let mut index = 0;
+        for y in range.rows.clone() {
+            for x in range.columns.clone() {
+                let pixel = at(x, y);
+                let expected = pixel.map(|value| code16(&thresholds, value));
+                assert_eq!(
+                    wide[index * 4..index * 4 + 4],
+                    [expected[0], expected[1], expected[2], u16::MAX],
+                    "({x}, {y}) at 16 bits"
+                );
+                let expected = pixel.map(|value| srgb::code(f64::from(value)));
+                assert_eq!(
+                    narrow[index * 4..index * 4 + 4],
+                    [expected[0], expected[1], expected[2], 255],
+                    "({x}, {y}) at 8 bits"
+                );
+                index += 1;
+            }
+        }
+    }
+    // Reduced to odd sizes: the CPU's sums within one code.
+    let reduced = [lanczos_taps(width, 97), lanczos_taps(height, 61)];
+    for range in runner
+        .resample_cuts(&reduced[0], &reduced[1], 0)
+        .expect("cuts")
+    {
+        let (columns, rows) = (
+            &reduced[0][range.columns.start as usize..range.columns.end as usize],
+            &reduced[1][range.rows.start as usize..range.rows.end as usize],
+        );
+        let ticket = runner
+            .submit_resample(&cut(columns, rows, resample::ResampleDepth::Sixteen))
+            .expect("a cut");
+        let Ok(TilePixels::Codes16(codes)) = runner.finish(ticket) else {
+            panic!("16-bit codes");
+        };
+        for (index, sum) in resampled(&values, width, columns, rows).iter().enumerate() {
+            for channel in 0..3 {
+                let (gpu, cpu) = (
+                    codes[index * 4 + channel],
+                    code16(&thresholds, sum[channel]),
+                );
+                assert!(gpu.abs_diff(cpu) <= 1, "{index}: {gpu} against {cpu}");
+            }
+            assert_eq!(codes[index * 4 + 3], u16::MAX);
+        }
+    }
+    let figures = runner.figures();
+    assert!(figures.peak <= GPU_TILE_BUDGET);
+    assert!(figures.peak >= stage_bytes);
+    runner.release_output();
+    runner.release();
+    assert_eq!(
+        runner.figures().stage_bytes,
+        resample::WIDE_BYTES,
+        "the thresholds alone kept"
+    );
+    eprintln!("{test}: {figures:?}");
+}
+
+/// One axis's Gaussian weights of `sigma`, `⌈3σ⌉` taps a side, summing to one.
+fn gaussian(sigma: f64) -> Vec<f32> {
+    let radius = (3.0 * sigma).ceil() as i64;
+    let raw: Vec<f64> = (-radius..=radius)
+        .map(|k| (-((k * k) as f64) / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let sum: f64 = raw.iter().sum();
+    raw.iter().map(|weight| (weight / sum) as f32).collect()
+}
+
+/// `codes`, a `width` × `height` output of opaque RGBA codes up to `top`, sharpened on the CPU in
+/// `f64` as the design states it: the luma's unsharp mask by `weights` across and down, clamped to
+/// the edge, its change rounded half away from zero and held so no channel clips.
+fn sharpened_on_cpu(
+    codes: &[u32],
+    (width, height): (u32, u32),
+    weights: &[f32],
+    amount: f64,
+    top: f64,
+) -> Vec<u32> {
+    let (w, h) = (width as i64, height as i64);
+    let r = (weights.len() / 2) as i64;
+    let at = |x: i64, y: i64| ((y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) * 4) as usize;
+    let luma = |i: usize| {
+        0.2126 * f64::from(codes[i])
+            + 0.7152 * f64::from(codes[i + 1])
+            + 0.0722 * f64::from(codes[i + 2])
+    };
+    let mut out = codes.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let mut blurred = 0.0;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    blurred += f64::from(weights[(dy + r) as usize])
+                        * f64::from(weights[(dx + r) as usize])
+                        * luma(at(x + dx, y + dy));
+                }
+            }
+            let own = at(x, y);
+            let high = amount * (luma(own) - blurred);
+            let rgb = [codes[own], codes[own + 1], codes[own + 2]].map(f64::from);
+            let low = -rgb.iter().copied().fold(f64::MAX, f64::min);
+            let room = top - rgb.iter().copied().fold(0.0, f64::max);
+            let change = (high.signum() * (high.abs() + 0.5).floor()).clamp(low, room);
+            for channel in 0..3 {
+                out[own + channel] = (rgb[channel] + change) as u32;
+            }
+        }
+    }
+    out
+}
+
+/// Output sharpening in the resample sweep's cuts: a held stage resampled to an odd size, then cut
+/// in bands and across at arbitrary edges, each cut computed `r` pixels wider and its interior
+/// sharpened, reads back, assembled, what the whole unsharpened output sharpened on the CPU reads,
+/// within one code, at 8 and at 16 bits: no seam at any cut's edge, and the image's edges clamped.
+#[test]
+#[slow]
+fn sharpened_cuts_read_their_neighbours_across_every_cut_edge() {
+    let test = "sharpened_cuts_read_their_neighbours_across_every_cut_edge";
+    let Some(mut runner) = runner(test) else {
+        return;
+    };
+    let (width, height) = (160u32, 120u32);
+    let value = |channel: usize, x: u32, y: u32| {
+        // Stripes and a ramp: edges for the sharpening to find, and saturated corners.
+        let stripe = if (x / 7 + y / 5).is_multiple_of(2) {
+            0.6
+        } else {
+            0.1
+        };
+        (stripe + 0.002 * x as f32 * (channel as f32 + 1.0) - 0.003 * y as f32).clamp(-0.1, 1.2)
+    };
+    let plane = (width * height) as usize;
+    let mut planes = vec![0f32; 3 * plane];
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..3 {
+                planes[channel * plane + (y * width + x) as usize] = value(channel, x, y);
+            }
+        }
+    }
+    let source = GpuSource::planes(
+        1,
+        Arc::new(planes),
+        (width, height),
+        [0, 0, width, height],
+        1,
+    )
+    .expect("a source");
+    runner.hold_output((width, height)).expect("the stage held");
+    let side = 64;
+    for y0 in (0..height).step_by(side as usize) {
+        for x0 in (0..width).step_by(side as usize) {
+            let size = (side.min(width - x0), side.min(height - y0));
+            let plan = cut_plan(&source, (x0, y0), size, 1);
+            let rect = [x0, y0, x0 + size.0, y0 + size.1];
+            let ticket = runner
+                .submit_to(
+                    &plan,
+                    &source,
+                    [x0, y0, size.0, size.1],
+                    TileInput::Source,
+                    TileOutput::Held { rect },
+                )
+                .expect("a tile into the held stage");
+            runner.finish_stage(ticket).expect("drawn");
+        }
+    }
+    let output = (97u32, 71u32);
+    let taps = [
+        lanczos_taps(width, output.0),
+        lanczos_taps(height, output.1),
+    ];
+    let weights = gaussian(1.25);
+    let radius = (weights.len() / 2) as u32;
+    let amount = 1.7f32;
+    for (depth, top) in [
+        (resample::ResampleDepth::Eight, 255.0),
+        (resample::ResampleDepth::Sixteen, 65535.0),
+    ] {
+        // Read a rectangle of the output back, sharpened or not, as opaque RGBA codes.
+        let mut read = |columns: std::ops::Range<u32>,
+                        rows: std::ops::Range<u32>,
+                        sharpen: bool|
+         -> Vec<u32> {
+            let (outer_columns, outer_rows) = if sharpen {
+                (
+                    resample::extended(&columns, radius, output.0 as usize),
+                    resample::extended(&rows, radius, output.1 as usize),
+                )
+            } else {
+                (columns.clone(), rows.clone())
+            };
+            let cut = resample::ResampleCut {
+                columns: &taps[0][outer_columns.start as usize..outer_columns.end as usize],
+                rows: &taps[1][outer_rows.start as usize..outer_rows.end as usize],
+                depth,
+                sharpen: sharpen.then(|| resample::CutSharpen {
+                    weights: &weights,
+                    amount,
+                    interior: [
+                        columns.start - outer_columns.start,
+                        rows.start - outer_rows.start,
+                        columns.len() as u32,
+                        rows.len() as u32,
+                    ],
+                }),
+            };
+            let ticket = runner.submit_resample(&cut).expect("a cut");
+            match runner.finish(ticket) {
+                Ok(TilePixels::Codes(codes)) => codes.into_iter().map(u32::from).collect(),
+                Ok(TilePixels::Codes16(codes)) => codes.into_iter().map(u32::from).collect(),
+                other => panic!("codes, not {other:?}"),
+            }
+        };
+        let plain = read(0..output.0, 0..output.1, false);
+        let mut assembled = vec![0u32; plain.len()];
+        for rows in [0..23, 23..24, 24..71] {
+            for columns in [0..40, 40..41, 41..97] {
+                let codes = read(columns.clone(), rows.clone(), true);
+                let across = columns.len();
+                for (line, y) in rows.clone().enumerate() {
+                    let at = (y as usize * output.0 as usize + columns.start as usize) * 4;
+                    assembled[at..at + across * 4]
+                        .copy_from_slice(&codes[line * across * 4..(line + 1) * across * 4]);
+                }
+            }
+        }
+        let expected = sharpened_on_cpu(&plain, output, &weights, f64::from(amount), top);
+        let worst = assembled
+            .iter()
+            .zip(&expected)
+            .map(|(gpu, cpu)| gpu.abs_diff(*cpu))
+            .max()
+            .unwrap();
+        assert!(worst <= 1, "{depth:?}: a code {worst} from the CPU's");
+        assert_ne!(
+            assembled, plain,
+            "{depth:?}: the sharpening changed nothing"
+        );
+    }
+    runner.release_output();
+    runner.release();
+}

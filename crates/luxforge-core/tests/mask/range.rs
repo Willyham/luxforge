@@ -8,6 +8,8 @@
 //! * **The composition.** A range component combined with a gradient and a subtract brush renders
 //!   exactly as the frozen algebra composes them, which is what makes a sky selection practical.
 //! * **The declared sample limit** and the generated methods that create, patch and sample a range.
+//! * **A pick reads the masked operation's input**: the area query's block means, and a dragged
+//!   colour pick that renders as the reference composes what it stored.
 //! * **What a whole-stage rectangle costs**, measured.
 
 use super::kinds::{
@@ -34,6 +36,7 @@ use luxforge_reference::range::{
     compile_colour_range, compile_luminance_range, luminance_coverage,
 };
 use luxforge_reference::srgb;
+use luxforge_test_macros::slow;
 use luxforge_testkit::fixtures::{render, render_linear, sample_linear};
 use serde_json::{Value, json};
 
@@ -570,6 +573,207 @@ fn the_generated_methods_create_patch_sample_and_unsample_a_range() {
     assert_eq!(stored.payload["high_feather"], json!(12.5));
     assert_eq!(stored.payload["low"], json!(20.0));
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Picking from the photograph
+// ---------------------------------------------------------------------------
+
+/// **A pick reads the pixels the masked operation receives and renders as the reference composes
+/// what it stored.** Over the JPEG fixture, `mask.sample-input-area` answers the block means of the
+/// layer's input over the whole-block rectangle it names, within its point bound; a drag with
+/// `mask.pick-colour-range` stores the area's medoid and a Refine no higher than it was, in one
+/// entry; and a masked exposure through that component renders, channel for channel, as the
+/// reference composes the stored payload over the unedited picture.
+#[test]
+#[slow]
+fn a_dragged_colour_pick_stores_what_the_area_holds_and_renders_as_the_reference_composes_it() {
+    let dir = temp("pick");
+    let source = dir.join("orientation-1.jpg");
+    std::fs::copy(luxforge_testbase::paths::jpeg(), &source).expect("the fixture copies");
+    let mut service = EditorService::open(&dir.join("catalog.sqlite")).expect("a catalog");
+    let asset: AssetId = service
+        .import(&source)
+        .expect("the fixture imports")
+        .asset
+        .id;
+    let unedited = service
+        .render_current(&asset)
+        .expect("the unedited picture");
+    let (width, height) = (unedited.width, unedited.height);
+    let input = |x: u32, y: u32| -> [f64; 3] {
+        let pixel = unedited.pixel(x, y).expect("a pixel of the stage");
+        std::array::from_fn(|channel| srgb::decode(pixel[channel]))
+    };
+    let mut request = 0u64;
+    let mut run = |service: &mut EditorService, method: &str, target: MaskTarget, parameters| {
+        request += 1;
+        let mutation = Mutation {
+            expected_revision: service.state(&asset).unwrap().revision,
+            request_id: format!("pick-{request}"),
+            actor: "mask-pick".to_owned(),
+        };
+        service
+            .run_action(&asset, mutation, method, target.request(parameters))
+            .unwrap_or_else(|error| panic!("{method}: {error}"))
+    };
+
+    let created = run(
+        &mut service,
+        "mask.create-colour-range",
+        MaskTarget::default(),
+        json!({"refine": 80.0}),
+    );
+    let mask = created.mask.clone().expect("a created mask");
+    let target = MaskTarget {
+        mask: Some(mask.clone()),
+        component: created.component.clone(),
+        name: None,
+        stroke: None,
+    };
+
+    // The area query, read first so the pick's answer can be held to it.
+    let rect = json!({"x": 0.1, "y": 0.2, "width": 0.4, "height": 0.3});
+    let mut query = rect.clone();
+    query["mask"] = json!(mask.as_str());
+    let entry = service.state(&asset).unwrap().current_entry.id;
+    let answer = service
+        .run_query(&asset, &entry, commands::SAMPLE_INPUT_AREA, query)
+        .expect("the area is answered");
+    let area: luxforge_core::AreaInput = serde_json::from_value(answer).expect("an area answer");
+    assert_eq!(
+        (area.stage.width, area.stage.height),
+        (width, height),
+        "the stage the masked layer receives"
+    );
+    let reduction = area.reduction;
+    assert!(reduction.is_power_of_two());
+    let [columns, rows] = area.size;
+    assert!(area.points.len() <= commands::AREA_POINTS);
+    assert_eq!(area.points.len(), (columns * rows) as usize);
+    assert!(
+        (columns * 2) * (rows * 2) > commands::AREA_POINTS as u32 || reduction == 1,
+        "{columns}x{rows} at {reduction}: the smallest reduction within the bound"
+    );
+    assert!(
+        area.rect.x0.is_multiple_of(reduction)
+            && area.rect.y0.is_multiple_of(reduction)
+            && area.rect.width == columns * reduction
+            && area.rect.height == rows * reduction,
+        "the rectangle is whole blocks"
+    );
+    for row in 0..rows {
+        for column in 0..columns {
+            let mut sum = [0.0f64; 3];
+            for dy in 0..reduction {
+                for dx in 0..reduction {
+                    let pixel = input(
+                        area.rect.x0 + column * reduction + dx,
+                        area.rect.y0 + row * reduction + dy,
+                    );
+                    for channel in 0..3 {
+                        sum[channel] += pixel[channel];
+                    }
+                }
+            }
+            let point = area.points[(row * columns + column) as usize];
+            let count = f64::from(reduction * reduction);
+            for channel in 0..3 {
+                let expected = sum[channel] / count;
+                assert!(
+                    (point[channel] - expected).abs() <= 1e-6,
+                    "block ({column}, {row}) channel {channel}: {} against {expected}",
+                    point[channel]
+                );
+            }
+        }
+    }
+
+    // A rectangle hanging off the frame is clipped to it, not refused.
+    let entry = service.state(&asset).unwrap().current_entry.id;
+    let clipped: luxforge_core::AreaInput = serde_json::from_value(
+        service
+            .run_query(
+                &asset,
+                &entry,
+                commands::SAMPLE_INPUT_AREA,
+                json!({"mask": mask.as_str(), "x": 0.9, "y": 0.85, "width": 0.3, "height": 0.3}),
+            )
+            .expect("an area partly outside the stage"),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            clipped.rect.x0 + clipped.rect.width,
+            clipped.rect.y0 + clipped.rect.height
+        ),
+        (width, height),
+        "clipped to the stage"
+    );
+    assert!(clipped.rect.x0 <= (0.9 * f64::from(width)) as u32);
+    assert!(clipped.rect.y0 <= (0.85 * f64::from(height)) as u32);
+
+    let picked = run(&mut service, "mask.pick-colour-range", target.clone(), rect);
+    assert_eq!(picked.label.as_deref(), Some("Pick Colour range 1"));
+    let entry = service.state(&asset).unwrap().current_entry.id;
+    let stored = service
+        .mask_listing(&asset, &entry)
+        .expect("a listing")
+        .masks[0]
+        .components[0]
+        .payload
+        .clone();
+    let range: RefColourRange = RefColourRange {
+        samples: serde_json::from_value(stored["samples"].clone()).expect("samples"),
+        refine: stored["refine"].as_f64().expect("a refine"),
+    };
+    assert_eq!(range.samples.len(), 1, "a drag replaces the samples");
+    assert!(
+        area.points.contains(&range.samples[0]),
+        "the sample is a point of the area"
+    );
+    assert!(range.refine <= 80.0, "a pick never raises Refine");
+
+    run(
+        &mut service,
+        "set-basic",
+        MaskTarget::default(),
+        json!({"mask": mask.as_str(), "exposure": MASKED_EV}),
+    );
+    let rendered = service.render_current(&asset).expect("the masked render");
+    let oracle = compile_colour_range(&range);
+    let mut partial = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = input(x, y);
+            let m = colour_coverage(&oracle, pixel);
+            if m > 0.0 && m < 1.0 {
+                partial += 1;
+            }
+            let out = rendered.pixel(x, y).expect("a pixel of the stage");
+            for (channel, &code) in out.iter().enumerate().take(3) {
+                let effect = exposed(pixel[channel], MASKED_EV);
+                let blended = (1.0 - m) * pixel[channel] + m * effect;
+                assert_code(
+                    code,
+                    srgb::code(blended),
+                    blended,
+                    &format!("({x}, {y}) channel {channel}"),
+                );
+            }
+        }
+    }
+    // The fixture is flat regions of colour, so the falloff is their edges: few pixels, but the
+    // pick must select part of the picture, not none or all of it, and leave a falloff to compare.
+    let selected = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| colour_coverage(&oracle, input(x, y)) >= 1.0)
+        .count();
+    assert!(
+        selected > 0 && selected < (width * height) as usize && partial > 0,
+        "{selected} pixels selected and {partial} on the falloff"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

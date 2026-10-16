@@ -1100,7 +1100,8 @@ impl Study {
         let exports = parallel(&reads, |(si, id, path)| {
             let subject = &subjects[*si];
             let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let tiff = crate::tiff::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let tiff =
+                crate::tiff_reader::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             drop(bytes);
             let factor = match subject.class {
                 Class::Charts => 1,
@@ -1975,7 +1976,8 @@ impl Pairs {
             let subject = &study.subjects[*si];
             let path = exports.join(format!("{id}.tif"));
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let tiff = crate::tiff::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let tiff =
+                crate::tiff_reader::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             drop(bytes);
             let frame = from_codes(
                 tiff.width as usize,

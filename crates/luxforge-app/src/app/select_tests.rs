@@ -97,6 +97,7 @@ fn event_source() -> ViewSource {
 /// A view of `count` frames at revision 7 over one day, with a burst of three at 1..4.
 fn summary(count: u32) -> ViewSummary {
     ViewSummary {
+        paired: 0,
         revision: 7,
         query: ViewQuery::of(event_source()),
         count,

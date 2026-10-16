@@ -612,7 +612,7 @@ mod tests {
             match module
                 .compile(
                     super::super::PRESENCE_EFFECT,
-                    1,
+                    crate::current_effect_format(crate::PRESENCE_EFFECT),
                     &payload,
                     at.shaped(shaped),
                 )

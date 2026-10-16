@@ -44,7 +44,7 @@ use std::{
     net::{Shutdown, TcpStream},
     panic::{self, AssertUnwindSafe},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
@@ -355,7 +355,10 @@ impl JobChanges {
 pub struct JobControl {
     changes: Arc<JobChanges>,
     cancelled: AtomicBool,
+    published: AtomicBool,
     reason: Mutex<Option<String>>,
+    waiters: Condvar,
+    wait_generation: AtomicU64,
     activity: Mutex<Option<Activity>>,
     /// Cancelled with the job, so a render the job runs stops within one row or chunk without
     /// the job polling for it: the render's passes read this token themselves.
@@ -379,6 +382,12 @@ impl JobControl {
         self.cancelled.load(Ordering::Acquire)
     }
 
+    /// A worker crossed its visible publication point. Later cooperative cancellation cannot
+    /// turn that completed publication into a claim that nothing changed.
+    pub(crate) fn mark_published(&self) {
+        self.published.store(true, Ordering::Release);
+    }
+
     /// The cancel flag itself, for work that checks a plain flag between its steps, as a source
     /// preparation's decode, development and artifact reads do.
     pub(crate) fn flag(&self) -> &AtomicBool {
@@ -392,10 +401,49 @@ impl JobControl {
             *held = Some(reason.to_owned());
         }
         self.cancelled.store(true, Ordering::Release);
+        self.bump_wait_generation();
+        self.waiters.notify_all();
         self.render.cancel();
         if let Some(socket) = self.connection.lock().expect("job connection").as_ref() {
             let _ = socket.shutdown(Shutdown::Both);
         }
+    }
+
+    /// Snapshot before checking an external result, then pass it to `wait_for_change` so a
+    /// completion arriving between the result check and sleeping cannot be lost.
+    pub fn wait_generation(&self) -> u64 {
+        self.wait_generation.load(Ordering::Acquire)
+    }
+
+    /// Wait for cancellation, a new completion generation, or this active operation's timeout.
+    /// Returns whether the job was cancelled. No thread or timer exists when no operation waits.
+    pub fn wait_for_change(&self, observed: u64, timeout: std::time::Duration) -> bool {
+        let held = self.reason.lock().expect("job cancel reason");
+        if self.is_cancelled() || self.wait_generation() != observed {
+            return self.is_cancelled();
+        }
+        let _held = self
+            .waiters
+            .wait_timeout(held, timeout)
+            .expect("job cancellation wait");
+        self.is_cancelled()
+    }
+
+    pub(crate) fn wait_cancelled(&self, timeout: std::time::Duration) -> bool {
+        self.wait_for_change(self.wait_generation(), timeout)
+    }
+
+    fn bump_wait_generation(&self) {
+        self.wait_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .expect("job wait generation exhausted");
+    }
+
+    /// Wake a worker waiting for cancellation when its external result is now available.
+    pub fn wake_waiters(&self) {
+        let _held = self.reason.lock().expect("job cancel reason");
+        self.bump_wait_generation();
+        self.waiters.notify_all();
     }
 
     /// Keep a clone of `socket`, the connection of the job's network request, for `cancel` to shut
@@ -1176,6 +1224,23 @@ impl Jobs {
             }
             _ => false,
         }
+    }
+
+    /// Join an admitted source job by its durable identity without resolving new targets.
+    pub(crate) fn join_source(&mut self, job_id: &JobId, client: ClientId) -> bool {
+        match self.entries.get_mut(job_id) {
+            Some(entry) if entry.family() == Family::Source && entry.interest.is_some() => {
+                entry.join(client);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn published(&self, job_id: &JobId) -> bool {
+        self.entries
+            .get(job_id)
+            .is_some_and(|entry| entry.control.published.load(Ordering::Acquire))
     }
 
     /// Whether `job_id` belongs to the clients interested in it — a source job, an analysis or a
@@ -1999,7 +2064,7 @@ mod tests {
                     module_id: None,
                     resource_id: None,
                     asset_id: Some(asset.clone()),
-                    origin: Some(Origin::new("export.jpeg", "request")),
+                    origin: Some(Origin::new("export.write", "request")),
                     grants: Vec::new(),
                     activity: Some(ActivitySpec {
                         kind: "export",

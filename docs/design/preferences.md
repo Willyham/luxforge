@@ -28,12 +28,13 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
 | `canvas_background` | `theme`, `dark`, `black` or `grey` | `theme` | General: **Canvas background** | at once |
 | `theme` | a theme id, or `null` | `null`: Luxforge Dark | Settings › Appearance ([UI themes](ui-themes.md)) | at once |
+| `theme_follows_omarchy` | boolean | `true` | Settings › Appearance: **Follow Omarchy's theme**, where Omarchy runs ([following Omarchy](ui-themes.md#following-omarchy)) | at once |
 | `interface_size` | `100`, `110`, `125` or `150` | `100` | General: **Interface size** | at once |
 | `catalog` | absolute path of a catalog file, or `null` | `null`: `catalog.sqlite` in the configuration directory | General: **Catalog** | next launch |
 | `workspace` | `{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}` | the workspace's defaults | remembered | next launch |
 | `brush` | `{size, feather, flow}`, or `null` | `null`: the neutral brush | remembered | next launch |
 | `window` | `{width, height, x, y}` in the system's points, or `null` | `null`: 1440 × 900, placed by the system | remembered | next launch |
-| `export_folder` | absolute path of a folder, or `null` | `null`: the original's folder | remembered | next export |
+| `export_last` | `{settings, preset_id}`, or `null` | `null`: the sheet opens on Web | remembered | next export |
 | `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
 | `panorama_merge` | `{projection, boundary_warp}`: `auto`, `perspective`, `cylindrical` or `spherical`, and 0–100; or `null` | `null`: Auto and 0 | remembered | next ⌥-click merge |
 
@@ -69,7 +70,7 @@ A path is not required to exist, since a drive can be unplugged. Its use checks 
 - `interface_size`
 - `catalog`
 
-and whenever `theme` changes.
+and whenever `theme` or `theme_follows_omarchy` changes.
 
 An open Settings sheet reads them again. The desktop applies the theme, the canvas background, the interface size and the mask overlay colour from what it reads, so an agent's change shows at once. Remembered state is the desktop's own bookkeeping and announces nothing.
 
@@ -93,7 +94,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it in the current catalog format if the folder holds none, as it creates the default today; its `catalog.index` cache and any `catalog.artifacts` live beside it in that folder. The open catalog stays where it is, and the row says so.
   - **Notes.** While the stored location differs from this launch's, the row says "Relaunch to use `<path>`". `--catalog` and evidence runs take precedence, and the row says "This launch uses `--catalog`" or "This launch uses the evidence run's catalog".
   - **Missing folder.** If the stored catalog's folder does not exist at launch, as with an unplugged drive, the desktop opens the default catalog instead. The status bar says "Catalog folder not found: `<folder>`; using the default catalog", and the row repeats it. The stored location is kept, so the next launch with the drive present opens it. The event log records `catalog_folder_missing`.
-  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, or its format is unsupported) is refused as the default catalog is today: the launch stops, naming the catalog and, for an older catalog, its format and the one expected, and the file is left unchanged. There is no fallback to the default for these, so the way past an older catalog is a launch with `--catalog` and Use Default there.
+  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, its format is unsupported, or checking its parent reports an access error or finds a regular file) is refused as the default catalog is today: the launch stops, naming the catalog and, for an older catalog, its format and the one expected, and the file is left unchanged. Only a missing parent selects the default; other parent-check failures keep the stored path for the opening error. There is no fallback to the default for these, so the way past an older catalog is a launch with `--catalog` and Use Default there.
   - **The command line.** `luxforge-json` keeps requiring `--catalog`.
 - **Remembered workspace.** As the editor is built, before its first frame, the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`, sent only when they differ from the defaults, so a launch with nothing stored sends nothing.
   - **Storing.** After the desktop adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. This covers the panel toggles, `O`, `J`, the histogram's triangles, the palette and an evidence run's own workspace steps, which store into the evidence directory.
@@ -106,7 +107,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Off-display check.** Iced reports a display's size but not where it sits among the others. After opening, a frame no display holds is moved to the main display and checked again. A frame on the main display, taken to be the one whose bounds hold its top-left corner, that does not lie wholly within it is centred there at its size, shrunk to fit. A frame on another display is kept if it fits that display's size, and otherwise moved to the main one.
   - **Limit.** A secondary display larger than the main one, to its right or below it, can be taken for the main one, so a frame running past its edge can be moved to the main display. Exact placement needs the native screen frames.
   - **Events.** The event log records `window_fitted` and `window_moved_to_main_display`.
-- **Remembered export folder.** After an export whose destination the person chose in the save dialog succeeds, the desktop stores the destination's folder. When `export_folder` is stored and is an existing folder, `export.plan` suggests `<export_folder>/<stem>-edited.jpg`, counting up within that folder. Otherwise it suggests the original's folder as today. An export with a destination given by an evidence step or an API client stores nothing.
+- **Remembered export.** After an export the person started from the Export sheet, the Export menu or the palette succeeds, the desktop stores its settings and the preset they came from unchanged, or `null`. The sheet opens on them and Export again repeats them ([export settings](export-settings.md#the-export-sheet)). An API client's export stores nothing.
 - **Remembered HDR merge.** When a merge this desktop asked for starts, the desktop stores its alignment and deghosting as `hdr_merge`, if they differ from what is stored. ⌥-click on Merge HDR merges with them, and the [merge preview](panorama-merge.md#the-merge-preview) opens with them; with nothing stored, both are Auto. The folder, the reference and exposure overrides belong to one bracket and are not remembered.
 - **Remembered panorama merge.** Likewise, a panorama merge this desktop asked for stores its projection and Boundary Warp as `panorama_merge`; ⌥-click on Merge panorama and a newly opened panorama preview start from them, else from Auto and 0. The reference and the folder are not remembered.
 
@@ -116,7 +117,7 @@ All of the desktop's `preferences.set` calls go through one writer:
 
 - **One at a time.** One call is in flight. A later change waits, merged with any change already waiting, with the newer value of a field replacing the older.
 - **Shown at once.** A change shows immediately, and the answer that lands confirms it or puts the stored value back.
-- **Refusals.** A refused write says "Could not save preferences: `<reason>`" in the status bar, logs `preference_set_failed` with its fields, and reads back what is stored.
+- **Refusals.** A refused write says "Could not save preferences: `<reason>`" in the status bar, logs `preference_set_failed` with its fields, and reads back what is stored. A failed mask overlay colour save also reconciles this session's colour with that read, even when the stored preference stayed unchanged; a newer waiting colour choice keeps precedence.
 - **Closing.** Closing the window waits for the last write, as the Performance preference does today.
 - **Existing writes.** The Performance disclosure and Auto collapse history writes move onto this writer.
 
@@ -168,7 +169,7 @@ Decided by the owner on 2026-10-04:
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
 - The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
-- **Export defaults** (owner, 2026-10-07): keep JPEG quality fixed at 90 and Keep metadata chosen per export. Neither becomes a preference; the export folder remains remembered as described above. The planned [export settings](export-settings.md) replace this when implemented, with export presets and a remembered last export (`export_last`) in place of `export_folder`.
+- **Export defaults** (owner, 2026-10-07): the [export settings](export-settings.md) hold quality, metadata and the folder in export presets, and the last export is remembered as `export_last`, with no Settings row, in place of `export_folder`.
 
 Recorded defaults, proposals the owner can revise:
 

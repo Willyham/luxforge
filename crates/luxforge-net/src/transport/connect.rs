@@ -1,7 +1,11 @@
 //! Resolution and connection. A request resolves its host exactly once, requires every answer to
 //! belong to the endpoint's class and connects only to an address it checked, so no second lookup
 //! can rebind the name between the check and the connection.
-use super::address::address_allowed;
+use super::{
+    address::address_allowed,
+    agent::Pace,
+    resolver::{self, ResolverService},
+};
 use luxforge_core::{
     Error,
     capabilities::endpoint::{Endpoint, EndpointClass},
@@ -9,6 +13,7 @@ use luxforge_core::{
 use std::{
     io,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use url::Host;
@@ -18,14 +23,20 @@ pub trait Resolve: Send + Sync {
     fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>>;
 }
 
-/// The operating system's resolver. A lookup blocks for as long as the system resolver takes; the
-/// request's deadlines are checked when it returns.
+/// The operating system's resolver. The transport runs its blocking call on the fixed resolver
+/// service; cancellation/deadline ends the caller's wait, while an OS call may occupy a worker
+/// until it returns.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemResolver;
 
 impl Resolve for SystemResolver {
     fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-        Ok((host, port).to_socket_addrs()?.collect())
+        // The extra address is a refusal sentinel, never a truncated successful answer. The
+        // service rejects it before address-class checks or any connection can occur.
+        Ok((host, port)
+            .to_socket_addrs()?
+            .take(resolver::MAX_DNS_ADDRESSES + 1)
+            .collect())
     }
 }
 
@@ -56,7 +67,9 @@ fn not_in_class(address: SocketAddr, class: EndpointClass) -> Error {
 /// checked the same way without a lookup.
 pub(super) fn resolve(
     endpoint: &Endpoint,
-    resolver: &dyn Resolve,
+    resolver: &Arc<dyn Resolve>,
+    service: &Option<Arc<ResolverService>>,
+    pace: &Pace,
 ) -> Result<Vec<SocketAddr>, Error> {
     let url = &endpoint.url;
     let port = url
@@ -65,9 +78,7 @@ pub(super) fn resolve(
     let name = url.host_str().unwrap_or_default();
     let (addresses, looked_up) = match url.host() {
         Some(Host::Domain(domain)) => (
-            resolver.resolve(domain, port).map_err(|error| {
-                Error::file_access(format!("cannot resolve {name}: {}", error.kind()))
-            })?,
+            resolver::resolve(service, resolver.clone(), domain, port, pace)?,
             true,
         ),
         Some(Host::Ipv4(address)) => (vec![SocketAddr::new(address.into(), port)], false),

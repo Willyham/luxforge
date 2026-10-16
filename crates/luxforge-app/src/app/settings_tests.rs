@@ -371,6 +371,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         usage: false,
         updates: false,
         own: Vec::new(),
+        moved: Default::default(),
     };
     let _ = editor.update(Message::Sync(super::message::sync::SyncMessage::Synced(
         Ok(closed),
@@ -468,4 +469,42 @@ fn auto_collapse_history_is_on_by_default_and_turning_it_off_keeps_every_entry()
     owner.stop();
     join.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn published_flag_failure_reads_back_the_visible_flag_without_a_saved_message() {
+    let (mut editor, root) = launch();
+    answer_read(&mut editor);
+    let flag = luxforge_core::flags::PRERELEASE_CHANNEL;
+    let _ = editor.update(Message::Settings(SettingsMessage::Set {
+        flag: flag.into(),
+        value: Some(json!(true)),
+    }));
+    call(
+        &editor.owner,
+        editor.client,
+        "flags.set",
+        json!({"flag": flag, "value": true}),
+    )
+    .unwrap();
+    let reason = "read-error: the replacement is visible but durability is unconfirmed".to_owned();
+    let _ = editor.update(Message::Settings(SettingsMessage::Saved(Err(
+        reason.clone()
+    ))));
+    assert!(editor.settings.reading);
+    answer_read(&mut editor);
+    assert_eq!(
+        editor
+            .settings
+            .flags
+            .as_ref()
+            .unwrap()
+            .flag(flag)
+            .unwrap()
+            .value,
+        json!(true)
+    );
+    assert!(editor.status.text.contains(&reason));
+    assert!(!editor.status.text.contains("Saved"));
+    finish(editor, root);
 }

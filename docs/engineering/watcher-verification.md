@@ -13,6 +13,12 @@ coverage in quick and a separate native integration gate required for watcher ch
   or more retain `#[slow]`, including those exercising the deletion grace period. Core journeys use real scratch files and the production owner/index lane, with an
   explicitly injected notification source and a fixture-owned cursor. No native notification
   delivery is needed to complete them.
+- Initial root delivery that a full channel refuses explicitly wakes an idle Linux or Windows
+  wait, then retries the owed rescan and caught-up in order. A deterministic delivery check
+  covers the wake decision; platform native checks exercise the eventfd and completion-port wake.
+  Linux queue-overflow tests restore watches for missed folder arrivals and renames before the
+  rescan is reported, preserve nested-root sharing within the kernel watch budget, and retain
+  both the rescan and an unwatched report when rebuilding fails.
 - Tests that require real platform delivery have the own-name prefix `native_watch_` and carry `#[slow]`. Ordinary
   `xtask check` and `xtask test`, quick and full, report and exclude those tests; full ordinary
   checks still include slow tests and doctests. Direct Cargo tests retain their usual behavior.

@@ -447,8 +447,8 @@ fn owner_run(dir: &Path, source: &Path, samples: usize, collecting: bool) -> Res
             let accepted = call(
                 &owner,
                 editor,
-                "export.jpeg",
-                json!({"asset_id": asset, "destination": destination,
+                "export.write",
+                json!({"asset_id": asset, "destination": destination, "settings": crate::export_smoke::export_settings(dir),
                     "mutation": {"request_id": client::request_id("export"), "actor": ACTOR}}),
             )?;
             let record = client::settle(&owner, editor, &accepted["job_id"])?;

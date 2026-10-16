@@ -47,7 +47,9 @@
 //! and the [`WatchEvent::CaughtUp`] it was owed, after it; and the mount table's difference is
 //! sent again from the table then current. What is owed is retried every [`RETRY`] until it is
 //! delivered, a timer armed only while something is owed; the only other is Windows' few reads
-//! of the drive letters after a volume notification. A `Changed` holds at most [`MAX_PATHS`]
+//! of the drive letters after a volume notification. Initial delivery owed by a caller adding a
+//! root wakes Linux's or Windows' idle wait, so retry does not require a later disk change.
+//! A `Changed` holds at most [`MAX_PATHS`]
 //! paths; a larger batch is split, with its cursor on the last part. So what the watcher holds is
 //! bounded by the channel's capacity.
 //!
@@ -56,7 +58,7 @@
 //! - **macOS**: none of its own. Each root's FSEvents stream and the Disk Arbitration session
 //!   deliver on one serial dispatch queue.
 //! - **Linux**: one thread, blocking in `poll` on the inotify descriptor, `/proc/self/mountinfo`
-//!   (which reports a mount or unmount as a priority event) and an eventfd that stops it.
+//!   (which reports a mount or unmount as a priority event) and eventfds for stopping and waking it.
 //! - **Windows**: one thread, blocking on an I/O completion port that each root's overlapped
 //!   `ReadDirectoryChangesW` and the configuration manager's volume notifications complete on.
 //!

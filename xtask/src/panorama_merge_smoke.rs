@@ -11,8 +11,8 @@
 //! 150 MP, so its result is a paged source). It makes a new catalog with `Frames` indexed and
 //! nothing merged (`panorama-merge-expected.json`).
 //!
-//! The `select` launch, in [`select_plan`] order: `G`; the Row's folder, its four frames selected
-//! and the selection menu opened over them, both kinds planned; Merge panorama… opening the
+//! The `select` launch, in [`select_plan`] order: Select shown; the Row's folder, its four frames
+//! selected and the selection menu opened over them, both kinds planned; Merge panorama… opening the
 //! preview sheet; Boundary Warp dragged to [`WARP`]; Frame outlines and Crop and coverage turned
 //! off and on again; Merge, its pending row, and one collapsed panorama tile; `S` expanding its
 //! originals, each "Frame k of 4"; an original clicked, then the result, its Info band reading the
@@ -25,7 +25,8 @@
 //! folder in Develop: Fit, 100% and the bottom-right corner, Fit again, a linear mask and Exposure
 //! through it, and `merge.inspect`; then the paged Wide result the same way, at Fit counting its
 //! overview and at 100% from a window of level 0, and Develop's export of it, above 128 MP, on the
-//! GPU. The catalog is read again (`panorama-merge-after-develop.json`), `Frames` renamed so no
+//! GPU, then the Export sheet's Web preset, resized on the banded reference with the GPU's reason.
+//! The catalog is read again (`panorama-merge-after-develop.json`), `Frames` renamed so no
 //! frame can be read, and the `offline` launch, in [`offline_plan`] order, opens the Row result
 //! with its masked edit and inspects it, then the Wide result with its own. The folder is named
 //! back, the catalog read again (`panorama-merge-after.json`) and every frame's hash checked.
@@ -42,8 +43,8 @@ use crate::{
 };
 use luxforge_core::{BASIC_EFFECT, ClientId, EditorService, OwnerHandle};
 use luxforge_evidence::{
-    self as script, CatalogStep, DevelopStep, ExportFile, ExportStep, LibraryKey, MergeChoice,
-    MergePreviewStep, SelectStep, ViewStep,
+    self as script, CatalogStep, DevelopStep, ExportFile, ExportStep, ExportWrite, LibraryKey,
+    MergeChoice, MergePreviewStep, SelectStep, SelectWorkspace, SheetEdit, SheetFolder, ViewStep,
 };
 use luxforge_reference::{
     panorama::{Lens, Pose, Scene, apply, row},
@@ -64,7 +65,8 @@ pub const NOTE: &str = "The run first writes two rows of JPEG frames of one synt
     (`panorama-merge-expected.json`). Each launch opens that catalog with `--catalog`. The `select` \
     launch merges both rows; the run then reads where the catalog filed them \
     (`panorama-merge-after-select.json`). The `develop` launch opens each from its catalog folder \
-    and exports the Wide result into its evidence directory (`wide-panorama.jpg`); the run reads \
+    and exports the Wide result into its evidence directory (`wide-panorama.jpg`, then the Web \
+    preset's resized JPEG); the run reads \
     the catalog again (`panorama-merge-after-develop.json`), renames `Frames` to `Frames offline`, \
     and the `offline` launch reopens both; the folder is named back and the catalog read again \
     (`panorama-merge-after.json`).";
@@ -276,7 +278,10 @@ pub fn select_plan(expected: &Value) -> Result<Plan> {
             .map(str::to_owned)
             .ok_or_else(|| format!("The expected answers name no {} folder", set.name).into())
     };
-    let mut steps = vec![Step::opened("opened"), key("select", "g")];
+    let mut steps = vec![
+        Step::opened("opened"),
+        in_select("select", SelectStep::Switch(SelectWorkspace::Select)),
+    ];
     steps.extend(selected("row_", folder(&ROW)?, &ROW));
     steps.extend([
         in_select(
@@ -323,7 +328,10 @@ pub fn develop_plan(after: &Value) -> Result<Plan> {
     let whose = "The select launch's catalog";
     let (row_path, row_position) = filed(places, &ROW, whose)?;
     let (wide_path, wide_position) = filed(places, &WIDE, whose)?;
-    let mut steps = vec![Step::opened("opened"), key("select", "g")];
+    let mut steps = vec![
+        Step::opened("opened"),
+        in_select("select", SelectStep::Switch(SelectWorkspace::Select)),
+    ];
     // Select shows the Row result's folder again; the Wide's is pressed only when it is another.
     let wide_path = (wide_path != row_path).then_some(wide_path);
     steps.extend(developed("", Some(row_path), row_position));
@@ -344,6 +352,26 @@ pub fn develop_plan(after: &Value) -> Result<Plan> {
         )
         .commits(0),
     );
+    // The Web preset from the Export sheet into the evidence directory: a paged source resized,
+    // which the banded reference renders.
+    steps.extend([
+        Step::new("wide_web_sheet", ExportStep::Sheet(Default::default())).commits(0),
+        Step::new("wide_web", ExportStep::Preset("Web".into())).commits(0),
+        Step::new(
+            "wide_web_folder",
+            script::Step::export_edit(SheetEdit {
+                folder: Some(SheetFolder::Evidence),
+                ..SheetEdit::default()
+            }),
+        )
+        .commits(0),
+        Step::new(
+            "wide_web_written",
+            ExportStep::Write(ExportWrite::default()),
+        )
+        .commits(0)
+        .status_starts("Exported "),
+    ]);
     Ok(Plan::new(steps))
 }
 
@@ -357,7 +385,7 @@ pub fn offline_plan(after: &Value) -> Result<Plan> {
     let (wide_path, wide_position) = filed(places, &WIDE, whose)?;
     let mut steps = vec![
         Step::opened("opened"),
-        key("select", "g"),
+        in_select("select", SelectStep::Switch(SelectWorkspace::Select)),
         Step::new(
             "place",
             script::Step::Catalog(CatalogStep::Source(row_path.clone())),
@@ -839,7 +867,8 @@ fn check_developed(
     )?;
     for step in ["fit", "corner", "refit"] {
         let frame = at(step)?;
-        frame.photo()?;
+        // At 100% in its corner the photograph runs past the canvas: what is on screen is drawn.
+        frame.visible_photo()?;
         checks.note(
             frame,
             &format!("{prefix}{step}: the result drawn"),
@@ -1427,6 +1456,48 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"width": width, "height": height, "export": export,
             "windows": windows.len()}),
     );
+    // The Web preset's resized export of it: a held output stage no GPU texture holds, so the
+    // banded reference renders it, naming the GPU's reason, into a 2,048-pixel long edge.
+    let web = developing.at("wide_web_written")?;
+    let export = &web["step"]["export"];
+    let result = &export["record"]["result"];
+    let file = Path::new(result["path"].as_str().unwrap_or_default())
+        .file_name()
+        .map(|name| developing.evidence.join(name))
+        .unwrap_or_default();
+    let (web_width, web_height) = image::image_dimensions(&file)?;
+    // A panorama has no original: its file is named after its first frame, with `-pano`.
+    let named = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    ensure(
+        named.starts_with(&format!("{}_", WIDE.prefix))
+            && named.ends_with("-pano-web.jpg")
+            && !named.contains(char::is_whitespace),
+        format!("wide_web_written: the file is named {named}, not <first frame>-pano-web.jpg"),
+    )?;
+    ensure(
+        export["record"]["status"] == "ready"
+            && result["renderer"]["record"] == "reference"
+            && matches!(
+                result["renderer"]["reason"].as_str(),
+                Some("texture-limit" | "tiles-budget")
+            )
+            && web_width.max(web_height) == 2048
+            && result["width"] == web_width
+            && result["height"] == web_height
+            && (f64::from(web_width) * f64::from(height) / f64::from(width)
+                - f64::from(web_height))
+            .abs()
+                <= 1.0,
+        format!("wide_web_written: a {web_width} × {web_height} file from {export}"),
+    )?;
+    checks.note(
+        web,
+        "wide_web_written: the Web preset's export of the paged result, on the banded reference",
+        json!({"width": web_width, "height": web_height, "export": export}),
+    );
 
     // The catalog the develop launch left: both merges still active, nothing merged again, and
     // the Row result's edits in its history.
@@ -1515,7 +1586,7 @@ mod tests {
         let after = json!({ "places": places() });
         let developing = develop_plan(&after).unwrap();
         developing.validate().unwrap();
-        assert_eq!(developing.len(), 22);
+        assert_eq!(developing.len(), 26);
         assert!(developing.index("wide_place").is_none());
         let reopening = offline_plan(&after).unwrap();
         reopening.validate().unwrap();

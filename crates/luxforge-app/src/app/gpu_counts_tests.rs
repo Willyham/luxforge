@@ -3,12 +3,14 @@
 //! no CPU render and its tiles' counts become its report, plotted and in the owner's store; counts
 //! that fail send the content to the reference renderer; a gesture's ticks plot the counts of the
 //! frame each drew, as updating; and before the surface has checked its stage the reference renders
-//! as before. The surface is no test's: what it reports is stood in for.
+//! as before. The surface is no test's: what it reports is stood in for. A gesture's tick over a
+//! stack the GPU presented never leaves the earlier stack's CPU frame under it as the photograph.
 use super::*;
 use crate::app::{
     Message,
+    gpu_preview::SurfaceReport,
     gpu_preview_tests::{catalog, deliver_until, surface_ready},
-    message::preview::PreviewMessage,
+    message::{draft::DraftMessage, preview::PreviewMessage},
     tasks::call,
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
 };
@@ -182,6 +184,69 @@ fn a_commit_the_gpu_draws_renders_no_cpu_frame_and_its_tiles_counts_are_its_repo
     assert_eq!(
         requested["result"]["r"][128],
         serde_json::json!(u64::from(size.0) * u64::from(size.1))
+    );
+    editor.gpu.counts_report = None;
+    finish(editor, catalog);
+}
+
+/// A commit the GPU presents, its counts still to come when the view reaches a zoom that shows the
+/// minimap: the overview sweep draws the held picture at rest again, under new versions. The counts
+/// still to come are the swept tiles', so its report is adopted and nothing (a capture among them)
+/// waits on counts of tiles handed no more.
+#[test]
+fn counts_still_to_come_are_the_overview_sweeps_tiles() {
+    let (mut editor, catalog) = opened_on_the_gpu("counts-sweep");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.gpu.counts.is_some()
+    });
+    luxforge_testkit::client::call(
+        &editor.owner,
+        editor.client,
+        "view.set",
+        serde_json::json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    )
+    .expect("the zoom");
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+    let _ = editor.zoom_changed(&luxforge_core::Zoom::Fit);
+    deliver_until(
+        &mut editor,
+        "the minimap's sweep of the held tiles",
+        |editor| {
+            let sweep = editor.overviews.sweep_version();
+            sweep.is_some() && editor.gpu_rest_held_overview() == Some(sweep)
+        },
+    );
+    let target = editor.gpu.counts.clone().expect("its counts wanted");
+    assert!(editor.gpu_counts_pending());
+    let handed = editor.surfaces();
+    let tiles = handed
+        .gpu_rest
+        .or(handed.gpu_counts)
+        .expect("the swept tiles handed");
+    assert!(
+        target.versions.contains(&tiles.version),
+        "the counts wanted are the swept tiles': {:?} against {}",
+        target.versions,
+        tiles.version
+    );
+    let size = (target.identity.width, target.identity.height);
+    editor.gpu.counts_report = Some(SurfaceCounts {
+        rest: Some((
+            tiles.version,
+            luxforge_gpu::CountsOutcome::Ready(Box::new(uniform(128, size))),
+        )),
+        tick: None,
+    });
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(!editor.gpu_counts_pending(), "its report adopted");
+    assert_eq!(
+        editor
+            .presentation
+            .analysis
+            .as_ref()
+            .map(|analysis| analysis.source),
+        Some(AnalysisSource::Gpu)
     );
     editor.gpu.counts_report = None;
     finish(editor, catalog);
@@ -607,5 +672,148 @@ fn a_comparison_without_a_shared_source_discards_retired_gpu_plans() {
     editor.gpu_compare_end();
     assert!(editor.gpu_rest_plan().is_none());
     assert!(editor.gpu_source_handed().is_none());
+    finish(editor, catalog);
+}
+
+/// A commit the GPU presented, its picture at rest drawn whole, and the version that picture is
+/// handed under: the CPU frame under it is the open's, an earlier stack's. At 50%, where the view
+/// draws the stage smaller than it is, so its picture at rest is reduced to the view.
+fn presented_at_rest(name: &str) -> (Editor, std::path::PathBuf, u64) {
+    let (mut editor, catalog) = opened_on_the_gpu(name);
+    crate::app::gpu_preview_tests::zoomed_out(&mut editor, 50.0);
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.presentation.frame_behind()
+            && editor.gpu_rest_plan().is_some()
+            && editor.gpu_rest_handed().is_some()
+            && !editor.presentation.queue.is_busy()
+            && !editor.presentation.queue.ready()
+    });
+    let version = editor
+        .gpu_rest_handed()
+        .expect("its picture at rest")
+        .version;
+    editor.gpu.rest_done = Some(version);
+    (editor, catalog, version)
+}
+
+/// The open draft's newest tick has no plan of its own: its job was planned at no view
+/// (`unplannable`), as a boundary not yet derivable or a layer the GPU has no program for leaves
+/// it.
+fn tick_without_a_plan(editor: &mut Editor) {
+    let set = editor
+        .session
+        .draft
+        .as_ref()
+        .map(crate::app::gesture::identity)
+        .expect("an open draft");
+    assert_eq!(
+        editor.gpu_tick(&set, None),
+        crate::app::gpu_preview::Tick::Cpu
+    );
+}
+
+/// Over a stack the GPU presented, a drag's tick whose own plan the surface cannot draw yet — its
+/// source still uploading — never leaves the earlier stack's CPU frame as the photograph: the plan
+/// is handed to draw, and under it the committed stack's picture at rest, drawn whole already,
+/// stands in wherever its output is not.
+#[test]
+fn a_tick_the_surface_cannot_draw_yet_shows_the_picture_at_rest_under_it() {
+    let (mut editor, catalog, rest) = presented_at_rest("stand-in-under");
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(luxforge_gpu::GpuFallback::SourceUploading {
+            uploaded: 0,
+            bytes: 1,
+        }),
+        drawn: None,
+        evaluated: None,
+    });
+    let _ = slide(&mut editor, ACTION, FIELD, 0.6);
+    assert_eq!(editor.gpu_plan_fallback(), Some("source-uploading".into()));
+    let surfaces = editor.surfaces();
+    assert!(
+        surfaces.gpu.is_some() && !surfaces.gpu_hold,
+        "the tick's plan"
+    );
+    assert!(surfaces.gpu_tag.is_some(), "tagged with its revision");
+    assert_eq!(
+        surfaces.gpu_rest.map(|picture| picture.version),
+        Some(rest),
+        "the picture at rest stands in under it"
+    );
+    assert!(
+        surfaces.gpu_rest_under,
+        "drawn only where the plan's is not"
+    );
+    // Once the CPU frame is the draft's own, it is no earlier stack's, and nothing stands in.
+    editor.presentation.gpu_presented = None;
+    assert!(editor.surfaces().gpu_rest.is_none());
+    assert!(!editor.surfaces().gpu_rest_under);
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// Over a stack the GPU presented, a drag's tick with no plan of its own keeps the committed
+/// stack's GPU picture on screen, as at rest — its view plan drawn, not held behind the CPU frame,
+/// and its tiles — never the earlier stack's CPU frame behind it.
+#[test]
+fn a_tick_with_no_plan_of_its_own_keeps_the_picture_at_rest_on_screen() {
+    let (mut editor, catalog, rest) = presented_at_rest("held-at-rest");
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.6);
+    tick_without_a_plan(&mut editor);
+    assert_eq!(editor.gpu_plan_fallback(), Some("unplannable".into()));
+    let surfaces = editor.surfaces();
+    let (plan, _) = editor
+        .gpu_rest_plan()
+        .expect("the committed stack's view plan");
+    assert!(
+        surfaces.gpu.is_some_and(|drawn| std::ptr::eq(drawn, plan)),
+        "the view plan at rest is handed"
+    );
+    assert!(!surfaces.gpu_hold, "drawn in place of the CPU frame");
+    assert!(surfaces.gpu_tag.is_none(), "no gesture's revision");
+    assert_eq!(surfaces.gpu_rest.map(|picture| picture.version), Some(rest));
+    assert!(!surfaces.gpu_rest_under, "the picture at rest, as at rest");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A drag whose own frame the GPU drew keeps that frame on screen through a later tick with no
+/// plan of its own: its last plan stays drawn, not held behind the CPU frame, rather than going
+/// back to the committed stack or to the earlier stack's CPU frame.
+#[test]
+fn a_tick_with_no_plan_after_a_drawn_one_keeps_the_drags_own_frame() {
+    let (mut editor, catalog, _) = presented_at_rest("held-own-frame");
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.6);
+    let drawn = editor.surfaces();
+    let boundary = drawn.gpu.expect("the tick's plan").boundary.version();
+    let (revision, serial) = (
+        drawn.gpu_tag.expect("its revision"),
+        drawn.gpu_change.expect("its serial").serial,
+    );
+    // The surface drew that plan's output.
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: Some(boundary),
+        fallback: None,
+        drawn: Some((boundary, revision)),
+        evaluated: Some(serial),
+    });
+    tick_without_a_plan(&mut editor);
+    let surfaces = editor.surfaces();
+    assert!(
+        editor.gpu_rest_plan().is_none(),
+        "not the committed stack's"
+    );
+    assert_eq!(
+        surfaces.gpu_change.map(|change| change.serial),
+        Some(serial),
+        "the drag's own last plan"
+    );
+    assert!(!surfaces.gpu_hold, "drawn, not held behind the CPU frame");
+    assert_eq!(surfaces.gpu_tag, Some(revision));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }

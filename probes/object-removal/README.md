@@ -72,7 +72,7 @@ probes/object-removal/target/release/removal-probe parity --out target/evidence/
 `removal-probe remove` runs the whole chain on one point or one stroke and writes into `--out` (default: a new directory under the system temporary directory, which it names):
 
 ```sh
-C=/Users/will/projects/lightwell/private/object-removal/corpus
+C=private/object-removal/corpus
 probes/object-removal/target/release/removal-probe remove --image $C/z6-bridge.jpg --point 1690,3550 --out /tmp/bridge
 probes/object-removal/target/release/removal-probe remove --image $C/air2s-kayaks.jpg --family sam21-small \
   --stroke "3177,2442 3255,2427 3320,2487" --radius 12 --pick 1,2 --out /tmp/kayaks

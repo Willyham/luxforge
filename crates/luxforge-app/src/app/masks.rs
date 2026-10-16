@@ -5,7 +5,6 @@
 //! the update function without simulating a pointer, and every request the panel sends is the one an
 //! independent JSON client would send for the same edit. The shape gestures go through the delivered
 //! `draft.*` lifecycle — one drag is one history entry — and the list edits are ordinary mutations.
-use crate::app::message::view::ViewMessage;
 use crate::{
     app::{
         Editor,
@@ -195,7 +194,7 @@ impl Editor {
     /// the listing gained: a command that added a component, renamed a mask or changed an amount
     /// gains none and this does nothing. More than one new mask cannot come from one command, and if
     /// one ever did there would be no honest choice between them, so nothing is opened.
-    pub(crate) fn open_created_mask(&mut self, before: &[MaskId]) {
+    pub(crate) fn open_created_mask(&mut self, before: &[MaskId], typed: bool) {
         let after = self.listed_masks();
         let mut fresh = after.into_iter().filter(|id| !before.contains(id));
         let Some(created) = fresh.next() else {
@@ -204,10 +203,53 @@ impl Editor {
         if fresh.next().is_some() {
             return;
         }
-        self.mask_panel.selected_mask = Some(created);
+        self.mask_panel.selected_mask = Some(created.clone());
         self.mask_panel.selected_component = None;
         self.mask_panel.hovered_component = None;
+        if typed {
+            // A typed create makes a mask with the one component it describes, selected so its
+            // fields are on screen at once.
+            let sole = self.listed_components(&created);
+            if let [only] = sole.as_slice() {
+                self.select_typed_component(only.clone());
+            }
+        }
         self.seed_values();
+    }
+
+    /// The components `mask` holds, in order, by identity.
+    pub(crate) fn listed_components(&self, mask: &MaskId) -> Vec<ComponentId> {
+        self.document
+            .masks
+            .as_ref()
+            .and_then(|listing| listing.masks.iter().find(|report| &report.id == mask))
+            .map(|report| report.components.iter().map(|c| c.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Select the component a typed add just made to `mask`, found by comparing the component list
+    /// with `before`, and tint the overlay for it. A command that gained none, or more than one,
+    /// moves nothing.
+    pub(crate) fn select_added_component(&mut self, mask: &MaskId, before: &[ComponentId]) {
+        let after = self.listed_components(mask);
+        let mut fresh = after.into_iter().filter(|id| !before.contains(id));
+        let (Some(added), None) = (fresh.next(), fresh.next()) else {
+            return;
+        };
+        self.mask_panel.selected_mask = Some(mask.clone());
+        self.select_typed_component(added);
+        self.seed_values();
+    }
+
+    /// Select a component a typed create or add made and arm the eyedropper on it: a typed kind's
+    /// button is its tool start, and what a range selects is picked from the photograph, so the
+    /// next click on it picks, and an overlay that is Off by default shows Tint while it is armed.
+    fn select_typed_component(&mut self, component: ComponentId) {
+        self.mask_panel.selected_component = Some(component.clone());
+        self.mask_panel.hovered_component = None;
+        if let Some(mask) = self.mask_panel.selected_mask.clone() {
+            self.arm_picker(mask, component);
+        }
     }
 
     pub(crate) fn follow_mask_selection(&mut self) -> bool {
@@ -577,7 +619,7 @@ impl Editor {
     }
 
     /// The kind of the component the panel has selected, as the listing reports it.
-    fn selected_component_kind(&self) -> Option<String> {
+    pub(crate) fn selected_component_kind(&self) -> Option<String> {
         let component = self.mask_panel.selected_component.as_ref()?;
         self.open_mask()?
             .components
@@ -619,7 +661,7 @@ impl Editor {
     }
 
     /// Send one mask command with no gesture behind it: a list edit, a rename, a delete.
-    fn mask_command(
+    pub(crate) fn mask_command(
         &mut self,
         method: &'static str,
         target: MaskTarget,
@@ -641,6 +683,8 @@ impl Editor {
         // `command` refuses while a request is in flight, but `mask_command` has already answered
         // that case above, so reaching here means this one went out and its answer is ours.
         self.mask_panel.command_in_flight = true;
+        // Only the typed create that follows this call claims its answer as its own.
+        self.mask_panel.typed_create = false;
         sent
     }
 
@@ -652,6 +696,7 @@ impl Editor {
             message,
             MaskMessage::Hover(_)
                 | MaskMessage::Handle(_)
+                | MaskMessage::PickPointer(_)
                 | MaskMessage::Transform(..)
                 | MaskMessage::Brush(_)
                 | MaskMessage::Drag(crate::app::message::mask::DragEdit::Over(_))
@@ -823,25 +868,39 @@ impl Editor {
                 self.mask_panel.hovered_component = hovered;
                 self.refresh_mask_coverage()
             }
-            // Enter or leave the host's own pick for the selected component's kind: one
-            // `workspace.set` through the same message a module's picker control sends, so the pick
-            // mode is per-client view state and nothing is committed by turning it on.
-            MaskMessage::Pick => {
-                let Some(kind) = self.selected_component_kind() else {
-                    self.status.text = "Select the component this pick fills".into();
+            // Arm the eyedropper on the selected component, or put it down again: view state in
+            // Mask mode, so nothing is sent and the sections stay bound to the open mask.
+            MaskMessage::Pick => self.toggle_picker(),
+            MaskMessage::PickDone => {
+                self.put_picker_down("done");
+                Task::none()
+            }
+            MaskMessage::PickEscape => {
+                // A drag in progress is what Escape cancels first: nothing is sent and the
+                // eyedropper stays armed for the next pick.
+                if let Some(picker) = self.mask_panel.picker.as_mut()
+                    && picker.drag.take().is_some()
+                {
+                    self.status.text = "Pick cancelled".into();
+                    self.event("range_pick_cancelled", || json!({}));
+                    return Task::none();
+                }
+                self.put_picker_down("escape");
+                Task::none()
+            }
+            MaskMessage::PickPointer(pointer) => self.pick_pointer(pointer),
+            MaskMessage::CopyPick => {
+                let Some((method, target, fields)) = self.copied_pick() else {
                     return Task::none();
                 };
-                let Some(mode) = crate::state::masks::pick_mode(&kind) else {
-                    self.status.text =
-                        format!("This build has no canvas pick for a {kind} component");
+                let Some(params) = self.mask_request(&target, &fields) else {
                     return Task::none();
                 };
-                let target = if self.session.workspace.mode == mode {
-                    luxforge_core::POINTER_MODE.to_owned()
-                } else {
-                    mode
-                };
-                self.dispatch(Message::View(ViewMessage::SetMode(target)))
+                self.status.text = format!("Copied the {method} request");
+                iced::clipboard::write(
+                    serde_json::to_string_pretty(&json!({"method": method, "params": params}))
+                        .unwrap_or_default(),
+                )
             }
             MaskMessage::Typing(edit) => self.mask_typing_edit(edit),
             MaskMessage::ToggleBand => {
@@ -1015,24 +1074,13 @@ impl Editor {
     }
 
     /// The brush a stroke started now would be drawn with: the panel's settings, with the held
-    /// modifier erasing over them, and the colour limit applied only where it can be read.
+    /// modifier erasing over them.
     ///
-    /// The limit needs the pixel the operation the open mask modulates receives, so a mask no layer
-    /// is bound to has nothing to read. The panel says that in the same row the toggle sits in and
-    /// through the same predicate this reads, so a stroke never carries a limit the host would refuse
-    /// and a person is never told one thing while the request says another.
+    /// The limit reads where the mask's first adjustment would go, so it applies to a mask with no
+    /// bound layer and to the stroke that draws a new mask alike.
     pub(crate) fn painting_brush(&self) -> crate::mask_draft::Brush {
-        let refused = crate::state::masks::limit_reason(
-            if self.mask_shape().is_some_and(MaskDraft::owns_creation) {
-                None
-            } else {
-                self.open_mask()
-            },
-        )
-        .is_some();
         crate::mask_draft::Brush {
             erase: self.mask_panel.brush.erase || self.mask_panel.erase_held,
-            limit_to_colour: self.mask_panel.brush.limit_to_colour && !refused,
             ..self.mask_panel.brush
         }
     }
@@ -1118,13 +1166,18 @@ impl Editor {
 
     // ---- what the canvas shows while a gesture is open -----------------------------------------
 
-    /// Tool starts make coverage visible over an Off setting until an explicit visibility choice.
-    /// This is local view state; choosing Off while drawing remains authoritative.
+    /// An adjustment section's slider is held in Mask mode, so the overlay steps aside and the
+    /// picture shows the adjustment. The mask family's own controls — the range band's grips, the
+    /// selection's number fields, Refine and Amount — tune the selection the overlay draws, so
+    /// holding one keeps it visible.
     pub(crate) fn mask_adjustment_held(&self) -> bool {
         self.mask_mode_active()
-            && self
-                .core_gesture()
-                .is_some_and(|gesture| gesture.slider().is_some() && !gesture.draft.released())
+            && self.core_gesture().is_some_and(|gesture| {
+                !gesture.draft.released()
+                    && gesture.slider().is_some_and(|slider| {
+                        luxforge_core::mask::commands::find(&slider.action).is_none()
+                    })
+            })
     }
 
     pub(crate) fn effective_mask_overlay(&self) -> MaskOverlayMode {
@@ -1267,7 +1320,11 @@ impl Editor {
             self.status.text = format!("This build cannot create a {kind} component");
             return Task::none();
         };
-        self.mask_command(command.method, target, fields)
+        let sent = self.mask_command(command.method, target, fields);
+        // Its answer selects the component it makes, and an add to the open mask gains no new mask
+        // for the create path to find.
+        self.mask_panel.typed_create = self.mask_panel.command_in_flight;
+        sent
     }
 
     /// Put the brush in hand on one existing brush component, so the next press is its next stroke.
@@ -1388,6 +1445,24 @@ impl Editor {
         gesture: GestureId,
         result: Result<MappingDescriptor, String>,
     ) -> Task<Message> {
+        if let Some(picker) = self
+            .mask_panel
+            .picker
+            .as_mut()
+            .filter(|picker| picker.request == Some(gesture))
+        {
+            picker.request = None;
+            picker.map = match result {
+                Ok(transform) => ContentMap::from_descriptor(transform),
+                Err(error) => {
+                    self.status.text = format!("Picking unavailable: {error}");
+                    None
+                }
+            };
+            let available = picker.map.is_some();
+            self.outcome(Outcome::MaskMap { available });
+            return Task::none();
+        }
         if let Some(resting) = self
             .resting
             .as_mut()
@@ -2074,20 +2149,21 @@ impl Editor {
         shown
     }
 
-    /// The frame asked for a coverage grid and arrived without one, for a reason the host named.
+    /// The coverage worker answered a grid request without one, for a reason the host named.
     ///
     /// The last grid is dropped rather than left over a frame it does not describe, the host's own
-    /// reason is logged, and the absence is reported with it.
-    /// A mask whose coverage depends on the pixel it reads is the case this exists for. Its grid
-    /// reads the input of the mask's first bound layer
-    /// ([proposal P16](../../../../docs/design/range-study.md#proposals), decided and built), and
-    /// the host refuses it by name when it has no such input, or cannot afford to read it: no layer
-    /// is bound to the mask, or its first bound layer sits behind a spatial layer. The reason
-    /// deliberately does not go to the status line: the frame this arrives with writes its own
-    /// status in the same update, so a line written here would be replaced before it was ever
-    /// drawn.
+    /// reason is logged, and the absence is reported with it. A mask whose coverage depends on the
+    /// pixel it reads is the case this exists for: its grid reads the input of the mask's input
+    /// site ([proposal P16](../../../../docs/design/range-study.md#proposals)), and the host
+    /// refuses it by name when it cannot afford to read it, such as a first bound layer behind a
+    /// spatial layer, or when no maskable effect is registered. The reason is kept as the open
+    /// mask row's note and, when it differs from the last one shown, written to the status line once.
     pub(crate) fn mask_overlay_unavailable(&mut self, generation: u64, reason: &str) {
         self.presentation.presenter.clear_coverage();
+        if self.mask_panel.coverage_refusal.as_deref() != Some(reason) {
+            self.mask_panel.coverage_refusal = Some(reason.to_owned());
+            self.status.text = reason.to_owned();
+        }
         let forced = self.mask_overlay_forced();
         self.event(
             "mask_overlay_absent",

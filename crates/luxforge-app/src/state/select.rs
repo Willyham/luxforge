@@ -15,10 +15,11 @@ use super::{Inputs, status::clients_text};
 use luxforge_core::{
     MutationRequest, SourceTag,
     catalog_types::{
-        BodyKey, BracketEvidence, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Event,
-        EventList, Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexFolders,
-        IndexSource, LibraryChange, LibraryItem, LocalDay, Moment, MomentKind, Month, PreviewState,
-        RowItem, SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary, VolumeId, Volumes,
+        BodyKey, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Event, EventList,
+        Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexFolders, IndexSource,
+        LibraryChange, LibraryItem, LocalDay, Moment, MomentEvidence, MomentKind, Month,
+        PreviewState, RowItem, SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary,
+        VolumeId, Volumes,
     },
 };
 use serde_json::{Value, json};
@@ -742,12 +743,14 @@ pub(crate) enum Block {
         title: String,
         detail: String,
     },
-    /// A burst or a bracket of `frames` consecutive items, with its header: its pick count in the
-    /// accent ("1 picked") and, for a bracket over files, its actions: Pick all while its frames
-    /// are not all picked, then the primary Merge HDR when a merge can take that many frames. `index` is the moment's in the summary's `groups.moments`.
+    /// A burst, a bracket or a panorama of `frames` consecutive items, with its header: its pick
+    /// count in the accent ("1 picked") and, for a bracket or a panorama over files, its actions:
+    /// Pick all while its frames are not all picked, then the primary Merge HDR or Merge panorama
+    /// when that merge can take that many frames. `index` is the moment's in the summary's
+    /// `groups.moments`.
     Moment {
         index: u32,
-        bracket: bool,
+        kind: MomentKind,
         title: String,
         detail: String,
         evidence: Option<String>,
@@ -775,23 +778,20 @@ pub(crate) enum Block {
 pub(crate) enum MomentAction {
     /// Pick all N: `pick.set` of the frames' files.
     PickAll(u32),
-    /// Merge HDR of the frames.
-    Merge,
+    /// Merge the frames: a bracket's HDR, a panorama's panorama.
+    Merge(luxforge_core::catalog_types::MergeKind),
 }
 
 impl MomentAction {
     pub(crate) fn label(self) -> String {
         match self {
             Self::PickAll(frames) => format!("Pick all {frames}"),
-            // A bracket's merge is HDR's.
-            Self::Merge => super::select_merge::words(luxforge_core::catalog_types::MergeKind::Hdr)
-                .action
-                .to_owned(),
+            Self::Merge(kind) => super::select_merge::words(kind).action.to_owned(),
         }
     }
 
     pub(crate) fn primary(self) -> bool {
-        self == Self::Merge
+        matches!(self, Self::Merge(_))
     }
 }
 
@@ -950,15 +950,20 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
                 let bracket = group.kind == MomentKind::Bracket;
                 content.blocks.push(Block::Moment {
                     index: moment as u32,
-                    bracket,
-                    title: if bracket { "Bracket" } else { "Burst" }.to_owned(),
+                    kind: group.kind,
+                    title: moment_title(group.kind).to_owned(),
                     detail: moment_detail(group),
                     evidence: group.evidence.map(evidence_label).map(str::to_owned),
                     picked: (group.picked > 0)
                         .then(|| format!("{} picked", thousands(group.picked))),
-                    actions: moment_actions(bracket && over_files, group.picked, frames),
+                    actions: if over_files {
+                        moment_actions(group.kind, group.picked, frames)
+                    } else {
+                        Vec::new()
+                    },
                     frames,
-                    collapsed: !bracket && collapsed.contains(&(moment as u32)),
+                    collapsed: group.kind == MomentKind::Burst
+                        && collapsed.contains(&(moment as u32)),
                 });
                 if bracket && group.steps_ev.len() == group.len as usize {
                     for (frame, step) in group.steps_ev.iter().take(frames as usize).enumerate() {
@@ -995,25 +1000,37 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
     content
 }
 
-/// A moment's header buttons: for a bracket over files, Pick all while its frames are not all
-/// picked, then the primary Merge HDR while an HDR merge, a bracket's kind, takes that many
-/// frames.
-fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<MomentAction> {
+/// A moment's header buttons over files: for a bracket or a panorama, Pick all while its frames
+/// are not all picked, then the primary merge of its kind (Merge HDR, Merge panorama) while that
+/// merge takes that many frames. A burst has none.
+fn moment_actions(kind: MomentKind, picked: u32, frames: u32) -> Vec<MomentAction> {
     use luxforge_core::catalog_types::MergeKind;
+    let merge = match kind {
+        MomentKind::Bracket => MergeKind::Hdr,
+        MomentKind::Panorama => MergeKind::Panorama,
+        MomentKind::Burst | MomentKind::Single => return Vec::new(),
+    };
     let mut actions = Vec::new();
-    if !bracket_of_files {
-        return actions;
-    }
     if picked < frames {
         actions.push(MomentAction::PickAll(frames));
     }
-    if MergeKind::Hdr.inputs().contains(&(frames as usize)) {
-        actions.push(MomentAction::Merge);
+    if merge.inputs().contains(&(frames as usize)) {
+        actions.push(MomentAction::Merge(merge));
     }
     actions
 }
 
-/// A moment's header detail: a burst's frames and span, a bracket's exposures and steps.
+/// A moment's header title.
+pub(crate) fn moment_title(kind: MomentKind) -> &'static str {
+    match kind {
+        MomentKind::Bracket => "Bracket",
+        MomentKind::Panorama => "Panorama",
+        MomentKind::Burst | MomentKind::Single => "Burst",
+    }
+}
+
+/// A moment's header detail: a burst's or a panorama's frames and span, a bracket's exposures and
+/// steps.
 fn moment_detail(moment: &Moment) -> String {
     match moment.kind {
         MomentKind::Bracket => {
@@ -1028,10 +1045,11 @@ fn moment_detail(moment: &Moment) -> String {
     }
 }
 
-fn evidence_label(evidence: BracketEvidence) -> &'static str {
+fn evidence_label(evidence: MomentEvidence) -> &'static str {
     match evidence {
-        BracketEvidence::Metadata => "from metadata",
-        BracketEvidence::Previews => "from previews",
+        MomentEvidence::Metadata => "from metadata",
+        MomentEvidence::Previews => "from previews",
+        MomentEvidence::Folder => "from its folder",
     }
 }
 
@@ -1338,10 +1356,16 @@ pub(crate) struct CellFacts {
     pub(crate) in_catalog: bool,
     pub(crate) availability: Availability,
     pub(crate) edited: bool,
+    /// A RAW file shown with the JPEG the camera wrote beside it, which [`PAIR_NOTE`] says.
+    pub(crate) paired: bool,
 }
+
+/// The note on a RAW+JPEG pair's cell.
+pub(crate) const PAIR_NOTE: &str = "RAW+JPEG";
 
 pub(crate) fn cell_facts(row: &ViewRow) -> CellFacts {
     CellFacts {
+        paired: row.pair.is_some(),
         aspect: aspect(row),
         picked: row.picked,
         in_catalog: matches!(row.item, RowItem::File { .. }) && row.developed_as.is_some(),
@@ -2531,11 +2555,7 @@ pub(crate) fn item_info(
             summary.and_then(|summary| summary.groups.moments.get(at.index as usize))
         && group.kind != MomentKind::Single
     {
-        let kind = if group.kind == MomentKind::Bracket {
-            "Bracket"
-        } else {
-            "Burst"
-        };
+        let kind = moment_title(group.kind);
         moment.push((
             "Moment".to_owned(),
             format!("{kind} \u{b7} frame {} of {}", at.frame + 1, group.len),
@@ -2569,6 +2589,10 @@ pub(crate) fn item_info(
         }),
     );
     push("File", Some(row.file_name.clone()));
+    push(
+        "With JPEG",
+        row.pair.as_ref().map(|pair| pair.file_name.clone()),
+    );
     push(
         "Folder",
         row.path
@@ -2610,13 +2634,18 @@ pub(crate) fn item_info(
     }
 }
 
-/// Why a moment is one: a burst's frames are close together, a bracket's exposure steps.
+/// Why a moment is one: a burst's frames are close together, a bracket's exposure steps, a
+/// panorama's frames are in a panorama folder or sweep across the scene.
 fn why(moment: &Moment) -> String {
     match (moment.kind, moment.evidence) {
-        (MomentKind::Bracket, Some(BracketEvidence::Previews)) => {
+        (MomentKind::Bracket, Some(MomentEvidence::Previews)) => {
             "Brightness steps, measured on the previews".to_owned()
         }
         (MomentKind::Bracket, _) => "Exposure steps, from the metadata".to_owned(),
+        (MomentKind::Panorama, Some(MomentEvidence::Folder)) => {
+            "Shot into a panorama folder".to_owned()
+        }
+        (MomentKind::Panorama, _) => "Overlapping views, measured on the previews".to_owned(),
         _ => {
             let gaps = moment.len.saturating_sub(1).max(1);
             format!(

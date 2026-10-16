@@ -41,6 +41,7 @@ mod hdr_merge_measure;
 mod hdr_merge_smoke;
 mod hdr_merge_view_smoke;
 mod histogram_smoke;
+mod icon;
 mod information_smoke;
 mod inspect_dng;
 mod launch;
@@ -74,7 +75,9 @@ mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
 mod release_build;
+mod release_linux;
 mod release_sign;
+mod release_source;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
@@ -84,7 +87,7 @@ mod smoke;
 mod sparkle;
 mod stats;
 mod theme_smoke;
-mod tiff;
+mod tiff_reader;
 mod unsupported_catalog_smoke;
 mod update_journey;
 mod usage_backend_smoke;
@@ -213,6 +216,7 @@ fn main_result() -> Result {
             )?;
         }
         "release-sign" => release_sign::run(&root, &mut a)?,
+        "release-source" => release_source::run(&root, &mut a)?,
         "update-journey" => update_journey::run(&root, &mut a)?,
         "release-assemble" => {
             let tag = a.value("--tag")?.ok_or("Required: --tag")?;
@@ -226,6 +230,8 @@ fn main_result() -> Result {
                 tag.to_str().ok_or("Tag encoding")?,
             )?;
         }
+        "release-gate" => xtask_cli::release_verify::run_gate(&mut a)?,
+        "release-verify" => xtask_cli::release_verify::run_verify(&mut a)?,
         "update-record" => xtask_cli::update::run_record(&root, &mut a)?,
         "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
@@ -424,6 +430,10 @@ fn main_result() -> Result {
             let out = absolute(&root, &a.path("--output")?);
             a.done()?;
             lens_qualification::run(&manifest, &edges, &out)?;
+        }
+        "icon" => {
+            a.done()?;
+            icon::generate(&root)?;
         }
         "lensfun-import" => {
             let source = absolute(&root, &a.path("--source")?);
@@ -717,14 +727,17 @@ fn main_result() -> Result {
                 .value("--aspect")?
                 .map(|s| s.to_string_lossy().parse::<f64>())
                 .transpose()?;
-            let columns = a
-                .value("--columns")?
-                .map(|s| -> Result<[u32; 2]> {
-                    let text = s.to_string_lossy();
-                    let (left, right) = text
-                        .split_once(',')
-                        .ok_or("--columns expects LEFT,RIGHT physical pixels")?;
-                    Ok([left.trim().parse()?, right.trim().parse()?])
+            let canvas = a
+                .value("--canvas")?
+                .map(|s| -> Result<[u32; 4]> {
+                    let edges = s
+                        .to_string_lossy()
+                        .split(',')
+                        .map(|edge| edge.trim().parse::<u32>())
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    edges.try_into().map_err(|_| {
+                        "--canvas expects LEFT,TOP,RIGHT,BOTTOM physical pixels".into()
+                    })
                 })
                 .transpose()?;
             a.done()?;
@@ -734,7 +747,7 @@ fn main_result() -> Result {
                     &image::open(&path)?.to_rgb8(),
                     &scenario::Fixture {
                         aspect,
-                        columns,
+                        canvas,
                         ..scenario::Fixture::fit(orientation)
                     }
                 )?

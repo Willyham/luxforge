@@ -716,7 +716,9 @@ impl SelectPreviews {
                     entry.job = None;
                     (Read::Ready, Some(preview))
                 }
-                Ok(PreviewAnswer::Queued { job_id, fallback }) => {
+                Ok(PreviewAnswer::Queued {
+                    job_id, fallback, ..
+                }) => {
                     let job = job_id.as_str().to_owned();
                     let ended = entry.job.as_ref().is_some_and(|earlier| *earlier != job);
                     entry.job = Some(job);

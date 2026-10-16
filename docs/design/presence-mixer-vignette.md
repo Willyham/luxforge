@@ -2,7 +2,9 @@
 
 Status: implemented and verified on the M4 Mac. The owner authorized implementation on 2026-09-22 on the recorded defaults; the three modules, the host stages, the spatial primitive and the acceptance and rendered evidence are delivered, and [performance](../specs/performance.md#presence-colour-mixer-and-vignette-qualification) records the measurements and the missed slider targets. The [proposals](#proposals-with-recorded-defaults) at the end carry those defaults so the plan runs to completion on agent judgement; each is the owner's to refine, as the Basic defaults were. It builds on the delivered [Basic adjustments](basic-and-histogram.md) integration contract (field patches, the draft lifecycle, pointwise colour runs), the [module and API contract](modules-and-api.md), the [UI components](ui-components.md) vocabulary and the [Develop workspace](develop-workspace.md) tool array.
 
-[Colour grading](colour-grading.md) extends the delivered mixer: the same layer, now at its own format 2, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
+[Colour grading](colour-grading.md) extends the delivered mixer: the same layer, at its own format marker, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
+
+Clarity, Dehaze, the mixer's 24 HSL sliders and the vignette's Amount and Midpoint follow Lightroom Classic's measured responses ([Presence, the mixer and the vignette realigned](lightroom-alignment.md#presence-the-mixer-and-the-vignette-realigned)): each slider's value goes through a frozen response to the strength the unit below applies, which is what the tables here call the slider's value. The units, their stages and their GPU programs are unchanged. Presence's payload format is 2, the vignette's 2 and the mixer's 3, so a layer of an earlier meaning is refused, never re-rendered.
 
 ## Outcome and scope
 
@@ -90,6 +92,15 @@ The vignette study freezes the mask and the amount equation:
 - **Amount** −100..+100 (default 0): negative darkens toward black in linear light with the gain `1 − |a|·m`; positive lightens toward the display white with a compressive mapping that never exceeds 1 in encoded terms. Amount 0 is the exact identity for every mask. The one style shipped is this luminance-neutral one; Lightroom's highlight-priority and paint-overlay styles are not selected.
 
 One `set-vignette` field patch, `reset-vignette`, labels like `Vignette amount −35` and `Reset Vignette`.
+
+The GPU admits a non-neutral vignette only when its normalized falloff span `r1 - r0` is at
+least `1e-3`. Smaller spans, including Feather 0, use the existing whole-frame reference renderer
+with the vignette layer named by the `no-program` fallback; qualification requests retain that
+limit. This keeps f32 radius and boundary rounding from changing a nearly hard transition into a
+different effect. The frozen f64 mask and existing output tolerance are unchanged. The default
+Feather 50 has a span of 0.5 and stays on the GPU. A neutral GPU-shaped draft remains an exact
+identity regardless of span. Stacks with the unsupported settings incur the reference renderer's
+whole-frame cost; broader GPU admission requires actual shader qualification.
 
 ## Controls and interaction
 

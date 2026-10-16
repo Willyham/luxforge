@@ -133,6 +133,11 @@ impl Editor {
                         // its event like another client's.
                         self.resync();
                         let flag = written.map(|(flag, _)| flag).unwrap_or_default();
+                        let updates = if flag == luxforge_core::flags::PRERELEASE_CHANNEL {
+                            self.read_updates()
+                        } else {
+                            Task::none()
+                        };
                         self.status.text = format!("Could not change {flag}: {reason}");
                         self.event(
                             "flag_set_failed",
@@ -140,7 +145,7 @@ impl Editor {
                         );
                         self.settings.error = Some(reason);
                         // The row showed the change it asked for; read back what is stored.
-                        self.read_flags()
+                        Task::batch([self.read_flags(), updates])
                     }
                 };
                 if self.settings.closing && self.settings.idle() {

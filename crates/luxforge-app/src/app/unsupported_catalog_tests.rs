@@ -16,7 +16,7 @@ use crate::{
         unsupported_catalog::{Phase, Refusal},
     },
 };
-use luxforge_core::{ErrorKind, HostConfig, ModuleRegistry};
+use luxforge_core::{CATALOG_FORMAT, ErrorKind, HostConfig, ModuleRegistry};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -140,7 +140,7 @@ fn stored(root: &Path) -> Option<serde_json::Value> {
 }
 
 /// A remembered catalog another version made opens the sheet naming both formats; Start a new
-/// catalog creates `catalog (format 1).sqlite` beside it, remembers it, and the window becomes a
+/// catalog creates `catalog (format N).sqlite` beside it, remembers it, and the window becomes a
 /// working editor over it; the refused catalog, its log, artifacts and index keep every byte.
 #[test]
 fn unsupported_catalog_start_opens_and_remembers_a_new_catalog_and_keeps_the_refused_one() {
@@ -157,7 +157,7 @@ fn unsupported_catalog_start_opens_and_remembers_a_new_catalog_and_keeps_the_ref
         before,
         "the refusal changed nothing"
     );
-    let new = folder.join("catalog (format 1).sqlite");
+    let new = folder.join(format!("catalog (format {CATALOG_FORMAT}).sqlite"));
     assert_eq!(sheet.next.as_deref(), Some(new.as_path()));
     let model = sheet.model();
     assert!(
@@ -166,7 +166,9 @@ fn unsupported_catalog_start_opens_and_remembers_a_new_catalog_and_keeps_the_ref
         model.formats
     );
     assert!(
-        model.formats.contains("opens catalog format 1"),
+        model
+            .formats
+            .contains(&format!("opens catalog format {CATALOG_FORMAT}")),
         "{}",
         model.formats
     );
@@ -186,7 +188,8 @@ fn unsupported_catalog_start_opens_and_remembers_a_new_catalog_and_keeps_the_ref
 
     // What the task Start queued runs here, as it runs off the update loop.
     luxforge_core::OwnerHandle::read_no_host_mounts(&new);
-    let started = start_new(prepared(&root, &refused, None), &refused, 1).expect("started");
+    let started =
+        start_new(prepared(&root, &refused, None), &refused, CATALOG_FORMAT).expect("started");
     assert_eq!(started.path, new);
     assert_eq!(started.unremembered, None);
     assert_eq!(stored(&root).unwrap()["catalog"], json!(new), "remembered");
@@ -236,7 +239,7 @@ fn unsupported_catalog_start_opens_and_remembers_a_new_catalog_and_keeps_the_ref
 #[test]
 fn unsupported_catalog_quit_creates_and_writes_nothing() {
     let root = luxforge_testbase::paths::temp_dir("unsupported-quit");
-    let refused = seed(&root, 2);
+    let refused = seed(&root, CATALOG_FORMAT + 1);
     let before = refused_files(&root);
     for message in [Message::UnsupportedCatalog(Sheet::Quit), Message::Close] {
         let mut sheet = launch(prepared(&root, &refused, None), &refused).unwrap();
@@ -246,7 +249,11 @@ fn unsupported_catalog_quit_creates_and_writes_nothing() {
         assert_eq!(sheet.phase, Phase::Offered);
         assert_eq!(sheet.exit_problem(), None, "Quit is an ordinary exit");
     }
-    assert!(!root.join("catalog (format 1).sqlite").exists());
+    assert!(
+        !root
+            .join(format!("catalog (format {CATALOG_FORMAT}).sqlite"))
+            .exists()
+    );
     assert_eq!(stored(&root), None);
     assert_eq!(refused_files(&root), before);
     std::fs::remove_dir_all(root).unwrap();
@@ -262,12 +269,13 @@ fn unsupported_catalog_a_failed_start_offers_both_choices_again() {
     let mut sheet = launch(prepared(&root, &refused, None), &refused).unwrap();
     let _ = sheet.update(Message::UnsupportedCatalog(Sheet::Start));
     // The name was taken meanwhile by something that is not a catalog.
-    let taken = root.join("catalog (format 1).sqlite");
+    let taken = root.join(format!("catalog (format {CATALOG_FORMAT}).sqlite"));
     std::fs::write(&taken, b"not a catalog").unwrap();
     // The next free name is used instead: nothing that exists is opened.
-    let second = root.join("catalog (format 1) 2.sqlite");
+    let second = root.join(format!("catalog (format {CATALOG_FORMAT}) 2.sqlite"));
     luxforge_core::OwnerHandle::read_no_host_mounts(&second);
-    let started = start_new(prepared(&root, &refused, None), &refused, 1).expect("started");
+    let started =
+        start_new(prepared(&root, &refused, None), &refused, CATALOG_FORMAT).expect("started");
     assert_eq!(started.path, second);
     let boot = started.boot.lock().unwrap().take().unwrap();
     boot.owner.stop();
@@ -287,7 +295,10 @@ fn unsupported_catalog_a_failed_start_offers_both_choices_again() {
     assert!(model.start_enabled && model.quit_enabled);
     assert_eq!(
         sheet.next.as_deref(),
-        Some(root.join("catalog (format 1) 3.sqlite").as_path())
+        Some(
+            root.join(format!("catalog (format {CATALOG_FORMAT}) 3.sqlite"))
+                .as_path()
+        )
     );
     assert_eq!(refused_files(&root), before);
     std::fs::remove_dir_all(root).unwrap();
@@ -310,7 +321,7 @@ fn unsupported_catalog_explicit_and_owned_catalogs_keep_the_command_line_refusal
         explicit,
         format!(
             "cannot open catalog {}: incompatible: catalog format 16 is not supported; \
-             expected 1; choose a new catalog path",
+             expected {CATALOG_FORMAT}; choose a new catalog path",
             refused.display()
         )
     );
@@ -338,7 +349,11 @@ fn unsupported_catalog_explicit_and_owned_catalogs_keep_the_command_line_refusal
     );
     holder.0.stop();
     holder.1.join().unwrap();
-    assert!(!root.join("catalog (format 1).sqlite").exists());
+    assert!(
+        !root
+            .join(format!("catalog (format {CATALOG_FORMAT}).sqlite"))
+            .exists()
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -356,10 +371,9 @@ fn unsupported_catalog_an_unmarked_catalog_is_named_as_unmarked() {
     let sheet = launch(prepared(&root, &catalog, None), &catalog).unwrap();
     assert!(!sheet.refusal.marked);
     assert!(
-        sheet
-            .model()
-            .formats
-            .starts_with("It is not marked as a Luxforge catalog of format 1"),
+        sheet.model().formats.starts_with(&format!(
+            "It is not marked as a Luxforge catalog of format {CATALOG_FORMAT}"
+        )),
         "{}",
         sheet.model().formats
     );

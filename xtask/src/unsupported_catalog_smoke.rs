@@ -8,7 +8,7 @@
 //! `seed.before/`. One launch names the seeded catalog as its remembered one
 //! (`--evidence-catalog`) and Start a new catalog as the sheet's choice
 //! (`--evidence-unsupported-catalog start`): it captures the sheet with its state
-//! (`unsupported-catalog.png` and `.json`), creates and remembers `catalog (format 1).sqlite` beside
+//! (`unsupported-catalog.png` and `.json`), creates and remembers `catalog (format 2).sqlite` beside
 //! the refused catalog, and opens the fixture in the editor over it. The checks read the sheet's
 //! state, its pixels, the log's events in order, the remembered preference, the new catalog's
 //! header, and compare every refused file with its copy.
@@ -31,7 +31,7 @@ pub const NOTE: &str = "The launch passes `--evidence-catalog seed/catalog.sqlit
 const SEED: &str = "seed";
 const BEFORE: &str = "seed.before";
 const CATALOG: &str = "catalog.sqlite";
-const NEW_CATALOG: &str = "catalog (format 1).sqlite";
+const NEW_CATALOG: &str = "catalog (format 2).sqlite";
 const REFUSED_FORMAT: u32 = 16;
 /// Where SQLite keeps `user_version` and `application_id` in a database's header.
 const USER_VERSION_OFFSET: usize = 60;
@@ -190,7 +190,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let formats = sheet["formats"].as_str().unwrap_or_default();
     ensure(
         formats.starts_with("It is catalog format 16. Luxforge ")
-            && formats.ends_with(" opens catalog format 1."),
+            && formats.ends_with(" opens catalog format 2."),
         format!("The sheet names both formats: {formats:?}"),
     )?;
     ensure(
@@ -218,7 +218,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     ensure(
         state["refusal"]["catalog_format"] == 16
-            && state["refusal"]["expected_format"] == 1
+            && state["refusal"]["expected_format"] == luxforge_core::CATALOG_FORMAT
             && state["new_catalog"] == json!(new)
             && state["phase"] == "offered"
             && state["hidden"] == true
@@ -283,9 +283,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // The new catalog: beside the refused one, this format, marked, remembered by this run's own
     // preferences, and the fixture open in the editor over it.
     ensure(
-        header_field(&new, USER_VERSION_OFFSET)? == 1
+        header_field(&new, USER_VERSION_OFFSET)? == luxforge_core::CATALOG_FORMAT as u32
             && header_field(&new, APPLICATION_ID_OFFSET)? == APPLICATION_ID,
-        "The new catalog is format 1 and marked as a Luxforge catalog",
+        "The new catalog uses the current format and is marked as a Luxforge catalog",
     )?;
     let preferences = read_json(&evidence.join("host/config/preferences.json"))?;
     ensure(
@@ -310,7 +310,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .next()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .unwrap_or_default();
-        !name.starts_with("catalog (format 1)")
+        !name.starts_with("catalog (format 2)")
     });
     ensure(
         after.keys().eq(before.keys()),
