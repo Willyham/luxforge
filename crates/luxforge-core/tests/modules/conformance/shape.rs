@@ -5,8 +5,9 @@
 //! colour or a curve — with a default, and a parameterless non-patch action that the module's own
 //! reset names. Additional non-patch actions, such as query-choice selection, do not change that
 //! shape. This is what `modules/field_patch.rs` builds from a spec, and nothing here reads a
-//! spec, a module type or a module identity, so a module registered in that shape is covered the
-//! day it is registered.
+//! spec or a module type, so a module registered in that shape is covered the day it is
+//! registered. The one identity read is [`NOT_FIELD_PATCHES`]: a module in that shape that
+//! documents why it is not one.
 //!
 //! Every payload the suite sends is derived from the declared field table: the neutral spellings
 //! from the defaults, and the moved values from each field's own declaration — a number moved
@@ -389,6 +390,13 @@ pub struct FieldPatch {
     pub descriptor: ModuleDescriptor,
 }
 
+/// Modules whose descriptor has the field-patch shape but whose stored form is not a field patch.
+/// The look implements `ToolModule` directly: its payload stores resolved knots, a chroma gain and
+/// a knee that no action sets, and its neutral is `{"look": "neutral"}`, not `{}`. Its `set-look`
+/// declares a default for every field only so a client seeds a photo without a Look layer as
+/// Neutral, with Amount disabled.
+const NOT_FIELD_PATCHES: &[&str] = &["luxforge.look"];
+
 /// Every registered module in the field-patch shape, in registration order.
 pub fn field_patches(registry: &ModuleRegistry) -> Vec<FieldPatch> {
     registry
@@ -400,6 +408,9 @@ pub fn field_patches(registry: &ModuleRegistry) -> Vec<FieldPatch> {
 
 impl FieldPatch {
     fn read(descriptor: &ModuleDescriptor) -> Option<Self> {
+        if NOT_FIELD_PATCHES.contains(&descriptor.id.as_str()) {
+            return None;
+        }
         let [effect] = descriptor.effects.as_slice() else {
             return None;
         };

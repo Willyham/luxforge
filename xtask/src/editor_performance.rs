@@ -12,7 +12,7 @@ fn basic_exposure_layer(ev: f64) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({ "exposure": ev }),
         mask: None,
         artifacts: Vec::new(),
@@ -26,7 +26,7 @@ fn basic_exposure_and_tone_layer(ev: f64) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({
             "exposure": ev,
             "contrast": 30.0,
@@ -53,7 +53,7 @@ fn tone_curve_layer() -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: CURVE_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(CURVE_EFFECT),
         payload: json!({ "luminance": TONE_CURVE_S }),
         mask: None,
         artifacts: Vec::new(),
@@ -67,7 +67,7 @@ fn basic_vibrance_saturation_layer(vibrance: f64, saturation: f64) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({ "vibrance": vibrance, "saturation": saturation }),
         mask: None,
         artifacts: Vec::new(),
@@ -80,7 +80,7 @@ fn basic_white_balance_layer(temperature: f64, tint: f64) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({ "temperature": temperature, "tint": tint }),
         mask: None,
         artifacts: Vec::new(),
@@ -93,7 +93,7 @@ fn basic_full_layer() -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: BASIC_EFFECT.into(),
-        effect_format: 1,
+        effect_format: luxforge_core::current_effect_format(BASIC_EFFECT),
         payload: json!({
             "exposure": 0.5,
             "contrast": 25.0,

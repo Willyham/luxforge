@@ -282,9 +282,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )
 }
 
-/// The tiled journey's claims: After's retained frame is the 60 MP exact raster, its display
-/// reduction stands in for it at Fit, no mip level is resident anywhere, and After alone is the
-/// display-size photograph the open drew, to within a code.
+/// The tiled journey's claims: After's retained frame is the 60 MP exact raster, something other
+/// than that tiled raster draws it at Fit — its display reduction, or the GPU's picture at rest
+/// where the GPU presented the photograph — no mip level is resident anywhere, and After alone is
+/// the display-size photograph the open drew, to within a code.
 pub fn verify_tiled(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
@@ -298,9 +299,10 @@ pub fn verify_tiled(_: &mut Run, launches: &[Checked]) -> Result {
         ));
     }
     let reduced = after.state()["compare_after_reduced_at_fit"].clone();
-    if reduced != json!(true) {
+    let gpu_picture = after.state()["surface"]["gpu"]["compare"]["picture"].clone();
+    if reduced != json!(true) && gpu_picture != json!("rest") {
         failures.push(format!(
-            "The comparison holds no display reduction for Fit ({reduced}), though its exact raster is held in tiles"
+            "The comparison holds no display reduction for Fit ({reduced}) and the GPU does not draw After from its picture at rest ({gpu_picture}), though its exact raster is held in tiles"
         ));
     }
     for (name, frame) in [
