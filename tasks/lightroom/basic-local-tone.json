@@ -1,0 +1,336 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "basic-local-tone",
+  "title": "Basic tone that adapts to the picture",
+  "objective": "Make Basic's Highlights, Shadows and Whites act on a RAW photograph's scene values relative to its development's scene white, and Blacks, Contrast, Vibrance and Saturation after the Look, so one strength per value fits Lightroom Classic's charts and photographs within A8, as docs/design/basic-local-tone.md specifies.",
+  "context_summary": "Planned from docs/design/basic-local-tone.md, a level C change (A1, A8) of the Lightroom alignment plan's TASK-006, whose study (cargo xtask lr-align tone-study) measured Lightroom's exports only (A4). The design is a proposal: the owner's four questions are open and no task is authorized. The plan follows the design's recommended answers (global scene-white operator, Blacks/Contrast/Vibrance/Saturation after the Look on RAW, the development's scene white, Whites' re-stretch left to a later study); a different answer changes TASK-002 to TASK-004 and is a focused plan update. Basic stays one layer and one payload; its format rises from 3 to 4 and format 3 layers and presets are refused. Both parts are pointwise in the fused colour run: no halo, scratch, GPU window or staged sweep changes. This Linux host has no Metal; GPU evidence comes from the M4 in TASK-006. Rounds and originals are read-only.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Freeze the reference for the split Basic tone: the scene part (Whites, Shadows, Highlights in the scene-white domain c x W_e, with c_H = 3 and c_S = 2) and the rendered part (Blacks, Contrast, then Vibrance and Saturation), the scene white's definition, and the JPEG path, with exact fixtures and a dense monotonicity proof for each part.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "Promote the study's curves from crates/luxforge-reference/src/local_tone.rs into the frozen Basic tone reference; the base, guided and Levels prototypes stay study code unless the owner chooses the local option.",
+        "The scene white: block means to at most 0.25 MP, then the 0.999 quantile of linear luminance read from a fixed-bin histogram, deterministic and tile-invariant (recorded choice). W_e is W scaled by Exposure's gain and by Basic's white balance gain on a neutral grey.",
+        "Whites and Blacks no longer share one endpoint remap or its gap clamp; each part is monotone on its own, proved densely as basic-tone.md does today, and values past the domain's white pass through.",
+        "On a rendered input the domain is today's (c x W_e = 1) and the order is Whites, Shadows, Highlights, Blacks, Contrast, Vibrance/Saturation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "The equations, constants and order to freeze.",
+          "locator": "The operator"
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone",
+          "target": "docs/design/basic-tone.md",
+          "relevance": "The frozen curves and the dense monotonicity proof this extends."
+        },
+        {
+          "kind": "file",
+          "label": "Study prototypes",
+          "target": "crates/luxforge-reference/src/local_tone.rs",
+          "relevance": "The candidate operators and their known-answer tests."
+        }
+      ],
+      "acceptance_criteria": [
+        "Exact fixtures cover each part on RAW-like scene values and on rendered values, the scene white on a synthetic plane with a known quantile, and Exposure scaling W_e exactly.",
+        "The dense monotonicity proof passes for each part at every field's limits; basic-tone.md documents the split, the domain and the scene white."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Add exact fixtures and the dense proof beside Basic's existing reference tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-reference basic"
+        ],
+        "expected_results": [
+          "The fixtures and proofs pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Compute the development's scene white once on the source worker when a RAW photograph is developed, keep it with the prepared development, and pass it to colour compilation through CompileStage.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "It is a property of the development, not of the stage: independent of the crop and of every layer, never recomputed on a drag, never on the catalog owner or UI thread.",
+        "A rendered or derived source (JPEG, HDR merge) has none; compilation then takes the rendered path.",
+        "Charge its cost to the development path and measure it at 24 and 60 MP when timing runs are due; until then answer the performance checklist with its bounds (one reduction, a fixed histogram)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "Where the scene white lives and why it is not a stage estimate.",
+          "locator": "Design"
+        },
+        {
+          "kind": "file",
+          "label": "CompileStage",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
+          "relevance": "CompileStage and the scene-referred flag the statistic travels beside.",
+          "locator": "CompileStage"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Off-thread, bounded work and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "A developed RAW photograph's CompileStage carries its scene white; a JPEG's and a derived source's carry none.",
+        "The value is identical across crops, previews and full renders of one development and matches the reference definition exactly."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test the statistic against the reference and its crop and preview independence."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core scene_white"
+        ],
+        "expected_results": [
+          "The tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Let a colour operation carry a rendered tail that the registry places directly after the stack's rendering layer (the Look) when one follows on a scene-referred stack, and otherwise directly after the layer's own units, with the layer's mask on both parts, in the same fused colour run on the CPU and the GPU plan.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "One layer, one payload, one history entry: no second Basic layer (rejected in the design).",
+        "Point queries through a layer with a tail stay O(layers) and never rasterize; the neutral picker still reads the stage before the layer.",
+        "No new program boundary: both parts stay in the fused colour run, so halo, scratch, GPU window and staged sweeps are unchanged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "The placement rule and why it is host-owned.",
+          "locator": "One layer, two places"
+        },
+        {
+          "kind": "file",
+          "label": "Colour compilation",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "relevance": "Where stage units are ordered and fused."
+        },
+        {
+          "kind": "file",
+          "label": "GPU preview",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The fused colour run and program counts."
+        }
+      ],
+      "acceptance_criteria": [
+        "With a test operation, the tail lands after a following Look, after the layer itself without one, and in the same place on a rendered stack; a mask covers both parts.",
+        "Point queries and the GPU plan's program count are unchanged by a tail."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test placement, masks, point queries and the GPU plan with a test operation."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core rendered_tail"
+        ],
+        "expected_results": [
+          "The tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Compile Basic as the scene part and a rendered tail, exact against TASK-001's reference on the CPU and within the declared tolerance in WGSL, raise BASIC_EFFECT_FORMAT from 3 to 4 and refuse format 3 layers and presets, and move Auto tone's forward model to the same split and scene white.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "The GPU tone program gains the domain's uniform words; one program with a mode word or two, whichever keeps the fused run's program count no larger (delegated).",
+        "Responses stay today's until TASK-005 refits them; Auto's searched fields search through the new forward model, its ruled fields keep their picture-statistic triggers and bounds.",
+        "Preset import keeps transferring Lightroom's Basic values as the same numbers (A11)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "The format, Auto tone and import changes.",
+          "locator": "Format, responses, Auto tone and imports"
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
+          "relevance": "BASIC_EFFECT_FORMAT and the compile.",
+          "locator": "BASIC_EFFECT_FORMAT"
+        },
+        {
+          "kind": "file",
+          "label": "Auto tone forward model",
+          "target": "crates/luxforge-core/src/modules/basic/auto/forward.rs",
+          "relevance": "The model that must compile the same split."
+        },
+        {
+          "kind": "file",
+          "label": "Basic on the scene scale",
+          "target": "docs/design/basic-scene.md",
+          "relevance": "Exposure and white balance stay first and a plain gain on RAW."
+        }
+      ],
+      "acceptance_criteria": [
+        "The CPU units match the reference exactly on RAW and JPEG; the WGSL matches within the declared tone tolerance in the reference comparison.",
+        "A format 3 layer and preset are refused naming the format; a JPEG render of a payload without Blacks is unchanged within the tone tolerance.",
+        "Auto tone's tests pass on the new model and its corpus outputs are recorded beside today's."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run Basic's and Auto tone's tests, then the rendered tier at this integration point."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core modules::basic",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tests pass; the rendered tier passes on available hardware, with no GPU claim from a host without one."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Measure rounds 1, 1b and 2 on a study build of the new operator with extended ranges, refit response.json with lr-align fold (Contrast, Highlights, Shadows, Whites, Blacks, Vibrance, Saturation; c_H and c_S at the frozen reduction), and record the figures, sheets and acceptance results in the design.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Outputs only (A4); round folders and originals are read-only. Keep the owner's Whites review.",
+        "Expected starting strengths from the study: Highlights -111/+86 at -100/+100, Shadows -20/+21, Blacks -84/+62 after the Look.",
+        "Update basic-tone.md, basic-scene.md, lightroom-alignment.md's Basic realigned table, the feature status and the user guide for the changed behaviour."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "The thresholds the fold must meet.",
+          "locator": "Acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Changing a control, the fold and the Basic realigned table.",
+          "locator": "Changing a control"
+        }
+      ],
+      "acceptance_criteria": [
+        "Highlights within A8 jointly from -100 to +50 and on photographs at every value; charts at +75/+100 no worse than 2.2/3.0.",
+        "Shadows within A8 at every value; Blacks within A8 from -50 to +100 and no worse than 2.2/2.6 at -75/-100.",
+        "Exposure + Highlights within A8; Contrast + Blacks at most 5.0 and Contrast + Whites at most 6.5; Exposure + Whites no worse than 5.9 beyond the Whites +100 re-stretch; Contrast, Whites, Vibrance and Saturation on the charts no worse than today."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Measure each round, fold, re-measure at the folded responses through the CPU reference at full size."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask lr-align measure --round 1 --folder ROUND1_DIR --output NEW_DIR",
+          "tools/cargo-cached xtask lr-align measure --round 2 --folder ROUND2_DIR --output NEW_DIR",
+          "tools/cargo-cached xtask lr-align fold --measured DIR --measured DIR --output NEW_DIR",
+          "tools/cargo-cached test -p luxforge-core modules::basic"
+        ],
+        "expected_results": [
+          "The acceptance figures hold and are recorded with their scope."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Qualify on the M4 and close: whole-corpus gpu-qualification with the RAW manifest, the performance checklist with the scene white's development-path cost at 24 and 60 MP, the owner's review of the study's and the fold's sheets, and a confirming Lightroom round that adds Contrast alone on the photographs.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Deferrable gates: nothing in TASK-001 to TASK-005 waits on this task.",
+        "The confirming round needs the owner to import and export in Lightroom; agents cannot run Lightroom."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Basic tone that adapts to the picture",
+          "target": "docs/design/basic-local-tone.md",
+          "relevance": "Item 7, the later gates.",
+          "locator": "Acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "GPU qualification and evidence rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "Whole-corpus GPU qualification with the RAW manifest passes on the M4; the performance checklist is answered with measured figures.",
+        "The owner has reviewed the sheets and the confirming round's results are recorded in the design."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Run the qualification on the M4 and record the confirming round."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Qualification passes and the round is recorded."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006"
+      ]
+    }
+  ]
+}
