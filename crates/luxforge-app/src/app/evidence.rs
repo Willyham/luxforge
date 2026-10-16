@@ -7206,22 +7206,22 @@ mod tests {
     #[test]
     #[slow]
     fn a_background_export_step_is_captured_once_the_section_lists_it_running() {
+        // The section's read takes in long work's board and then reports the answer. The board is
+        // the one the read took in, set here as the read would have, and the answer is reported as
+        // the read reports it: the board read itself is long work's to test.
         let read = |editor: &mut Editor, elapsed_ms: u64| {
             let (resources, _) =
                 crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
                     .unwrap();
-            // The board the section's read takes its rows from: long work's.
             editor.long_work.state.observe(
                 serde_json::from_value(json!({"sequence":1,"active":[{"id":3,"kind":"export","label":"Exporting JPEG","detail":"a.jpg","phase":"rendering","elapsed_ms":elapsed_ms}],"recent":[],"untracked":0})).unwrap(),
             );
-            let epoch = editor.performance.epoch;
-            let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
-                epoch,
-                result: Ok(Box::new(crate::app::tasks::PerformanceRead {
+            editor.outcome(Outcome::PerformanceRead(Some(Box::new(
+                crate::app::tasks::PerformanceRead {
                     resources,
                     wall_ms: 0,
-                })),
-            }));
+                },
+            ))));
         };
         let script = r#"[{"export":{"file":{"name":"a.jpg","reference":true,"background":true}}}]"#;
         let (mut editor, catalog, _, _) = scripted(script);
