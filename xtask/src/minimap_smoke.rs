@@ -14,9 +14,9 @@
 //!   the stage and a click; the tools and state panels hidden, the filmstrip collapsed, the window
 //!   made smaller and the interface 125%, with a click under each; an exposure, the Original
 //!   selected in History and current again; a 1:1 crop straightened by 6°; a radial mask with an
-//!   exposure of its own and the mask mode; the window hidden and shown; Select, where the overview
-//!   is let go, and Develop again, where it is made anew; the 480 × 320 orientation fixture opened at
-//!   200%, where the stage fits the canvas on both axes, and the photograph opened again; and Fit.
+//!   exposure of its own and the mask mode; the window hidden and shown; the 480 × 320 orientation
+//!   fixture opened at 200%, where the stage fits the canvas on both axes, and the photograph opened
+//!   again; Select, where the overview is let go, and Develop again, where it is made anew; and Fit.
 //! - `reference`, with `--no-gpu-render`, walks [`REFERENCE_PLAN`]: the overview made only by the
 //!   reference's reduction of the frame it retains, through navigation, edits, a crop, a mask and a
 //!   resize.
@@ -234,18 +234,17 @@ const GPU_PLAN: [Row; 65] = [
     at("hidden", Do::Visibility("hide_window"), 200.0),
     at("hidden-wait", Do::Wait(1000), 200.0),
     at("reshown", Do::Visibility("show_window"), 200.0),
-    // Select lets the overview go; Develop again makes it anew. Before the opens below: once
-    // another photograph has been opened and this one again, Develop again never settles, at any
-    // zoom and with no minimap shown.
-    at("select", Do::Workspace(SelectWorkspace::Select), 200.0),
-    at("develop", Do::Workspace(SelectWorkspace::Develop), 200.0),
-    ready("recovered", 200.0, true),
     // The view keeps its zoom across an open.
     at("switch", Do::Switch, 200.0),
     ready("switch-ready", 200.0, true),
     gesture("switch-click", MinimapStep::Click(image(0.2, 0.2))),
     at("return", Do::Return, 200.0),
     ready("return-ready", 200.0, true),
+    // Select lets the overview go, and the pipeline the source; Develop again hands the source
+    // back and makes the overview anew, after another photograph was opened and this one again.
+    at("select", Do::Workspace(SelectWorkspace::Select), 200.0),
+    at("develop", Do::Workspace(SelectWorkspace::Develop), 200.0),
+    ready("recovered", 200.0, true),
     row("fit", Do::View(None), Some(Zoom::Fit)),
 ];
 

@@ -69,8 +69,8 @@ Every item above has ordinary tests; the rendered and measured parts are partly 
     - an edit, the Original selected in History and current again;
     - a straightened 1:1 crop, a radial mask with its own adjustment, and the mask mode;
     - the window hidden and shown;
-    - Select and Develop again;
-    - a switch to a photograph that fits the canvas on both axes, and back.
+    - a switch to a photograph that fits the canvas on both axes, and back;
+    - Select and Develop again, after that switch and back.
   - The reference renderer's launch (`--no-gpu-render`) covers navigation, edits, the crop, the mask and a resize, with every overview the reference's.
   - Every frame correlates the card's placement, image area, stage and rectangle against geometry worked independently for its canvas, display and interface scale. It also checks each gesture's pan against the desktop's session and the overview's version and stage. Wherever the card shows a ready overview, the thumbnail's middle must agree in linear light with the photograph's, so another photograph's, entry's or edit's overview cannot pass.
   - The counters show navigation, layout and zoom above the threshold reusing the overview with no build, sweep or upload, and the hidden window doing no overview work.
@@ -80,9 +80,8 @@ Every item above has ordinary tests; the rendered and measured parts are partly 
   - the first overview, cold after the crossing and warm after Select and Develop;
   - the overview's retained and peak GPU and CPU bytes;
   - the lifecycle's build, sweep, upload and reuse counts over the drag and in all.
-- **Open.** Item 7's measurements; unavailable originals; a lens or perspective warp; oversubscribed memory in a real window; 1× display scale in a rendered window, where only the geometry's tests hold it; Windows and Linux. Two main issues also leave parts unrendered:
+- **Open.** Item 7's measurements; unavailable originals; a lens or perspective warp; oversubscribed memory in a real window; 1× display scale in a rendered window, where only the geometry's tests hold it; Windows and Linux. One main issue also leaves parts unrendered:
   - Panning under Compare at a percentage zoom leaves the evidence capture's photograph not ready. This reproduces at 150% with no card, so the journeys cover Compare with a letterbox press and a grab that does not move.
-  - Once another photograph has been opened and then this one again, Select and Develop again never settle. This reproduces at Fit with no card, so the journey visits Select before its switch.
 
 ## Performance-rules review
 
