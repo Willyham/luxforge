@@ -1911,10 +1911,14 @@ impl shader::Primitive for PhotoPrimitive {
                 held.tick = Some(tick);
             }
         }
-        surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
-            Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
-            _ => None,
-        });
+        // A held GPU frame keeps that plan's marks too: those of a plan still compiling are not
+        // drawn yet.
+        if !surface.gpu_held_frame {
+            surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
+                Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
+                _ => None,
+            });
+        }
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
@@ -2545,7 +2549,8 @@ struct SurfaceSlots {
     gpu_tag: Option<u64>,
     /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
     dissolving: Option<gpu_preview::DissolveFrame>,
-    /// The classes of the clipping marks the plan this frame was handed draws.
+    /// The classes of the clipping marks the plan this frame was handed draws, or, while that plan
+    /// waits behind a held GPU frame, the marks of the plan that drew it.
     gpu_marks: Option<[bool; 2]>,
     /// The picture at rest dissolving in over the plan's output drawn when its last tile came in:
     /// from that output's boundary to the rest's version.
