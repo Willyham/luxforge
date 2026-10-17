@@ -586,7 +586,9 @@ passes or fails the same way however loaded that host is:
   `wait_for`.
 - **A deadline only bounds a hang.** Every wait fails naming what never happened after the one hang
   bound, `luxforge_testbase::HANG` (two minutes); no test outside the timing tier asserts how fast
-  anything happened.
+  anything happened. A step that legitimately outlasts it on a slow host, such as a job over a
+  photograph above 128 megapixels on a three-core runner, waits through `wait_for_within` with a
+  multiple of `HANG`.
 
 The macOS library tests use real scratch disk images for offline-volume and relinking checks.
 Their `hdiutil` operations retry within that same hang bound when the disk-image service refuses

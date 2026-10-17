@@ -7,10 +7,10 @@
 //! The oracle is the independent f64 reference crate `luxforge-reference`, the one the core's own
 //! numerical tests use, so the acceptance journey and those tests check production against one
 //! written-from-the-formulas implementation that cannot depend on the core it checks. This file
-//! composes the frozen unit order — white balance, exposure, tone, vibrance, saturation —
-//! quantizes once at the output boundary, and implements the crop spec's rotated-box mapping and
-//! linear-light bilinear sampler from `docs/specs/single-image.md` so a mixed stack is checked
-//! stepwise rather than against itself.
+//! composes the frozen unit order — white balance and exposure, the tone's scene and rendered
+//! parts, vibrance, saturation — quantizes once at the output boundary, and implements the crop
+//! spec's rotated-box mapping and linear-light bilinear sampler from `docs/specs/single-image.md`
+//! so a mixed stack is checked stepwise rather than against itself.
 //! The histogram reduction below is a plain serial loop written here, not `analysis::reduce`, so a
 //! reported count is compared with a second implementation.
 use crate::*;
@@ -103,16 +103,17 @@ impl Basic {
         let strength = |field: &str, value: f64| {
             luxforge_core::basic_response(field).map_or(value, |r| r.strength(value))
         };
-        channels = reference::tone::tone_pixel(
-            channels,
-            reference::tone::ToneParams {
-                contrast: strength("contrast", self.contrast),
-                highlights: strength("highlights", self.highlights),
-                shadows: strength("shadows", self.shadows),
-                whites: strength("whites", self.whites),
-                blacks: strength("blacks", self.blacks),
-            },
-        );
+        // The tone's scene part (Whites, Shadows, Highlights), then its rendered part (Blacks,
+        // Contrast), both in the rendered domain on this rendered fixture.
+        let tone = reference::tone::ToneParams {
+            contrast: strength("contrast", self.contrast),
+            highlights: strength("highlights", self.highlights),
+            shadows: strength("shadows", self.shadows),
+            whites: strength("whites", self.whites),
+            blacks: strength("blacks", self.blacks),
+        };
+        channels = reference::tone::scene_tone(channels, tone, reference::tone::Domain::RENDERED);
+        channels = reference::tone::rendered_tone(channels, tone);
         channels = reference::colour::apply_basic_colour(
             channels,
             strength("vibrance", self.vibrance),

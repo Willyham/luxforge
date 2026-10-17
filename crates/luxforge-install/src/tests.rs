@@ -308,6 +308,24 @@ impl Drop for Attached {
     }
 }
 
+/// Run a disk-image command, retrying within the shared hang bound: Disk Arbitration can refuse
+/// one while it is busy, as a hosted runner's can. A persistent failure names its last answer.
+fn hdiutil(command: &mut Command) {
+    let mut last = None;
+    let result = luxforge_testbase::try_wait_for("the disk-image command to succeed", || {
+        let answer = run(command);
+        let succeeded = answer.is_ok();
+        last = Some(answer);
+        succeeded.then_some(())
+    });
+    if let Err(hung) = result {
+        panic!(
+            "{hung}\n{command:?}: {:?}",
+            last.expect("the command was attempted")
+        );
+    }
+}
+
 #[test]
 #[slow]
 fn move_to_applications_classifies_a_real_read_only_disk_image() {
@@ -316,35 +334,38 @@ fn move_to_applications_classifies_a_real_read_only_disk_image() {
     fs::create_dir_all(&source).unwrap();
     fake_app(&source, "Luxforge.app", "image");
     let image = scratch.join("Luxforge.dmg");
-    run(Command::new("/usr/bin/hdiutil")
-        .args([
-            "create",
-            "-quiet",
-            "-fs",
-            "HFS+",
-            "-format",
-            "UDZO",
-            "-volname",
-            "LuxforgeTest",
-            "-srcfolder",
-        ])
-        .arg(&source)
-        .arg(&image))
-    .expect("hdiutil create");
+    hdiutil(
+        Command::new("/usr/bin/hdiutil")
+            .args([
+                "create",
+                "-quiet",
+                "-ov",
+                "-fs",
+                "HFS+",
+                "-format",
+                "UDZO",
+                "-volname",
+                "LuxforgeTest",
+                "-srcfolder",
+            ])
+            .arg(&source)
+            .arg(&image),
+    );
     let mount = scratch.join("mounted");
     fs::create_dir_all(&mount).unwrap();
-    run(Command::new("/usr/bin/hdiutil")
-        .args([
-            "attach",
-            "-quiet",
-            "-readonly",
-            "-nobrowse",
-            "-noautoopen",
-            "-mountpoint",
-        ])
-        .arg(&mount)
-        .arg(&image))
-    .expect("hdiutil attach");
+    hdiutil(
+        Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-quiet",
+                "-readonly",
+                "-nobrowse",
+                "-noautoopen",
+                "-mountpoint",
+            ])
+            .arg(&mount)
+            .arg(&image),
+    );
     let attached = Attached {
         mount: mount.clone(),
     };
