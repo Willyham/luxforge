@@ -221,8 +221,8 @@ fn usage_adapter_names_and_driver_text_do_not_reach_the_profile() {
 
 /// This host's real adapter, as the launch enumerates it, through the observation to the profile:
 /// within the 2 KiB cap, its vendor, backend and type as enums, an Apple silicon GPU's generation
-/// and tier equal to the CPU brand's, and nothing of the adapter's name or driver text on the
-/// wire. Enumeration creates a graphics instance and opens no device.
+/// and tier equal to the CPU brand's outside a virtual machine, and nothing of the adapter's name
+/// or driver text on the wire. Enumeration creates a graphics instance and opens no device.
 #[test]
 #[luxforge_test_macros::slow]
 fn usage_this_hosts_real_adapter_makes_a_profile_without_its_strings() {
@@ -267,7 +267,14 @@ fn usage_this_hosts_real_adapter_makes_a_profile_without_its_strings() {
             .output()
             .unwrap();
         let brand = String::from_utf8(brand.stdout).unwrap();
-        if brand.starts_with("Apple M") {
+        // A virtual Mac, such as a hosted CI runner, has an Apple CPU brand but exposes a
+        // paravirtual Metal device, not the Apple silicon GPU.
+        let hypervisor = std::process::Command::new("sysctl")
+            .args(["-n", "kern.hv_vmm_present"])
+            .output()
+            .unwrap();
+        let virtual_machine = String::from_utf8(hypervisor.stdout).unwrap().trim() == "1";
+        if brand.starts_with("Apple M") && !virtual_machine {
             let gpu = gpus[0];
             assert_eq!(
                 (gpu.vendor, gpu.backend, gpu.gpu_type, gpu.unified_memory),

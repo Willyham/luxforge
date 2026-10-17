@@ -34,6 +34,14 @@ pub fn try_wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> Resu
     wait_within(HANG, what, || ready().map_or(Look::Waiting, Look::Ready))
 }
 
+/// [`wait_for`] with a longer hang bound than [`HANG`], for one step that legitimately takes
+/// longer on a slow host, such as a photo-sized export through the reference on a three-core
+/// runner.
+pub fn wait_for_within<T>(bound: Duration, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
+    wait_within(bound, what, || ready().map_or(Look::Waiting, Look::Ready))
+        .unwrap_or_else(|hung| panic!("{hung}"))
+}
+
 /// One look of [`try_wait_progressing`] at what it waits for.
 pub enum Look<T> {
     /// It holds, with this value.
@@ -51,7 +59,7 @@ pub fn try_wait_progressing<T>(what: &str, look: impl FnMut() -> Look<T>) -> Res
     wait_within(HANG, what, look)
 }
 
-/// [`try_wait_for`] with its hang bound given, so this crate's own tests can reach it.
+/// [`try_wait_for`] with its hang bound given.
 fn wait_within<T>(
     bound: Duration,
     what: &str,
