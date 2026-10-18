@@ -106,19 +106,16 @@ pub(crate) enum ZoomView {
 }
 
 /// What the surface shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum PhotoView {
-    /// Nothing is open: this line is shown instead.
+    /// Nothing is open: the invitation to open a photograph, over the empty canvas's art.
+    #[default]
+    Closed,
+    /// A photograph is open but has no picture to show: this line says why.
     Empty(String),
     Plain,
     /// The crop layer's input stage under the draft's frame.
     Draft,
-}
-
-impl Default for PhotoView {
-    fn default() -> Self {
-        Self::Empty("Open a photograph".into())
-    }
 }
 
 /// What a drag on the image does right now.

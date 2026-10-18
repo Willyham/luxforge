@@ -13,11 +13,13 @@
 //! it holds no authoritative editing state and wakes the desktop when resources retire or a photo
 //! draw enters or leaves a temporary stale state.
 
+pub mod empty_canvas;
 pub mod geometry;
 pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
+pub use empty_canvas::empty_canvas;
 pub use theme::{Derived, Ink, Mode, Palette, Theme, Token};
 
 /// An element drawn in Luxforge's [`Theme`]: every widget here returns one, and the desktop's view

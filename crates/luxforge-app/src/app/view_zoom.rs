@@ -227,7 +227,10 @@ impl Editor {
             || self.gallery_page().is_some()
             || self.palette.open
             || self.view_state.picker_open
-            || matches!(self.workspace.canvas.photo, PhotoView::Empty(_))
+            || matches!(
+                self.workspace.canvas.photo,
+                PhotoView::Closed | PhotoView::Empty(_)
+            )
         {
             return Task::none();
         }
