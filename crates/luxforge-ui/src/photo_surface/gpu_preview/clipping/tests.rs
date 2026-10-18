@@ -4,8 +4,12 @@
 //! A headless test with no adapter prints that it was skipped and asserts nothing. It is not GPU
 //! evidence: the skip is the report.
 use super::super::super::{Frame, Layer, PhotoPrimitive};
-use super::super::tests::{ID, SIDE, diagnostics, headless, identity, own_pipeline, paint, plan};
-use super::super::{End, GpuBoundary, GpuFallback, GpuStep, assemble_passes, output_encoding};
+use super::super::tests::{
+    ID, SIDE, diagnostics, headless, identity, own_pipeline, paint, paint_prepared, plan,
+};
+use super::super::{
+    End, GpuBoundary, GpuFallback, GpuProgram, GpuStep, assemble_passes, output_encoding,
+};
 use super::*;
 use iced::{Size, Vector};
 use luxforge_reference::srgb;
@@ -171,6 +175,49 @@ fn the_marks_composite_each_clipped_pixel_as_the_cpu_overlay_does() {
         assert_eq!(seen.gpu_fallback, None);
     }
     eprintln!("{test}: marks match the CPU overlay's composite within a code");
+}
+
+/// The marks a frame records are those of the output it draws. Turning them on adds a step, so the
+/// plan's sequence compiles over the boundary the GPU frame on screen was drawn from, and that
+/// frame stays, unmarked, recording no marks; the frame that draws the plan records them.
+#[test]
+#[slow]
+fn a_frame_held_while_the_marks_compile_records_none() {
+    let test = "a_frame_held_while_the_marks_compile_records_none";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    // Its own entry name, so the marked sequence is first seen.
+    let program = GpuProgram::new(
+        "held_marks",
+        "fn held_marks(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n    \
+         return rgb;\n}\n",
+    );
+    let _ = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(vec![GpuStep::colour(program.clone())]),
+    );
+    assert_eq!(diagnostics(&pipeline, ID).drawn_clipping_marks, None);
+    let marked = primitive(vec![
+        GpuStep::colour(program),
+        GpuStep::Clipping(marks(true, false)),
+    ]);
+    let _ = paint_prepared(&device, &queue, &mut pipeline, &marked);
+    let held = diagnostics(&pipeline, ID);
+    assert_eq!(held.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(held.drawn_path, Some(luxforge_gpu::DrawingPath::Gpu));
+    assert_eq!(
+        held.drawn_clipping_marks, None,
+        "the frame drawn is the earlier plan's"
+    );
+    let _ = paint(&device, &queue, &mut pipeline, &marked);
+    assert_eq!(
+        diagnostics(&pipeline, ID).drawn_clipping_marks,
+        Some([true, false])
+    );
 }
 
 /// The marks read the output the last pass encodes: anywhere but last, a plan does not assemble,

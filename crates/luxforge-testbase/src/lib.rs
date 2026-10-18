@@ -40,4 +40,6 @@ pub use gate::Gate;
 pub use loopback::{NO_LOOPBACK, loopback_forbidden};
 pub use proof::{ProofAnswer, ProofEndpoint, ProofProtocol, ProofRequest};
 pub use server::{Options, Request, TestServer, respond, send};
-pub use wait::{HANG, Look, try_wait_for, try_wait_progressing, wait_for, wait_until};
+pub use wait::{
+    HANG, Look, try_wait_for, try_wait_progressing, wait_for, wait_for_within, wait_until,
+};
