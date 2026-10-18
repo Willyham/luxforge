@@ -661,9 +661,8 @@ impl Statistic {
     }
 }
 
-/// Which side of `limit` is a pass. Every target before the instant-preview design was an upper
-/// bound; the burst design adds a lower bound (frames per second), so the comparison is explicit
-/// rather than assumed.
+/// Which side of `limit` is a pass. Most targets are upper bounds; the burst design's frames per
+/// second is a lower bound, so the comparison is explicit rather than assumed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {
     AtMost,

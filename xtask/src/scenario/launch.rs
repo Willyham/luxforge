@@ -78,7 +78,7 @@ pub struct Poll<'a> {
 /// The one loop that watches a launched editor. Each poll, in order: `reached` may end the watch
 /// with what it found; the editor's exit ends it with its status; past the deadline it fails;
 /// otherwise `sample` reads what it reads, and the loop sleeps. Each caller keeps its own poll
-/// rate, deadline and samples, so a figure it takes is taken at the rate it always was.
+/// rate, deadline and samples, so a figure it takes is taken at that caller's rate.
 pub fn watch<T>(
     child: &mut Guard,
     poll: Poll,

@@ -119,14 +119,14 @@ use std::sync::{
 use std::time::Instant;
 
 /// What one tile runner may hold on its device at once: the window of the source, the tile's slot,
-/// the readback copies of the tiles in flight, and what a tile in flight still holds of a window
-/// or a slot let go since. 2 GiB, the owner's decision of 2026-10-06 (`docs/decisions.md`, "GPU-first
-/// rendering"): a budget of its own beside the photo surface's 2 GiB GPU-preview budget, whose
-/// slots a run never shares, so the two together may hold 4 GiB of unified memory. By the runner's
-/// own charge over the core's plan, an estimate and not a measurement, a tile in the interior of a
-/// 60-megapixel RAW (9504 × 6336) through Detail and all three Presence fields reads the tile grown
-/// by its summed halo of 465 pixels on every side, anchored: at 2048 pixels a 3281-pixel square
-/// window, charged 1,330.8 MB; at 1024 a 2257-pixel one, charged 622.3 MB.
+/// the readback copies of the tiles in flight, and what a tile in flight still holds of a window or
+/// a slot let go since. 2 GiB (`docs/decisions.md`, "GPU-first rendering"): a budget of its own
+/// beside the photo surface's 2 GiB GPU-preview budget, whose slots a run never shares, so the two
+/// together may hold 4 GiB of unified memory. By the runner's own charge over the core's plan, an
+/// estimate and not a measurement, a tile in the interior of a 60-megapixel RAW (9504 × 6336)
+/// through Detail and all three Presence fields reads the tile grown by its summed halo of 465
+/// pixels on every side, anchored: at 2048 pixels a 3281-pixel square window, charged 1,330.8 MB;
+/// at 1024 a 2257-pixel one, charged 622.3 MB.
 pub const GPU_TILE_BUDGET: u64 = 2 << 30;
 
 /// How many tiles a runner keeps submitted and not yet read back: the GPU draws one while its

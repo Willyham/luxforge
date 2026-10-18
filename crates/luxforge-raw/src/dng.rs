@@ -1909,8 +1909,8 @@ mod tests {
     }
 
     /// Gain, warp and vignette in both stage orders, serial and on the pool,
-    /// keep the bits they had before the RAW preparation clean-ups. Captured
-    /// on the owner's M4; elsewhere serial and pooled are still compared above.
+    /// keep their pinned bits. Captured on the owner's M4; elsewhere serial
+    /// and pooled are still compared above.
     #[test]
     #[slow]
     fn corrected_planes_keep_their_pinned_bits() {

@@ -21,8 +21,8 @@ use std::sync::Mutex;
 pub const LORA_PROMPT: &str = "Remove the highlighted object from the scene";
 /// What Replace's prompt follows: the instruction the qualification's Replace used.
 pub const REPLACE_PREFIX: &str = "Replace the highlighted object with ";
-/// The largest side a generation takes: the working size its memory and time were measured at
-/// (owner, 2026-10-11). The runtime reserves its compute buffers for the size it first meets.
+/// The largest side a generation takes: the working size its memory and time were measured at.
+/// The runtime reserves its compute buffers for the size it first meets.
 pub const MAX_SIDE: u32 = 1024;
 /// The LoRA's strength, as qualified.
 const LORA_MULTIPLIER: f32 = 1.0;

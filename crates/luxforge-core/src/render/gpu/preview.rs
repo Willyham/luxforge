@@ -31,8 +31,7 @@
 //!   reads the light of the stack it started from; either computes the stand-in over the source,
 //!   those layers left out, where the slot keeps no exact light. One that changes it through a
 //!   colour layer computes it every tick from the source with every spatial layer before it left
-//!   out ([`super::GpuLightRestoration::LeftOut`]), the owner's decision of 2026-10-06
-//!   (`docs/decisions.md`, "GPU-first rendering").
+//!   out ([`super::GpuLightRestoration::LeftOut`]; `docs/decisions.md`, "GPU-first rendering").
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the reduced-stage plan with its bounds and window, or at the exact stage at

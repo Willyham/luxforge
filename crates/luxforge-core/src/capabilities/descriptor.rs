@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_without_capabilities_serialize_exactly_as_before() {
+    fn a_descriptor_serializes_each_optional_section_only_when_it_declares_one() {
         for descriptor in ModuleRegistry::builtin().descriptors() {
             let value = serde_json::to_value(descriptor).unwrap();
             let declared = [

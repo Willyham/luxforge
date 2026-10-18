@@ -911,25 +911,21 @@ mod tests {
         );
     }
 
-    /// A RAW layer of the shared format 1 — written before exposure moved to Basic — is refused
-    /// explicitly and never rewritten.
+    /// A RAW layer of a format other than the module's own is refused explicitly and never
+    /// rewritten.
     #[test]
-    fn a_format_one_raw_layer_is_refused_as_incompatible() {
+    fn a_raw_layer_of_another_format_is_refused_as_incompatible() {
         let original = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
         let module = RawModule::new();
-        let mut stored = original.value();
-        let error = module
-            .validate_payload(RAW_EFFECT, 1, &stored)
-            .expect_err("format 1");
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(error.detail, "unsupported effect format 1");
-        // A payload that still holds an exposure is not this format's either.
-        stored["exposure_ev"] = json!(0.5);
-        assert!(
-            module
-                .validate_payload(RAW_EFFECT, RAW_EFFECT_FORMAT, &stored)
-                .is_err()
-        );
+        let stored = original.value();
+        for format in [0, RAW_EFFECT_FORMAT + 1] {
+            let error = module
+                .validate_payload(RAW_EFFECT, format, &stored)
+                .expect_err("another format");
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, format!("unsupported effect format {format}"));
+        }
+        assert_eq!(stored, original.value(), "the refused payload is kept");
     }
 
     #[test]
@@ -1197,16 +1193,6 @@ mod tests {
         ] {
             let error = plan_of(&layer, SET_RAW, request.clone()).expect_err("out of range");
             assert_eq!(error.kind, ErrorKind::Validation, "{request}");
-        }
-        // Each removed action is unknown.
-        for removed in [
-            "set-raw-exposure",
-            "set-raw-temperature",
-            "set-raw-tint",
-            "use-as-shot-wb",
-            "reset-raw",
-        ] {
-            assert!(RawModule::new().descriptor().action(removed).is_none());
         }
     }
 

@@ -39,19 +39,13 @@ Alternates, next by score or excluded only by missing data: Canon 5D Mark III, 9
 
 Upload share by decoder family: Canon CR3 38%, Sony ARW 23%, Nikon NEF on bodies without High Efficiency 15%, Canon CR2 11%, Fujifilm RAF 4%, Nikon NEF on High Efficiency bodies at least 3.4% (understated by the missing Z8, Z6III and Z5II data), ORF 2.7%, DNG 1.3%, RW2 1.1%, Pentax 0.4%.
 
-## What the adapter opened
+## What the adapter opens
 
-Of 52 samples, the adapter rejected 29 on 2026-09-30. Apart from crop-sensor sizes and the two unsupported formats below, the rejected files are ones LibRaw decodes and the catalog does not list:
-
-- **Sony compressed ARW** on the A7 III, A7 IV, A7C II and A7R V, the default on each. The catalog listed only their uncompressed mode.
-- **Fujifilm X-T5** uncompressed and lossy compressed. Only lossless compressed was listed.
-- **Nikon D850** lossless and lossy; **Canon 5D Mark IV** single-frame RAW (only Dual Pixel was listed).
-- **Bodies missing from the catalog:** Nikon Z6III, Z50II, Z5II; Sony ZV-E10; Fujifilm X-M5; Canon 90D, 5D Mark III.
-- **Crop-sensor sizes** (APS-C crop on full-frame Sony and Canon bodies), which have a different sensor size from the catalogued one.
+Apart from crop-sensor sizes and the two formats below, every sampled mode is one LibRaw decodes; [popular camera support](../design/popular-camera-support.md) lists the modes the camera catalog admits.
 
 Two formats decode in neither LibRaw 0.22.2 nor RawSpeed:
 
-- **Nikon High Efficiency (HE and HE★)** NEF, the factory default on the Z8, Z9, Zf and Z6III and likely on the Z50II and Z5II. The payload is a JPEG XS (ISO/IEC 21122) codestream from intoPIX's TicoRAW encoder with vendor header changes. darktable does not decode it either: up to 5.6.0 it shows the embedded JPEG in the lighttable and fails in the darkroom, and its maintainers point users to Adobe DNG Converter. An experimental open-source decoder exists as [dnglab pull request 835](https://github.com/dnglab/dnglab/pull/835) (Rawler, unmerged), which decoded all six High Efficiency samples plausibly in 290–670 ms; the dnglab maintainer expects LibRaw to publish its own decoder. The owner decided on 2026-09-30 not to support the format until upstream LibRaw does, and to reject it explicitly.
+- **Nikon High Efficiency (HE and HE★)** NEF, the factory default on the Z8, Z9, Zf and Z6III and likely on the Z50II and Z5II. The payload is a JPEG XS (ISO/IEC 21122) codestream from intoPIX's TicoRAW encoder with vendor header changes. darktable does not decode it either: up to 5.6.0 it shows the embedded JPEG in the lighttable and fails in the darkroom, and its maintainers point users to Adobe DNG Converter. An experimental open-source decoder exists as [dnglab pull request 835](https://github.com/dnglab/dnglab/pull/835) (Rawler, unmerged), which decoded all six High Efficiency samples plausibly in 290–670 ms; the dnglab maintainer expects LibRaw to publish its own decoder. Luxforge does not support the format until upstream LibRaw does, and rejects it explicitly.
 - **Sony A7 V compressed ARW**, a new compressed format and the A7 V's default.
 
 LibRaw 0.22.2 detects High Efficiency data only on the Z8, Z9, Zf and Z6III. On the Z50II and Z5II samples it selects the ordinary lossless NEF decoder, logs "data corrupted" and returns a garbage mosaic without failing.

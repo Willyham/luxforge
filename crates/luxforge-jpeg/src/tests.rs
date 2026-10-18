@@ -10,7 +10,6 @@ use mozjpeg_sys::{
     JWRN_HIT_MARKER, JWRN_HUFF_BAD_CODE, JWRN_JFIF_MAJOR, JWRN_JPEG_EOF, JWRN_MUST_RESYNC,
     JWRN_NOT_SEQUENTIAL, JWRN_TOO_MUCH_DATA,
 };
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
@@ -54,21 +53,6 @@ fn refused_for(bytes: &[u8]) -> i32 {
         Err(JpegError::Corrupt(code)) => code,
         other => panic!("expected a refused warning, got {:?}", other.map(|_| ())),
     }
-}
-
-/// An independent decode of the same bytes (`image`'s JPEG decoder), unoriented, as RGB.
-fn independent(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
-    let decoder = JpegDecoder::new(Cursor::new(bytes)).unwrap();
-    let (width, height) = decoder.dimensions();
-    let grey = decoder.color_type() == image::ColorType::L8;
-    let mut pixels = vec![0; decoder.total_bytes() as usize];
-    decoder.read_image(&mut pixels).unwrap();
-    let rgb = if grey {
-        pixels.iter().flat_map(|&value| [value; 3]).collect()
-    } else {
-        pixels
-    };
-    (width, height, rgb)
 }
 
 /// A `width` × `height` pattern encoded by libjpeg at quality 85 and 4:2:0, baseline or with its
@@ -1237,76 +1221,4 @@ fn a_short_band_is_an_error_not_an_abort() {
         "jpeg encode: finished before the last row"
     );
     assert!(early.len() < whole.len() && whole.starts_with(&early));
-}
-
-/// How far the crate's decode is from the `image` crate's (zune-jpeg 0.5.15), which decoded
-/// originals before it, and which warnings each decode went on past: per file, the mean and
-/// largest absolute difference per channel, the share of pixels that differ at all and by more
-/// than one and two codes, and the warnings accepted, or why the decode was refused. Every
-/// committed s0 JPEG, plus the files named in `LUXFORGE_JPEG_COMPARE` (colon-separated). A
-/// measurement, not a gate:
-///
-/// ```text
-/// LUXFORGE_JPEG_COMPARE=/path/24mp.jpg:/path/photo.jpg \
-///   cargo test --release -p luxforge-jpeg --lib tests::measure -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "a measurement, not a gate"]
-fn measure_the_difference_from_the_previous_decoder() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0");
-    let mut paths: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|e| e == "jpg"))
-        .collect();
-    paths.sort();
-    if let Ok(extra) = std::env::var("LUXFORGE_JPEG_COMPARE") {
-        paths.extend(extra.split(':').map(std::path::PathBuf::from));
-    }
-    let mut rows = Vec::new();
-    for path in paths {
-        let bytes = std::fs::read(&path).unwrap();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        accepted();
-        let (width, height, rgba) = match decode(&bytes) {
-            Ok(decoded) => decoded,
-            Err(error) => {
-                rows.push(json!({"file": name, "refused": error.to_string()}));
-                continue;
-            }
-        };
-        let warnings: Vec<_> = accepted()
-            .into_iter()
-            .map(|code| warnings::name(code).unwrap_or("unlisted"))
-            .collect();
-        let (zune_width, zune_height, rgb) = independent(&bytes);
-        assert_eq!((width, height), (zune_width, zune_height), "{name}");
-        let pixels = width as usize * height as usize;
-        let mut sums = [0_u64; 3];
-        let mut largest = [0_u8; 3];
-        let (mut any, mut over_1, mut over_2) = (0_usize, 0_usize, 0_usize);
-        for (a, z) in rgba.chunks_exact(4).zip(rgb.chunks_exact(3)) {
-            let mut worst = 0;
-            for channel in 0..3 {
-                let difference = a[channel].abs_diff(z[channel]);
-                sums[channel] += u64::from(difference);
-                largest[channel] = largest[channel].max(difference);
-                worst = worst.max(difference);
-            }
-            any += usize::from(worst > 0);
-            over_1 += usize::from(worst > 1);
-            over_2 += usize::from(worst > 2);
-        }
-        rows.push(json!({
-            "file": name,
-            "dimensions": [width, height],
-            "accepted_warnings": warnings,
-            "mean_abs_codes": sums.map(|sum| sum as f64 / pixels as f64),
-            "max_abs_codes": largest,
-            "share_changed": any as f64 / pixels as f64,
-            "share_over_1": over_1 as f64 / pixels as f64,
-            "share_over_2": over_2 as f64 / pixels as f64,
-        }));
-    }
-    println!("{}", serde_json::to_string_pretty(&rows).unwrap());
 }

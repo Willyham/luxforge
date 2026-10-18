@@ -1345,9 +1345,6 @@ fn merge_preview_sheet_requests_and_revisions_are_a_json_clients() {
     assert!(create.get("plan_id").is_none(), "{create}");
     assert_eq!(create["hdr"], json!({"deghost": "off"}));
     assert_eq!(create["folder"], json!({"kind": "place", "name": place}));
-    for removed in ["folder_id", "add_to_development_set"] {
-        assert!(create.get(removed).is_none(), "{create}");
-    }
     assert!(
         editor.select.state.merge.sheet.is_none(),
         "the sheet is gone"

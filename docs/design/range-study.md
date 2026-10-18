@@ -16,7 +16,7 @@ and edits whatever the flag says, so these equations apply to it either way.
 What is frozen here: the luminance axis, the band and its shoulders, the Oklab colour metric, the
 multi-sample combination, the refine mapping and the tolerance. **Not frozen here**, and named so
 nothing assumes otherwise: the brush stroke's capsule profile and its accumulation rule, the
-colour-constrained brush (which will reuse this study's metric but has its own gesture and its own
+colour-constrained brush (which reuses this study's metric but has its own gesture and its own
 accumulation), and the masked colour and spatial blend itself. The reference under `tests/` never
 runs in a release build or against a real image row, so the
 [performance rules](../engineering/performance-rules.md) checklist applies to the production unit
@@ -40,11 +40,10 @@ blending domain — and nothing here is derived from either.
 
 Both components read the **pixel value the operation they modulate receives**, in linear sRGB, as
 the design states. That costs nothing during a render — the value is in the row being processed —
-and costs one existing `O(layers)` sample at a point query. It also has four consequences that the
-[compiled-mask contract](masking.md#the-compiled-mask) does not have today, which are escalated as
-[P12 and P13](#proposals) rather than decided here:
+and costs one existing `O(layers)` sample at a point query. It also has four consequences for the
+[compiled-mask contract](masking.md#the-compiled-mask), settled as [P12 and P13](#proposals):
 
-- coverage is no longer a function of position alone, so `evaluate(x, y)` cannot answer it;
+- coverage is not a function of position alone, so `evaluate` takes the pixel as well as the position;
 - a value-based component has no spatial support, so its conservative bounds rectangle is the whole
   stage and no colour span or spatial tile can be skipped for it;
 - what it selects moves when a layer is reordered, because the operation's input changes;
@@ -392,11 +391,10 @@ an average is not the average of the coverages. Measured at a sky/roof edge over
 The proxy frame is still the exact recipe over the exact downscale, which is what the delivered
 contract promises — the recipe is being evaluated on the downscaled image — so nothing about that
 contract breaks. But the 2 × 2 mask supersample the [thin-feature rule](masking.md#point-queries-and-proxies)
-applies cannot help here, because the full-resolution pixels are not there to read. Whether the
-frame should nevertheless be marked approximate is [P13](#proposals); the recommendation is that it
-should not, and that the overlay and user guide should say the settled 100% view carries full detail
-for a range component. The mask-coverage overlay samples the first bound layer's input through the
-uncut full-stage recipe and maps its grid into the visible region. It is separate from the displayed
+applies cannot help here, because the full-resolution pixels are not there to read. The frame is
+not marked approximate ([P13](#proposals)); the overlay and user guide say the settled 100% view
+carries full detail for a range component. The mask-coverage overlay samples the input at the mask's
+input site through the uncut full-stage recipe and maps its grid into the visible region. It is separate from the displayed
 pixels and from pixel-derived clipping.
 
 ## Frozen tolerance
@@ -432,9 +430,9 @@ every one of the 256 input codes, which is the repository's standing quantizatio
 not what it is verified against.** `crates/luxforge-core/src/mask/range.rs` widens the incoming
 `[f32; 3]` once, at the top of `CompiledMask::evaluate`, and every expression after it is this
 reference's own `f64` expression — the luminance dot product, the continued OETF, the Oklab matrices
-and the signed cube roots included. The whole coverage field was already `f64`, because the
+and the signed cube roots included. The whole coverage field is `f64`, because the
 [mask study](mask-study.md) froze it that way, so nothing is paid for this that the geometric
-components were not already paying, and the result is **exact equality** with this reference rather
+components do not pay already, and the result is **exact equality** with this reference rather
 than a bound: the kind-conformance suite (`crates/luxforge-core/tests/mask/kinds/`) compares `f64`
 bit patterns for both kinds, one component alone over 24 000 randomized pixels each and composed
 masks on photo-sized and small stages, including pixels outside the gamut and shoulders at the
@@ -446,7 +444,7 @@ arithmetic bounded, and as the bound anyone writing an `f32` variant later would
 
 **A production unit transcribes the blocks above expression for expression and in the same order, so
 it is bit-identical to this reference rather than merely within tolerance of it.** The rule is the
-[mask study's](mask-study.md#transcription), unchanged: **any value that does not depend on the
+[mask study's](mask-study.md#transcription): **any value that does not depend on the
 pixel may be precomputed, and no arithmetic on the per-pixel path may be rewritten.** Specifically
 forbidden, each of which is within tolerance and not bit-identical:
 
@@ -472,13 +470,13 @@ layer it is, because the mask reads the operation's input.
 
 - **The luminance band has no local contrast.** It is a point function of one number, so it cannot
   tell a bright sky from a bright wall, and it has no edge awareness at all. An edge-aware
-  refinement is already [P7](masking.md#proposals-with-recorded-defaults) in the design and needs
+  refinement is [P7](masking.md#proposals-with-recorded-defaults) in the design and needs
   its own study, because a guided filter is a neighbourhood operation and a mask is a point
   function.
 - **The colour range's cost is one Oklab conversion per pixel**, the same conversion the delivered
   mixer performs, and it is the most expensive component kind. Unlike a geometric component it has
-  no bounds rectangle to skip spans with, so the cost is paid over the whole stage. The
-  transcription task measured it (`the_cost_of_a_whole_stage_rectangle`, release, M4 MacBook Pro,
+  no bounds rectangle to skip spans with, so the cost is paid over the whole stage. It is
+  measured by `the_cost_of_a_whole_stage_rectangle` (release, M4 MacBook Pro,
   one thread, one component over a 6000 × 4000 stage): a linear gradient placed low in the frame
   bounds **40.0%** of the stage at **14.6 to 20.0 ns** per pixel inside it, while both range kinds
   bound **100%** at **28.9 to 44.2 ns** (luminance) and **28.1 to 39.2 ns** (colour). So a value-based
@@ -494,7 +492,7 @@ layer it is, because the mask reads the operation's input.
 - **No photographic corpus for these selection claims.** Authentic RAW sources exist in the
   independently retained sample corpus, but they do not qualify range selections over skies,
   faces and noisy shadows. This study's JPEG fixtures are synthetic colour blocks, so every claim
-  here is numerical, over measured surface colours and constructed scenes. **Phase D's acceptance pass closed as much of that as a
+  here is numerical, over measured surface colours and constructed scenes. **The `mask-range` fixture closes as much of that as a
   synthetic fixture can and no more**: `fixtures/generated/range.jpg` is twelve flat patches of this
   study's own surfaces — the 24-patch chart's sRGB renderings — so the `mask-range` scenario renders
   the sky/grey-card failure, the two-skins failure and the every-neutral failure in the editor at the
@@ -502,11 +500,11 @@ layer it is, because the mask reads the operation's input.
   exercises the noise measurement above, and a real sky, a real face and a real noisy shadow remain
   uninspected. That is the honest remainder, and it needs a corpus rather than another scenario.
 - **No fixture file is frozen.** Coverage is a pure function of a pixel and a handful of numbers, so
-  the transcription task tests the production unit against this reference in process. A committed
+  the production unit is tested against this reference in process. A committed
   JSON oracle would be a third artefact to keep in step for no coverage the direct comparison does
   not already give — the same reasoning the mask study gives, and for the same reason: this study's
   inputs are payloads and single pixels, not images.
-- **The colour-constrained brush is not frozen here**, and is now frozen in the
+- **The colour-constrained brush is not frozen here**; it is frozen in the
   [mask study](mask-study.md#the-colour-constraint), which is the brush's own study. It reuses this
   study's metric and its refine mapping exactly — the similarity *is* this study's colour range at one
   sample, proved bit for bit there — while its gesture, its stored seed and its accumulation are the
@@ -515,19 +513,17 @@ layer it is, because the mask reads the operation's input.
 ## Proposals
 
 Numbered continuing the [masking design's list](masking.md#proposals-with-recorded-defaults), which
-runs to P11 and every row of which is now settled. **P12 to P15 are decided**, on the transcription
-task and with the reasons below. P16 and P17 were raised by that task; **P17 is decided and built**, its unbound refusal superseded by the owner on 2026-10-16 and delivered,
-on the colour-constrained brush task, and **P16 is decided and built**, on the coverage overlay's
-pixel source, with the cost it was decided against measured in its row.
+runs to P11, every row of it settled. **P12 to P15 are decided**, with the reasons below, and
+**P16 and P17 are decided and built**.
 
 | # | Question | Decision |
 | --- | --- | --- |
-| P12 | `CompiledMask::evaluate` is declared position-only, and a value-based component cannot be answered from position. What is the signature? | **Decided as recommended**: `evaluate(x, y, rgb) -> f32` and `coverage(x, y, rgb) -> f64`, with the pixel the operation receives. A geometric component ignores `rgb`, which the kind-conformance suite's `reads_exactly_what_its_kind_says` proves is exact rather than approximate — the same `f64` bits for five very different pixels at every pixel of a stage, for every position-only kind, with both inversions and an amount applied — so the mask study's own bit-for-bit comparisons still hold unchanged. The colour run passes the snapshot it already takes to blend against, and the spatial tiling the tile-shaped snapshot it already cuts out, so `render.sample` and the rasterizing pass reach the mask through one call with the same arguments and a sampled byte still equals the rendered byte. The rejected alternative, a second entry point, doubles the contract for one argument |
-| P13 | What does a value-based component answer for `bounds()` and `min_feature_px`, and is a proxy frame carrying one approximate? | **Decided as recommended**: whole stage, and `f32::INFINITY`, so the thin-feature rule never fires for one and no proxy frame is marked approximate for it. Supersampling cannot help, because the full-resolution pixels are not available at proxy scale, so the flag would name a condition nothing can fix; a mixed mask is still supersampled for its *geometric* components, and its range components answer the same value at all four subsample positions, because the supersample moves the position and not the pixel. The overlay and the [user guide](../user-guide.md) state that a range selection is evaluated at representative coordinates in the visible coverage grid, using the input supplied by the uncut full-stage recipe for the first bound layer. 100% shows full image detail at rest, and motion at 100% and above may show a softer frame ([GPU previews](gpu-preview.md#at-100-and-above)); the coverage grid uses full-stage coordinates independently of the displayed scale. The cost of the whole-stage rectangle is measured by `the_cost_of_a_whole_stage_rectangle` |
-| P14 | Which way does Refine go, and what is its default? | **Decided as recommended**: increasing refine narrows the selection, default `50`. The research does not establish Lightroom's behaviour, so this is Luxforge's own, and `50` is measured to be the setting that holds an ordinary surface across a stop of shading |
-| P15 | The band's numbers are on the histogram's axis, but the delivered histogram is three channel populations rather than a luminance trace. How is that labelled? | **Decided as recommended**: the four band parameters are declared `0..100` with the unit `%`, and their notes say they are on the histogram's own axis and that one unit is 2.55 output codes; the user guide says the same. Adding a luminance trace to the delivered, verified histogram is a larger change to a shipped inspector and stays its own decision, unmade |
-| P16 | The coverage overlay is a function of position over the finished frame, and a value-based component's coverage is a function of the pixel the masked *operation* receives. Where does the overlay get that pixel? | **Decided by the owner on 2026-09-23 and built: the overlay reads the recipe prefix up to the mask's first bound layer, once per grid cell**, through the same rule (`input_site`, which was `input_layer_index`) the colour-constrained brush's seed and `mask.sample-input` already resolve through, so the overlay and the seed use the same input. The two rejected options, recorded because the reasons outlive the decision: reading the finished frame, which holds the operation's **output** and would draw a selection the render never makes; and leaving it refused, which left a mask a person *painted* unreadable. Earlier M4 grid timings added 2 to 8 ms at Fit and 20 to 27 ms at 100%; the current coverage samples the first-bound-layer input through the uncut full-stage recipe and maps its grid into the visible region using full-stage coordinates. This grid is separate from displayed image pixels and pixel-derived clipping; source settings can still make the input approximate, such as drafted RAW white balance. The reference coverage worker supports a leading restoration run such as Detail through a bounded input grid: it renders the restoration prefix once, retains only the grid and applies later colour per cell. One refusal is kept: a mask whose first bound layer sits behind a later spatial layer such as Presence, where a point query would cost a tile render per cell. A mask with no bound layer, the second refusal this decision first kept, is read where a first Basic adjustment would go (superseded by the owner's decision of 2026-10-16, delivered; see P17). This grid is not a tile-service read; the seed and `mask.sample-input` now read through the tile service, on the desktop from the GPU, with the same first-bound-layer rule |
-| P17 | The colour range's swatches are picked off the photograph, and the delivered pick machinery (`CanvasInteraction::SampleApply`) runs a **module's** query and submits to a **module's** action. A mask command is neither. How does a click become a swatch? | **Decided and built, taking both halves of the second option.** `CanvasInteraction::SampleApply` may name a **host** pair as well as a module's, and the host declares one pick per sampling kind from the kind table, so registering a kind is still what makes it reachable; and the new read-only `mask.sample-input` answers the input pixel of the operation the mask modulates as `r`, `g` and `b`, which are exactly the parameters `mask.add-<kind>-sample` declares, so the delivered field-matching rule needs no exception and the client maps nothing. The rule a shared mask needed: the pixel is read at the stage **the first layer bound to that mask in evaluation order** receives, and a mask no layer is bound to was **refused by name** rather than answered from the source or the finished frame — a seed in the wrong domain would silently select nothing, which this study's own `+0.75 EV` measurement is the evidence for. The client still decodes nothing: the only source of a colour is the host's answer, and the colour-constrained brush goes further and takes no colour in its request at all, seeding itself from the stroke's own first position. **The unbound refusal is superseded by the owner's decision of 2026-10-16, delivered** ([range masks](range-masks.md); qualification open): with Lightroom-style picking chosen, a mask no layer is bound to reads at the position a first Basic adjustment would take, and the host's `sample-apply` pick became an area pick (`mask.pick-luminance-range`, `mask.pick-colour-range`) |
+| P12 | A value-based component cannot be answered from position. What is the signature of `CompiledMask::evaluate`? | **Decided**: `evaluate(x, y, rgb) -> f32` and `coverage(x, y, rgb) -> f64`, with the pixel the operation receives. A geometric component ignores `rgb`, which the kind-conformance suite's `reads_exactly_what_its_kind_says` proves is exact rather than approximate — the same `f64` bits for five very different pixels at every pixel of a stage, for every position-only kind, with both inversions and an amount applied — so the mask study's own bit-for-bit comparisons hold. The colour run passes the snapshot it already takes to blend against, and the spatial tiling the tile-shaped snapshot it already cuts out, so `render.sample` and the rasterizing pass reach the mask through one call with the same arguments and a sampled byte still equals the rendered byte. The rejected alternative, a second entry point, doubles the contract for one argument |
+| P13 | What does a value-based component answer for `bounds()` and `min_feature_px`, and is a proxy frame carrying one approximate? | **Decided**: whole stage, and `f32::INFINITY`, so the thin-feature rule never fires for one and no proxy frame is marked approximate for it. Supersampling cannot help, because the full-resolution pixels are not available at proxy scale, so the flag would name a condition nothing can fix; a mixed mask is still supersampled for its *geometric* components, and its range components answer the same value at all four subsample positions, because the supersample moves the position and not the pixel. The overlay and the [user guide](../user-guide.md) state that a range selection is evaluated at representative coordinates in the visible coverage grid, using the input supplied by the uncut full-stage recipe for the first bound layer. 100% shows full image detail at rest, and motion at 100% and above may show a softer frame ([GPU previews](gpu-preview.md#at-100-and-above)); the coverage grid uses full-stage coordinates independently of the displayed scale. The cost of the whole-stage rectangle is measured by `the_cost_of_a_whole_stage_rectangle` |
+| P14 | Which way does Refine go, and what is its default? | **Decided**: increasing refine narrows the selection, default `50`. The research does not establish Lightroom's behaviour, so this is Luxforge's own, and `50` is measured to be the setting that holds an ordinary surface across a stop of shading |
+| P15 | The band's numbers are on the histogram's axis, but the delivered histogram is three channel populations rather than a luminance trace. How is that labelled? | **Decided**: the four band parameters are declared `0..100` with the unit `%`, and their notes say they are on the histogram's own axis and that one unit is 2.55 output codes; the user guide says the same. Adding a luminance trace to the delivered, verified histogram is a larger change to a shipped inspector and stays its own decision, unmade |
+| P16 | The coverage overlay is a function of position over the finished frame, and a value-based component's coverage is a function of the pixel the masked *operation* receives. Where does the overlay get that pixel? | **Built: the overlay reads the recipe prefix up to the mask's input site, once per grid cell**, through the same rule (`input_site`) the colour-constrained brush's seed and `mask.sample-input` resolve through, so the overlay and the seed use the same input. The two rejected options, recorded because the reasons outlive the decision: reading the finished frame, which holds the operation's **output** and would draw a selection the render never makes; and leaving it refused, which leaves a mask a person *painted* unreadable. The coverage samples that input through the uncut full-stage recipe and maps its grid into the visible region using full-stage coordinates. This grid is separate from displayed image pixels and pixel-derived clipping; source settings can still make the input approximate, such as drafted RAW white balance. The reference coverage worker supports a leading restoration run such as Detail through a bounded input grid: it renders the restoration prefix once, retains only the grid and applies later colour per cell. One refusal is kept: a mask whose first bound layer sits behind a later spatial layer such as Presence, where a point query would cost a tile render per cell. A mask with no bound layer is read where a first Basic adjustment would go (see P17). This grid is not a tile-service read; the seed and `mask.sample-input` read through the tile service, on the desktop from the GPU, with the same input-site rule |
+| P17 | The colour range's swatches are picked off the photograph, and the delivered pick machinery (`CanvasInteraction::SampleApply`) runs a **module's** query and submits to a **module's** action. A mask command is neither. How does a click become a swatch? | **Built as an area pick** ([range masks](range-masks.md); qualification open). The host declares one `area-pick` per kind with a pick rule in the kind table, so registering a kind is still what makes it reachable, and its pick command (`mask.pick-luminance-range`, `mask.pick-colour-range`) reads the input pixel or area of the operation the mask modulates and derives the band or swatch itself. The read-only `mask.sample-input` answers that input pixel as `r`, `g` and `b`, which are exactly the parameters `mask.add-<kind>-sample` declares, so the field-matching rule needs no exception and the client maps nothing. The pixel is read at the mask's [input site](range-masks.md#the-input-site): the stage **the first layer bound to that mask in evaluation order** receives, or, for a mask no layer is bound to, the position a first Basic adjustment would take — never the source or the finished frame, because a seed in the wrong domain would silently select nothing, which this study's own `+0.75 EV` measurement is the evidence for. The client decodes nothing: the only source of a colour is the host's answer, and the colour-constrained brush takes no colour in its request at all, seeding itself from the stroke's own first position |
 
 ## Figures
 

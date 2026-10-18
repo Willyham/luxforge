@@ -293,7 +293,7 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
         );
     }
     // The fixed-D65 solver's advertised 2000 K, tint +100 endpoint has a
-    // blue gain above the old 16x bound. The full corrected frame must remain
+    // blue gain above 16x. The full corrected frame must remain
     // finite at the shared 32x RAW gain limit.
     let endpoint = raw
         .develop([1.008_977, 1.0, 28.309_303], &AtomicBool::new(false))

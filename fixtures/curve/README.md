@@ -2,9 +2,9 @@
 
 Synthetic-only, small, deterministic oracle data for the Tone curve module's one pointwise unit, the
 contract in [the Tone curve design](../../docs/design/tone-curve.md) ("Processing contract", "The
-curve `C`", "Frozen tolerance"). Nothing here comes from a photograph. No production code reads it
-yet: the module is planned, and its unit is to be checked against every case directly and through
-the render path.
+curve `C`", "Frozen tolerance"). Nothing here comes from a photograph. The production unit
+(`crates/luxforge-core/src/modules/curve/unit.rs`) is checked against every case directly, and
+`crates/luxforge-core/tests/modules/curve.rs` checks the cases through the render path.
 
 ## `curve-cases.json`
 
@@ -30,7 +30,7 @@ Structure:
 - `cases` — `name` (`{set}/{input}`), `set`, `input_linear_rgb` and `expected_linear_rgb`: the
   unclamped linear-sRGB output of the unit at full `f64` precision. Every input value is
   `f32`-representable, so the tolerance measures the unit and not the input cast.
-- `samples` — by set, `[x, C(x)]` for `x = i / 256`, `i` in `0..=256`: what the planned
+- `samples` — by set, `[x, C(x)]` for `x = i / 256`, `i` in `0..=256`: what
   `query.sample-curve` answers for those points, to `1e-12`.
 
 | Input group | Count | What it covers |

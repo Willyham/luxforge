@@ -207,7 +207,7 @@ fn registering_a_sampling_kind_is_enough_to_make_its_swatches_editable() {
 /// Registering a kind with a pick rule is enough to make it pickable: `mask.pick-<kind>` is
 /// generated, listed by `schema.list` with its click-or-drag parameters, never gated by the
 /// experiment that gates creating the kind, and named by exactly one host `area-pick` canvas
-/// declaration. The host declares no `sample-apply` of its own any more, and a request carries no
+/// declaration. The host declares no `sample-apply` of its own, and a request carries no
 /// colour: `add` is declared only by a kind that holds samples.
 #[test]
 fn registering_a_picking_kind_is_enough_to_make_it_pickable() {

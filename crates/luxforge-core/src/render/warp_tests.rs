@@ -298,7 +298,7 @@ fn integer_crop_after_warp_stays_exact_geometry() {
     assert_eq!(chain.steps.len(), 2);
 }
 #[test]
-fn crop_only_stack_compiles_as_before() {
+fn a_crop_only_stack_compiles_to_one_affine_resample() {
     let r = registry();
     let plain = r
         .compile(

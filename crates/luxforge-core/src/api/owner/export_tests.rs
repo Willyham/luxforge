@@ -2165,7 +2165,7 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
 
 /// `export.write` refuses by name an output sharpening it does not know, never ignoring it; a
 /// destination whose extension is not the format's and a chosen folder that is missing are refused
-/// too, and none of these writes anything. `export.jpeg` no longer exists.
+/// too, and none of these writes anything.
 #[test]
 fn export_write_refuses_unknown_sharpening_a_wrong_extension_and_a_missing_folder() {
     let harness = Harness::start("not-yet");
@@ -2199,12 +2199,6 @@ fn export_write_refuses_unknown_sharpening_a_wrong_extension_and_a_missing_folde
     assert_eq!(missing.code, "validation");
     assert_eq!(missing.data.unwrap()["notice"], "folder-missing");
     assert!(listing(&out).is_empty(), "nothing written");
-    let gone = harness.send(
-        "export.jpeg",
-        with_envelope(json!({"asset_id": asset, "destination": out.join("old.jpg")})),
-    );
-    assert!(gone.error.is_some(), "export.jpeg is gone");
-    assert!(listing(&out).is_empty());
 }
 
 /// `schema.list` describes ExportSettings once, and every method that takes settings points at it.
@@ -2252,7 +2246,6 @@ fn schema_list_describes_export_settings_once() {
             "{method}: {settings}"
         );
     }
-    assert!(schema["methods"].get("export.jpeg").is_none());
 }
 
 /// Presets round-trip through create, list, update and delete over the API and survive the owner

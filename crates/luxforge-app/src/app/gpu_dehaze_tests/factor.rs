@@ -1,11 +1,11 @@
 //! The per-frame light's reduction factor (`docs/specs/performance.md`, "The per-frame light's
 //! reduction factor"): the measurement that chooses the one free parameter of stage 3's estimate
-//! twin (`tasks/rendering/gpu-first.json`, TASK-005). The twin computes Dehaze's atmospheric light every
-//! frame from the stack compiled at a block stage — the content stage reduced by a factor f per
-//! side, f dividing 16 — the colour run over each f × f cell's mean, each 16 px block's cells
-//! averaged, and the light selected as Dehaze prepares it. Where the colour run clips or crushes,
-//! the colour of a cell's mean is not the mean of its pixels' colour, so the light misses the
-//! reference's by that gap, which finer cells narrow.
+//! twin. The twin computes Dehaze's atmospheric light every frame from the stack compiled at a
+//! block stage — the content stage reduced by a factor f per side, f dividing 16 — the colour run
+//! over each f × f cell's mean, each 16 px block's cells averaged, and the light selected as Dehaze
+//! prepares it. Where the colour run clips or crushes, the colour of a cell's mean is not the mean
+//! of its pixels' colour, so the light misses the reference's by that gap, which finer cells
+//! narrow.
 //!
 //! Each candidate light is emulated on the CPU (`luxforge_core::qualification::twin_lights`): the
 //! twin's at f = 16, 8, 4 and 2; at f = 1, a control, where the cells are pixels and the colour run

@@ -884,10 +884,11 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Today's files, written before the newer preferences existed, still read.
+    /// A file that holds only some of the optional preferences reads, every missing one at its
+    /// default.
     #[test]
-    fn a_file_from_before_the_new_preferences_still_reads() {
-        let root = temp_path("preferences-today");
+    fn missing_optional_preferences_read_as_their_defaults() {
+        let root = temp_path("preferences-missing-optional");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("preferences.json"),

@@ -1,15 +1,15 @@
 # Watcher verification
 
 Status: implemented and verified with quick and the separate native gate on macOS. Native
-Windows/Linux and hosted CI execution are unrun. The owner requested cheap deterministic watcher
-coverage in quick and a separate native integration gate required for watcher changes and releases.
+Windows/Linux and hosted CI execution are unrun. Watcher coverage in quick is cheap and deterministic, with a
+separate native integration gate required for watcher changes and releases.
 
 ## Contract
 
-- Ordinary tests retain event interpretation, bounded delivery, signature reconciliation, rename
+- Ordinary tests cover event interpretation, bounded delivery, signature reconciliation, rename
   identity, exclusions, rescan jobs, cancellation, stale-root recovery, cursor persistence and
   interrupted reads. Quick keeps the cheap deterministic checks; injected journeys taking 100 ms
-  or more retain `#[slow]`, including those exercising the deletion grace period. Core journeys use real scratch files and the production owner/index lane, with an
+  or more carry `#[slow]`, including those exercising the deletion grace period. Core journeys use real scratch files and the production owner/index lane, with an
   explicitly injected notification source and a fixture-owned cursor. No native notification
   delivery is needed to complete them.
 - Initial root delivery that a full channel refuses explicitly wakes an idle Linux or Windows
@@ -23,12 +23,12 @@ coverage in quick and a separate native integration gate required for watcher ch
   checks still include slow tests and doctests. Direct Cargo tests retain their usual behavior.
 - The dedicated `xtask test --native-watchers` gate selects only `native_watch_` tests, fails if none
   are available, and preserves failures rather than retrying them into a pass. Its test binaries
-  run separately from ordinary tests and one at a time. Existing hang bounds remain unchanged.
-- The native suite retains the platform adapter's real delivery, replay and removal checks and
+  run separately from ordinary tests and one at a time. The usual hang bounds apply.
+- The native suite holds the platform adapter's real delivery, replay and removal checks and
   core journeys proving real automatic updates, close/reopen replay and interrupted-read catch-up.
   The fixture's automatic change/replay injection is disabled in these journeys. The interrupted
   read uses explicit fault injection before close and requires real OS catch-up after reopen.
-  Disk-image and other ignored qualification checks keep their existing explicit scope; they
+  Disk-image and other ignored qualification checks keep their own explicit scope; they
   are not silently claimed by this gate.
 - Non-quick verification tiers record the native gate as a separate required component. Hosted
   checks and tag builds run it explicitly after ordinary checks. Local release initiation requires

@@ -1,6 +1,6 @@
 # Corrections in the Develop workspace
 
-Status: **decided by the owner on 2026-10-09, with the defaults under [decisions](#decisions); implemented in the desktop; qualified on the M4 against the corpus and on JPEG and RAW; the owner accepted Heal after a blinded review on 2026-10-11. The interaction timing was set aside by the owner on 2026-10-11 and has not been run; it is not a pass.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design adds what the person sees and does, plus the three contract changes it needs: automatic sources, moving a correction's destination, and a larger operation limit.
+Status: **decided, with the defaults under [decisions](#decisions); implemented in the desktop; qualified on the M4 against the corpus and on JPEG and RAW; the owner has accepted Heal after a blinded review. The interaction timing has not been run; it is not a pass.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design owns what the person sees and does, including automatic sources, moving a correction's destination and the operation limit.
 
 Where something isn't specified here, the reference is Lightroom Classic's Healing tool, for familiarity rather than as a checklist. The modifier keys follow Photoshop and Lightroom wherever the two agree.
 
@@ -28,7 +28,7 @@ Boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is als
 
 ## Entering and leaving
 
-Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and the [AI editing design](ai-editing.md#the-flow) already proposes it. It can also be entered from the palette.
+Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and [AI editing](ai-editing.md#the-flow) places Remove under it. It can also be entered from the palette.
 
 The mode is a tab of its own, as Mask mode is. While it is active, the tools panel shows the **Corrections band** under the histogram, where the Masks band sits in Mask mode, and the band replaces the module sections: no adjustment applies through a correction, so nothing is drawn under it. Leaving the mode hides the band and brings the sections back. Outside the mode Corrections has no section in the tools panel; the status bar's stale-patch count, the API and the corrections' pixels do not need one. Pins and outlines are drawn only in the mode, and the corrections render everywhere.
 
@@ -126,7 +126,7 @@ When no candidate survives, the result is an explicit `no-source` outcome, which
 
 ## Programmability
 
-Every gesture above has a semantic equivalent through the same command service. The current actions stay, with these changes:
+Every gesture above has a semantic equivalent through the same command service:
 
 | Gesture | Request |
 | --- | --- |
@@ -144,7 +144,7 @@ Every gesture above has a semantic equivalent through the same command service. 
 
 ## Capacity
 
-Dust spotting and distraction removal routinely need dozens of corrections, and an eight-operation ceiling makes the stacking principle hollow. **Decided (owner, 2026-10-09): 100 corrections per photograph**, checked before a draft starts, with the `resource-limit` refusal above. Reaching it needs the repair pass to evaluate many operations in one dispatch, for example from a bounded operation table and per-operation source windows, rather than one charged output plane per operation. That rendering change belongs to the processing primitive's task and is measured there. Until it lands, the band and the refusal use whatever limit the core declares; the number is never hard-coded in the desktop.
+Dust spotting and distraction removal routinely need dozens of corrections, so a photograph holds **100 corrections**, checked before a draft starts, with the `resource-limit` refusal above. The repair pass evaluates many operations in one dispatch from a bounded operation table ([rendering](corrections.md#rendering)). The band and the refusal use the limit the core declares; the number is never hard-coded in the desktop.
 
 ## Visual language
 
@@ -152,23 +152,20 @@ Overlays are white with a translucent dark under-stroke, so they read on any pho
 
 ## Lessons
 
-An interim panel was tried on a branch and rejected by the owner on 2026-10-09. It selected saved operations by typing their numeric IDs, edited the source as numeric X/Y offsets, used right-click to choose a source, had no on-image selection and no keyboard deletion, and stopped at eight operations. Its failures shaped the principles above: creation was ambiguous, IDs leaked into the interface, and corrections could not practically stack.
+An interim panel was tried and rejected. It selected saved operations by typing their numeric IDs, edited the source as numeric X/Y offsets, used right-click to choose a source, had no on-image selection and no keyboard deletion, and stopped at eight operations. Its failures shaped the principles above: creation was ambiguous, IDs leaked into the interface, and corrections could not practically stack.
 
 ## Outstanding work
 
-Nothing in this design is missing from the desktop. The interaction timing on the M4 (see [Acceptance](#acceptance)) was set aside by the owner on 2026-10-11 and has not been run; the owner's blinded review of the automatic source is recorded in the [numerics](corrections-numerics.md#the-corpus-review). The `raw-corrections` scenario runs the journeys on each supplied RAW, the overlay through the Z6's and Air 2S's lens profile warp among them ([performance](../specs/performance.md#corrections-qualified-on-the-m4)).
+Nothing in this design is missing from the desktop. The interaction timing on the M4 (see [Acceptance](#acceptance)) has not been run; the owner's blinded review of the automatic source is recorded in the [numerics](corrections-numerics.md#the-corpus-review). The `raw-corrections` scenario runs the journeys on each supplied RAW, the overlay through the Z6's and Air 2S's lens profile warp among them ([performance](../specs/performance.md#corrections-qualified-on-the-m4)).
 
 ## Acceptance
 
-The background-only `corrections` smoke scenario covers each journey with correlated state, log and capture: click spot with automatic source, painted stroke, `⇧`-click, `⌥`-click then live-painted Clone, `⌘`-drag, selection by pin and by row, pin drag, source drag, spot resize, `/`, `⌫`, row drag and `⌥↑`, `H`, the Escape order, a stroke stacked across an earlier correction whose pixels show that it sampled the earlier repair, the no-source notice and the limit refusal. Each committing gesture is checked as exactly one entry with the label above. UI/API parity is verified per row of the [programmability table](#programmability). The automatic search has exact reference fixtures for its candidate set, rejection rules, score and tie-break. Overlays are checked by the scenario through a 16:9 crop, a straighten and a Perspective warp: after each, the core's own `render.transform` places every pin and a selected spot's outline, the desktop's retained map must agree, and the capture with pins and outline shown must differ from the capture with them hidden (`H`) at those places. The Locate journey moves an original while the editor is not running, records it missing with `source.check`, locates it from Select's Missing originals at the moved file of the same bytes, and opens it to find its Clone intact and rendered. Interaction latency (input to overlay, from the overlay canvas's logged first draw after each message, release to repaired frame, handle drag and the automatic search) would be measured with the brush on 24/60 MP JPEG and qualified RAW on the M4; the owner set that measurement aside on 2026-10-11 and it has not been run.
+The background-only `corrections` smoke scenario covers each journey with correlated state, log and capture: click spot with automatic source, painted stroke, `⇧`-click, `⌥`-click then live-painted Clone, `⌘`-drag, selection by pin and by row, pin drag, source drag, spot resize, `/`, `⌫`, row drag and `⌥↑`, `H`, the Escape order, a stroke stacked across an earlier correction whose pixels show that it sampled the earlier repair, the no-source notice and the limit refusal. Each committing gesture is checked as exactly one entry with the label above. UI/API parity is verified per row of the [programmability table](#programmability). The automatic search has exact reference fixtures for its candidate set, rejection rules, score and tie-break. Overlays are checked by the scenario through a 16:9 crop, a straighten and a Perspective warp: after each, the core's own `render.transform` places every pin and a selected spot's outline, the desktop's retained map must agree, and the capture with pins and outline shown must differ from the capture with them hidden (`H`) at those places. The Locate journey moves an original while the editor is not running, records it missing with `source.check`, locates it from Select's Missing originals at the moved file of the same bytes, and opens it to find its Clone intact and rendered. Interaction latency (input to overlay, from the overlay canvas's logged first draw after each message, release to repaired frame, handle drag and the automatic search) is measured with the brush on 24/60 MP JPEG and qualified RAW on the M4; it has not been run.
 
 ## Decisions
 
-Accepted by the owner on 2026-10-09, with the rest of this design:
-
-
-1. **Capacity**: 100 corrections per photograph (above), replacing the initial eight.
-2. **A set source persists**: it is used by following corrections until **Auto** or Escape, as Photoshop's aligned clone does, rather than for one correction only.
-3. **Moving a correction keeps its source in place**, as in Lightroom, rather than moving the source with it.
-4. **A stroke's pin is at its first point**, as in Lightroom, rather than at its midpoint.
+1. **Capacity**: 100 corrections per photograph (above).
+2. **A set source persists**: it is used by following corrections until **Auto** or Escape, as Photoshop's aligned clone does.
+3. **Moving a correction keeps its source in place**, as in Lightroom.
+4. **A stroke's pin is at its first point**, as in Lightroom.
 5. **Modifiers**: `⌥`-click sets the source, `⌘`-drag places and pulls out a source, and `⇧` draws straight strokes.

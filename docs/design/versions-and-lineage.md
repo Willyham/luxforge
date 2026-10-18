@@ -1,20 +1,20 @@
 # Versions, lineage and the history graph
 
-Status: implemented. This note records what the history graph is, the named versions and lineage queries built on it, and the catalog storage decision those features settled. The owner chose the name "version" for the Lightroom-style saved state.
+Status: implemented. This note records what the history graph is, the named versions and lineage queries built on it, and the catalog storage they rely on. "Version" is the name for the Lightroom-style saved state.
 
-## The graph that already existed
+## The history graph
 
 Every history entry stores its complete immutable stack and an `undo_parent`. Undo and redo move the current pointer; a new edit after undo appends with the undone-to entry as its parent; nothing is ever deleted. [Auto-collapse](#auto-collapse) hides entries from history pages without deleting them. That is a commit graph: an entry is a commit, its stack is the tree, `undo_parent` is the parent pointer, the asset's current entry is HEAD and the per-asset `sequence` is the reflog. Restore is a forward-moving revert that copies an old stack into a new entry.
 
-Lightroom truncates later history when you edit from an earlier state, and its snapshots exist to survive that truncation. Luxforge never truncates, so every state a Lightroom snapshot could bring back is already reachable through `history.list` and `history.restore`. What was missing was a way to name one entry among hundreds, and a way to see the chain rather than the chronological list.
+Lightroom truncates later history when you edit from an earlier state, and its snapshots exist to survive that truncation. Luxforge never truncates, so every state a Lightroom snapshot could bring back is already reachable through `history.list` and `history.restore`. Versions name one entry among hundreds, and lineage shows the chain rather than the chronological list.
 
 ## Vocabulary
 
-- **Snapshot** keeps its existing internal meaning: the immutable stack one action produced. It is not a user feature.
+- **Snapshot** is an internal term: the immutable stack one action produced. It is not a user feature.
 - **Version** is the user-facing name for a named reference to one retained entry. It is a tag, not a branch.
 - **Lineage** is the undo-parent chain from an entry back towards Original.
 
-Branches in the Lightroom sense, virtual copies with their own current pointer, are not part of this work. They would need a second head per asset and are left for a later library decision.
+Branches in the Lightroom sense, virtual copies with their own current pointer, are not supported. They would need a second head per asset and await a library decision.
 
 ## Versions
 
@@ -43,7 +43,7 @@ The last condition is what makes a collapse safe: the superseded entry changed n
 
 The preference reaches the catalog owner when it starts and whenever `preferences.set` changes it, and applies to edits from then on. Turning it off or on rewrites no history.
 
-Performance review of the change: it reads, hashes and decodes no original and allocates no frame. On the owner thread, a commit whose current entry is the same action and field set by the same actor plans the action a second time, on the base's stack, and compares two stacks, `O(layers)`; a field patch's plan reads no pixel, and the base is read from the entry cache. Every other commit adds a handful of field comparisons. A history page adds one indexed lookup per row. The desktop adds no request: a collapsing edit reads the lineage instead of adding its entry to the loaded one, as an undo does, and reads no page. No timer, poll, subscription or cache is added. No timing run was taken, because no interactive path changes: a slider drag still commits once, on release.
+Performance: auto-collapse reads, hashes and decodes no original and allocates no frame. On the owner thread, a commit whose current entry is the same action and field set by the same actor plans the action a second time, on the base's stack, and compares two stacks, `O(layers)`; a field patch's plan reads no pixel, and the base is read from the entry cache. Every other commit adds a handful of field comparisons. A history page adds one indexed lookup per row. The desktop adds no request: a collapsing edit reads the lineage instead of adding its entry to the loaded one, as an undo does, and reads no page. No timer, poll, subscription or cache is added. It has no timing measurement, because it is on no interactive path: a slider drag commits once, on release.
 
 ## History rows
 
@@ -57,7 +57,7 @@ Asynchronous catalog work records its immutable resolved targets and settings be
 
 Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries, and `collapsed_entries` the entries [auto-collapse](#auto-collapse) hid, keyed by entry; a trigger refuses deleting a row there, as entries refuse updates. The catalog also holds the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. In the request table it holds each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted. Each asset's source kind tag (`jpeg`, `raw` or `derived`) has a column of its own beside its interpretation, so a list of photographs reads columns only and decodes no interpretation. History inserts name their columns explicitly.
 
-The current catalog format is 2, and the catalog carries SQLite's `application_id` `0x4C584643` (`LXFC`) beside it: the collapsed-entry table, the catalog of developed picks with no development set ([catalog](catalog.md#storage)), and the derived sources and kind-tagged merges, with provenance format 2, of [HDR merges](hdr-merge.md#durable-derived-source) and, once its provider exists, [panoramas](panorama-merge.md). Beside history the catalog adds these tables:
+The current catalog format is 2, and the catalog carries SQLite's `application_id` `0x4C584643` (`LXFC`) beside it: the collapsed-entry table, the catalog of developed picks ([catalog](catalog.md#storage)), and the derived sources and kind-tagged merges, with provenance format 2, of [HDR merges](hdr-merge.md#durable-derived-source) and [panoramas](panorama-merge.md). Beside history the catalog adds these tables:
 
 | Table | Holds |
 | --- | --- |
@@ -81,7 +81,7 @@ The schema holds the invariants the lanes rely on:
 
 A photograph enters the catalog only by being developed (`pick.develop`, [developing picks](catalog.md#developing-picks)), which writes its asset row with its catalog folder, source folder, volume and moment, its capture row, its Original entry and its state row in one transaction. A collapsed entry is part of its photograph's record: [Empty Removed](catalog.md#removing) deletes it with the photograph's other entries, lifting the table's permanence trigger inside its own transaction only, as it does the artifact references'.
 
-Every other format marker is refused by name and left as it is. Development catalogs made before the format was reset to 1 carry markers up to 16, or a format 1 without the application mark; both are refused, and the unmarked one as "not marked as a Luxforge catalog".
+Every other format marker is refused by name and left as it is. A catalog with a format marker but without the application mark is refused as "not marked as a Luxforge catalog".
 
 The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 7). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
 
@@ -93,7 +93,7 @@ The `-wal` file is beside the catalog while it is open and after a crash, when i
 
 ## Sessions live with the owner
 
-The same change moved client sessions into the catalog owner, keyed by a registered client id. Previously the desktop threaded a copy of its session through every task and wrote the copy back on completion, so a slow read-only refresh could overwrite a newer zoom or selection. Now only the owner mutates sessions, every session-returning response carries a session revision, and the desktop adopts a response only when its revision is at least the one it holds. Pan goes through `view.set` like zoom, with one request in flight and only the newest pending position.
+Client sessions live in the catalog owner, keyed by a registered client id. Only the owner mutates sessions, so a slow read-only refresh cannot overwrite a newer zoom or selection; every session-returning response carries a session revision, and the desktop adopts a response only when its revision is at least the one it holds. Pan goes through `view.set` like zoom, with one request in flight and only the newest pending position.
 
 A session's history selection is kept per asset, in `session.preview.selections`: each asset the client previews a historical entry of maps to that `entry_id` and the `geometry_from` entry that frames it, and an asset absent from the map is at its current entry. `preview.select` changes the named asset's selection alone, and selecting an asset's current entry removes it; `preview.return-current` and a `job.adopt` return every asset. An edit, undo, redo or draft of an asset is refused only while that asset has a selection, and `render.sample`, `render.locate`, `render.transform`, `preset.capture` and a module query without an `entry_id` answer against the named asset's own selection, so a client can preview one photo's history while it edits another. A session holds at most 16 selections (`MAX_SELECTIONS`); one more is refused with `resource-limit`.
 
@@ -116,6 +116,6 @@ The one method table in the core carries each method's declared parameters, note
 - Versions survive reopen, reject empty, oversized and control-character names, treat case-insensitive duplicates as conflicts, restore through the ordinary restore path and keep their entry after deletion.
 - Lineage skips abandoned branches, pages with a continuation id and rejects unknown assets.
 - An independent JSON client creates a version, undoes, lists versions and reads a one-step lineage in one session.
-- History rows carry no stack, equal their entries' row fields before and after reopen, page without gaps and decode no entry. A format 7 catalog is refused by name and left as it was.
+- History rows carry no stack, equal their entries' row fields before and after reopen, page without gaps and decode no entry. A catalog of another format is refused by name and left as it was.
 - Auto-collapse: a run of one control keeps one visible entry whose undo parent is the run's base; a run back to its start writes no entry and leaves no row; another control, another field set, another actor, another mask target, a relative action, a moved head, a named entry or the preference off collapses nothing; collapsed entries survive reopen hidden and are listed on request; a retried collapse answers as it did. The field-patch conformance suite checks the collapse and its undo for every field-patch module.
 - Desktop: stale session responses are not adopted, pan coalesces to one in-flight request, and a refresh replaces or merges history and marks branches. A commit's refresh reads no page, lineage or versions and merges its row and lineage; undo, redo and restore read the lineage; an answer overtaken by a newer selection or revision is dropped; a test counts the owner calls of each. `cargo xtask check` passes.

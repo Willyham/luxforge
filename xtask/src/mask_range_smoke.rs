@@ -16,17 +16,17 @@
 //! one person's skin selecting another's — then Escape, Pick and Return on the eyedropper, and
 //! finishes with the colour-constrained brush: one stroke across two surfaces, and a colour-held
 //! erase that takes one of them back out and leaves the other alone — read from the picture and
-//! then from that mask's own overlay, which a colour-held stroke used to have none of.
+//! then from that mask's own overlay, which a colour-held stroke has too.
 //!
 //! **Why the readings are taken from the photograph as well as from the overlay.** Every claim this
 //! scenario makes about what a selection selects is read from the rendered photograph with an
 //! adjustment applied through the mask, because that is the picture a person is actually editing. The
-//! overlay is now read too, and read **against** those same frames: a mask that reads pixels is
-//! answered on the input of its first bound layer ([proposal P16](../../docs/design/range-study.md#proposals),
-//! decided by the owner on 2026-09-23), so the composed mask's grid and the frame the masked Exposure
-//! produced are two views of one selection and are checked patch by patch against each other. The
-//! overlay at Fit is still read on a downscaled pixel and the 100% view is still the truth; what the
-//! grid buys is that a selection can be *seen* rather than only inferred.
+//! overlay is read too, and read **against** those same frames: a mask that reads pixels is
+//! answered on the input of its first bound layer ([proposal
+//! P16](../../docs/design/range-study.md#proposals)), so the composed mask's grid and the frame the
+//! masked Exposure produced are two views of one selection and are checked patch by patch against
+//! each other. The overlay at Fit is still read on a downscaled pixel and the 100% view is still
+//! the truth; what the grid buys is that a selection can be *seen* rather than only inferred.
 //!
 //! **Why the comparisons are against a control inside the same frame.** A value-based selection moves
 //! when a layer ahead of it changes the operation's input, and proving that by predicting an output
@@ -617,12 +617,11 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .label("Mask 4 · Update Brush 1"),
-        // The overlay on and off over that mask. **This is the frame P16 bought for a mask a person
-        // painted**: a colour-held stroke makes a brush component read pixels, so before this there
-        // was no grid for it at all and the only way to see what the erase had taken was to apply an
-        // adjustment and look at the picture. The grid is checked against exactly that —
-        // `constrained`'s own readings — and then the overlay is switched off and the photograph is
-        // exactly where it was.
+        // The overlay on and off over that mask. **This is the frame P16 gives a mask a person
+        // painted**: a colour-held stroke makes a brush component read pixels, and P16 draws its
+        // grid, so what the erase has taken shows on the overlay as well as in a picture adjusted
+        // through the mask. The grid is checked against that picture — `constrained`'s own
+        // readings — and then the overlay is switched off and the photograph is exactly where it was.
         overlay("held-overlay", "mask-on-black"),
         overlay("held-overlay-off", "off"),
         // Undone. The erase is one entry like any other stroke, so the foliage is selected again and
@@ -1028,7 +1027,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value> {
     // The pairing itself lives in `editor_latency`, beside the `--mode paint` run that takes the same
     // measurement on a bare recipe at 24 and 60 MP, so the two figures are one definition and not
-    // two implementations that could drift apart. The paced stroke no longer races the render
+    // two implementations that could drift apart. The paced stroke does not race the render
     // pipeline, so there is always at least one pair to find here unless the stroke is genuinely
     // broken.
     let feedback = editor_latency::paced_stroke_latencies(events)?;
@@ -1585,9 +1584,9 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
     )?;
 
     // **The overlay of a mask a person painted and held to a colour.** A colour-held stroke makes a
-    // brush component read the pixel its operation receives, so before P16 was built this mask had
-    // no grid at all and the only way to see what the erase had taken was to apply an adjustment and
-    // look at the picture. The grid is checked against exactly that: every patch the overlay calls
+    // brush component read the pixel its operation receives, and P16 draws its grid, so what the
+    // erase has taken shows on the overlay as well as in a picture adjusted through the mask. The
+    // grid is checked against that picture: every patch the overlay calls
     // selected is a patch `constrained` moved from `skin` — the last frame before this mask existed,
     // so the difference is this mask's own layer and nothing else — and every patch it calls
     // unselected is one that frame left alone; the sky the stroke crossed reads covered and the
@@ -1757,7 +1756,7 @@ mod tests {
 
     #[test]
     fn a_settled_stroke_pairs_every_position_and_passes() {
-        // Three positions, each settled before the next was sent (as `settle_between` now
+        // Three positions, each settled before the next was sent (as `settle_between`
         // guarantees), so every one of them has its own displayed frame to pair a latency to.
         let mut events = Vec::new();
         events.extend(paired(0.0, 4.0, 28.0, 1));

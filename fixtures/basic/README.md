@@ -1,12 +1,10 @@
 # Basic and histogram fixtures
 
-Synthetic-only, small, deterministic data prepared for the [Basic adjustments and
-histogram](../../docs/design/basic-and-histogram.md) proposal ahead of any production
-implementation (see that design's "Numerical and color contract", "Histogram and clipping
-contract" and "Verification and acceptance" sections). Nothing here is generated from a real
-photo; no private originals are committed. These fixtures are consumed by later tasks (a
-histogram reducer, a float colour stage, an `Exposure` operation); as of this task no production
-code reads them yet.
+Synthetic-only, small, deterministic data for [Basic adjustments and the
+histogram](../../docs/design/basic-and-histogram.md) (see that design's "Numerical and color
+contract", "Histogram and clipping contract" and "Verification and acceptance" sections). Nothing
+here is generated from a real photo; no private originals are committed. The tests of the
+histogram reducer, the float colour stage and the Basic operations read them.
 
 Expected values in every file were computed independently of any production implementation with
 an inline `python3` command (not committed as a tool, per repository convention: private-photo
@@ -23,7 +21,7 @@ here is computed at load time.
   `crates/luxforge-reference/src/`): exact to the stated formula (standard sRGB transfer
   constants: threshold 0.04045/0.0031308, 12.92, 1.055, 0.055, exponent 2.4; exposure
   `out = in * 2^EV`), computed in f64 with no intermediate clamping between colour operations.
-- **Production tolerance** (for later tasks, not tested here): float colour output must agree
+- **Production tolerance** (not tested here): float colour output must agree
   with the f64 reference within `1e-6 + 1e-6 * abs(reference)` in linear light, and output codes
   may differ by at most one at a quantization boundary, per the design's numerical contract.
 
@@ -79,7 +77,7 @@ the generating formulas:
    (`x=1..4, y=1..2` of the full buffer) with none of the border's black or white pixels: by
    hand its `counts` are the full file's interior contribution alone (each of the 8 interior
    values appears exactly once per channel, since all interior values are distinct and none is
-   0 or 255), and every `clipping` field is 0. A later composition test can subtract the crop
+   0 or 255), and every `clipping` field is 0. A composition test can subtract the crop
    file's counts from the full file's counts and confirm the remainder is exactly the border's
    12 black + 4 white contribution.
 
@@ -97,6 +95,13 @@ code 0; 16 at -5 EV stays at output code 1 rather than flooring; 10 at -1 EV sta
 `crates/luxforge-reference/tests/studies/exposure.rs` loads this file and asserts the Rust
 `reference` module's `evaluate_pixel` agrees with every `expected` value, cross-checking the two
 independent implementations.
+
+## White balance corpus: `white-balance-cases.json`
+
+The neutral picker's patch corpus and Basic's white-balance colour inputs ([neutral picker](../../docs/design/basic-white-balance.md#the-neutral-picker)). Every expectation the tests hold is computed by the independent scene reference, `luxforge_reference::scene`, at test time; the file stores inputs and labels:
+
+- `transform_cases`: 45 cases, five 8-bit input colours under nine Temperature and Tint pairs. `crates/luxforge-core/tests/basic/white_balance.rs` renders each through a real Basic layer against `scene::apply`.
+- `solver_cases`: 125 patches of 8-bit samples. 121 are dithered 5 × 5 patches of distinct casts, labelled by `expected_solution`, a Temperature and Tint pair on the −100..100 step-20 grid that names the case; then a near-black patch, a patch with one clipped pixel, a cast past the sliders' range and an edge-clipped 3 × 3 corner patch. The query test in `crates/luxforge-core/src/modules/basic/mod.rs` runs every full patch through `query.neutral-sample` and holds its answer to `scene::neutral_settings`, rounded, or to an `out-of-range` refusal where the reference finds none within range.
 
 ## Mixed-order composition cases: `mixed-order.json`
 
