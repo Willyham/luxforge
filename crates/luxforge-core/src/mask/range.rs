@@ -13,7 +13,7 @@
 //! **These two kinds read a value, not a position.** Everything else in this module answers
 //! `coverage(u, v)` from the pixel's position alone; a range selection answers from the **pixel the
 //! operation it modulates receives**, which is what [`super::CompiledMask::coverage`] carries as its
-//! `rgb` argument (proposal P12 of the study, decided there). Three consequences are stated rather
+//! `rgb` argument (proposal P12 of the study). Three consequences are stated rather
 //! than hidden, and each has its own answer below: the conservative rectangle is the whole stage
 //! ([`value_support`]), the smallest feature is `f64::INFINITY` because no pixel grid resolves a
 //! value test ([`value_feature_px`]), and what such a component selects moves when a layer ahead of
@@ -407,7 +407,7 @@ pub(crate) const REFINE_MAX: f64 = 100.0;
 /// measured position and not a midpoint: the refine at which a surface stops being held whole across
 /// a stop of shading is `53.0` for skin, `52.7` for a sky and `50.5` for foliage, so the geometric
 /// mean of the two radius ends lands within three points of "hold an ordinary surface together" on
-/// all three (proposal P14 of the study, decided there).
+/// all three (proposal P14 of the study).
 pub const REFINE_DEFAULT: f64 = 50.0;
 
 /// The bounds one stored sample component may take, in linear sRGB. A sample is a pixel of the
@@ -830,7 +830,7 @@ pub(super) fn pick_colour(
 
 /// The conservative rectangle of a value-based component: the **whole stage**, drawn or inverted.
 ///
-/// This is a stated answer and not a guess (proposal P13 of the study, decided there). Coverage
+/// This is a stated answer and not a guess (proposal P13 of the study). Coverage
 /// depends on a pixel's value and not on where it is, so a colour a component selects can appear
 /// anywhere in the frame and no colour span or spatial tile can be skipped for it. Saying so is what
 /// keeps the rectangle's promise — outside it coverage is exactly zero — true.

@@ -1,13 +1,12 @@
-//! The declared tolerance of every output kind against the reference renderer, as the
-//! [GPU-first design](../../../docs/design/gpu-first.md#the-contract) states it (owner,
-//! 2026-10-04): the GPU is the renderer of record, and what it produces — the picture on screen at
-//! rest and in motion, the histogram and clipping counts, a sample and an export — is held to a
-//! declared limit against what the whole-frame CPU reference renders. The picture in motion is held
-//! to the frame it settles to, by the design's recorded default of 2026-10-05, and on request to
-//! the reference. This module names each [`Kind`], what it is compared with and its limit, and holds
-//! the comparisons: the picture and the minimap's overview through [`reduce_srgb8`] and the
-//! [`preview_error`] measure, the counts through [`histogram`], samples through [`samples`] and an
-//! export through [`export`].
+//! The declared tolerance of every output kind against the reference renderer, as the [GPU-first
+//! design](../../../docs/design/gpu-first.md#the-contract) states it: the GPU is the renderer of
+//! record, and what it produces — the picture on screen at rest and in motion, the histogram and
+//! clipping counts, a sample and an export — is held to a declared limit against what the
+//! whole-frame CPU reference renders. The picture in motion is held to the frame it settles to, by
+//! the design's recorded default, and on request to the reference. This module names each [`Kind`],
+//! what it is compared with and its limit, and holds the comparisons: the picture and the minimap's
+//! overview through [`reduce_srgb8`] and the [`preview_error`] measure, the counts through
+//! [`histogram`], samples through [`samples`] and an export through [`export`].
 //!
 //! Like the rest of this crate it is written from the design, never from production code, and
 //! depends on nothing. `cargo xtask gpu-qualification`, the release gate that renders the corpus
@@ -386,7 +385,7 @@ pub const CLIPPING: [&str; 11] = [
 pub const HISTOGRAM_FRACTION: f64 = 0.001;
 
 /// The most each of the histograms of R, G, B and luminance may move from the reference's, by the
-/// earth mover's distance in codes ([`histogram_emd`]): a quarter of a code (owner, 2026-10-05).
+/// earth mover's distance in codes ([`histogram_emd`]): a quarter of a code.
 /// A whole frame one code off is 1.0; a share of its pixels one code off is that share.
 pub const HISTOGRAM_EMD_CODES: f64 = 0.25;
 

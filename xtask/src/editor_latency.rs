@@ -1459,7 +1459,7 @@ pub struct Options<'a> {
     /// Percentage view chosen before the measured gesture; absent means Fit.
     pub zoom: Option<f32>,
     /// Move the scrollable on each paced burst tick; kept explicit so the fixed-view burst script
-    /// can also run against the pre-viewport binary for a like-for-like baseline.
+    /// can run without it.
     pub moving_pan: bool,
     /// Paint mode only: show the selected mask's tint while the stroke is painted, so each drafted
     /// job fills the overlay's coverage grid beside its frame.
@@ -6014,9 +6014,9 @@ mod tests {
 
     /// A pipeline overwhelmed by the input rate can drop every drafted frame: the render queue
     /// never keeps up, so nothing between the gesture's start and its commit is ever displayed.
-    /// That is a real, if grim, measurement — the pre-instant-preview baseline this mode exists to
-    /// show — and must not be refused. The frame the initial open presented, before the gesture's
-    /// first input, is excluded from presented_frames and the fps window it divides.
+    /// That is a real, if grim, measurement — what this mode exists to show — and must not be
+    /// refused. The frame the initial open presented, before the gesture's first input, is
+    /// excluded from presented_frames and the fps window it divides.
     #[test]
     fn burst_analysis_reports_zero_drafted_frames_rather_than_failing() {
         let mut events = vec![
@@ -6693,7 +6693,7 @@ mod tests {
     }
 
     /// Every default exposure value is the decimal the slider sends, so a 30- or 100-sample drag
-    /// never asks for a value no rail fraction reaches (the 19th was once 0.5700000000000001).
+    /// never asks for a value no rail fraction reaches (such as 0.5700000000000001 for 0.57).
     #[test]
     fn gesture_values_on_a_decimal_step_are_the_decimals_the_slider_sends() {
         let field = FieldTarget::basic_exposure();

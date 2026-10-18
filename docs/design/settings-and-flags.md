@@ -1,14 +1,14 @@
 # Settings and feature flags
 
-Status: implemented, at the owner's request of 2026-10-04 and on the four [decisions](#decisions) below.
+Status: implemented, on the four [decisions](#decisions) below.
 
 Luxforge has a small, typed **feature flag** registry that gates features and experiments, two API methods that read and change it, and a **Settings** surface in the desktop whose **General** tab holds the person's preferences and whose **Experiments** tab lists every flag with its control. Developer mode is the first flag, and the luminance and colour range mask kinds are the first experiment a live flag gates. Verified on the M4 Mac by the `settings` smoke scenario, with the `quick` and `rendered` tiers passing.
 
 ## Scope
 
-[Optional usage statistics](usage-statistics.md) add a **Privacy** tab, listed only in a launch eligible to report. It is not a feature flag. Visible debug, unrevisioned and Developer launches are eligible for consented test-tenant reporting and disclose its complete URL. Ordinary revisioned release launches remain ineligible while production activation is off; evidence runs need explicit test eligibility (`--usage-test-receiver`). The switch drives the desktop's statistics supervisor, which an eligible launch starts ([implemented integration](usage-statistics.md#implemented-integration)); turning it on starts a session and turning it off cancels any upload in flight. The General, Appearance and Experiments tabs are unchanged. A **Models** tab, after Appearance, is listed only when a registered module holds a model ([module capabilities](module-capabilities.md#desktop)).
+[Optional usage statistics](usage-statistics.md) add a **Privacy** tab, listed only in a launch eligible to report. It is not a feature flag. Visible debug, unrevisioned and Developer launches are eligible for consented test-tenant reporting and disclose its complete URL. Ordinary revisioned release launches remain ineligible while production activation is off; evidence runs need explicit test eligibility (`--usage-test-receiver`). The switch drives the desktop's statistics supervisor, which an eligible launch starts ([implemented integration](usage-statistics.md#implemented-integration)); turning it on starts a session and turning it off cancels any upload in flight. A **Models** tab, after Appearance, is listed only when a registered module holds a model ([module capabilities](module-capabilities.md#desktop)).
 
-In scope: the flag registry, its storage beside the existing user preferences, `flags.list` and `flags.set`, launch-time resolution, developer mode as a flag, the Settings surface with its Experiments tab, the palette and keyboard routes to it, evidence steps and a rendered smoke scenario.
+In scope: the flag registry, its storage beside the user preferences, `flags.list` and `flags.set`, launch-time resolution, developer mode as a flag, the Settings surface with its Experiments tab, the palette and keyboard routes to it, evidence steps and a rendered smoke scenario.
 
 Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, flags in `luxforge-json`'s own launch, and the GPU renderer, which is the renderer of record and neither a flag nor a preference ([GPU-first](gpu-first.md)). The person's preferences are designed in [preferences](preferences.md).
 
@@ -17,7 +17,7 @@ Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, fla
 - **A flag never changes pixels.** A flag gates interface, behaviour and execution paths whose output is byte-identical. An experiment that changes what a recipe renders or exports is a module whose layers the recipe records, so the same recipe always renders the same image whatever flags are on. Review enforces this; the registry's flag descriptions say what each flag changes.
 - **Flags are the person's, outside any catalog.** Values are stored in the host's `preferences.json` under the application configuration root, through the same bounded, locked, format-marked atomic writer as the Performance preference. An evidence run keeps them inside its evidence directory, so no automated launch reads or writes the person's flags.
 - **Only explicit choices are stored.** A flag nobody set has no stored value and follows its default, so a changed default reaches everyone who never chose. Resetting a flag removes its stored value.
-- **Nothing is discarded silently.** A stored value for a flag this build does not know is kept, untouched, and listed as unrecognized. A stored value that does not fit its flag's current kind is reported on that flag with the reason, the flag follows its default, and the stored value is replaced only by an explicit `flags.set`. A malformed or unsupported preferences file is refused without rewriting it, as it is today.
+- **Nothing is discarded silently.** A stored value for a flag this build does not know is kept, untouched, and listed as unrecognized. A stored value that does not fit its flag's current kind is reported on that flag with the reason, the flag follows its default, and the stored value is replaced only by an explicit `flags.set`. A malformed or unsupported preferences file is refused without rewriting it.
 - **Every flag is programmable.** The Settings surface reads `flags.list` and writes `flags.set`, the same methods any client uses.
 
 ## Registry
@@ -32,7 +32,7 @@ Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, fla
 
 `applies` is `live`, read by its consumer each time it is needed, or `launch`, read once as a binary starts. A launch flag's change takes effect the next time the desktop launches.
 
-Flags today:
+The flags:
 
 | Flag | Kind | Applies | Default | Listed | What it changes |
 | --- | --- | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ The two proof flags follow the proof modules' rule: they exist only when the run
 
 ## Launch
 
-The desktop reads its launch flags once, before it assembles the module registry: the stored value, or the default, then the command line. `--developer` forces developer mode on for that launch whatever is stored, as it does today; there is no switch to force it off. A preferences file that cannot be read leaves every flag at its default for the launch, and the status bar says why, as the Performance preference's failure does. The desktop also reads `flags.list` once as it starts, off the update loop, for what a live flag gates outside the sheet.
+The desktop reads its launch flags once, before it assembles the module registry: the stored value, or the default, then the command line. `--developer` forces developer mode on for that launch whatever is stored; there is no switch to force it off. A preferences file that cannot be read leaves every flag at its default for the launch, and the status bar says why, as the Performance preference's failure does. The desktop also reads `flags.list` once as it starts, off the update loop, for what a live flag gates outside the sheet.
 
 `luxforge-json` keeps its own `--developer` and reads no flag at launch: what `schema.list` lists through it never depends on the person's settings or on how the binary was built. Its `flags.list` lists the same flags without `active`.
 
@@ -98,16 +98,14 @@ Which tab is open, and whether the sheet is, is this desktop's own view state, l
 - **Desktop messages:** opening the sheet reads `flags.list` once; each change sends one `flags.set` and adopts its answer. No `asset.state`, `history.list`, preview job or upload is added. A closed sheet derives nothing. The launch reads `flags.list` once, and a `flags.set` event reads it again, with the preferences too while the sheet is open; the desktop's own writes are skipped by the event sync.
 - **Timers, polls and subscriptions:** none added.
 - **Repeated work and caches:** none added; the launch reads its flags once, before the registry is assembled.
-- **Timing:** no interactive path changes, so no `editor-performance` run is needed for this change.
+- **Timing:** no interactive path is involved, so no `editor-performance` run is needed.
 - **Exactness:** flags change no pixels by rule; no effect is added.
 
 ## Decisions
 
-Decided by the owner on 2026-10-04:
-
-- A **Settings surface with an Experiments tab**, rather than a beaker popover in the title bar.
+- A **Settings surface with an Experiments tab**.
 - **Always visible**, in every build.
-- **Developer mode becomes the first flag**, with `--developer` kept as a launch override.
+- **Developer mode is the first flag**, with `--developer` kept as a launch override.
 - **A flag never changes how a photo renders or exports.**
 
 Recorded defaults, proposals the owner can revise: the gear button and Cmd+, as the routes in; launch flags apply on the next launch rather than restarting anything; only explicit choices are stored; `luxforge-json` reads no flag at launch; the two developer-only proof flags.

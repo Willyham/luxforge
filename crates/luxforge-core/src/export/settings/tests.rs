@@ -569,8 +569,8 @@ fn a_folder_resolves_to_the_originals_or_the_chosen_one() {
 }
 
 /// A WebP of any size within the format's 16,383 px a side is written, with no memory cap: above
-/// 24 MP it carries `large-image`, which warns and never refuses (owner, 2026-10-13); a TIFF that
-/// could pass the format's 4 GiB is refused as `tiff-too-large`, by the writer's own bound.
+/// 24 MP it carries `large-image`, which warns and never refuses; a TIFF that could pass the
+/// format's 4 GiB is refused as `tiff-too-large`, by the writer's own bound.
 #[test]
 fn a_large_webp_is_warned_and_a_tiff_past_4_gib_refuses_the_export() {
     let folder = luxforge_testbase::paths::temp_dir("export-settings-too-large");

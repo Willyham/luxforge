@@ -40,4 +40,4 @@
 
 **D.** Classic 15.5 adds Render to DNG: the current edit is baked into a new non-raw DNG. Its presence is a reminder that the `.dng` extension alone does not mean “untouched mosaic sensor data.” [S35: Lightroom Classic release notes](https://helpx.adobe.com/lightroom-classic/desktop/introduction-to-lightroom-classic/release-notes.html)
 
-**P.** Represent source-preserving edit recipes, derived computational sources and flattened exports distinctly in Luxforge. Do not automatically include AI, panorama or HDR merge in current milestones. Their data, quality and API contracts require their own scope.
+**P.** Represent source-preserving edit recipes, derived computational sources and flattened exports distinctly in Luxforge. AI editing, panorama and HDR merge each need their own data, quality and API contracts.

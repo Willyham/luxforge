@@ -103,7 +103,7 @@ fn every_transform_case_renders_through_a_real_basic_layer() {
             let pixel = rendered.pixel(index as u32, 0).expect("a rendered pixel");
             assert_eq!(pixel[3], 255, "alpha is never touched");
             // The corpus's inputs and parameters, held to the scene reference
-            // (`basic-scene.md`) rather than its recorded Bradford transform.
+            // (`basic-scene.md`).
             let reference =
                 scene::apply(temperature, tint, 0.0, case.input_rgb_u8.map(srgb::decode));
             for (channel, linear) in reference.into_iter().enumerate() {

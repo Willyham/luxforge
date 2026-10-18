@@ -2012,13 +2012,12 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
     }
 }
 
-/// What one coverage grid costs, on 24 MP and 60 MP, before and after a value-based component is in
-/// the mask — the measurement proposal P16 of `docs/design/range-study.md` was decided against. The
-/// figures are stated against the exact render of the same frame.
+/// What one coverage grid costs, on 24 MP and 60 MP, without and with a value-based component in
+/// the mask — the measurement behind proposal P16 of `docs/design/range-study.md`. The figures are
+/// stated against the exact render of the same frame.
 ///
-/// The "before" figure for a value-based mask is nothing at all, because such a mask was refused a
-/// grid; the geometric rows are the delivered cost of a grid and must not have moved. So the added
-/// cost is the band and mixed rows.
+/// The geometric rows are the cost of a grid without a value-based component; the band and mixed
+/// rows show what such a component adds.
 ///
 /// The two grid sizes are the two a person actually asks for, from
 /// `state::histogram::overlay_cells`: at Fit one cell per physical pixel of the drawn photograph,
@@ -2114,8 +2113,8 @@ fn the_cost_of_a_coverage_grid() {
 
 /// A straightened crop over a RAW source with a Presence layer, previewed while another
 /// evaluation holds the whole spatial target: a `render.sample` through the same layer on the
-/// owner thread, which is how a committed RAW crop was once refused with "spatial
-/// processing needs … bytes, and … of the … byte spatial budget is in use" and left unshown.
+/// owner thread, which must not refuse the committed RAW crop with "spatial processing needs …
+/// bytes, and … of the … byte spatial budget is in use" and leave it unshown.
 /// A moving job's proxy and the exact frame at rest each deliver the cropped frame, byte for byte
 /// the frame the same stack renders with the target free, and every batch releases what it
 /// reserved.

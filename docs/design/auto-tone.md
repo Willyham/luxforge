@@ -1,6 +1,6 @@
 # Auto tone
 
-Status: **implemented and qualified on the owner's M4: GPU/reference corpus agreement, the native journeys and click-to-entry measurement; the Lightroom fitting round remains open**. The owner requested a plan for an Auto tone feature that sets the Basic values automatically, and decided its scope on 2026-10-07 ([decided](#decided)). The algorithm's numbers below are starting targets that ship as research defaults and are fitted afterwards. [Tasks](../../tasks/editing/auto-tone.json) track delivery, qualification and the separate owner fitting round.
+Status: **implemented and qualified on the owner's M4: GPU/reference corpus agreement, the native journeys and click-to-entry measurement; the Lightroom fitting round remains open**. Auto tone sets the Basic values automatically; its scope is [decided](#decided). The algorithm's numbers below are starting targets that ship as research defaults, for the owner's fitting round to fit. The [tasks](../../tasks/editing/auto-tone.json) track that round.
 
 ## How other editors do it
 
@@ -48,7 +48,7 @@ What Luxforge takes from this:
   - **Historical entry or open draft:** refused, as every Basic action is.
   - **No tonal range:** a photo whose analysis finds none is refused with its reason, and nothing is committed. Examples: a black or uniform frame, or too few usable samples.
 - **Not in scope**, with no placeholder controls:
-  - Auto white balance. The owner chose tone only; it remains a separate later proposal.
+  - Auto white balance, which remains a separate later proposal ([T2](#decided)).
   - Per-slider Auto (Shift+double-click).
   - A desktop "Auto selected photos" command. [Presets](#presets-and-import) carry Auto to several photos through `batch.apply-settings`, which analyses each photo separately.
   - A learned model.
@@ -125,7 +125,7 @@ The solve runs off the owner and off the tile service, in a pure function in `lu
 - `P_q` is a weighted percentile of `y` over the sample.
 - The clipping fractions count non-excluded samples with any output channel at 1 (highlight) or every output channel at 0 (shadow). Basic's tone scales a pixel's channels together, so it drives one channel to 0 only with the others: a single channel at 0 is a colour out of gamut, such as turquoise water through the Look, which no Blacks value removes and which lifting Blacks only greys.
 
-**Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly. The searched fields (Exposure, Whites, Blacks) search slider values through the Basic units, so their bounds are slider values; the ruled fields (Highlights, Shadows, Contrast, Vibrance, Saturation) compute and bound a strength, the value before [Basic was realigned](lightroom-alignment.md#basic-realigned), and write the whole slider value whose strength is nearest it, or the slider's end when it reaches no further. A ruled bound reached is reported as reached:
+**Steps**, in fixed order. Every search runs over the field's own grid, so the committed value meets its constraint exactly. The searched fields (Exposure, Whites, Blacks) search slider values through the Basic units, so their bounds are slider values; the ruled fields (Highlights, Shadows, Contrast, Vibrance, Saturation) compute and bound a strength, the value the unit receives through the slider's [frozen response](lightroom-alignment.md#basic-realigned), and write the whole slider value whose strength is nearest it, or the slider's end when it reaches no further. A ruled bound reached is reported as reached:
 
 1. **Exposure** `E` within ±4 EV.
    - Find, on the 0.01 EV grid, the `E` whose median `P_50(y)` is closest to `m = 0.46`.
@@ -165,23 +165,23 @@ The constants above are the starting targets. They live in one versioned `AutoTo
 
 **The settings set.**
 
-- A settings set may name the analysis step `"auto-tone": {}`, the one key whose value may be empty. An action declares itself an analysis step (`ActionDescriptor::analysis`), and `ModuleRegistry::settings_action` resolves a settings key through it or, for any other action, through `patch_action`; today the only analysis step is Basic's `auto-tone`.
+- A settings set may name the analysis step `"auto-tone": {}`, the one key whose value may be empty. An action declares itself an analysis step (`ActionDescriptor::analysis`), and `ModuleRegistry::settings_action` resolves a settings key through it or, for any other action, through `patch_action`; the only analysis step is Basic's `auto-tone`.
 - **Order:** the step runs after every field-patch step, whatever the key order, and analyses the intermediate stack those steps produced. A preset's white balance, Detail or Look therefore informs Auto, and the result equals applying the rest of the preset and then Auto.
 - **Planning:** a composite with an analysis step plans through the same deferred read as the single action. Other composites keep planning without rasterizing anything.
 - **Store-time refusal:** a set naming both `auto-tone` and any of its eight fields under `set-basic` is refused when stored, because Auto would overwrite them. Lightroom refuses the same combination.
 - **Label:** the entry is still labelled `Preset: <name>`.
 - **No tonal range:** a photo whose analysis finds none skips the step and reports it under `skipped` with the reason. The rest of the preset applies, so a batch continues.
 
-**Capture.** `preset.capture` accepts `{"auto-tone": true}` and returns `{"auto-tone": {}}`. The desktop create form gains an Auto tone row in Basic's Tone group; ticking it clears and disables the eight fields it would overwrite.
+**Capture.** `preset.capture` accepts `{"auto-tone": true}` and returns `{"auto-tone": {}}`. The desktop create form has an Auto tone row in Basic's Tone group; ticking it clears and disables the eight fields it would overwrite.
 
 **Batch.** `batch.apply-settings` applies through `edit.apply-settings` for each photo, so each photo is analysed separately. One photo's values are never copied to another.
 
 **Lightroom import.**
 
-- `crs:AutoTone="True"` in XMP, or `AutoTone = true` in `.lrtemplate`, maps to the `auto-tone` step. It is no longer refused as `Luxforge has no Auto Tone`.
+- `crs:AutoTone="True"` in XMP, or `AutoTone = true` in `.lrtemplate`, maps to the `auto-tone` step.
 - The eight fields in the same preset are reported as overridden by Auto tone and not imported.
 - `AutoTone` false is neutral.
-- The earlier process versions' `Auto*` switches keep their current treatment.
+- The earlier process versions' `Auto*` switches are treated as the [preset mapping](presets.md#mapping)'s other earlier-process fields are.
 - A Luxforge preset document round-trips the key.
 
 ## Desktop
@@ -200,7 +200,7 @@ The constants above are the starting targets. They live in one versioned `AutoTo
 
 ## Tuning against Lightroom's Auto
 
-The owner chose to fit the targets to Lightroom's Auto on their own photos, after the working feature is delivered. Delivery never waits on it.
+The targets are fitted to Lightroom's Auto on the owner's own photos ([T4](#decided)). Delivery does not wait on it.
 
 **Owner's part.** The owner picks 40 to 100 of their photos, RAW and JPEG, and in Lightroom Classic applies Auto on the current process version with the default profile. They then export two things for each photo:
 
@@ -247,7 +247,7 @@ The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coord
    - The preset composite runs Auto after the other steps, refuses the overlapping set at store, skips a degenerate photo and analyses each photo of a batch separately.
    - The import maps `AutoTone` in XMP and `.lrtemplate` with its report.
 5. **Desktop.** A real background rendered journey on the M4 correlates the button, the history row, the slider values, the session state, logs and captures, on generated photos and the supplied RAW fixtures. It covers busy state, the disabled states, Auto's absence on a mask, Cmd+U, undo, a refusal and the preset create form.
-6. **Measurement.** Once delivery is complete, release photo-sized measurements on the M4 record click-to-entry latency for 24 MP and 60 MP, warm and cold, on the GPU and the reference, together with sample bytes and solve time.
+6. **Measurement.** Release photo-sized measurements on the M4 record click-to-entry latency for 24 MP and 60 MP, warm and cold, on the GPU and the reference, together with sample bytes and solve time.
    - Provisional targets: p95 at or below 250 ms (24 MP) and 400 ms (60 MP) on the GPU, warm.
    - A miss is reported with its figures and does not block delivery.
 7. **Tuning.** It is recorded with held-out figures and the owner's review. It is not a gate for 1 to 6.
@@ -258,7 +258,7 @@ The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coord
 
 **Background journeys on the owner's M4.** The `auto-tone` scenario passes on its generated JPEG and on each of the three supplied RAWs: all eight committed and displayed values match the independent query; the busy button, the tooltip's report taken from the action's answer, Cmd+U, repeat, undo, history and Compare refusals and the per-photo preset form are correlated with captures and logs. A separate RAW preset test proves that changing white balance and running Auto together equals changing white balance first and then running Auto, with other layers and original bytes preserved.
 
-**Click to entry on the owner's M4.** `editor-latency --mode auto-tone` times the Auto button's action (or `⌘U` through the key table with `--shortcut`) from its script step to the desktop's `analysis_action_answered` event, which carries the committed entry and the report, and to that entry's first exact frame, recording each report's grid points and sample bytes. The warm GPU path meets the provisional budgets at 24 MP and 60 MP; a first Auto on a photograph, which reads its grid, and the reference renderer's path do not ([performance](../specs/performance.md#auto-tone)). The desktop cannot see solve time, so read and solve time come from the engine measurement `auto_tone_measure_photo_sized_inputs` on the same sources; its warm solve is slower than on 2026-10-08, for a cause not investigated. Auto on a paged derived source with the reference renderer is refused.
+**Click to entry on the owner's M4.** `editor-latency --mode auto-tone` times the Auto button's action (or `⌘U` through the key table with `--shortcut`) from its script step to the desktop's `analysis_action_answered` event, which carries the committed entry and the report, and to that entry's first exact frame, recording each report's grid points and sample bytes. The warm GPU path meets the provisional budgets at 24 MP and 60 MP; a first Auto on a photograph, which reads its grid, and the reference renderer's path do not ([performance](../specs/performance.md#auto-tone)). The desktop cannot see solve time, so read and solve time come from the engine measurement `auto_tone_measure_photo_sized_inputs` on the same sources. Auto on a paged derived source with the reference renderer is refused.
 
 Generated half/float GPU samples with Detail plus crop, straighten, lens and perspective stay within the declared display tolerance and Auto value bounds. Exact CPU grids, cache identities, solver oracles, stale-client refusal, batch per-photo analysis and imports have focused tests. The fitting rig passes synthetic and repository-fixture stand-ins; these are not Lightroom calibration. Native Windows/Linux GPU qualification remains unrun.
 
@@ -270,13 +270,13 @@ Generated half/float GPU samples with Detail plus crop, straighten, lens and per
 - **Timers:** none. No idle timer, polling or per-tick work. Auto runs only on request.
 - **Desktop requests:** the button sends one mutation, then the normal `asset.state`/session refresh and preview. The tooltip shows the report the mutation answered, pinned to the entry the refresh read back, so nothing is read or solved again. It adds no history-page read. An explanation for a displaced entry is discarded.
 - **Reuse:** a query followed by the action, or a repeated Auto, reuses the grid by asset, verified source/development identity, semantic prefix, output geometry, grid, input mode, clip detection and renderer, for any client. Neither the grid nor the small per-request replay memo holds a source or evaluation. Removing or deleting the photo releases its grids; stale fills cannot repopulate them. Solved reports are not cached across requests.
-- **RAW clip flags:** at most 27 sensor sites a grid point, read on the tile service's thread with the grid. An indication on 2026-10-08 on the M4 under heavy shared load (load average 38), the three supplied RAWs' full grids of about 700,000 points: 21 to 24 ms on the X100VI, 33 to 35 ms on the Z6 and 48 to 49 ms on the Air 2S DNG, whose warp maps each channel; not a measurement of the click-to-entry budget.
+- **RAW clip flags:** at most 27 sensor sites a grid point, read on the tile service's thread with the grid. An indication on the M4 under heavy shared load (load average 38), the three supplied RAWs' full grids of about 700,000 points: 21 to 24 ms on the X100VI, 33 to 35 ms on the Z6 and 48 to 49 ms on the Air 2S DNG, whose warp maps each channel; not a measurement of the click-to-entry budget.
 - **Baseline:** the dedicated Auto engine measurement records the read and the solve, pooled and, as the parallelism rule's basis, on one thread ([performance](../specs/performance.md#auto-tone)); no `editor-performance` improvement is claimed. `editor-latency --mode auto-tone` measures click to entry and frame.
 - **Evidence:** exact tests cover the CPU sample and the solver, and declared-tolerance comparisons cover the GPU sample. Measurements follow delivery, once.
 
 ## Decided
 
-The owner decided on 2026-10-07:
+Decided:
 
 | # | Question | Decided | Not chosen |
 | --- | --- | --- | --- |
@@ -297,16 +297,7 @@ Routine code organisation, the reduction used for repeated evaluation and the bu
 
 ## Execution
 
-**Tasks.** Eight tasks:
-
-- **The solver** and **the bounded analysis sample** start independently.
-- **The Basic action and query** integrate them.
-- **The desktop button** and **presets and import** build on the action.
-- **The Lightroom fitting rig** can be prepared from the solver alone, before the owner's export exists.
-- **Qualification, measurement and documentation** follow working delivery.
-- **The owner's Lightroom round, the fit and the review** come last, with no dependency back into delivery.
-
-**Implementation review:** the plan was checked against upstream `main` at `76af7e1e`. The current module, field-patch and tile-service interfaces support the work. Preset batches must enter the same deferred analysis path as individual actions; analysis identity must use intermediate layer content, not newly allocated layer IDs. The plan uses the roadmap's high-tier model minimum.
+**Tasks.** The solver, the bounded analysis sample, the Basic action and query, the desktop button, presets and import, the Lightroom fitting rig, and qualification, measurement and documentation are complete. The owner's Lightroom round, the fit and the review remain, with no dependency back into delivery.
 
 ## References
 

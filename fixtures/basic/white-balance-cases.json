@@ -7,12 +7,7 @@
         0
       ],
       "temperature": 0.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -21,12 +16,7 @@
         0
       ],
       "temperature": 50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -35,12 +25,7 @@
         0
       ],
       "temperature": -50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -49,12 +34,7 @@
         0
       ],
       "temperature": 100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -63,12 +43,7 @@
         0
       ],
       "temperature": -100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -77,12 +52,7 @@
         0
       ],
       "temperature": 0.0,
-      "tint": 50.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 50.0
     },
     {
       "input_rgb_u8": [
@@ -91,12 +61,7 @@
         0
       ],
       "temperature": 0.0,
-      "tint": -50.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": -50.0
     },
     {
       "input_rgb_u8": [
@@ -105,12 +70,7 @@
         0
       ],
       "temperature": 0.0,
-      "tint": 100.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": 100.0
     },
     {
       "input_rgb_u8": [
@@ -119,12 +79,7 @@
         0
       ],
       "temperature": 0.0,
-      "tint": -100.0,
-      "expected_linear_f64": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "tint": -100.0
     },
     {
       "input_rgb_u8": [
@@ -133,12 +88,7 @@
         64
       ],
       "temperature": 0.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.05126945837404324,
-        0.05126945837404324,
-        0.05126945837404324
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -147,12 +97,7 @@
         64
       ],
       "temperature": 50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.06000117234277003,
-        0.05056150845923994,
-        0.036829334203987735
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -161,12 +106,7 @@
         64
       ],
       "temperature": -50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.04160704179333209,
-        0.052542622597900664,
-        0.07211256426042209
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -175,12 +115,7 @@
         64
       ],
       "temperature": 100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0674056567846129,
-        0.050416295848298646,
-        0.027243938606353792
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -189,12 +124,7 @@
         64
       ],
       "temperature": -100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.0312584472008446,
-        0.05425470605223896,
-        0.10213762286580486
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -203,12 +133,7 @@
         64
       ],
       "temperature": 0.0,
-      "tint": 50.0,
-      "expected_linear_f64": [
-        0.05804720149411373,
-        0.0487664118059294,
-        0.05737163151666703
-      ]
+      "tint": 50.0
     },
     {
       "input_rgb_u8": [
@@ -217,12 +142,7 @@
         64
       ],
       "temperature": 0.0,
-      "tint": -50.0,
-      "expected_linear_f64": [
-        0.044328111156219194,
-        0.05399452520379944,
-        0.04603064418402983
-      ]
+      "tint": -50.0
     },
     {
       "input_rgb_u8": [
@@ -231,12 +151,7 @@
         64
       ],
       "temperature": 0.0,
-      "tint": 100.0,
-      "expected_linear_f64": [
-        0.06470452914005938,
-        0.0464415557971578,
-        0.06458672766890455
-      ]
+      "tint": 100.0
     },
     {
       "input_rgb_u8": [
@@ -245,12 +160,7 @@
         64
       ],
       "temperature": 0.0,
-      "tint": -100.0,
-      "expected_linear_f64": [
-        0.03716685063231208,
-        0.056993519411052095,
-        0.0414722801884777
-      ]
+      "tint": -100.0
     },
     {
       "input_rgb_u8": [
@@ -259,12 +169,7 @@
         128
       ],
       "temperature": 0.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.21586050011389926,
-        0.21586050011389926,
-        0.21586050011389926
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -273,12 +178,7 @@
         128
       ],
       "temperature": 50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.25262375457213493,
-        0.21287980892831807,
-        0.15506304829932951
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -287,12 +187,7 @@
         128
       ],
       "temperature": -50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.1751786957498978,
-        0.22122092081668798,
-        0.30361651321113464
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -301,12 +196,7 @@
         128
       ],
       "temperature": 100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.2837989564445816,
-        0.21226841829118773,
-        0.11470552643125409
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -315,12 +205,7 @@
         128
       ],
       "temperature": -100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.13160786674068586,
-        0.22842932914419434,
-        0.4300314271199653
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -329,12 +214,7 @@
         128
       ],
       "temperature": 0.0,
-      "tint": 50.0,
-      "expected_linear_f64": [
-        0.24439692444801436,
-        0.20532188899654488,
-        0.24155256295447847
-      ]
+      "tint": 50.0
     },
     {
       "input_rgb_u8": [
@@ -343,12 +223,7 @@
         128
       ],
       "temperature": 0.0,
-      "tint": -50.0,
-      "expected_linear_f64": [
-        0.18663525121479413,
-        0.2273338861680961,
-        0.19380344925118498
-      ]
+      "tint": -50.0
     },
     {
       "input_rgb_u8": [
@@ -357,12 +232,7 @@
         128
       ],
       "temperature": 0.0,
-      "tint": 100.0,
-      "expected_linear_f64": [
-        0.2724263618684702,
-        0.19553351602242514,
-        0.2719303807271814
-      ]
+      "tint": 100.0
     },
     {
       "input_rgb_u8": [
@@ -371,12 +241,7 @@
         128
       ],
       "temperature": 0.0,
-      "tint": -100.0,
-      "expected_linear_f64": [
-        0.15648409832258525,
-        0.2399605923972376,
-        0.17461130712628906
-      ]
+      "tint": -100.0
     },
     {
       "input_rgb_u8": [
@@ -385,12 +250,7 @@
         40
       ],
       "temperature": 0.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.7912979403326302,
-        0.04518620438567554,
-        0.021219010376003555
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -399,12 +259,7 @@
         40
       ],
       "temperature": 50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.848237846438712,
-        0.041258775193176236,
-        0.009647183837092715
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -413,12 +268,7 @@
         40
       ],
       "temperature": -50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.7339197696804632,
-        0.050123610942337506,
-        0.0375109356721087
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -427,12 +277,7 @@
         40
       ],
       "temperature": 100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.9009463156731549,
-        0.03848380016998676,
-        0.0017034301778408
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -441,12 +286,7 @@
         40
       ],
       "temperature": -100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.6783187829239848,
-        0.05581892597744123,
-        0.0605665549639604
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -455,12 +295,7 @@
         40
       ],
       "temperature": 0.0,
-      "tint": 50.0,
-      "expected_linear_f64": [
-        0.8290077035784982,
-        0.03966175564079553,
-        0.025387566404817458
-      ]
+      "tint": 50.0
     },
     {
       "input_rgb_u8": [
@@ -469,12 +304,7 @@
         40
       ],
       "temperature": 0.0,
-      "tint": -50.0,
-      "expected_linear_f64": [
-        0.7542773749049341,
-        0.05104102584624308,
-        0.017662328001233157
-      ]
+      "tint": -50.0
     },
     {
       "input_rgb_u8": [
@@ -483,12 +313,7 @@
         40
       ],
       "temperature": 0.0,
-      "tint": 100.0,
-      "expected_linear_f64": [
-        0.8675385327352894,
-        0.034397258052345996,
-        0.03035543279000153
-      ]
+      "tint": 100.0
     },
     {
       "input_rgb_u8": [
@@ -497,12 +322,7 @@
         40
       ],
       "temperature": 0.0,
-      "tint": -100.0,
-      "expected_linear_f64": [
-        0.7177984728402058,
-        0.05731109049662025,
-        0.014579199885880936
-      ]
+      "tint": -100.0
     },
     {
       "input_rgb_u8": [
@@ -511,12 +331,7 @@
         230
       ],
       "temperature": 0.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.021219010376003555,
-        0.10224173308810132,
-        0.7912979403326302
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -525,12 +340,7 @@
         230
       ],
       "temperature": 50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.04320391257208844,
-        0.10462075164767337,
-        0.5893908121055557
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -539,12 +349,7 @@
         230
       ],
       "temperature": -50.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        -0.005909850497600289,
-        0.09944703617596154,
-        1.0837938103089506
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -553,12 +358,7 @@
         230
       ],
       "temperature": 100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        0.060183013853163325,
-        0.10696610855786916,
-        0.4561449097078651
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -567,12 +367,7 @@
         230
       ],
       "temperature": -100.0,
-      "tint": 0.0,
-      "expected_linear_f64": [
-        -0.039097830322107674,
-        0.09524742950030413,
-        1.5059704429992637
-      ]
+      "tint": 0.0
     },
     {
       "input_rgb_u8": [
@@ -581,12 +376,7 @@
         230
       ],
       "temperature": 0.0,
-      "tint": 50.0,
-      "expected_linear_f64": [
-        0.03093224910280734,
-        0.09528944372972517,
-        0.8764258348202292
-      ]
+      "tint": 50.0
     },
     {
       "input_rgb_u8": [
@@ -595,12 +385,7 @@
         230
       ],
       "temperature": 0.0,
-      "tint": -50.0,
-      "expected_linear_f64": [
-        0.010647028834141647,
-        0.10946124006962783,
-        0.7185310043507737
-      ]
+      "tint": -50.0
     },
     {
       "input_rgb_u8": [
@@ -609,12 +394,7 @@
         230
       ],
       "temperature": 0.0,
-      "tint": 100.0,
-      "expected_linear_f64": [
-        0.03976206813714217,
-        0.08844385469895946,
-        0.9773961642852397
-      ]
+      "tint": 100.0
     },
     {
       "input_rgb_u8": [
@@ -623,12 +403,7 @@
         230
       ],
       "temperature": 0.0,
-      "tint": -100.0,
-      "expected_linear_f64": [
-        -0.0008197001023806938,
-        0.11710893986074354,
-        0.6555880148743103
-      ]
+      "tint": -100.0
     }
   ],
   "solver_cases": [
@@ -764,8 +539,7 @@
       "expected_solution": [
         -100,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,-80)",
@@ -899,8 +673,7 @@
       "expected_solution": [
         -100,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,-60)",
@@ -1034,8 +807,7 @@
       "expected_solution": [
         -100,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,-40)",
@@ -1169,8 +941,7 @@
       "expected_solution": [
         -100,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,-20)",
@@ -1304,8 +1075,7 @@
       "expected_solution": [
         -100,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,0)",
@@ -1439,8 +1209,7 @@
       "expected_solution": [
         -100,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,20)",
@@ -1574,8 +1343,7 @@
       "expected_solution": [
         -100,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,40)",
@@ -1709,8 +1477,7 @@
       "expected_solution": [
         -100,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,60)",
@@ -1844,8 +1611,7 @@
       "expected_solution": [
         -100,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,80)",
@@ -1979,8 +1745,7 @@
       "expected_solution": [
         -100,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-100,100)",
@@ -2114,8 +1879,7 @@
       "expected_solution": [
         -100,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,-100)",
@@ -2249,8 +2013,7 @@
       "expected_solution": [
         -80,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,-80)",
@@ -2384,8 +2147,7 @@
       "expected_solution": [
         -80,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,-60)",
@@ -2519,8 +2281,7 @@
       "expected_solution": [
         -80,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,-40)",
@@ -2654,8 +2415,7 @@
       "expected_solution": [
         -80,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,-20)",
@@ -2789,8 +2549,7 @@
       "expected_solution": [
         -80,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,0)",
@@ -2924,8 +2683,7 @@
       "expected_solution": [
         -80,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,20)",
@@ -3059,8 +2817,7 @@
       "expected_solution": [
         -80,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,40)",
@@ -3194,8 +2951,7 @@
       "expected_solution": [
         -80,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,60)",
@@ -3329,8 +3085,7 @@
       "expected_solution": [
         -80,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,80)",
@@ -3464,8 +3219,7 @@
       "expected_solution": [
         -80,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-80,100)",
@@ -3599,8 +3353,7 @@
       "expected_solution": [
         -80,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,-100)",
@@ -3734,8 +3487,7 @@
       "expected_solution": [
         -60,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,-80)",
@@ -3869,8 +3621,7 @@
       "expected_solution": [
         -60,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,-60)",
@@ -4004,8 +3755,7 @@
       "expected_solution": [
         -60,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,-40)",
@@ -4139,8 +3889,7 @@
       "expected_solution": [
         -60,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,-20)",
@@ -4274,8 +4023,7 @@
       "expected_solution": [
         -60,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,0)",
@@ -4409,8 +4157,7 @@
       "expected_solution": [
         -60,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,20)",
@@ -4544,8 +4291,7 @@
       "expected_solution": [
         -60,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,40)",
@@ -4679,8 +4425,7 @@
       "expected_solution": [
         -60,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,60)",
@@ -4814,8 +4559,7 @@
       "expected_solution": [
         -60,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,80)",
@@ -4949,8 +4693,7 @@
       "expected_solution": [
         -60,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-60,100)",
@@ -5084,8 +4827,7 @@
       "expected_solution": [
         -60,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,-100)",
@@ -5219,8 +4961,7 @@
       "expected_solution": [
         -40,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,-80)",
@@ -5354,8 +5095,7 @@
       "expected_solution": [
         -40,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,-60)",
@@ -5489,8 +5229,7 @@
       "expected_solution": [
         -40,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,-40)",
@@ -5624,8 +5363,7 @@
       "expected_solution": [
         -40,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,-20)",
@@ -5759,8 +5497,7 @@
       "expected_solution": [
         -40,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,0)",
@@ -5894,8 +5631,7 @@
       "expected_solution": [
         -40,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,20)",
@@ -6029,8 +5765,7 @@
       "expected_solution": [
         -40,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,40)",
@@ -6164,8 +5899,7 @@
       "expected_solution": [
         -40,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,60)",
@@ -6299,8 +6033,7 @@
       "expected_solution": [
         -40,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,80)",
@@ -6434,8 +6167,7 @@
       "expected_solution": [
         -40,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-40,100)",
@@ -6569,8 +6301,7 @@
       "expected_solution": [
         -40,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,-100)",
@@ -6704,8 +6435,7 @@
       "expected_solution": [
         -20,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,-80)",
@@ -6839,8 +6569,7 @@
       "expected_solution": [
         -20,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,-60)",
@@ -6974,8 +6703,7 @@
       "expected_solution": [
         -20,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,-40)",
@@ -7109,8 +6837,7 @@
       "expected_solution": [
         -20,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,-20)",
@@ -7244,8 +6971,7 @@
       "expected_solution": [
         -20,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,0)",
@@ -7379,8 +7105,7 @@
       "expected_solution": [
         -20,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,20)",
@@ -7514,8 +7239,7 @@
       "expected_solution": [
         -20,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,40)",
@@ -7649,8 +7373,7 @@
       "expected_solution": [
         -20,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,60)",
@@ -7784,8 +7507,7 @@
       "expected_solution": [
         -20,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,80)",
@@ -7919,8 +7641,7 @@
       "expected_solution": [
         -20,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(-20,100)",
@@ -8054,8 +7775,7 @@
       "expected_solution": [
         -20,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,-100)",
@@ -8189,8 +7909,7 @@
       "expected_solution": [
         0,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,-80)",
@@ -8324,8 +8043,7 @@
       "expected_solution": [
         0,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,-60)",
@@ -8459,8 +8177,7 @@
       "expected_solution": [
         0,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,-40)",
@@ -8594,8 +8311,7 @@
       "expected_solution": [
         0,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,-20)",
@@ -8729,8 +8445,7 @@
       "expected_solution": [
         0,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,0)",
@@ -8864,8 +8579,7 @@
       "expected_solution": [
         0,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,20)",
@@ -8999,8 +8713,7 @@
       "expected_solution": [
         0,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,40)",
@@ -9134,8 +8847,7 @@
       "expected_solution": [
         0,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,60)",
@@ -9269,8 +8981,7 @@
       "expected_solution": [
         0,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,80)",
@@ -9404,8 +9115,7 @@
       "expected_solution": [
         0,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(0,100)",
@@ -9539,8 +9249,7 @@
       "expected_solution": [
         0,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,-100)",
@@ -9674,8 +9383,7 @@
       "expected_solution": [
         20,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,-80)",
@@ -9809,8 +9517,7 @@
       "expected_solution": [
         20,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,-60)",
@@ -9944,8 +9651,7 @@
       "expected_solution": [
         20,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,-40)",
@@ -10079,8 +9785,7 @@
       "expected_solution": [
         20,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,-20)",
@@ -10214,8 +9919,7 @@
       "expected_solution": [
         20,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,0)",
@@ -10349,8 +10053,7 @@
       "expected_solution": [
         20,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,20)",
@@ -10484,8 +10187,7 @@
       "expected_solution": [
         20,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,40)",
@@ -10619,8 +10321,7 @@
       "expected_solution": [
         20,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,60)",
@@ -10754,8 +10455,7 @@
       "expected_solution": [
         20,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,80)",
@@ -10889,8 +10589,7 @@
       "expected_solution": [
         20,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(20,100)",
@@ -11024,8 +10723,7 @@
       "expected_solution": [
         20,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,-100)",
@@ -11159,8 +10857,7 @@
       "expected_solution": [
         40,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,-80)",
@@ -11294,8 +10991,7 @@
       "expected_solution": [
         40,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,-60)",
@@ -11429,8 +11125,7 @@
       "expected_solution": [
         40,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,-40)",
@@ -11564,8 +11259,7 @@
       "expected_solution": [
         40,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,-20)",
@@ -11699,8 +11393,7 @@
       "expected_solution": [
         40,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,0)",
@@ -11834,8 +11527,7 @@
       "expected_solution": [
         40,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,20)",
@@ -11969,8 +11661,7 @@
       "expected_solution": [
         40,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,40)",
@@ -12104,8 +11795,7 @@
       "expected_solution": [
         40,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,60)",
@@ -12239,8 +11929,7 @@
       "expected_solution": [
         40,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,80)",
@@ -12374,8 +12063,7 @@
       "expected_solution": [
         40,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(40,100)",
@@ -12509,8 +12197,7 @@
       "expected_solution": [
         40,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,-100)",
@@ -12644,8 +12331,7 @@
       "expected_solution": [
         60,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,-80)",
@@ -12779,8 +12465,7 @@
       "expected_solution": [
         60,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,-60)",
@@ -12914,8 +12599,7 @@
       "expected_solution": [
         60,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,-40)",
@@ -13049,8 +12733,7 @@
       "expected_solution": [
         60,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,-20)",
@@ -13184,8 +12867,7 @@
       "expected_solution": [
         60,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,0)",
@@ -13319,8 +13001,7 @@
       "expected_solution": [
         60,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,20)",
@@ -13454,8 +13135,7 @@
       "expected_solution": [
         60,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,40)",
@@ -13589,8 +13269,7 @@
       "expected_solution": [
         60,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,60)",
@@ -13724,8 +13403,7 @@
       "expected_solution": [
         60,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,80)",
@@ -13859,8 +13537,7 @@
       "expected_solution": [
         60,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(60,100)",
@@ -13994,8 +13671,7 @@
       "expected_solution": [
         60,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,-100)",
@@ -14129,8 +13805,7 @@
       "expected_solution": [
         80,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,-80)",
@@ -14264,8 +13939,7 @@
       "expected_solution": [
         80,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,-60)",
@@ -14399,8 +14073,7 @@
       "expected_solution": [
         80,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,-40)",
@@ -14534,8 +14207,7 @@
       "expected_solution": [
         80,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,-20)",
@@ -14669,8 +14341,7 @@
       "expected_solution": [
         80,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,0)",
@@ -14804,8 +14475,7 @@
       "expected_solution": [
         80,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,20)",
@@ -14939,8 +14609,7 @@
       "expected_solution": [
         80,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,40)",
@@ -15074,8 +14743,7 @@
       "expected_solution": [
         80,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,60)",
@@ -15209,8 +14877,7 @@
       "expected_solution": [
         80,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,80)",
@@ -15344,8 +15011,7 @@
       "expected_solution": [
         80,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(80,100)",
@@ -15479,8 +15145,7 @@
       "expected_solution": [
         80,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,-100)",
@@ -15614,8 +15279,7 @@
       "expected_solution": [
         100,
         -100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,-80)",
@@ -15749,8 +15413,7 @@
       "expected_solution": [
         100,
         -80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,-60)",
@@ -15884,8 +15547,7 @@
       "expected_solution": [
         100,
         -60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,-40)",
@@ -16019,8 +15681,7 @@
       "expected_solution": [
         100,
         -40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,-20)",
@@ -16154,8 +15815,7 @@
       "expected_solution": [
         100,
         -20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,0)",
@@ -16289,8 +15949,7 @@
       "expected_solution": [
         100,
         0
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,20)",
@@ -16424,8 +16083,7 @@
       "expected_solution": [
         100,
         20
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,40)",
@@ -16559,8 +16217,7 @@
       "expected_solution": [
         100,
         40
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,60)",
@@ -16694,8 +16351,7 @@
       "expected_solution": [
         100,
         60
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,80)",
@@ -16829,8 +16485,7 @@
       "expected_solution": [
         100,
         80
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "round trip true=(100,100)",
@@ -16964,8 +16619,7 @@
       "expected_solution": [
         100,
         100
-      ],
-      "expected_rejection": null
+      ]
     },
     {
       "description": "near-black uniform patch",
@@ -17096,8 +16750,7 @@
           8
         ]
       ],
-      "expected_solution": null,
-      "expected_rejection": "NearBlack"
+      "expected_solution": null
     },
     {
       "description": "one clipped highlight pixel",
@@ -17228,8 +16881,7 @@
           120
         ]
       ],
-      "expected_solution": null,
-      "expected_rejection": "Clipped"
+      "expected_solution": null
     },
     {
       "description": "cast requiring temperature=120, outside range",
@@ -17360,8 +17012,7 @@
           253
         ]
       ],
-      "expected_solution": null,
-      "expected_rejection": "OutOfRange { temperature: true, value: 120.0 }"
+      "expected_solution": null
     },
     {
       "description": "edge-clipped 3x3 corner patch (9 of 25 pixels)",
@@ -17415,8 +17066,7 @@
       "expected_solution": [
         30,
         -10
-      ],
-      "expected_rejection": null
+      ]
     }
   ]
 }

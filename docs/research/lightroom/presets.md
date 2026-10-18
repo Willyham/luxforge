@@ -103,8 +103,7 @@ formal license audit was done (AGENTS.md, "Manual license reviews are deferred")
 
 **Luxforge's own solve.** Luxforge's inverse locus search
 ([`temperature_tint_from_uv`](../../../crates/luxforge-core/src/modules/raw/white_balance.rs),
-factored out of the gains inverse `temperature_tint_from_gains` without changing that function's
-results) takes the `uv` the DNG table names and finds the temperature and tint on *Luxforge's own*
+shared with the gains inverse `temperature_tint_from_gains`) takes the `uv` the DNG table names and finds the temperature and tint on *Luxforge's own*
 blackbody/daylight-blend locus that reach the same `uv`, refusing with `out-of-range: ...` when
 none does within its stated tolerance — in particular whenever the answer would sit outside
 2,000–12,000 K or ±100 tint. This is a **value conversion**: Luxforge's own locus is a different

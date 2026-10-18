@@ -30,7 +30,7 @@ pub(crate) const FILL_GENERATIVE: &str = "fill-generative";
 pub(crate) const GENERATIVE_FLAG: &str = crate::flags::AI_GENERATIVE;
 /// The tier's name, as `module.status` and a candidate's provenance give it.
 pub(crate) const GENERATIVE_TIER: &str = "generative";
-/// Candidates one Generate makes by default, and at most. One at a time (owner, 2026-10-11): a
+/// Candidates one Generate makes by default, and at most. One at a time: a
 /// local candidate takes about two minutes, so Generate makes one and Regenerate adds one.
 pub(crate) const DEFAULT_CANDIDATES: u32 = 1;
 pub(crate) const MAX_CANDIDATES: u32 = crate::artifacts::candidates::MAX_JOB_CANDIDATES as u32;

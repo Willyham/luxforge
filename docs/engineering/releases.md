@@ -106,7 +106,7 @@ Do these in order. Until the last one, releases publish no record and no feed.
    ```
 
    The file holds base64 of the key's 32-byte seed, the form `generate_keys -x` writes. Keep an **offline backup** of it, encrypted and away from this Mac and GitHub, for example on an encrypted removable drive in a safe place, then delete the exported file. The Keychain copy stays on your Mac.
-4. **Provision the update store** on the production API host, with its publication account and key, as [step 16 of the deployment checklist](../../services/usage-statistics/DEPLOYMENT.md#16-the-update-feed-route) describes. It ends with three settings in **Settings → Secrets and variables → Actions**:
+4. **Provision the update store** on the production API host, with its publication account and key, as the deployment guide's [update feed route](../../services/usage-statistics/DEPLOYMENT.md#the-update-feed-route) describes. It ends with three settings in **Settings → Secrets and variables → Actions**:
 
    | Name | Kind | Value |
    | --- | --- | --- |
@@ -159,7 +159,7 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 
 ## Qualification status
 
-A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run. Those gates and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the owner-requested automatic publication of build candidates.
+A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run. Those gates and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the automatic publication of build candidates.
 
 ## Recording gate results and verifying readiness
 

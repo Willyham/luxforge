@@ -558,9 +558,8 @@ fn a_radial_is_created_added_patched_and_rendered_end_to_end() {
 }
 
 /// A component's mode and inversion are properties you change **after** the fact, each one command,
-/// one history entry and one readable label — and each changes the picture. That is the owner's
-/// complaint about Lightroom answered in pixels: there, the mode of a component is decided by which
-/// button created it and cannot be revisited.
+/// one history entry and one readable label — and each changes the picture. Lightroom differs here:
+/// there, the mode of a component is decided by which button created it and cannot be revisited.
 #[test]
 #[slow]
 fn a_components_mode_and_inversion_are_editable_after_it_exists() {
@@ -726,7 +725,7 @@ fn sample_stroke(rng: &mut SplitMix64, erase: bool) -> Stroke {
 /// A brush subtracting from a gradient renders exactly what the frozen algebra and the frozen
 /// accumulation rules compose, over randomized strokes and randomized radials, on every pixel.
 ///
-/// This is phase C's claim in its strongest form and the one the owner asked for: *a brush can take
+/// This is the combination claim in its strongest form: *a brush can take
 /// a region out of a gradient*. The frame is compared and not the coverage field, so it covers the
 /// accumulation inside the component (screen union for an add stroke, multiply-complement for an
 /// erase, in stored order), the Zadeh composition between the two components, the compiled brush's

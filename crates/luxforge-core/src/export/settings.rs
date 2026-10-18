@@ -656,11 +656,10 @@ impl ExportSettings {
 
     /// The notices a plan of an output of `width` × `height` carries, in order: `large-image` when
     /// an output that holds memory with its size (an optimised JPEG, a WebP or a size limit) passes
-    /// [`LARGE_IMAGE_PIXELS`], with the estimate, which warns and never refuses (owner,
-    /// 2026-10-08 and 2026-10-13: no memory cap); `webp-too-large` when a WebP side passes the
-    /// format's [`WEBP_MAX_SIDE`]; `tiff-too-large` when a TIFF could pass the format's 4 GiB;
-    /// `folder-missing` when `folder` is not an existing directory, or is `None` because the
-    /// photograph has no original folder.
+    /// [`LARGE_IMAGE_PIXELS`], with the estimate, which warns and never refuses (there is no
+    /// memory cap); `webp-too-large` when a WebP side passes the format's [`WEBP_MAX_SIDE`];
+    /// `tiff-too-large` when a TIFF could pass the format's 4 GiB; `folder-missing` when `folder`
+    /// is not an existing directory, or is `None` because the photograph has no original folder.
     pub fn notices(&self, output: (u32, u32), folder: Option<&Path>) -> Vec<Notice> {
         let (width, height) = output;
         let pixels = u64::from(width) * u64::from(height);

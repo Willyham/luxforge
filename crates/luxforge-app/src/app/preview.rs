@@ -2245,7 +2245,7 @@ impl Editor {
             json!({
                 "entry_id":entry,
                 "snapshot_id":raster.snapshot_id.to_string(),
-                // The status bar no longer shows the source hash, so the log is where a frame is
+                // The status bar does not show the source hash, so the log is where a frame is
                 // correlated with it.
                 "source_fingerprint":raster.source_fingerprint,
                 "generation":generation,

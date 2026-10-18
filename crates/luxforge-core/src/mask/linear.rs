@@ -43,8 +43,8 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
 /// The legal range of a stored normalized position: the frame is `[0, 1]` and one stage extent of
 /// overshoot is legal on each side, because a gradient dragged from off the canvas is an ordinary
 /// edit and a gradient whose coverage never reaches zero inside the frame cannot be expressed with
-/// endpoints inside it. Widened from `[0, 1]` on 2026-09-23 on the mask study's recommendation: every
-/// frozen equation is total on finite inputs, so this is a validation rule and nothing more.
+/// endpoints inside it. Every frozen equation is total on finite inputs, so this is a validation
+/// rule and nothing more.
 pub const POSITION_MIN: f64 = -1.0;
 pub const POSITION_MAX: f64 = 2.0;
 

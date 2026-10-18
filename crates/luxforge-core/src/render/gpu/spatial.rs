@@ -449,8 +449,8 @@ pub enum GpuLightRestoration {
     Included,
     /// The light reads the prefix without them, their colour operations after them joining the
     /// ones before: the stand-in, a drag's per-tick light over the source for a colour drag
-    /// between them, since their exact output exists only at rest (the owner's decision of
-    /// 2026-10-06, `docs/decisions.md`, "GPU-first rendering").
+    /// between them, since their exact output exists only at rest (`docs/decisions.md`, "GPU-first
+    /// rendering").
     LeftOut,
 }
 

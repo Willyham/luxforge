@@ -322,7 +322,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         steps[42],
         Step::agent("preferences.set", json!({"theme": "luxforge.dark"}))
     );
-    // A step with no tab is written without one, as before tabs were named.
+    // A step with no tab is written without one.
     assert_eq!(
         Step::settings(true).to_value(),
         json!({"settings":{"open":true}})

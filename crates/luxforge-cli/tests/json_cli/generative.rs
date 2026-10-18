@@ -110,7 +110,7 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
         sample(&mut client, &asset, centre.0, centre.1),
     );
 
-    // Generate: one candidate (owner, 2026-10-11).
+    // Generate: one candidate.
     let queued = client.call(TASK, fill(7, "generate"));
     let first = client.settle("job.read", &queued["job_id"]);
     assert_eq!(first["status"], "ready", "{first}");

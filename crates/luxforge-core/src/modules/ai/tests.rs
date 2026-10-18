@@ -322,7 +322,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     );
     let revision = owner.asset_revision(&asset);
 
-    // Generate makes one candidate unless asked for more (owner, 2026-10-11).
+    // Generate makes one candidate unless asked for more.
     let single = owner.generate(with(selection(&asset), json!({"seed": 7})));
     let result = &single["result"]["result"];
     assert_eq!(result["candidates"], json!([0]), "{single}");

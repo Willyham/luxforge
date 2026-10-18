@@ -120,7 +120,7 @@ Note the conflict: the BEN paper lists BiRefNet at Fβmax 0.897 and Sm 0.905, wh
   - it cannot be version-pinned by hash.
 
   It could serve as a comparison oracle during evaluation.
-- **Training-data risk.** Every strong open subject model trains on DIS5K, DUTS, HRSOD or P3M-type academic sets with non-commercial terms. An MIT weights licence therefore does not clear data provenance. This is the same unresolved question FramePilot flagged, and it needs an owner decision (see Q8).
+- **Training-data risk.** Every strong open subject model trains on DIS5K, DUTS, HRSOD or P3M-type academic sets with non-commercial terms. An MIT weights licence therefore does not clear data provenance. This is the question FramePilot flagged; Luxforge does not make provenance a selection criterion ([AI editing](../../design/ai-editing.md#decisions); see Q8).
 
 ### Gaps
 - No primary-source latency or memory figures for any subject model on Apple M-series (Core ML, MPS or ONNX Runtime with the Core ML EP). This must be measured.
@@ -471,7 +471,7 @@ darktable 5.6, the closest open precedent, ships ONNX Runtime with SAM 2.1 or Se
   - pin SAM 2.1 (Apache-2.0) or SegNext (MIT) for object picking, shared by object removal and an Objects mask kind;
   - pin one closed-set panoptic model (EoMT/DINOv2, MIT and Apache) for Sky, Landscape and People;
   - pin one salient-object model (BiRefNet, MIT) for Subject and Background;
-  - keep SAM 3 as an optional, clearly-labelled custom-licence resource if the owner accepts the SAM Licence.
+  - keep SAM 3 as an optional, clearly-labelled custom-licence resource.
 
 **Architecture for sharing (inference, fitted to the module-capabilities contract)**
 1. **One inference runtime service** used by both the masks host and the object-removal module. ONNX Runtime with the Core ML EP (darktable's choice) is proven with SAM 2.1, SegNext, BiRefNet and others. vision.cpp or GGML is the precedent for a single C/C++ runtime covering segmentation, background removal and inpainting in a GPL editor. `tract` would need operator-coverage testing on Swin and Hiera attention models.
@@ -483,7 +483,7 @@ darktable 5.6, the closest open precedent, ships ONNX Runtime with SAM 2.1 or Se
    Mask tasks and object removal both read this cache. It is a bounded cache of derived, recomputable data, distinct from the immutable per-selection alpha artifacts that recipes reference.
 3. **One picker UI.** Hover highlights the candidate object from a decoder run at the cursor, click adds, Alt-click subtracts, and a box selects. It emits the same prompt data (points, labels, box) for both "New mask › Object" and "Remove object". darktable's positive/negative point UI and Krita's point/box tools are the precedent.
 4. **Semantic masks can seed SAM prompts.** For example, when the user wants a single tree or person from a class mask, sample points or a box from the semantic region and decode with SAM. This is another reuse of the cached embedding.
-5. **Vectorising, as darktable does,** loses edge detail; darktable itself offers PNG raster export for that reason. Luxforge's planned 8-bit raster artifact is the better representation for semantic masks.
+5. **Vectorising, as darktable does,** loses edge detail; darktable itself offers PNG raster export for that reason. Luxforge's 8-bit raster artifact is the better representation for semantic masks.
 
 ### Gaps
 - No measured Apple Silicon latency for SAM 2.1, SegNext or SAM 3 encoders was found; one search snippet reported ~4 s total for Core ML SAM 2.1 small on an M3, but its source was unclear, so it is not used.
@@ -517,7 +517,7 @@ The proven, cheap method is confidence-weighted guided upsampling of the low-res
   1. Model inference at native resolution (512–2048), keeping *soft* probabilities, not thresholds.
   2. A deterministic, non-learned, edge-aware upsample to the artifact size (≤4096 long side): a confidence-weighted guided filter or fast guided filter over content-stage luminance/RGB, with ~s=16–64 subsampling for speed.
 
-  Stage 2 is pure Rust, deterministic and exact-testable, which helps the proposal's "bytes identical across two runs" acceptance.
+  Stage 2 is pure Rust, deterministic and exact-testable, which helps the "bytes identical across two runs" acceptance.
 - **Optional learned refinement** for Subject and People edges: crop around the object's bounding box and rerun the HR subject model or a matting model on the crop, so a small subject in a 60 MP frame gets the model's full native resolution. This is cheaper than tiling the whole frame and keeps peak memory bounded.
 - **Tiling a full 4096 frame** through a salient-object model is risky: saliency is global, so tiles lose context and may flip foreground and background. Tiling suits semantic or depth models, with overlap, better than saliency models (inference).
 
@@ -542,7 +542,7 @@ Nearly all of them are *trained* on academic datasets with non-commercial terms 
 
 Must be flagged:
 - **Non-commercial (exclude):** RMBG-1.4 and 2.0, SkyAR, SegFormer, Sapiens v1, MatAnyone and MatAnyone2, ZIM, DA V2 B/L/G, DA3 L/G/Nested, Depth Pro weights, MobileCLIP (so EfficientSAM3's text path).
-- **Custom terms (owner decision):** SAM 3 (SAM Licence), DINOv3-based EoMT (DINOv3 Licence), Sapiens2, Marigold (RAIL++-M).
+- **Custom terms:** SAM 3 (SAM Licence), DINOv3-based EoMT (DINOv3 Licence), Sapiens2, Marigold (RAIL++-M).
 - **Copyleft:** YOLO (AGPL-3.0 on weights).
 
 ### Cited findings (licence matrix)
@@ -560,14 +560,14 @@ Must be flagged:
 | SkyAR | CC BY-NC-SA 4.0 | CC BY-NC-SA 4.0 ([repo](https://github.com/jiupinjia/SkyAR)) | CVPRW20-SkyOpt | **No (NC)** |
 | SegFormer (NVIDIA) | NVIDIA Source Code License (NC) | same ([LICENSE](https://github.com/NVlabs/SegFormer/blob/master/LICENSE)) | ADE20K etc. | **No (NC)** |
 | EoMT (DINOv2 backbone) | MIT ([repo](https://github.com/tue-mps/eomt)) | backbone Apache-2.0 ([DINOv2](https://github.com/facebookresearch/dinov2)); fine-tuned weights licence not separately stated | ADE20K (NC images), COCO | Probably yes; confirm weights licence; data flag for ADE20K |
-| EoMT (DINOv3 backbone) | MIT | DINOv3 License, custom ([Meta](https://ai.meta.com/resources/models-and-libraries/dinov3-license/)) | as above | **Custom: owner decision** ("Built with DINOv3" display, same-agreement redistribution) |
+| EoMT (DINOv3 backbone) | MIT | DINOv3 License, custom ([Meta](https://ai.meta.com/resources/models-and-libraries/dinov3-license/)) | as above | **Custom** ("Built with DINOv3" display, same-agreement redistribution) |
 | OneFormer | MIT ([repo](https://github.com/SHI-Labs/OneFormer)) | not stated on README | ADE20K, COCO, Cityscapes | Needs weights-licence check |
 | Mask2Former | MIT (+Apache-2.0 parts), archived 2025 ([repo](https://github.com/facebookresearch/Mask2Former)) | not stated on README | ADE20K, COCO | Needs weights-licence check |
 | SAM 2.1 | Apache-2.0 | Apache-2.0 ([repo](https://github.com/facebookresearch/sam2)) | SA-1B (custom research-only), SA-V (CC BY 4.0) ([darktable-ai card](https://github.com/darktable-org/darktable-ai/tree/main/models/mask-object-sam21-small)) | Yes (darktable ships it) |
 | SegNext (b2hq) | MIT | MIT ([darktable-ai card](https://github.com/darktable-org/darktable-ai/tree/main/models/mask-object-segnext-b2hq)) | COCO and LVIS (CC BY 4.0), HQSeg-44K (mixed) | Yes (darktable ships it) |
 | HQ-SAM / HQ-SAM 2 | Apache-2.0 ([repo](https://github.com/SysCV/sam-hq)) | not stated in fetched text | HQSeg-44K (includes DIS5K-type data) | Likely; confirm weights licence |
 | MobileSAM | — | Apache-2.0 (per [vision.cpp](https://github.com/Acly/vision.cpp)) | SA-1B distillation | Yes |
-| SAM 3 / 3.1 | SAM License | SAM License, gated ([LICENSE](https://github.com/facebookresearch/sam3/blob/main/LICENSE)) | SA-Co (Meta) | **Custom: owner decision** (not OSI; military/ITAR/trade-control terms) |
+| SAM 3 / 3.1 | SAM License | SAM License, gated ([LICENSE](https://github.com/facebookresearch/sam3/blob/main/LICENSE)) | SA-Co (Meta) | **Custom** (not OSI; military/ITAR/trade-control terms) |
 | EfficientSAM3 | Apache-2.0 | inherits SAM Licence; MobileCLIP text encoder under Apple AMLR research-only ([repo](https://github.com/SimonZeng7108/efficientsam3); [MobileCLIP](https://github.com/apple/ml-mobileclip/blob/main/LICENSE_MODELS)) | — | **No (research-only component)** |
 | CLIPSeg | MIT | not MIT (unspecified) ([repo](https://github.com/timojl/clipseg)) | PhraseCut etc. | **No (weights unlicensed)** |
 | Grounded-SAM-2 | Apache-2.0 + components ([repo](https://github.com/IDEA-Research/Grounded-SAM-2)) | Grounding DINO open; stronger detectors API-only | — | Local Grounding DINO path only; remote APIs conflict with local-only inference |
@@ -588,7 +588,7 @@ Must be flagged:
 | Depth Anything 3 S/B, Mono-L, Metric-L | Apache-2.0 | Apache-2.0 ([repo](https://github.com/ByteDance-Seed/Depth-Anything-3)) | — | Yes |
 | Depth Anything 3 L/G/Nested | Apache-2.0 | CC BY-NC 4.0 | — | **No (NC)** |
 | Depth Pro | Apple permissive code licence ([LICENSE](https://github.com/apple/ml-depth-pro/blob/main/LICENSE)) | Apple AMLR, research-only ([card](https://huggingface.co/apple/DepthPro)) | — | **No (research-only)** |
-| Marigold | Apache-2.0 | RAIL++-M ([repo](https://github.com/prs-eth/Marigold)) | SD2 base (OpenRAIL++-M) | **Custom use-restricted: owner decision** |
+| Marigold | Apache-2.0 | RAIL++-M ([repo](https://github.com/prs-eth/Marigold)) | SD2 base (OpenRAIL++-M) | **Custom use-restricted** |
 | CascadePSP | MIT | MIT ([repo](https://github.com/hkchengrex/CascadePSP)) | BIG, relabelled VOC | Yes |
 | SegRefiner | Apache-2.0 | not stated ([repo](https://github.com/MengyuWang826/SegRefiner)) | LVIS, ThinObject-5K, DIS-5K | Needs check; data flag |
 | vision.cpp runtime | MIT ([repo](https://github.com/Acly/vision.cpp)) | n/a | n/a | Yes |
@@ -599,8 +599,8 @@ Must be flagged:
 ### Inferences
 - **A user-initiated download of weights** under Apache-2.0, MIT or BSD is compatible with a GPL-3.0-or-later app. This follows the darktable precedent, and matches Luxforge's resource descriptor (licence, SHA-256, provenance).
 - **Non-commercial weights would impose a restriction on users that GPL-3.0 itself forbids adding to the program.** Whether separately downloaded weights count as part of the "program" is a legal question, not settled here. Excluding them, as darktable does, is the conservative path.
-- **Custom-licence weights** (SAM Licence, DINOv3, Sapiens2, RAIL++-M) are consequential product trade-offs. Per the project rules they should be recorded as proposals for the owner, not decided.
-- **The most pragmatic policy:** permissive weights required, training data disclosed in the resource descriptor (including non-commercial academic datasets), no gated or custom-licence models by default. This admits BiRefNet, SAM 2.1, SegNext, EoMT (DINOv2), RF-DETR-Seg, MediaPipe, DA3 Small/Base/Mono-Large and MODNet/ViTMatte, which covers every requested category.
+- **Custom-licence weights** (SAM Licence, DINOv3, Sapiens2, RAIL++-M) are consequential product trade-offs. Luxforge's policy is quality first with no licence gate: a licence keeps no model out, a restriction on the person's use of their results is shown in one line, and each feature's default is the best model without one ([AI editing](../../design/ai-editing.md#decisions)).
+- **Permissive weights alone** admit BiRefNet, SAM 2.1, SegNext, EoMT (DINOv2), RF-DETR-Seg, MediaPipe, DA3 Small/Base/Mono-Large and MODNet/ViTMatte, which covers every requested category.
 
 ### Gaps
 - The weights licence for the OneFormer, Mask2Former, EoMT (DINOv2) and HQ-SAM fine-tuned checkpoints was not confirmed from model cards; the READMEs state only code licences.

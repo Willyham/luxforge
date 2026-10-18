@@ -3,7 +3,7 @@
   "plan_id": "colour-grading",
   "title": "Colour grading in the mixer",
   "objective": "Extend the existing mixer with Lightroom-familiar tonal and Global grading, shared atomic wheels and numeric/API parity, independently proven CPU/GPU rendering, masks, presets and mapped Lightroom grading documents.",
-  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 through TASK-009 are completed, including native M4 full-tier component coverage and quiet-start 24/60 MP and Nikon Z6 RAW measurements; the scope and misses are in docs/specs/performance.md. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
+  "context_summary": "Product choices are settled and the plan has no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the contract. TASK-002 through TASK-009 are complete, including native M4 full-tier component coverage and quiet-start 24/60 MP and Nikon Z6 RAW measurements; the scope and misses are in docs/specs/performance.md. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -11,8 +11,8 @@
       "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Completed by this planning refinement from the owner’s answers on 2026-10-07: HSL/Grading with three-way/individual/Global views, all four wheels/luminance/masks/presets/direct mappings, dormant hue and scoped resets.",
-        "The owner requested no gates and moved all Lightroom matching/reference perfection after working-feature delivery. Numerical/layout details are implementer choices; no further approval task remains.",
+        "The contract: HSL/Grading with three-way/individual/Global views, all four wheels/luminance/masks/presets/direct mappings, dormant hue and scoped resets.",
+        "There are no gates: all Lightroom matching/reference perfection follows working-feature delivery. Numerical/layout details are implementer choices; no further approval task remains.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step."
       ],
       "context_links": [
@@ -541,7 +541,7 @@
         "No Lightroom catalog importer is implemented here. Its future source settings mapping consumes this shared mapper without new parallel logic.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
-        "Completed: Lightroom grading and split-toning rows as direct transfers, the source-era rule (lrtemplate and Camera Raw before 13.0 are split toning; ambiguous documents refused), new representative fixtures and tests; Luxforge presets carry HSL and Grading separately."
+        "Completed: Lightroom grading and split-toning rows as direct transfers, the source-era rule (lrtemplate and Camera Raw before 13.0 are split toning; ambiguous documents refused), representative fixtures and tests; Luxforge presets carry HSL and Grading separately."
       ],
       "context_links": [
         {
@@ -832,7 +832,7 @@
         "When measured inputs exist, apply the existing B/C response policy to grading, update conversions and current format markers as needed, and verify the resulting changes. No fabricated measurements, copied Adobe data, private-catalog access or contact-sheet approval requirement.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached, targeted tests while editing and background native verification for any numerical changes. Measure after those changes are finished.",
-        "Delivered ahead of TASK-009's handoff, with no dependency back into it: the f64 reference and its study and frozen fixture (no discrepancy with production, so no numerical change), luxforge_reference::grade_response with known-answer tests, and cargo xtask grade-align generate/render/measure, self-tested end to end. Remaining: a Lightroom round from the owner's installation, then the B/C decisions it warrants."
+        "Delivered with no dependency back into TASK-009: the f64 reference and its study and frozen fixture (no discrepancy with production, so no numerical change), luxforge_reference::grade_response with known-answer tests, and cargo xtask grade-align generate/render/measure, self-tested end to end. Remaining: a Lightroom round from the owner's installation, then the B/C decisions it warrants."
       ],
       "context_links": [
         {

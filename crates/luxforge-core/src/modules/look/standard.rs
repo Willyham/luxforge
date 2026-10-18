@@ -1,6 +1,6 @@
 //! The Standard look, frozen (`docs/design/raw-looks.md`, "The Standard look").
 //!
-//! The owner approved these numbers on 2026-10-05 from the corpus study. They are the independent
+//! These numbers come from the corpus study. They are the independent
 //! reference's `standard_knots(&STANDARD)` (`crates/luxforge-reference/src/look.rs`), written out as
 //! literal `f64` values so the module computes nothing at runtime and a later change to the
 //! reference's study code cannot move a photo's look: the tone map `f(Y) = W Y^p / (Y^p + s^p)` at

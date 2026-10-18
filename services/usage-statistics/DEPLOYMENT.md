@@ -6,12 +6,12 @@ The hosted backend is live at `https://api.luxforge.app/v1/usage/batches`. It is
 analysis references. Backend changes belong to Will; this app repository's Vector/ClickHouse/Grafana
 stack remains a local reference, with its own limits and retention.
 
-The backend pins the app wire contract at `f8456a94`; the registry and usage fixtures are unchanged
-at `23241d22`. Changes to the wire format, registry or fixtures require telling Will to bump that
+The backend pins the app wire contract at `f8456a94`; its registry and usage fixtures are those
+of `23241d22`. Changes to the wire format, registry or fixtures require telling Will to bump that
 pin. Developer routing changes only the destination URL; batches have the same validated shape.
 
 `PRODUCTION_ACTIVE` in `crates/luxforge-core/src/usage/eligibility.rs` remains `false`. Enabling it
-is Will's separate decision after the checklist below. Visible developer builds can already send
+is Will's separate decision after the checklist below. Visible developer builds can send
 consented test data; this does not activate production reporting.
 
 ## Destinations and checks
@@ -94,7 +94,7 @@ full storage/logging journey with `services/usage-statistics/test.sh --client NE
 The live smoke records requests and replies in `receiver.json`, with correlated state, logs and
 captures. It proves the client/HTTP journey only; inspecting the hosted stores, dashboard filtering,
 retention and infrastructure settings remains separate. Synthetic evidence must always use the test
-tenant. The old `probe.sh` is for the local reference contract; its production flag does not select
+tenant. `probe.sh` is for the local reference contract; its production flag does not select
 a test tenant and its checks do not match the hosted Worker, so do not run it against the live host.
 
 ## Activation checklist
@@ -115,10 +115,10 @@ client addresses. Deployment existence is reported by Will; it is not proof that
 
 Never infer production activation from test traffic, deployment availability or a successful `202`.
 
-## 16. The update feed route
+## The update feed route
 
 These are deployment instructions for the local reference ingress's implemented feed route.
-They do not describe a live Cloudflare update service: the hosted backend currently serves usage
+They do not describe a live Cloudflare update service: the hosted backend serves usage
 batches only, with other paths reaching its fallback Worker. Serving update feeds there requires
 Will's separate backend and publication configuration work. The app's update implementation and
 the reference installer remain available for independent local testing.
@@ -130,7 +130,7 @@ an account whose only command installs them into the update store. The route is 
 statistics switch: it can go live before or after [activation](#activation-checklist). A person
 fetching a feed from a deployment of this reference crosses its hosting and proxy too, so apply the
 [reference privacy requirements](README.md#reference-deployment-privacy-requirements) to that traffic.
-Hosted feed deployment remains unqualified. The commands below that need no host ran against a local
+Hosted feed deployment remains unqualified. The commands below that need no host are checked against a local
 ingress serving a store filled by `install-feeds.py`; host-dependent provisioning remains external work.
 
 The update feed URL is compiled into every release, so once a release that uses it is published the

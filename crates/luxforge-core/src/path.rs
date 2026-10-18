@@ -106,7 +106,7 @@ pub(crate) const DECIMATION_TOLERANCE_MIN: f64 =
 /// It is `sqrt(2)/2` of a step and not half a step, because the two coordinates are rounded
 /// independently: a position in the far corner of its cell moves by the cell's half diagonal, not by
 /// half a step. The measured worst case over randomized captured paths sits just under the tolerance
-/// plus this, which is what caught the half-step spelling.
+/// plus this, and past the tolerance plus half a step.
 pub(crate) const GRID_ROUNDING: f64 = std::f64::consts::FRAC_1_SQRT_2 / COORDINATE_STEPS_PER_UNIT;
 
 /// The decimation tolerance of a stroke whose radius is `size_steps` grid steps as stored: the

@@ -1,8 +1,8 @@
 //! Tests of stack admission and compilation.
 use super::{tests::*, *};
 use crate::{
-    AssetId, BASIC_EFFECT, Component, ComponentMode, EFFECT_FORMAT, EffectDescriptor, Layer,
-    LayerId, Mask, Orientation, RECIPE_FORMAT, Recipe, SnapshotId,
+    AssetId, BASIC_EFFECT, Component, ComponentMode, EffectDescriptor, Layer, LayerId, Mask,
+    Orientation, RECIPE_FORMAT, Recipe, SnapshotId,
     artifacts::ArtifactTable,
     modules::{
         ActionInput, ActionPlan, Availability, CapabilityModule, CropPayload, EffectStage,
@@ -174,101 +174,38 @@ fn an_unavailable_provider_keeps_its_identity_and_fails_evaluation_with_its_laye
             .detail,
         expected
     );
+    // An effect no registry provides, a developer run's included, is refused the same way by
+    // every compile, naming the layer; nothing rewrites the stored layer, which reads back as
+    // it was written.
+    let stored = Layer::new("test.absent", json!({"opaque": [9, 9, 9]}));
     let missing = Recipe {
-        format: RECIPE_FORMAT,
-        layers: vec![test_layer("test.absent")],
-        masks: Vec::new(),
-        ..Recipe::default()
-    };
-    assert_eq!(
-        registry.validate_recipe(&missing).unwrap_err().detail,
-        format!(
-            "unavailable effect test.absent (layers {})",
-            missing.layers[0].id
-        )
-    );
-    let _ = AssetId::new();
-}
-
-/// Current shapes only: the retired per-action transform effect has no provider, so a stack
-/// holding it is refused exactly like any other unavailable effect. Nothing rewrites it, so
-/// the data survives the refusal and the owner can open it with a build that provides it.
-#[test]
-fn a_stack_holding_the_retired_transform_effect_is_refused_without_being_rewritten() {
-    let registry = ModuleRegistry::builtin();
-    let retired = Layer {
-        id: LayerId::new(),
-        effect_id: "luxforge.geometry.transform".into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!("rotate-right"),
-        mask: None,
-        artifacts: Vec::new(),
-    };
-    assert!(registry.effect("luxforge.geometry.transform").is_none());
-    let recipe = Recipe {
-        format: RECIPE_FORMAT,
-        layers: vec![retired.clone()],
-        masks: Vec::new(),
-        ..Recipe::default()
-    };
-    let expected = format!(
-        "unavailable effect luxforge.geometry.transform (layers {})",
-        retired.id
-    );
-    for error in [
-        registry.validate_recipe(&recipe).unwrap_err(),
-        registry.validate_layer(&retired).unwrap_err(),
-        render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
-        sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
-    ] {
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(error.detail, expected);
-    }
-    assert_eq!(recipe.layers, vec![retired], "the refused stack is kept");
-}
-
-/// The deleted pixel proof's effect has no provider in any registry, a developer run included, so
-/// a stored stack holding one is refused as an unavailable effect that names the layer, and the
-/// stored layer survives the refusal as it was written.
-#[test]
-fn a_stack_holding_the_deleted_pixel_proof_effect_is_refused_and_kept() {
-    let stored = Layer::new(
-        "luxforge.pixel.replace",
-        json!({"x": 1, "y": 1, "rgb": [9, 9, 9]}),
-    );
-    let recipe = Recipe {
         format: RECIPE_FORMAT,
         layers: vec![stored.clone()],
         masks: Vec::new(),
         ..Recipe::default()
     };
-    let expected = format!(
-        "unavailable effect luxforge.pixel.replace (layers {})",
-        stored.id
-    );
-    for registry in [ModuleRegistry::builtin(), ModuleRegistry::developer()] {
-        assert!(registry.effect("luxforge.pixel.replace").is_none());
+    let expected = format!("unavailable effect test.absent (layers {})", stored.id);
+    for registry in [registry, ModuleRegistry::developer()] {
+        assert!(registry.effect("test.absent").is_none());
         for error in [
-            registry.validate_recipe(&recipe).unwrap_err(),
+            registry.validate_recipe(&missing).unwrap_err(),
             registry.validate_layer(&stored).unwrap_err(),
-            registry.compile(2, 1, &recipe).err().expect("no provider"),
-            render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
-            sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
+            registry.compile(2, 1, &missing).err().expect("no provider"),
+            render(&registry, &source(), SnapshotId::new(), &missing).unwrap_err(),
+            sample(&registry, &source(), &missing, 0, 0).unwrap_err(),
         ] {
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert_eq!(error.detail, expected);
-            assert_eq!(
-                error.unavailable_effect_id(),
-                Some("luxforge.pixel.replace")
-            );
+            assert_eq!(error.unavailable_effect_id(), Some("test.absent"));
         }
     }
-    let reread: Recipe = serde_json::from_slice(&serde_json::to_vec(&recipe).unwrap()).unwrap();
+    let reread: Recipe = serde_json::from_slice(&serde_json::to_vec(&missing).unwrap()).unwrap();
     assert_eq!(
         reread.layers,
         vec![stored],
         "the refused stack is kept as written"
     );
+    let _ = AssetId::new();
 }
 
 /// A mask reaches a layer only where the layer's input is the content stage the mask is stored
@@ -395,7 +332,7 @@ fn one_layer_per_target_is_what_single_layer_means() {
         bound(basic_layer(), &second),
     ]);
     registry.compile(64, 48, &legal).expect("one per target");
-    // Two layers of one effect with the same target, global or masked, is the old refusal.
+    // Two layers of one effect with the same target, global or masked, are refused.
     for (case, layers) in [
         ("two global layers", vec![basic_layer(), basic_layer()]),
         (

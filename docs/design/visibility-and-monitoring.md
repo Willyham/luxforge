@@ -1,27 +1,27 @@
 # Window visibility and event-driven job monitoring
 
-Status: implemented and verified on the M4 Mac. Optimized process CPU observations are recorded with host-load scope; a generalized quiet-host baseline is not claimed. The owner limited this work to visibility and event monitoring. CPU observations are scoped in [performance](../specs/performance.md), without a literal zero-CPU claim.
+Status: implemented and verified on the M4 Mac. Optimized process CPU observations are recorded with host-load scope; a generalized quiet-host baseline is not claimed. CPU observations are scoped in [performance](../specs/performance.md), without a literal zero-CPU claim.
 
 ## Outcome and scope
 
-An editor window that cannot be seen stops resource sampling and display-only elapsed-time refreshes. Export and capability readers wait for relevant job changes rather than checking jobs every 100 ms. Work and its authoritative results continue while the window is hidden, and restoring the window shows current state without replaying a backlog of progress messages.
+An editor window that cannot be seen stops resource sampling and display-only elapsed-time refreshes. Export and capability readers wait for relevant job changes, with no periodic job check. Work and its authoritative results continue while the window is hidden, and restoring the window shows current state without replaying a backlog of progress messages.
 
 In scope:
 
 - One desktop window-visibility state, updated by native window events, shared by the Performance sampler and display-only progress refreshes.
 - Pausing resource sampling while the window is minimized or hidden, retaining the person's saved disclosure choice, and starting a fresh sample window on restore.
-- Removing hidden-window elapsed-time refreshes and coalescing presentation-only progress while retaining lifecycle handling.
+- Stopping elapsed-time refreshes in a hidden window and coalescing presentation-only progress while retaining lifecycle handling.
 - Bounded, race-free notifications for the jobs the desktop actually follows, and a schema-described programmatic way to wait for those changes through the shared command service.
-- Moving export and capability readers from periodic `job.read` calls to notification-driven reads.
+- Notification-driven reads for export and capability readers, with no periodic `job.read` calls.
 - Native verification of visibility transitions, job completion while hidden, recovery on restore, and recorded CPU/wakeup observations.
 
 Out of scope: proxy CPU work, renderer changes, preview/decode scheduling, speculative preview cancellation, shared-pool scheduling, image caches, whole-window redraw optimization, changing frameworks or graphics libraries, and changing the visible Performance section's one-second sampling cadence.
 
 ## Visibility contract
 
-The owner selected minimized or explicitly hidden only. A visible window continues sampling when another app has focus or completely covers it; focus loss and occlusion alone never prove that presentation should pause.
+Presentation pauses only when the window is minimized or explicitly hidden. A visible window continues sampling when another app has focus or completely covers it; focus loss and occlusion alone never prove that presentation should pause.
 
-Visibility is a desktop fact, not an editing or catalog rule. Keep it outside recipes and persisted catalog/session state. Each consumer uses the same fact rather than defining its own approximation. Native callbacks carry copied state into a bounded, coalescing wake channel; they do no catalog work. Registration, an initial state read, notification delivery and removal must avoid a lost transition. No visibility polling timer is added.
+Visibility is a desktop fact, not an editing or catalog rule. Keep it outside recipes and persisted catalog/session state. Each consumer uses the same fact rather than defining its own approximation. Native callbacks carry copied state into a bounded, coalescing wake channel; they do no catalog work. Registration, an initial state read, notification delivery and removal must avoid a lost transition. There is no visibility polling timer.
 
 Iced 0.14 exposes minimized-state queries but no minimized/occluded event in its public window event vocabulary. On macOS, use a native observer through the existing safe platform boundary (`luxforge-input`) without replacing the window framework's delegate. Handle both window minimization/restoration and app/window hiding/showing. Use actual platform visibility, not `Unfocused`, zero dimensions or absence of frames. Verify Windows and Linux event semantics separately; report unsupported visibility facts explicitly rather than inventing a timer or silently equating focus with visibility. Automated evidence launches deliberately create invisible windows, so the evidence harness must distinguish a test override from an ordinary user's hidden window and state that distinction in its output.
 
@@ -34,7 +34,7 @@ On a transition to hidden:
 
 On restore, reconcile current job/board state once, re-arm any needed display refresh, and restart Performance sampling only if its section and panel are shown. Clear resource-sample history and take a new sample immediately; CPU and GPU rates require a second sample and must not span hidden time. Do not replay every missed elapsed-time tick or progress value.
 
-Exports, imports, indexing, original watching, explicit API requests, preference persistence and GPU resource retirement continue as today. Pausing presentation never cancels a job, changes an image or delays releasing retired resources.
+Exports, imports, indexing, original watching, explicit API requests, preference persistence and GPU resource retirement continue while the window is hidden. Pausing presentation never cancels a job, changes an image or delays releasing retired resources.
 
 ## Job notification contract
 
@@ -54,11 +54,11 @@ Name and enforce limits for waiters and watched jobs, pending wakes, change toke
 
 Export and capability readers first observe each tracked job, then sleep until it changes. Keep reads off the update loop and make one first, changed or final record available to the same existing adoption paths. Re-arm without a lost wake, and stop watching after a terminal answer or error. Changing the watched job set is bounded and does not restart unrelated readers unnecessarily.
 
-While hidden, lifecycle results are still adopted promptly. Display-only intermediate progress can be coalesced, but no held notification may suppress the final result or dependent work. The catalog activity watch supplies presentation progress and lifecycle display. Stable authoritative readers independently follow first-look Reading, Adding, Search, Locate and Batch jobs; Search retains partial business answers while coalescing hidden progress. Develop already waits for the owner's final publication through its existing completion route. The elapsed-time refresh gate is separate from lifecycle processing. All visibility-driven presentation reconciliation uses the common visibility state. The [usage statistics](usage-statistics.md#implemented-integration) supervisor of an eligible launch reads the same fact: once the gate is ready, the update loop reports its sampling decision to the supervisor whenever it changes, and a hidden window then starts no upload and takes no process sample.
+While hidden, lifecycle results are still adopted promptly. Display-only intermediate progress can be coalesced, but no held notification may suppress the final result or dependent work. The catalog activity watch supplies presentation progress and lifecycle display. Stable authoritative readers independently follow first-look Reading, Adding, Search, Locate and Batch jobs; Search retains partial business answers while coalescing hidden progress. Develop waits for the owner's final publication through its existing completion route. The elapsed-time refresh gate is separate from lifecycle processing. All visibility-driven presentation reconciliation uses the common visibility state. The [usage statistics](usage-statistics.md#implemented-integration) supervisor of an eligible launch reads the same fact: once the gate is ready, the update loop reports its sampling decision to the supervisor whenever it changes, and a hidden window then starts no upload and takes no process sample.
 
 ## Acceptance and evidence
 
-The core job-monitoring contract is also qualified by focused tests in the owner's ARM64 Omarchy VM (Arch Linux, kernel 7.2.6, Rust 1.94.0): bounded waits and cancellation, socket disconnect cleanup and response ordering, and progress/terminal publication. The portable visibility model passes its minimize/hide-only gate test there. These are functional tests, not native Linux event, desktop, GPU or idle-CPU evidence. Linux still reports native visibility facts as unsupported and retains normal UI sampling when a window is minimized.
+The core job-monitoring contract is also qualified by focused tests in the owner's ARM64 Omarchy VM (Arch Linux, kernel 7.2.6, Rust 1.94.0): bounded waits and cancellation, socket disconnect cleanup and response ordering, and progress/terminal publication. The portable visibility model passes its minimize/hide-only gate test there. These are functional tests, not native Linux event, desktop, GPU or idle-CPU evidence. Linux reports native visibility facts as unsupported and retains normal UI sampling when a window is minimized.
 
 - With the section open, minimized/hidden windows admit no further resource reads after any in-flight read completes, and create no resource or elapsed-time display timers. Visible unfocused windows retain normal behavior.
 - Restore retains disclosure, reconciles current jobs once and begins a fresh resource history without a rate computed across hidden time.
@@ -70,14 +70,14 @@ The core job-monitoring contract is also qualified by focused tests in the owner
 
 ## Owner decisions
 
-The owner limited scope to visibility and event monitoring, excluding proxy CPU work and CPU scheduling, and selected pausing only when minimized or explicitly hidden. Fully covered and unfocused windows retain their normal sampling behavior. There are no outstanding product decisions in this scope; native event and notification mechanisms remain implementation choices to verify.
+Scope is limited to visibility and event monitoring, excluding proxy CPU work and CPU scheduling, and presentation pauses only when the window is minimized or explicitly hidden. Fully covered and unfocused windows retain their normal sampling behavior. There are no outstanding product decisions in this scope; native event and notification mechanisms remain implementation choices to verify.
 
 ## Performance-rules review
 
-No original reads, decodes, frame allocations, image processing or new preview requests are introduced. The owner handles bounded job bookkeeping only. Notifications and visibility events replace idle polling; active display throttles exist only while a visible consumer needs them. All new queues/subscribers have explicit limits, and notification callbacks never read under producer locks. Rendering, image correctness, caching and CPU scheduling remain outside this work. Native CPU evidence is recorded after implementation, with process monitoring overhead and hidden-window evidence controls stated.
+Visibility and job monitoring add no original reads, decodes, frame allocations, image processing or preview requests. The owner handles bounded job bookkeeping only. Notifications and visibility events drive waiting, with no idle polling; active display throttles exist only while a visible consumer needs them. All queues/subscribers have explicit limits, and notification callbacks never read under producer locks. Rendering, image correctness, caching and CPU scheduling remain outside this work. Native CPU evidence is recorded with process monitoring overhead and hidden-window evidence controls stated.
 
 ## Remaining GPU-count verification
 
 `analysis.request` does not wait for a visible desktop frame: if no ready report or matching job exists, the owner queues its bounded reference analysis worker, which renders and reduces the planned identity off the owner. A GPU report arriving for that identity can complete the same job or be cached. Native hiding gates presentation sampling and progress display, not this authoritative worker.
 
-The native `visibility-monitoring` scenario proves sampler suspension, held business jobs and restoration, and makes no edit commit. The native `hidden-analysis` scenario does: a commit while the window is minimized and another while it is ordered out, each followed by an agent's `analysis.request`. Each commit's frame is the GPU's presentation of the new entry, its counts within the tolerance of an independent reduction; the GPU's counts for that entry are adopted while the last visibility callback still reports the native fact; and the request answers `ready` for that entry, bin by bin within the tolerance. On the M4 the counts were adopted 26 to 90 ms after the commit was sent. macOS only; Windows and Linux visibility facts are unsupported.
+The native `visibility-monitoring` scenario proves sampler suspension, held business jobs and restoration, and makes no edit commit. The native `hidden-analysis` scenario does: a commit while the window is minimized and another while it is ordered out, each followed by an agent's `analysis.request`. Each commit's frame is the GPU's presentation of the new entry, its counts within the tolerance of an independent reduction; the GPU's counts for that entry are adopted while the last visibility callback still reports the native fact; and the request answers `ready` for that entry, bin by bin within the tolerance. On the M4 the counts are adopted 26 to 90 ms after the commit is sent. macOS only; Windows and Linux visibility facts are unsupported.

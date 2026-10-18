@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "plan_id": "efficiency",
   "title": "CPU and memory efficiency",
-  "objective": "Spend less CPU time and hold less memory for byte-identical pictures, numbers and digests and the same or better latency, through the changes the owner accepted on 2026-10-03.",
-  "context_summary": "A read-only audit on 2026-10-03 found the idle path, uploads, subscriptions and the GPU preview's steady state already tight, and the remaining cost in per-pixel kernels (the 16-bit quantizer, spatial tile allocations and batches, Detail and Presence filters, RAW input reads), source preparation (software SHA-256 on aarch64, serial zero-fills, unsized reads), per-tick copying while painting, and build configuration. Owner decisions (docs/decisions.md, CPU and memory efficiency): every byte-identical finding accepted; RAW colour layers stay recomputed per spatial tile; a 64 MiB reduced-grid cache for Clarity and Dehaze; the float mosaic removed through a checked-in librtprocess patch, never by editing vendor/; the catalog in WAL with full flushes; a dist profile with LTO for packaging and timing, deferred by the owner until the timing runs other plans have outstanding are recorded, so this plan measures in release. Every estimate is unmeasured until the final task. The design is docs/design/efficiency.md.",
+  "objective": "Spend less CPU time and hold less memory for byte-identical pictures, numbers and digests and the same or better latency, through the accepted changes in docs/design/efficiency.md.",
+  "context_summary": "A read-only audit found the idle path, uploads, subscriptions and the GPU preview's steady state already tight, and the remaining cost in per-pixel kernels (the 16-bit quantizer, spatial tile allocations and batches, Detail and Presence filters, RAW input reads), source preparation (software SHA-256 on aarch64, serial zero-fills, unsized reads), per-tick copying while painting, and build configuration. Settled (docs/decisions.md, CPU and memory efficiency): every byte-identical finding accepted; RAW colour layers stay recomputed per spatial tile; the float mosaic removed through a checked-in librtprocess patch, never by editing vendor/; the catalog in WAL with full flushes; a dist profile with LTO for packaging and timing, deferred until the timing runs other plans have outstanding are recorded, so this plan measures in release. Every estimate is unmeasured until the final task. The design is docs/design/efficiency.md.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -82,7 +82,7 @@
         "TASK-001"
       ],
       "extra_context": [
-        "Blocked: the owner deferred the dist profile on 2026-10-03 until the timing runs other feature plans have outstanding are recorded. Those runs, and every baseline docs/specs/performance.md records, build release, and a dist figure is never compared with a release one. It stays blocked until the owner reopens it; this plan's measurement task does not wait for it. The condition is not met: catalog-measure and GPU resource accounting remain unrecorded, and the planned RAW looks, Corrections and AI editing work retains its final qualification and timing runs. GPU-first latencies are recorded on the M4, but native Windows and Linux evidence is absent.",
+        "Blocked: the dist profile is deferred until the timing runs other feature plans have outstanding are recorded. Those runs, and every baseline docs/specs/performance.md records, build release, and a dist figure is never compared with a release one. It stays blocked until the owner reopens it; this plan's measurement task does not wait for it. The condition is not met: catalog-measure and GPU resource accounting remain unrecorded, and the planned RAW looks, Corrections and AI editing work retains its final qualification and timing runs. GPU-first latencies are recorded on the M4, but native Windows and Linux evidence is absent.",
         "The root Cargo.toml has no [profile.release], so release is lto = false and codegen-units = 16. Release is the daily develop and smoke build and the rendered tier's editor build; quick uses development-profile checks, so slowing it would slow the edit loop.",
         "Add [profile.dist] with inherits = \"release\", codegen-units = 1 and lto set to \"thin\" or \"fat\". Build both once on the M4, run editor-performance on the 24 MP JPEG for each back to back, and keep the faster unless its build time makes the timing tier unreasonable; record build times and the choice in the design.",
         "Switch `cargo xtask package` and the timing commands (editor-performance, editor-latency, measure, detail-performance, detail-grid-performance, editor-performance --lens-only and the `timing` tier's builds) to `--profile dist`, including the binary paths they resolve (target/dist/...). develop and smoke keep release, rendered keeps its release editor, and quick keeps development-profile checks. Do not set panic = \"abort\": mozjpeg unwinds libjpeg errors into Rust.",
@@ -143,7 +143,7 @@
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-app/src/app/mod.rs:558 calls iced::system::information(), which (with the workspace's `sysinfo` iced feature) runs System::new_all() and refresh_all() on a spawned thread, walking every process twice, during the startup decode. The result supplies only state.backend's graphics backend and adapter strings (evidence.rs:781).",
-        "Supply the same strings without a process scan: from the renderer's adapter information through a small hook, or by deferring the call until something reads state.backend. Drop the `sysinfo` feature if nothing else needs it. state.backend keeps answering every client with the same strings, and evidence checks that read it keep passing; an API reader must not see null where it saw a value before."
+        "Supply the same strings without a process scan: from the renderer's adapter information through a small hook, or by deferring the call until something reads state.backend. Drop the `sysinfo` feature if nothing else needs it. state.backend keeps answering every client with the same strings, and evidence checks that read it keep passing; an API reader never sees null for them."
       ],
       "context_links": [
         {
@@ -168,7 +168,7 @@
       ],
       "acceptance_criteria": [
         "A normal launch performs no host-wide process enumeration; a recorded check (sample of the launch, or a test seam) shows it.",
-        "state.backend reports the same backend and adapter as before in a background launch and in evidence runs."
+        "state.backend reports the backend and adapter in a background launch and in evidence runs."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -192,7 +192,7 @@
       "extra_context": [
         "crates/luxforge-core/src/source.rs:112 reads through file.take(limit + 1) into Vec::new(); Take hides File's size hint, so the buffer doubles and can hold up to twice the file through the unpack (64 MiB capacity for a 40 MB NEF). Reserve the metadata length (already checked against the limit) with try_reserve_exact before reading, keeping the over-limit refusal.",
         "crates/luxforge-raw zero-fills with Vec::resize on one thread before a pooled pass writes every value: develop.rs:143 (RGB planes, 12 bytes per site; the spec measured a fresh serial 240 MB bzero at 10.8 to 12.5 ms), develop.rs:257 (direct development), lib.rs:810 (u16 mosaic) and dng.rs:1314 (Air 2S warp scratch). Add one fallible zeroed-allocation helper (alloc_zeroed behind a safe wrapper in luxforge-raw, which already permits unsafe, or an equivalent) and use it at each site, so fresh pages are faulted in by the writers as rule 2 asks. Keep the ResourceLimit errors.",
-        "crates/luxforge-core/src/proxy.rs:804 builds each RAW proxy through LinearImage::with_fingerprint, which scans every value for finiteness on one thread (source/linear.rs:167). A weighted mean of finite planes is finite; build it through the validated constructor with a debug assertion, and add a test that the proxy of a finite source is accepted without the scan and equals today's planes.",
+        "crates/luxforge-core/src/proxy.rs:804 builds each RAW proxy through LinearImage::with_fingerprint, which scans every value for finiteness on one thread (source/linear.rs:167). A weighted mean of finite planes is finite; build it through the validated constructor with a debug assertion, and add a test that the proxy of a finite source is accepted without the scan and equals the scanned planes.",
         "Warm benchmark loops can hide the zero-fill saving because the allocator reuses freed regions; the measurement task measures cold opens."
       ],
       "context_links": [
@@ -430,9 +430,9 @@
       "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Already done: smoothing, noise reduction's shrinkage (each pixel's chroma energy and factor computed once for a and b) and its level planes run over whole rows, the interior through slices and only the stage-edge columns through the clamped read, with the halo checked once a pass (modules/detail/filters.rs, denoise.rs). modules/detail/exactness.rs holds frozen tap-by-tap references for them.",
+        "Already done: smoothing, noise reduction's shrinkage (each pixel's chroma energy and factor computed once for a and b) and its level planes run over whole rows, the interior through slices and only the stage-edge columns through the clamped read, with the halo checked once a pass (modules/detail/filters.rs, denoise.rs).",
         "What remains on the clamped, release-asserted Geometry::index (filters.rs:128) per pixel: Sharpen::limited (sharpen.rs:57), which reads l and its blur at the pixel, the guide's four neighbours and l's 3 x 3 extrema, 14 indexed reads a pixel; and the reconstruction loops that end Denoise (denoise.rs:227) and Sharpen (sharpen.rs:184), which read lab, delta and input.sample per pixel.",
-        "Add an interior path over row slices for output pixels whose 3 x 3 reach lies inside the held region, with the clamped, asserted path kept for the band near the stage edge so the halo guard still applies there. Each value's own operations and order stay the same. exactness.rs uses Sharpen::limited as its reference; freeze a copy of today's limiter there before changing it.",
+        "Add an interior path over row slices for output pixels whose 3 x 3 reach lies inside the held region, with the clamped, asserted path kept for the band near the stage edge so the halo guard still applies there. Each value's own operations and order stay the same.",
         "Detail's GPU programs are unaffected."
       ],
       "context_links": [
@@ -477,7 +477,7 @@
       ],
       "acceptance_criteria": [
         "Interior taps of the limiter and both reconstruction loops do no clamp or assertion; edge-band taps keep both.",
-        "Detail's frozen references in modules/detail/exactness.rs, including a frozen copy of the limiter, and the f64 fixture tests pass unchanged in both domains."
+        "The Detail oracle (modules/detail/oracle.rs) and the f64 fixture tests pass unchanged in both domains."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -500,7 +500,7 @@
       "dependencies": [],
       "extra_context": [
         "In crates/luxforge-core/src/modules/presence/filters.rs, horizontal_mean (:425), vertical_strip (:491), the guided combines (:657, :774) and upsample (:823) read every tap through Plane::get or Planes::sample (modules/spatial.rs:344): two clamps, an index multiply and a bounds check, which also keeps vertical_strip's 64 independent accumulators from vectorizing. horizontal_mean's running sum is one dependent f64 add chain per row.",
-        "Read interior rows as slices and keep clamped reads for edge rows and columns; process two to four rows of horizontal_mean at once, each with its own sum in today's order; precompute upsample's (i0, fx) per column once per call instead of a division per pixel.",
+        "Read interior rows as slices and keep clamped reads for edge rows and columns; process two to four rows of horizontal_mean at once, each with its own sum in the existing order; precompute upsample's (i0, fx) per column once per call instead of a division per pixel.",
         "Each output value's own sequence of operations must stay identical (no reassociation). Presence's GPU programs are unaffected."
       ],
       "context_links": [
@@ -560,7 +560,7 @@
         "ViewReader::row (source/linear.rs:408) walks orientations 5 to 8 with a stride of plus or minus base_width, touching a new row of all three planes per output pixel. Load each chunk as a blocked transpose: walk base rows in order and write the chunk's (up to 16) output rows from each contiguous span.",
         "Segment::resolve (render/compiled.rs:631), called per pixel from pixel_in (pipeline.rs:612), composes ExactGeometry::then for every operation; return straight after unmap when the segment has no pixel replacements (!has_pixels).",
         "The RAW terminal (terminal_srgb, linear.rs:157, and put/write for rows without colour or white balance) widens f32 to f64 and calls Quantizer::rounded with its 1e-12 guard. For an f32 input only a threshold and its next_down can fall in the guard band, which the_f32_thresholds_are_where_both_quantizers_change_code pins; use quantizer.pixel for f32 rows after the non-finite check.",
-        "This touches the files the RAW colour-per-tile decision covers; do not add a materialized frame or row-band cache (owner, 2026-10-03)."
+        "This touches the files the RAW colour-per-tile decision covers; do not add a materialized frame or row-band cache."
       ],
       "context_links": [
         {
@@ -856,7 +856,7 @@
       ],
       "acceptance_criteria": [
         "A tick with an unchanged grid allocates no grid buffer; a prepare with unchanged block Arcs copies and compares none of them; tests prove both.",
-        "The buffer written to the GPU is byte-identical to today's for the same plan.",
+        "The buffer written to the GPU is byte-identical to the unskipped path's for the same plan.",
         "The gpu-preview and gpu-preview-zoom scenarios pass."
       ],
       "test_strategy": {
@@ -950,7 +950,7 @@
       "extra_context": [
         "During development the u16 mosaic (2 bytes per site), the normalized f32 mosaic (4) and the RGB planes (12) coexist: 18 bytes per site, about 1.08 GB at 60 MP, 30 per site while the second development is held. Normalization::run (crates/luxforge-raw/src/normalize.rs) writes ((s - black) * scale) * gain per site; RCD reads it only in its tile fill as LIM01(rawData / 65536) (vendor rcd.cc:124), Markesteijn reads it likewise without a clamp, and border.cc fills the border band from it.",
         "Add crates/luxforge-raw/patches/librtprocess-mosaic.patch, applied by build.rs's apply_patch after librtprocess-local.patch with exact context matching and an allowed-file list, plus its cargo:rerun-if-changed line. Through it rcd.cc, markesteijn.cc and border.cc read each site through one inline function computing the same f32 expression, in the same operations and order, from the u16 mosaic and per-site black, scale and gain tables the adapter passes. No file under vendor/ changes.",
-        "Keep today's float-mosaic path for any development whose sensor stage rewrites the float mosaic: DNG sensor-stage corrections (apply_sensor: Pixel 7/8 Pro GainMaps, Leica, Ricoh GR II) and sparse sensor repairs (MAX_CORRECTIONS). Select the path once per development.",
+        "Keep the float-mosaic path for any development whose sensor stage rewrites the float mosaic: DNG sensor-stage corrections (apply_sensor: Pixel 7/8 Pro GainMaps, Leica, Ricoh GR II) and sparse sensor repairs (MAX_CORRECTIONS). Select the path once per development.",
         "Exactness: planes must be bit-identical against the float-mosaic path on every committed Bayer and X-Trans fixture and every RAW-manifest source available on the host, including the Bayer clip at sensor white and X-Trans's unclamped values (bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not). Update the luxforge-raw README and THIRD_PARTY notes on local patches, and docs/design/native-demosaic-parallelism.md or initial-raw.md where they describe the peak."
       ],
       "context_links": [
@@ -1091,7 +1091,7 @@
         "TASK-009"
       ],
       "extra_context": [
-        "Clarity's encoded-luminance 4x block grid (crates/luxforge-core/src/modules/presence/clarity.rs) and Dehaze's reduced grid (dehaze.rs) are anchored at the stage origin and independent of the unit's amount, but every tile rebuilds them over its halo: about 2.7x the stage in encodes for Clarity at 60 MP, and again on every amount change. Owner decision 2026-10-03: cache them.",
+        "Clarity's encoded-luminance 4x block grid (crates/luxforge-core/src/modules/presence/clarity.rs) and Dehaze's reduced grid (dehaze.rs) are anchored at the stage origin and independent of the unit's amount, but every tile rebuilds them over its halo: about 2.7x the stage in encodes for Clarity at 60 MP, and again on every amount change.",
         "Only a unit that runs first in its operation is cached (Dehaze whenever present, Clarity when it runs alone): Presence's box filters keep running f64 sums that start at each rectangle's edge, so a later unit's input can differ in its last bits from tile to tile and no shared plane reproduces it byte for byte. Dehaze caches its guide and its dark channel's input, which reads the f64 block mean, with the atmospheric light recorded in the entry.",
         "Contract (rule 14, docs/design/efficiency.md, The reduced-grid cache): the key mirrors EstimateKey (source fingerprint, the domain's input prefix over the prefix hash, stage dimensions, the unit's reduction key), not the amount or the mask. One store in RenderContext beside EstimateStore, 64 MiB in total, named in docs/design/architecture.md's limits; evict least recently used before adding past the budget; refuse an entry larger than the budget.",
         "Filled by the render's own tiles: a tile that computes the planes hands back the cells whose first pixel it holds, the render publishes them when it completes, and a cancelled render publishes nothing. A served tile's input is the first unit's output rectangle; later units keep their rectangles. A point sample reads covering planes and never fills; windowed renders neither read nor fill.",
@@ -1102,7 +1102,7 @@
           "kind": "file",
           "label": "Efficiency design",
           "target": "docs/design/efficiency.md",
-          "relevance": "The full contract and the owner's decision.",
+          "relevance": "The full contract.",
           "locator": "The reduced-grid cache"
         },
         {
@@ -1127,7 +1127,7 @@
           "kind": "file",
           "label": "Decisions",
           "target": "docs/decisions.md",
-          "relevance": "The owner's cache decision.",
+          "relevance": "The efficiency rules.",
           "locator": "CPU and memory efficiency"
         },
         {
@@ -1187,7 +1187,7 @@
         "Workloads: editor-performance on the generated 24 MP and 60 MP JPEGs (Basic then Presence, Detail, Presence after Detail, masked stacks); cold open and committed white balance for each RAW-manifest source with peak RSS and the development's peak; editor-latency drag, paint (long stroke) and settle at 24 and 60 MP, and --presence and --detail drags; a Clarity amount drag for the reduced-grid cache's hit rate, rebuild cost and retained bytes; measure for launch and idle; commit latency with the WAL catalog.",
         "Where the desktop and owner tasks' savings show: the launch scan is skipped only in a normal launch, so measure's empty, 24mp and 60mp workloads (evidence launches) still ask for system information and only its idle row is a normal launch; a brush tick's owner copies are counted by tests/draft_tick (one copy of the path on an unplanned tick, three over a spatial stack) and its latency by editor-latency --mode paint; a collapsed section's saving is per message, largest with a large preset library; the WAL catalog's is commit latency (an import, a slider commit and a stroke commit).",
         "Record results in docs/specs/performance.md under a section of their own, update docs/engineering/performance-rules.md (anti-patterns removed: the serial zero-fills and per-tile planes), docs/features.md and the design's status. A change whose measured saving is nil or negative on its own workload is reverted and recorded as tried.",
-        "Run on 2026-10-04 within the three hours the owner allotted, as two A/B pairs: 946751cc against 135e720e for the core and RAW tasks, e7a65286 against 7a890372 for the owner, catalog and desktop tasks. Every change paid for itself where measured and none was reverted; the workloads not measured within the cap, and full's one failing scenario (raw-panel's crop-started step, failing identically before either body of this work), are recorded in docs/specs/performance.md."
+        "Measured as two A/B pairs, the core and RAW tasks and the owner, catalog and desktop tasks, each against its base: every change paid for itself where measured and none was reverted; the workloads left unmeasured, and full's one failing scenario (raw-panel's crop-started step, failing identically on the base), are recorded in docs/specs/performance.md."
       ],
       "context_links": [
         {

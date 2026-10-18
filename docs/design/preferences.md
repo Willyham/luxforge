@@ -1,10 +1,10 @@
 # Preferences
 
-Status: implemented, at the owner's request of 2026-10-04 and on the [decisions](#decisions) below; verified on the M4 by the unit and owner tests, the `settings` smoke scenario, a check across background launches, and the `quick` and `rendered` tiers.
+Status: implemented, on the [decisions](#decisions) below; verified on the M4 by the unit and owner tests, the `settings` smoke scenario, a check across background launches, and the `quick` and `rendered` tiers.
 
-The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). This design adds two kinds of preference to the one Auto collapse history row the Settings sheet's **General** tab has today:
+The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). Beside the Performance disclosure and the General tab's Auto collapse history row, there are two kinds of preference:
 
-- **Remembered state.** Choices the person already makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame, the last export folder and the last HDR merge's settings.
+- **Remembered state.** Choices the person makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame, the last export folder and the last HDR merge's settings.
 - **General rows.** Choices with no other home: whether new RAW photos get their lens profile, which look they start from, the mask overlay colour, the canvas background, the interface size and where the catalog lives.
 
 ## Rules
@@ -12,7 +12,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 **Protected usage statistics record.** `preferences.json` also holds the [usage statistics](usage-statistics.md#consent-and-first-launch) consent record, `usage_statistics`. It is not a preference: only `usage.prompt.claim` and `usage.set` write it ([protected record](#protected-usage-statistics-record)). The durable prompt claim is bookkeeping, a deliberate exception to the explicit-choice rule below.
 
 - **A preference never changes how a saved recipe renders.** It changes what the workspace draws, where files go, or which actions are proposed to a new photo. A proposed action is an ordinary history entry, so the recipe always records it.
-- **Only explicit choices are stored.** A preference nobody set has no stored value and follows its default. `null` in `preferences.set` removes the stored value. A stored value this build cannot read is refused, as today, without rewriting the file.
+- **Only explicit choices are stored.** A preference nobody set has no stored value and follows its default. `null` in `preferences.set` removes the stored value. A stored value this build cannot read is refused without rewriting the file.
 - **Every preference is programmable.** `preferences.read` answers every preference with its default filled in, and `preferences.set` sets any of them, checked by name. The desktop reads and writes them through the same two methods.
 - **Automated launches never touch the person's preferences.** An evidence run keeps its preferences inside its evidence directory, and a hidden launch never writes the window's frame.
 - **Nothing moves the person's files.** Choosing a catalog location opens or creates a catalog at the next launch. It never moves, copies or deletes the open catalog.
@@ -21,8 +21,8 @@ The person's preferences live outside every catalog, in the host's `preferences.
 
 | Field | Value | Default | Shown | Takes effect |
 | --- | --- | --- | --- | --- |
-| `performance_expanded` | boolean | `true` | Performance disclosure (today) | at once |
-| `auto_collapse_history` | boolean | `true` | General: **Auto collapse history** (today) | next edit |
+| `performance_expanded` | boolean | `true` | Performance disclosure | at once |
+| `auto_collapse_history` | boolean | `true` | General: **Auto collapse history** | next edit |
 | `auto_lens_profile` | boolean | `true` | General: **Correct lens distortion on new RAW photos** | next first preparation |
 | `raw_look` | `standard` or `neutral` | `standard` | General: **Starting look for new RAW photos** | photographs created from then on |
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
@@ -76,7 +76,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
 
 ## Behaviour
 
-- **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed as it is today. Off, a photograph's first preparation does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to first preparations from then on; it never adds or removes an entry on a photograph whose head has moved. A photograph still at its Original (revision 0) is asked at its next preparation, so turning the switch on later can still correct it there. This is a core preference, so every client follows it.
+- **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed. Off, a photograph's first preparation does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to first preparations from then on; it never adds or removes an entry on a photograph whose head has moved. A photograph still at its Original (revision 0) is asked at its next preparation, so turning the switch on later can still correct it there. This is a core preference, so every client follows it.
 - **Starting look for new RAW photos.** Standard by default: a new RAW photograph's Original holds Luxforge's look beside its development ([RAW looks](raw-looks.md#starting-a-new-photo)). Neutral, it holds the bare development. The host asks every module for its contribution to a new photograph's Original (`ToolModule::original`) and hands each the look, so the change applies to photographs created from then on, by a Develop or in a seeded catalog; it never rewrites a photograph already in the catalog or a saved recipe. JPEG photographs get no look. This is a core preference, so every client follows it.
 - **Mask overlay colour.** The colour the Tint overlay is drawn in. The General row and the Masks panel's control both set this desktop's session colour (`workspace.set {mask_overlay_colour}`) and store the preference.
 - **Canvas background.** The colour around the photograph:
@@ -89,13 +89,13 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
 - **Interface size.** It scales everything Iced draws, through the application's scale factor.
   - **Pixels.** The view state's scale factor is the system's factor multiplied by the interface size, so every physical-pixel computation, and 100% zoom, stays one source pixel per display pixel. Values that arrive in the system's points, such as the system's own factor and the trackpad's pinch position, are converted where they arrive.
   - **Changing it.** Iced keeps the window's physical size and sends no resize, so the desktop rescales its logical window size itself and Fit, the clipping grid and region requests follow through the ordinary view-geometry path. The window never resizes.
-  - **The rest.** The Settings sheet shrinks to fit a window too small for it. The status bar's `2×` names the display's own factor. A window moved to a display of another scale is not followed, as before.
+  - **The rest.** The Settings sheet shrinks to fit a window too small for it. The status bar's `2×` names the display's own factor. A window moved to a display of another scale is not followed.
 - **Catalog.** The row shows the catalog this launch uses, with **Choose Folder…**, and **Use Default** when a location is stored.
-  - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it in the current catalog format if the folder holds none, as it creates the default today; its `catalog.index` cache and any `catalog.artifacts` live beside it in that folder. The open catalog stays where it is, and the row says so.
+  - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it in the current catalog format if the folder holds none, as it creates the default; its `catalog.index` cache and any `catalog.artifacts` live beside it in that folder. The open catalog stays where it is, and the row says so.
   - **Notes.** While the stored location differs from this launch's, the row says "Relaunch to use `<path>`". `--catalog` and evidence runs take precedence, and the row says "This launch uses `--catalog`" or "This launch uses the evidence run's catalog".
   - **Missing folder.** If the stored catalog's folder does not exist at launch, as with an unplugged drive, the desktop opens the default catalog instead. The status bar says "Catalog folder not found: `<folder>`; using the default catalog", and the row repeats it. The stored location is kept, so the next launch with the drive present opens it. The event log records `catalog_folder_missing`.
-  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, its format is unsupported, or checking its parent reports an access error or finds a regular file) is refused as the default catalog is today: the launch stops, naming the catalog and, for an older catalog, its format and the one expected, and the file is left unchanged. Only a missing parent selects the default; other parent-check failures keep the stored path for the opening error. There is no fallback to the default for these, so the way past an older catalog is a launch with `--catalog` and Use Default there.
-  - **The command line.** `luxforge-json` keeps requiring `--catalog`.
+  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, its format is unsupported, or checking its parent reports an access error or finds a regular file) is refused as the default catalog is: the launch stops, naming the catalog and, for an older catalog, its format and the one expected, and the file is left unchanged. Only a missing parent selects the default; other parent-check failures keep the stored path for the opening error. There is no fallback to the default for these, so the way past an older catalog is a launch with `--catalog` and Use Default there.
+  - **The command line.** `luxforge-json` requires `--catalog`.
 - **Remembered workspace.** As the editor is built, before its first frame, the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`, sent only when they differ from the defaults, so a launch with nothing stored sends nothing.
   - **Storing.** After the desktop adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. This covers the panel toggles, `O`, `J`, the histogram's triangles, the palette and an evidence run's own workspace steps, which store into the evidence directory.
   - **Not remembered.** The canvas mode, the mask overlay mode and zoom.
@@ -118,8 +118,7 @@ All of the desktop's `preferences.set` calls go through one writer:
 - **One at a time.** One call is in flight. A later change waits, merged with any change already waiting, with the newer value of a field replacing the older.
 - **Shown at once.** A change shows immediately, and the answer that lands confirms it or puts the stored value back.
 - **Refusals.** A refused write says "Could not save preferences: `<reason>`" in the status bar, logs `preference_set_failed` with its fields, and reads back what is stored. A failed mask overlay colour save also reconciles this session's colour with that read, even when the stored preference stayed unchanged; a newer waiting colour choice keeps precedence.
-- **Closing.** Closing the window waits for the last write, as the Performance preference does today.
-- **Existing writes.** The Performance disclosure and Auto collapse history writes move onto this writer.
+- **Closing.** Closing the window waits for the last write.
 
 A held `[` key that resizes the brush therefore writes at most one call in flight plus one waiting, whatever the key repeat rate.
 
@@ -138,7 +137,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
   - The canvas colour is checked for each choice.
 - **Evidence steps.** `{"preference": {<field>: <value>}}` drives the General rows' own messages, sending only values the rows do not already show and waiting for the writer to go idle. The Catalog row takes the catalog file's path, as its dialog's answer, or `null` for Use Default.
 - **Frame state.** Each frame's state records `preferences`: `display` (canvas background, interface size, and the system's and combined scale factor), `applied`, `stored`, `writing`, `waiting` and `error`.
-- **The `settings` smoke scenario** runs its own launch, so its catalog step can name a folder inside the run's evidence directory, and gains:
+- **The `settings` smoke scenario** runs its own launch, so its catalog step can name a folder inside the run's evidence directory, and covers:
   - the canvas background set to grey, with the canvas pixels beside the photograph exactly `#777777`, and no pixel of the panels or the photograph changed, then back to dark;
   - the interface size set to 125%, with the combined scale factor recorded and the title bar's drawn height 1.25 times its height at 100%, then back to 100%;
   - the mask overlay colour set to white;
@@ -155,7 +154,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 - **Desktop messages.**
   - Each remembered change adds at most one `preferences.set`, coalesced by the writer. The window's frame is written once, at close.
   - A changed canvas background or interface size draws one new frame. The interface size reflows the layout once.
-  - No `asset.state`, `history.list`, preview job or upload is added. The photograph is not rendered again: a new interface size changes the photo surface's physical size, and the existing resize path handles that.
+  - No `asset.state`, `history.list`, preview job or upload is added. The photograph is not rendered again: a new interface size changes the photo surface's physical size, and the ordinary resize path handles that.
 - **Timers, polls and subscriptions.** None added.
 - **Repeated work and caches.** None added.
 - **Timing.** No interactive path changes cost, so no `editor-performance` run is needed.
@@ -163,13 +162,10 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 
 ## Decisions
 
-Decided by the owner on 2026-10-04:
-
 - Remember panel visibility, the thirds and clipping overlays, the brush, the window's frame and the last export folder across launches, with no Settings rows of their own.
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
-- The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
-- **Export defaults** (owner, 2026-10-07): the [export settings](export-settings.md) hold quality, metadata and the folder in export presets, and the last export is remembered as `export_last`, with no Settings row, in place of `export_folder`.
+- **Export defaults:** the [export settings](export-settings.md) hold quality, metadata and the folder in export presets, and the last export is remembered as `export_last`, with no Settings row.
 
 Recorded defaults, proposals the owner can revise:
 

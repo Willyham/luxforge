@@ -1,6 +1,6 @@
 # Automatic updates
 
-Status: **implemented; publication and qualification open** (authorized 2026-10-12, Linux first and then macOS). The owner asked on 2026-10-12 for an auto-updater from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); the [move into Applications](#moving-into-applications) with its launch question; [feed publication and the feed route](#publishing-and-serving-the-feeds); and the [macOS Sparkle port](#macos-sparkle), with Sparkle embedded in the release bundle and a local end-to-end update journey. The update key's public half is committed (2026-10-12), so a Linux or macOS release build compiled from then on checks the production feed; a build compiled before it reports `no-update-key`. The API host and its update store are not in place and publication is off, so no build updates itself today. Qualification (TASK-010) remains.
+Status: **implemented; publication and qualification open**. Luxforge updates itself from the first release, so nobody is stranded on v0.1. Sparkle is used on macOS, an in-house updater on Linux, and Windows comes later. The [task plan](../../tasks/project/auto-update.json) describes the work. Built: the update feed format, record signing and feed generation; the core's update state, commands, preferences and flag; [launching past an unsupported catalog](#launching-past-an-unsupported-catalog); the macOS disk image; the [Linux payload updater](#linux-the-payload-updater) with its desktop port; the [desktop's offer, Settings group and palette entry](#the-desktop); the [move into Applications](#moving-into-applications) with its launch question; [feed publication and the feed route](#publishing-and-serving-the-feeds); and the [macOS Sparkle port](#macos-sparkle), with Sparkle embedded in the release bundle and a local end-to-end update journey. The update key's public half is committed, so a Linux or macOS release build checks the production feed. The API host and its update store are not in place and publication is off, so no build updates itself yet. Qualification (TASK-010) remains.
 
 ## Outcome and scope
 
@@ -20,8 +20,6 @@ Out of scope:
 
 ## Decisions
 
-These were made by the owner on 2026-10-12.
-
 - **No launcher.** On macOS, Luxforge offers to move itself into Applications when it runs from anywhere else.
 - **macOS uses Sparkle 2.** It is the standard updater for Developer ID apps.
 - **Linux uses an in-house updater.** It replaces the user-level `Luxforge/` payload, reading the same feed format and checking the same Ed25519 signatures. When the installation is not writable, it falls back to offering a download.
@@ -32,7 +30,7 @@ These were made by the owner on 2026-10-12.
   - **Install updates automatically**, off by default.
 
   Settings states what the check sends.
-- **Catalog compatibility.** The catalog format was reset to 1 on 2026-10-12. Until 1.0.0, a release may still change the catalog format with no migration. From 1.0.0 onwards, every catalog format change ships with an automatic migration from each released format ([decisions](../decisions.md#catalog-compatibility)).
+- **Catalog compatibility.** Until 1.0.0, a release may change the catalog format with no migration. From 1.0.0 onwards, every catalog format change ships with an automatic migration from each released format ([decisions](../decisions.md#catalog-compatibility)).
 
   Until then the updater makes a format change visible:
   - The feed records each release's catalog format.
@@ -63,7 +61,7 @@ Each published release contributes one item to each feed it has a download for. 
 
 The macOS enclosure is the notarized ZIP. The Linux enclosure is the tarball.
 
-**Versions.** The build number orders releases on every platform. It is `CFBundleVersion` on macOS and the build number in `build.json` on Linux, and today it is the workflow run number. The feed generator refuses a set of releases whose build numbers do not rise with their versions, so renaming the workflow cannot silently reorder them.
+**Versions.** The build number orders releases on every platform. It is `CFBundleVersion` on macOS and the build number in `build.json` on Linux, and it is the workflow run number. The feed generator refuses a set of releases whose build numbers do not rise with their versions, so renaming the workflow cannot silently reorder them.
 
 **Channels.** Clients follow only the default channel. The pre-release channel is followed only when the Experiments flag `updates.prerelease-channel` is on, which is how release candidates are qualified.
 
@@ -74,7 +72,7 @@ The macOS enclosure is the notarized ZIP. The Linux enclosure is the tarball.
 - An item is never listed for an asset that is not yet published.
 - A macOS archive that is not Developer ID signed and notarized is never listed.
 
-The `luxforge-update` crate is the format's one home: the record, the appcast written and read, signing and verification, the choice of an update and `release/update.json`. It depends on no other workspace crate, which `cargo xtask check-repository` enforces; xtask builds it and the Linux updater will link it.
+The `luxforge-update` crate is the format's one home: the record, the appcast written and read, signing and verification, the choice of an update and `release/update.json`. It depends on no other workspace crate, which `cargo xtask check-repository` enforces; xtask and the Linux updater use it.
 
 **The update record** is pretty-printed JSON, schema 1:
 
@@ -158,7 +156,7 @@ A failure in either step fails the job before anything is published.
 
 `cargo xtask check-repository` holds every workflow to these rules: each action pinned to a full commit, a top-level `permissions` block, write permission for the release's publish job `contents` only, no `secrets: inherit`, `toJSON(secrets)`, `pull_request_target` or `write-all`, and each of the two keys named exactly once, in its own script step.
 
-**The store and the publication mechanism** were delegated to the backend's deployment. The choice, recorded here, is the simplest that fits the [usage statistics reference](../../services/usage-statistics/README.md): one host and one API process, behind a proxy that forwards every path unchanged.
+**The store and the publication mechanism** are the simplest that fit the [usage statistics reference](../../services/usage-statistics/README.md): one host and one API process, behind a proxy that forwards every path unchanged.
 
 - **The store** is a directory on the API host. `STORE/current` is a link to the latest publication, `STORE/feeds-<UTC time>/`, which holds `<target>/appcast.xml`.
 - **Publication** uses an SSH key that is `restrict`ed in `authorized_keys` and forced to run `install-feeds.py STORE` ([script](../../services/usage-statistics/install-feeds.py)), for an account that owns only the store. The key can do nothing but hand over a deploy archive.
@@ -177,7 +175,7 @@ A failure in either step fails the job before anything is published.
 The operator provisions:
 
 - the production `api.luxforge.app`, which usage statistics also awaits;
-- the update store and the publication account ([deployment checklist](../../services/usage-statistics/DEPLOYMENT.md#16-the-update-feed-route));
+- the update store and the publication account ([deployment checklist](../../services/usage-statistics/DEPLOYMENT.md#the-update-feed-route));
 - the secrets and variables.
 
 No v0.1 build may be published as release-ready until the route answers over HTTPS.
@@ -423,7 +421,6 @@ Any failure before the swap, a cancelled download included, removes its staging 
 
 - **A Linux release build** gets the port when a person launches it and the build has a public key. A release build is one compiled with `LUXFORGE_RELEASE_VERSION`, and the feed base URL and key come from the `release/update.json` it was compiled with. A release build without the key reports `no-update-key`. A binary outside a payload, with no `build.json` beside it, is treated as a development build.
 - **Every other launch** reports `unavailable` with `development-build`. That covers development and test builds, and hidden, evidence and test-receiver launches, which is how smoke, verify and background runs start. None of them contacts the real feed.
-- **macOS** stays `unavailable` until its Sparkle port is selected in the same place.
 - **A debug Linux build** can be pointed at a local feed and key for a manual test ([development](../engineering/development.md#a-local-update-feed)). A release build never reads those variables.
 
 ## Windows later

@@ -1,15 +1,14 @@
 //! What a masked Presence layer costs the GPU-preview budget with every link's scratch planes in
 //! the slot's one pool and Texture's band in one channel (`docs/design/gpu-preview.md`, "Bounds";
 //! recorded in `docs/specs/performance.md`, "The scratch pool's memory"): the slot's charge, which
-//! the live slot's `gpu_preview_in_use_bytes` equals, its breakdown, how many layers the budget
-//! holds, and what the same plans charge with each link holding its own scratch planes, the layout
-//! without the pool.
+//! the live slot's `gpu_preview_in_use_bytes` equals, its breakdown and how many layers the
+//! budget holds.
 use super::stage;
 use crate::app::compare_after::DEVICE_TEXTURE_LIMIT;
 use crate::app::gpu_plan::surface_plan_over;
 use crate::app::gpu_qualification::{headless, largest_view};
 use luxforge_core::{
-    Component, ComponentMode, GpuAnswer, GpuPlanRequest, GpuSpatial, Layer, Mask, ModuleRegistry,
+    Component, ComponentMode, GpuAnswer, GpuPlanRequest, Layer, Mask, ModuleRegistry,
     PRESENCE_EFFECT, Recipe, Region, gpu_plan,
 };
 use luxforge_gpu::{
@@ -86,27 +85,6 @@ fn stack(fields: Fields, layers: usize) -> Recipe {
         recipe.masks.push(mask);
     }
     recipe
-}
-
-/// The bytes a link holding `spatial` takes for scratch planes of its own: every plane the core
-/// declares less those an apply reads, which the link keeps.
-fn own_scratch(spatial: &GpuSpatial, origin: (u32, u32), size: (u32, u32)) -> u64 {
-    let kept: u64 = spatial
-        .planes
-        .iter()
-        .enumerate()
-        .filter(|(number, _)| {
-            spatial
-                .applies
-                .iter()
-                .any(|apply| apply.planes.contains(number))
-        })
-        .map(|(_, plane)| {
-            let (width, height) = plane.extent(origin, size);
-            u64::from(width) * u64::from(height) * plane.format.texel_bytes()
-        })
-        .sum();
-    spatial.plane_bytes(origin, size) - kept
 }
 
 /// `plan` with `links` links, each a copy of one of its spatial steps' links in turn: a chain
@@ -193,15 +171,11 @@ struct Charge {
     textures: u64,
     /// Each link's words and blocks buffers, in chain order.
     buffers: Vec<u64>,
-    /// Each link's own scratch planes, in chain order.
-    scratch: Vec<u64>,
-    /// The slot with each link holding its own scratch planes.
-    unpooled: u64,
     line: String,
 }
 
 /// The slot's charge for `layers` masked layers of `fields` at `place` over `held`, its breakdown,
-/// and the layout without the pool; and the surface plan, for [`repeated`].
+/// and the surface plan, for [`repeated`].
 #[allow(clippy::too_many_arguments)]
 fn measure(
     qualifier: &Qualifier,
@@ -262,13 +236,6 @@ fn measure(
         chain.total() + textures + buffers.iter().sum::<u64>(),
         "{label}, {layers} layers: the slot is its chain, textures and buffers"
     );
-    // Each link's own scratch: the core's planes less the ones its applies read, which are the
-    // surface step's planes.
-    let scratch: Vec<u64> = plan
-        .spatial
-        .iter()
-        .map(|spatial| own_scratch(spatial, origin, size))
-        .collect();
     for (core, surface) in plan.spatial.iter().zip(&spatial) {
         assert_eq!(
             core.plane_bytes(origin, size),
@@ -276,30 +243,17 @@ fn measure(
             "{label}: the surface holds the core's planes"
         );
     }
-    let unpooled = slot - chain.pool + scratch.iter().sum::<u64>();
-    // Links of one shape: the pool is one link's scratch, so the layout before it charged the
-    // slot each later link's scratch again.
-    assert_eq!(
-        unpooled,
-        slot + scratch[1..].iter().sum::<u64>(),
-        "{label}, {layers} layers: the pool is one link's scratch"
-    );
-    if layers >= 2 {
-        assert!(slot < unpooled, "{label}, {layers} layers: the pool saves");
-    }
     let boundary = u64::from(size.0) * u64::from(size.1) * format.texel_bytes() as u64;
     let line = format!(
         "{label}, {layers} layers: slot {slot} B = chain {} B (intermediates {}; kept per link, \
          planes and parameter slices, {}; pool {} B) + boundary {boundary} B + output in its size \
-         bucket and uniform {} B + buffers per link {}; own scratch per link {}; each link holding \
-         its own scratch {unpooled} B",
+         bucket and uniform {} B + buffers per link {}",
         chain.total(),
         runs(&chain.intermediates),
         runs(&chain.kept),
         chain.pool,
         textures - boundary,
         runs(&buffers),
-        runs(&scratch),
     );
     (
         Charge {
@@ -308,8 +262,6 @@ fn measure(
             chain,
             textures,
             buffers,
-            scratch,
-            unpooled,
             line,
         },
         surface,
@@ -325,11 +277,10 @@ fn measure(
 /// boundary and a RAW's `f32` one on the linear path, whose intermediates are `rgba32float`. For
 /// every cell: the charge, the increment of each layer after the first, the chain's breakdown
 /// (`chain_charge`), how many layers the 2 GiB budget holds — from the first charge and the
-/// increment, checked by charging that count and the next directly — and the charge with each link
-/// holding its own scratch planes, the layout before the pool, with today's one-channel band.
+/// increment, checked by charging that count and the next directly.
 ///
 /// It asserts only what must hold: each charge is the first plus the increment for every layer
-/// after it; the pool charges less than the links' own scratch from two layers; and every figure
+/// after it; and every figure
 /// is its chain's charge, the boundary, the output in its size bucket, its uniform and the
 /// buffers, as `slot_charge` composes it. The figures themselves are the measurement's.
 ///
@@ -404,7 +355,6 @@ fn gpu_shared_scratch_measured() {
     );
     let mut charges = Vec::new();
     let mut breakdowns = Vec::new();
-    let mut unpooled = Vec::new();
     let mut details = Vec::new();
     for fields in [Fields::TextureClarity, Fields::All] {
         for place in places {
@@ -501,26 +451,14 @@ fn gpu_shared_scratch_measured() {
                 let two = &measured[1];
                 let boundary = u64::from(width) * u64::from(height) * format.texel_bytes() as u64;
                 breakdowns.push(format!(
-                    "{row} {} | {} | {} | {} | {} | {} | {} | {} |",
+                    "{row} {} | {} | {} | {} | {} | {} | {} |",
                     mb(boundary),
                     mb(two.textures - boundary),
                     mb(two.chain.intermediates[0]),
                     mb(two.chain.kept[1]),
                     mb(two.chain.pool),
-                    mb(two.scratch[1]),
                     two.buffers[1],
                     mb(two.chain.intermediates[0] + two.chain.kept[1] + two.buffers[1]),
-                ));
-                let unpooled_increment = measured[1].unpooled - first.unpooled;
-                let cells: Vec<String> =
-                    measured.iter().map(|charge| mb(charge.unpooled)).collect();
-                let sixteen = measured.last().expect("16 layers");
-                unpooled.push(format!(
-                    "{row} {} | {} | {} | {} |",
-                    cells.join(" | "),
-                    mb(unpooled_increment),
-                    within(first.unpooled, unpooled_increment),
-                    mb(sixteen.unpooled - sixteen.slot),
                 ));
             }
         }
@@ -552,28 +490,14 @@ fn gpu_shared_scratch_measured() {
     eprintln!(
         "\n{test}: the breakdown, MB: the slot's boundary, its output in its size bucket with its \
          uniform, and of each layer after the first its intermediate, kept planes with their \
-         parameter slices and buffers; the pool once; and the scratch planes a link held as its \
-         own before the pool\n"
+         parameter slices and buffers; and the pool once\n"
     );
     eprintln!(
         "{header} Boundary texture | Output and uniform | Intermediate | Kept planes and \
-         parameters | Pool | A link's own scratch | Words and blocks buffers, B | Each layer after \
-         the first |"
+         parameters | Pool | Words and blocks buffers, B | Each layer after the first |"
     );
-    eprintln!("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    eprintln!("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for row in &breakdowns {
-        eprintln!("{row}");
-    }
-    eprintln!(
-        "\n{test}: each link holding its own scratch planes, as before the pool, with today's \
-         one-channel band, MB\n"
-    );
-    eprintln!(
-        "{header} 1 layer | 2 | 4 | 8 | 16 | Each layer after the first | Layers within 2 GiB | \
-         The pool saves at 16 |"
-    );
-    eprintln!("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
-    for row in &unpooled {
         eprintln!("{row}");
     }
     eprintln!("\n{test}: every charge, in bytes\n");
@@ -587,7 +511,7 @@ fn gpu_shared_scratch_measured() {
         eprintln!(
             "{test}: 100%, {source}: drawing the view's {}x{} region inside the window instead of \
              the window charges {} B less in every cell; the window's output in the photograph's \
-             square size bucket, as when the design measured it, would charge {} B more",
+             square size bucket, as a plan that is not a region takes, would charge {} B more",
             view.width,
             view.height,
             window_textures(format) - view_textures(format),

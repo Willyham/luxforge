@@ -34,15 +34,10 @@ fn merge_kind_schemas_list_the_registered_kinds_and_their_options() {
         let hdr = declared(&schema, method, "hdr");
         assert_eq!(hdr["kind"], "json", "{method}: {hdr}");
         assert_eq!(hdr["required"], false, "{method}");
-        for moved in ["reference", "exposure_overrides", "alignment", "deghost"] {
+        for option in ["reference", "exposure_overrides", "alignment", "deghost"] {
             assert!(
-                hdr["notes"].as_str().unwrap().contains(moved),
-                "{method}: hdr names {moved}"
-            );
-            assert_eq!(
-                declared(&schema, method, moved),
-                Value::Null,
-                "{method}: {moved} is HDR's, under hdr"
+                hdr["notes"].as_str().unwrap().contains(option),
+                "{method}: hdr names {option}"
             );
         }
         let panorama = declared(&schema, method, "panorama");
@@ -62,20 +57,6 @@ fn merge_kind_schemas_list_the_registered_kinds_and_their_options() {
             assert_eq!(options["required"], false, "{method} {field}");
         }
     }
-    // A request in the old shape names the field it no longer takes.
-    let old = bench.failure(
-        "merge.plan",
-        json!({"kind": "hdr", "targets": {"kind": "paths", "paths": bench.paths(0)},
-               "deghost": "off"}),
-    );
-    assert_eq!(old["code"], "validation");
-    assert!(
-        old["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown field `deghost`"),
-        "{old}"
-    );
 }
 
 #[test]

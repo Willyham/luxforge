@@ -547,7 +547,7 @@ impl Editor {
                 self.select.state.menu = None;
                 self.select.state.catalog.close();
                 // Another view chosen while a card or folder is being read: the reading goes on
-                // as the status bar's job, and its end no longer replaces the view.
+                // as the status bar's job, and its end leaves the view as it is.
                 self.select.reading = None;
                 self.select.stale_while_reading = false;
                 return self.evaluate(model::source_query(source));

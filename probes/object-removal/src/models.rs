@@ -106,7 +106,7 @@ pub fn directory(explicit: Option<PathBuf>) -> PathBuf {
     crate::paths::models_directory(explicit)
 }
 
-// The generative candidates (TASK-005), in their own ignored directory
+// The generative candidates, in their own ignored directory
 // (`private/models/generative/`, `--gen-models` or `LUXFORGE_GENERATIVE_MODELS`). Each is pinned
 // at the publisher's commit named in its source; the README's generative section lists them with
 // their licences.

@@ -1413,14 +1413,12 @@ mod tests {
         cases
     }
 
-    /// The normalized mosaics of [`normalization_cases`] at every lane count keep the digests
-    /// of the native normalization this replaced, which the Rust normalization matched bit for
-    /// bit on these cases before the native one was deleted. Normalization is IEEE `f32`
-    /// subtraction, division and multiplication alone, so the digests hold on every
-    /// architecture.
+    /// The normalized mosaics of [`normalization_cases`] at every lane count keep their recorded
+    /// digests. Normalization is IEEE `f32` subtraction, division and multiplication alone, so the
+    /// digests hold on every architecture.
     #[test]
     #[slow]
-    fn normalized_mosaics_keep_the_native_bits() {
+    fn normalized_mosaics_keep_their_pinned_bits() {
         let expected = [
             "176f4073ce6f9c7be0762983ddefb466faf64dfa15b55daa867b0f8ab2bf59aa",
             "c79700cd6b8589be63cb0e089bc6c3c70fb7dacb91e21fec763dc24283036fed",
@@ -1718,9 +1716,9 @@ mod tests {
     }
 
     /// The complete developed planes of synthetic Bayer and X-Trans mosaics,
-    /// serial and on the pool, keep the bits they had before the RAW
-    /// preparation clean-ups. The digests were captured on the owner's M4;
-    /// other architectures still compare serial against pooled.
+    /// serial and on the pool, keep their pinned bits. The digests were
+    /// captured on the owner's M4; other architectures still compare serial
+    /// against pooled.
     #[test]
     fn synthetic_developments_keep_their_pinned_bits() {
         let never = AtomicBool::new(false);
@@ -2755,9 +2753,9 @@ mod tests {
             for value in &serial_output {
                 hash.update(value.to_bits().to_le_bytes());
             }
-            // Captured from the serial RCD before its tiles ran as executor
-            // jobs, on the owner's M4 Mac. Other architectures still run the
-            // complete serial/pooled comparisons without claiming bit parity.
+            // The serial in-order development's pinned digest, captured on the
+            // owner's M4 Mac. Other architectures still run the complete
+            // serial/pooled comparisons without claiming bit parity.
             let expected = if name == "nikon_z6.NEF" {
                 "4de12f86889bada90d30728c4eb3d4f7ed0b0b4a2b553c8a0116a82e800fb2de"
             } else {
@@ -3276,7 +3274,7 @@ mod tests {
             for value in &serial.data {
                 hash.update(value.to_bits().to_le_bytes());
             }
-            // Captured from the pre-change binary on the owner's M4 Mac.
+            // Captured on the owner's M4 Mac.
             // Other architectures still run the complete serial/pooled
             // comparison below without claiming cross-platform bit parity.
             assert_eq!(
