@@ -11,7 +11,7 @@
 //! - **Each step runs once a tick.** A spatial step's passes read their input from the texture
 //!   the link before wrote, so a pass's `lf_source` is one texel load, never the steps before it
 //!   evaluated again at every texel a filter reads. A chain of spatial steps costs the sum of its
-//!   links, where recomputing every earlier step at every read made it grow with the square of
+//!   links, where recomputing every earlier step at every read would grow with the square of
 //!   their count.
 //! - **A link is its own sequence.** Its modules hold only its own steps' programs, so a pass is
 //!   the same module wherever its spatial step sits in a chain, and two masked layers of one shape

@@ -123,16 +123,9 @@ impl Sharpen {
     }
 
     /// The gain, the coring threshold squared and the masking scale squared the unit holds.
-    #[cfg(any(test, feature = "qualification"))]
+    #[cfg(feature = "qualification")]
     pub(super) fn coefficients(&self) -> [f32; 3] {
         [self.gain, self.theta_squared, self.mask_squared]
-    }
-
-    /// The blur's and the guide's kernels the unit holds: what the frozen reference in
-    /// `exactness.rs` runs.
-    #[cfg(test)]
-    pub(super) fn kernels(&self) -> (&[Kernel; 2], &[Kernel; 2]) {
-        (&self.kernels, &self.guide)
     }
 
     /// The limiter over the rows of `out` from the planes of the input's lightness `l`, its blur

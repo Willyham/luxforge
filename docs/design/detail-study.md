@@ -1,6 +1,6 @@
 # Detail numerical study
 
-Status: independent numerical reference frozen for the implementation prototype; **quality qualification is incomplete**. The broad correlated-chroma, proposed proxy p99 and literal noisy-ramp neighbour-jump gates fail. Full-pipeline probes and inspection of the four supplied photographs add terminal-chroma and fine-detail preservation concerns. These failures are not passing evidence.
+Status: independent numerical reference frozen; **quality qualification is incomplete**. The broad correlated-chroma, proposed proxy p99 and literal noisy-ramp neighbour-jump gates fail. Full-pipeline probes and inspection of the four supplied photographs add terminal-chroma and fine-detail preservation concerns. These failures are not passing evidence.
 
 The independent `f64` equations live in `crates/luxforge-reference/src/detail.rs`. This crate imports no production crate. `tests/studies/detail.rs` generates and reloads the 40 deterministic specifications and complete reference outputs in `fixtures/detail/cases.json`, and recomputes all 116 rows of `measurements.json`. The production implementation is checked against those outputs rather than used to generate them. The measurement report retains five failing rows: the two rejected three-level chroma controls and the four-level sigma-16, proxy p99 and noisy-ramp gates.
 
@@ -10,7 +10,7 @@ The eight fields are sharpening 0–150 (gain `/100`), radius 0.5–3.0 px (Gaus
 
 Each unit converts signed linear sRGB to the project's Oklab, retaining extended values. Every separable smoothing pass uses `center + Σ weight * (sample − center)`, excluding the center tap. B3 taps occur in order −2, −1, +1, +2. Gaussian taps occur in ascending coordinate order excluding zero. Constants are therefore exact. A zero accumulated Lab delta returns the original RGB without conversion back. Otherwise, when both reconstructed opponent channels have absolute value at most `1e-6`, all channels equal `L³`; other values use the published Oklab inverse. No intermediate RAW clipping or gamut clamp occurs.
 
-Noise reduction uses three luminance and **four chroma** undecimated B3 levels with spacings 1, 2, 4 and 8. The fourth level affects chroma only. Band noise factors are 0.8914, 0.1992, 0.0860 and 0.0417. The fixed moderate settings are luminance 40, colour 40, sharpening 50 and radius 1, with ancillary defaults. Thresholds are `T_L = 0.10*(luminance/100)^1.5*k` and `T_C = 0.10*(colour/100)^1.5*k`. This threshold tuning was needed because the initial 0.05/0.04 baseline reduced the strongest dark-patch noise by only 8.3%. The frozen values keep the selected formulation and pass the flat-patch threshold without increasing scale count beyond the contingency.
+Noise reduction uses three luminance and **four chroma** undecimated B3 levels with spacings 1, 2, 4 and 8. The fourth level affects chroma only. Band noise factors are 0.8914, 0.1992, 0.0860 and 0.0417. The fixed moderate settings are luminance 40, colour 40, sharpening 50 and radius 1, with ancillary defaults. Thresholds are `T_L = 0.10*(luminance/100)^1.5*k` and `T_C = 0.10*(colour/100)^1.5*k`. A 0.05/0.04 scale reduces the strongest dark-patch noise by only 8.3%. The frozen values keep the selected formulation and pass the flat-patch threshold without increasing scale count beyond the contingency.
 
 Protection uses a direct 3×3 box mean of the band's squared lightness, or the chroma vector's squared magnitude. `π = energy/(energy+(3T)²)` and `T_eff = T*(1−detail/100*π)`. Non-negative garrote applies `max(0,1−T_eff²/magnitude²)` to the scalar or whole chroma vector. Zero magnitude contributes zero delta. The sum of shrinkage deltas is added to the original Lab rather than reconstructed from separately rounded bands.
 
@@ -38,7 +38,7 @@ The 384×257 proxy probe is a noisy multiaxis grating with noninteger sampled ax
 
 The dark-ramp probe holds input codes 8–40 with 1.5-code Gaussian noise. After denoise it compares 8-bit, 16-bit and float hand-offs, then exposure +2 EV and the independent Basic Shadows +100 curve. Actual adjacent output-code jumps reach 15 codes with 8-bit and **16 codes with either 16-bit or float**, failing the literal one-code gate. Stochastic noise survives the garrote, so this metric cannot isolate quantization contours. Row-averaged neighbouring columns reach 0.625 codes with 8-bit, 0.578 with 16-bit and 0.516 with float; these are supplementary diagnostics, not substitutes for the failed gate. A revised banding-isolation metric has not been accepted. The production gate must not claim success based on these averages.
 
-The three known failing gate tests carry explicit ignored reasons and can be run individually with `--ignored`; they retain the original assertions and fail when explicitly run. Their skips are incomplete qualification. Passing default reference tests proves fixture consistency, the independent flat-patch/edge/RMS properties and the independent sigma-8 chroma gate. It does not qualify the terminal production chroma result below.
+The three known failing gate tests carry explicit ignored reasons and can be run individually with `--ignored`; they keep their assertions and fail when explicitly run. Their skips are incomplete qualification. Passing default reference tests proves fixture consistency, the independent flat-patch/edge/RMS properties and the independent sigma-8 chroma gate. It does not qualify the terminal production chroma result below.
 
 ## Full-pipeline synthetic qualification
 
@@ -53,10 +53,10 @@ The three known failing gate tests carry explicit ignored reasons and can be run
 | Chroma sigma 16, terminal output against full-precision input | 7.96% reduction | **Fail 25%**, as the f64 broad-scale gate does |
 | Moving linear-source proxy (developed-RAW path) | RMS ≤1.107 codes; p99 at 2× is 4 codes | RMS passes; **p99 fails 3** |
 | Moving JPEG proxy | RMS ≤1.137 codes; p99 ≤3 codes | Pass on this encoded probe; does not replace the failing unrounded reference/RAW result |
-| Dark ramp, actual JPEG 16-bit hand-off | Maximum adjacent jump 16 codes | **Fail 1**, unchanged from the reference disposition |
+| Dark ramp, actual JPEG 16-bit hand-off | Maximum adjacent jump 16 codes | **Fail 1**, as in the reference disposition |
 | Dark-ramp controls | Forced 8-bit 15 codes; linear float path 16 codes | Confirms the literal metric also responds to remaining noise |
 
-Terminal RGBA8 quantization contributes a chroma floor. Comparing processed terminal output with the terminal Original gives 24.49% / 14.74% reductions for sigma 8 / 16. These are supplementary diagnostics with no replacement gate; even the sigma-8 diagnostic is below 25%. No threshold, formulation or coefficient was changed after these observations.
+Terminal RGBA8 quantization contributes a chroma floor. Comparing processed terminal output with the terminal Original gives 24.49% / 14.74% reductions for sigma 8 / 16. These are supplementary diagnostics with no replacement gate; even the sigma-8 diagnostic is below 25%. No threshold, formulation or coefficient is tuned to these observations.
 
 ## Supplied photographic inspection
 

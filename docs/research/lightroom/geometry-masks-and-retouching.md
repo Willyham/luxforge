@@ -26,7 +26,7 @@ This is a compositing model, not proof of Lightroom's exact local-tone implement
 
 **D.** Brush Size, Feather, Flow and Density have separate roles: footprint, edge softness, application rate and stroke transparency. Auto Mask constrains painting using similar color. [S27: Masking](https://helpx.adobe.com/lightroom-classic/desktop/process-and-develop-photos/masking.html)
 
-**C.** Persisting only an overlay screenshot loses useful semantics. A future editor may need brush samples, coordinate space, pressure/flow behavior, component composition and computed selection data. Whether Lightroom stores each selection as vectors, rasters, compressed fields or a mixture is not established here.
+**C.** Persisting only an overlay screenshot loses useful semantics. A mask editor may need brush samples, coordinate space, pressure/flow behavior, component composition and computed selection data. Whether Lightroom stores each selection as vectors, rasters, compressed fields or a mixture is not established here.
 
 **P.** For Luxforge, distinguish:
 
@@ -35,7 +35,7 @@ This is a compositing model, not proof of Lightroom's exact local-tone implement
 - Recomputing an automatic selection from preserving a user's accepted selection.
 - Copying a semantic instruction such as “select subject” from copying fixed coordinates.
 
-These distinctions belong in the common operation API if masks are scoped later. A pointer gesture cannot be the sole representation of the operation.
+These distinctions belong in the common operation API. A pointer gesture cannot be the sole representation of the operation.
 
 ## Clone, heal and content generation
 
@@ -53,4 +53,4 @@ These distinctions belong in the common operation API if masks are scoped later.
 
 ## Testing implications
 
-**P.** Check masks and repairs across crop/rotate/flip, proxy/full resolution and export. Include strokes at image edges, intersected soft masks, overlapping repairs, unavailable derived assets and updates to automatic selections. Geometry correctness and the visual naturalness of a healed region need different evidence. None of these future tools was implemented or tested in this research task.
+**P.** Check masks and repairs across crop/rotate/flip, proxy/full resolution and export. Include strokes at image edges, intersected soft masks, overlapping repairs, unavailable derived assets and updates to automatic selections. Geometry correctness and the visual naturalness of a healed region need different evidence. This research implemented and tested none of these tools.

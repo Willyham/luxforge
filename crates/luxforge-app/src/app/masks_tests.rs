@@ -618,8 +618,7 @@ impl Masking {
     /// A mask gesture's `draft.set` runs synchronously on the desktop thread, in the update that
     /// produced the geometry, so nothing is left in flight or queued behind it and the draft the
     /// session reports holds every field the gesture would commit. There is no answer for a test to
-    /// deliver: asserting that the update already took it up is the whole of what a runtime task
-    /// used to be simulated for.
+    /// deliver: asserting that the update already took it up is the whole check.
     fn assert_geometry_sent(&self) {
         let Some(gesture) = self.editor.core_gesture() else {
             return;
@@ -3091,7 +3090,7 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
 /// step returned. The mask here holds a component whose coverage depends on the pixel the masked
 /// operation receives, and its only layer is a masked Presence layer placed after the global one —
 /// so reading that pixel would evaluate a spatial tile per grid cell, and the host refuses the grid
-/// (proposal P16 of `docs/design/range-study.md`, decided and built). A step that asked for the
+/// (P16 of `docs/design/range-study.md`). A step that asked for the
 /// overlay would otherwise wait out the run's whole deadline for a texture nothing will fill.
 #[test]
 fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
@@ -4035,10 +4034,9 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
     );
 }
 
-// ---- The draft races the one driver closes. Each of these failed against the two drivers it
-// replaced; the base versions are recorded with the change that introduced the driver. The races
-// of a `draft.begin`, `draft.reapply` or `draft.cancel` in flight have no test here: those requests
-// answer in the update that sends them, so nothing of theirs is left in flight to race.
+// ---- The draft races the one driver closes. The races of a `draft.begin`, `draft.reapply` or
+// `draft.cancel` in flight have no test here: those requests answer in the update that sends them,
+// so nothing of theirs is left in flight to race.
 
 /// Wait for the preview queue to finish what it holds, taking each result up as the runtime does.
 fn drain_queue(masking: &mut Masking) {

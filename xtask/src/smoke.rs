@@ -2231,7 +2231,7 @@ mod tests {
     }
 
     /// The render-time check accepts a presented frame's own figure in the editor's wording and
-    /// refuses what the status bar used to show: a figure that is the time since the last request,
+    /// refuses a figure that is not the frame's own: the time since the last request,
     /// a missing one, and a status bar that states a figure no frame reported.
     #[test]
     fn render_times_must_be_each_frames_own_and_plausible() {
@@ -2263,7 +2263,7 @@ mod tests {
             &[frame("Exact render \u{b7} 12 ms", 12.4, false)],
         );
         assert!(good.is_ok(), "{good:?}");
-        // The old figure: half a million milliseconds since the open.
+        // A figure that is the time since the open: half a million milliseconds.
         let none: [Value; 0] = [];
         assert!(expect_render_times(&[displayed(json!(500_000.0))], &none).is_err());
         assert!(expect_render_times(&[displayed(Value::Null)], &none).is_err());

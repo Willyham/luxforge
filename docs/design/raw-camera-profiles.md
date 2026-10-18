@@ -2,8 +2,8 @@
 
 Luxforge's camera policy lives in `crates/luxforge-raw/data/cameras.json`.
 The catalog selects supported recording modes and implemented processing
-capabilities. The modern-camera expansion and its approved resource bounds
-are tracked in [corpus camera support](corpus-camera-support.md) and
+capabilities. Modern and corpus camera coverage and their resource bounds
+are described in [corpus camera support](corpus-camera-support.md) and
 [modern camera support](modern-camera-support.md).
 
 ## Format and ownership
@@ -35,7 +35,7 @@ unknown versions/strategies, duplicate identities/mode identifiers, ambiguous mo
 selectors, invalid dimensions, and unsupported capability combinations fail the
 build. The build then emits the validated catalog as static Rust data, so the
 library parses no JSON at all, and a test proves that data equals the parsed
-file. No runtime file lookup, download or JSON parsing is introduced, and no
+file. There is no runtime file lookup, download or JSON parsing, and no
 environment variable changes the shipped catalog: the editor's
 `LUXFORGE_TEST_CAMERAS=1` admits only the built-in test table (see
 [Acceptance](#acceptance)). Build-generated native allowlist entries come from the same
@@ -72,7 +72,7 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | Camera `dng` | `null` for backend calibration, or the complete DNG settings object below; enabled together with `dng_tags` |
 | Mode `processing` | Optional `{crop, dng}` selecting the effective processing settings for this observed mode |
 | DNG `container` | `uncompressed_u16_single_strip`, `integer_cfa_single_segment` or `integer_linear_single_segment` for the strict single-segment paths; `integer_cfa_segments` or `integer_linear_segments` for bounded strips/tiles and source-authoritative ActiveArea. All require integer storage and integral crop; at most 65,536 nonoverlapping, in-file segments |
-| `calibration` | `root_fixed_matrix` preserves the strict existing path. `source_reference_matrix` reads root source ColorMatrix, CameraCalibration, AnalogBalance and AsShotNeutral or AsShotWhiteXY, validating both matrices and any ForwardMatrix without applying a DCP profile or illuminant interpolation. `monochrome` has no colour matrix or white balance |
+| `calibration` | `root_fixed_matrix` selects the strict fixed-matrix path. `source_reference_matrix` reads root source ColorMatrix, CameraCalibration, AnalogBalance and AsShotNeutral or AsShotWhiteXY, validating both matrices and any ForwardMatrix without applying a DCP profile or illuminant interpolation. `monochrome` has no colour matrix or white balance |
 | `illuminants`, `selected_matrix` | Expected two DNG illuminant IDs; select matrix `1` or `2` for fixed XYZ-to-camera calibration |
 | `calibration_identity` | Persisted description of the selected calibration; update when its interpretation changes |
 | `corrections` | `stage3_gain_map_then_warp` for the GainMap→Warp path, or `stage_ordered` for bounded ordered opcode processing |
@@ -97,11 +97,11 @@ nonunity scaling, fractional crops, unsupported channel layouts and ambiguous
 calibration; these are algorithm constraints shared by every profile selecting it.
 
 To add a camera, create a unique make/model entry with mode selectors from
-actual decoder/container evidence, choose existing crop and processing
+actual decoder/container evidence, choose implemented crop and processing
 capabilities, and run the RAW unit and authentic-file tests plus editor
 verification. `cargo build -p luxforge-raw --locked` validates the catalog and
 regenerates both language tables. Update the support/coverage documentation only
-after the new recording modes are demonstrated. Changing a profile does not
+after its recording modes are demonstrated. Changing a profile does not
 rewrite catalogs: incompatible source interpretation still fails explicitly.
 
 Reproduce corpus selection and decoder evidence with
@@ -128,8 +128,8 @@ RAW payloads and generated outputs remain outside the repository.
   the owner Air 2S fixture supplies the remaining profile/mode. Every retained
   source passes strict M4 decode/development regression. Controlled colour and
   unsampled recording settings remain separate.
-- Camera addition using existing strategies requires only data; implementing a
-  new format/algorithm still requires code, tests and authentic qualification.
+- Adding a camera with implemented strategies requires only data; a new
+  format or algorithm requires code, tests and authentic qualification.
 - Invalid catalogs fail explicitly, with no partially accepted entries.
 - Tests cover profile mutation, malformed/ambiguous catalogs, unknown cameras,
   mode rejection and required-correction selection. Authentic source/mosaic and
@@ -141,14 +141,14 @@ RAW payloads and generated outputs remain outside the repository.
 
 ## Performance checklist
 
-Source reads, hashing and unpack still use the verified source worker/cache.
+Source reads, hashing and unpack use the verified source worker/cache.
 Profiles add a bounded immutable catalog. Sensor repairs add at most 65,536
 sorted sparse patches shared with the source, with no additional full-frame
-mosaic copy. New source-segment sensor repairs exclude masked padding, while
-the existing strict paths retain their frozen full-frame repair interpretation.
+mosaic copy. Source-segment sensor repairs exclude masked padding, while
+the strict paths keep their frozen full-frame repair interpretation.
 Stage-one vignette gain applies before black subtraction; stage-two CFA gain
 maps multiply normalized sensor values before demosaic. Neutral sampling validates the bounded patch list and uses binary
 search per sampled site; it never develops or renders a frame. Owner work,
-desktop refreshes and timers gain no frame processing. Native allowlist lookup and mode classification run before unpack. Existing
-exact mosaic, correction, geometry and sharing tests remain applicable. Timing
-verification covers photo-sized workloads; this refactor claims no speedup.
+desktop refreshes and timers do no frame processing. Native allowlist lookup and mode classification run before unpack. The
+exact mosaic, correction, geometry and sharing tests apply. Timing
+verification covers photo-sized workloads; the catalog claims no speedup.

@@ -36,7 +36,7 @@ These ideas complement the existing [module/API design](../../design/modules-and
 
 **S.** darktable can coalesce current-module history changes and truncate later history when a new edit starts from an earlier endpoint, subject to its internal exceptions. [History implementation](storage-and-history.md#history-is-a-sequence-of-state-assignments).
 
-**P.** Luxforge should retain its already accepted append-only Restore-action behavior, preserving later actions. This is a consequential product difference, not an implementation detail to inherit accidentally from a reference editor. A useful reference can demonstrate both techniques to adopt and policies to reject.
+**P.** Luxforge keeps its append-only Restore-action behavior, preserving later actions. This is a consequential product difference, not an implementation detail to inherit accidentally from a reference editor. A useful reference can demonstrate both techniques to adopt and policies to reject.
 
 ## Focused experiments before architectural adoption
 
@@ -55,4 +55,4 @@ Use the project's [development evidence requirements](../../engineering/developm
 
 ## What this research does not select
 
-No darktable dependency, UI module inventory, algorithm, native ABI, neural model or RAW library is adopted. The owner-selected GPL-3.0-or-later license permits useful reuse investigations, but dependency/model/asset notices still require their own review before reuse. This research changes no implementation milestone or completion status.
+No darktable dependency, UI module inventory, algorithm, native ABI, neural model or RAW library is adopted. Luxforge's GPL-3.0-or-later license permits useful reuse investigations, but dependency/model/asset notices still require their own review before reuse. This research changes no implementation milestone or completion status.

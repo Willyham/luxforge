@@ -433,9 +433,8 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
 }
 
 /// Every way a generated control starts — Enter, a discrete value, a rail, a step, the picker, the
-/// curve, a field reset and an action button — asks the one refusal and writes its reason when
-/// refused, sending nothing and leaving the field as it was. Each used to return without a word
-/// when the photograph was not editable.
+/// curve, a field reset and an action button — asks the one refusal and, when the photograph is
+/// not editable, writes its reason, sending nothing and leaving the field as it was.
 #[test]
 fn every_refused_control_start_says_why() {
     let (mut editor, catalog, asset) = editor();
@@ -1344,7 +1343,7 @@ fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
     assert_eq!(editor.displayed_entry(), Some(entry_id));
     assert!(editor.slider_gesture().is_none() && editor.crop().is_none());
 
-    // The mode strip no longer offers it: the panel is the only place it lives.
+    // The mode strip does not offer it: the panel is the only place it lives.
     assert!(
         !editor
             .workspace

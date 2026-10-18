@@ -1,6 +1,6 @@
 //! The repair boundary ([`super::Entry::Repair`]): a repair layer's operation table bound to the
 //! stage it receives, the bounded regions its operations read, and the CPU reference's frame of it
-//! (`docs/design/corrections.md`, "Rendering (TASK-003)").
+//! (`docs/design/corrections.md`, "Rendering").
 //!
 //! **Declared reads.** A spatial operation reads its output window grown by a halo. A repair
 //! operation may read a source anywhere in the stage, so producing a window `W` of the repair

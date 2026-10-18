@@ -1,7 +1,6 @@
-//! A buffer's blocks against packing them whole, as every tick did before the buffer kept its
-//! blocks: the same words and the same chunks written after every tick, over a drag's ticks and
-//! random ones, and nothing compared or copied of a block handed again at the same place. Then the
-//! key a link reads its blocks by.
+//! A buffer's blocks against packing them whole at every tick: the same words and the same chunks
+//! written after every tick, over a drag's ticks and random ones, and nothing compared or copied of
+//! a block handed again at the same place. Then the key a link reads its blocks by.
 use super::super::{
     ClipMarks, Coverage, CoverageComponent, CoverageMode, GpuProgram, GpuSpatial, GpuStep, GpuTail,
     MaskedColour, PositionMap, chain::written_key, mask::changed_ranges,

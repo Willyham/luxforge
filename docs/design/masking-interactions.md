@@ -1,12 +1,12 @@
 # Masking interactions
 
-Status: implemented and verified with final quick/rendered checks, native RAW liveness and
+Status: implemented and verified with quick and rendered checks, native RAW liveness and
 scoped 24/60 MP hover and continuous-paint measurements. The [performance evidence](../specs/performance.md#native-masking-interaction-qualification)
 records timing, memory and diagnostic limits; total editor memory and display latency remain unqualified.
 The [mask performance work](mask-performance.md) moves exact overlay painting off the UI thread,
 keeps its handoff bounded, and records a scoped native brush comparison.
 The [masking model](masking.md), frozen coverage equations, content coordinates, stroke storage
-and current catalog/API shapes remain the shared contract. The [workspace design](masking-workspace.md)
+and current catalog/API shapes are the shared contract. The [workspace design](masking-workspace.md)
 describes the panel.
 
 ## Placement and ownership
@@ -25,7 +25,7 @@ row editing, adjustment fields, history, presets, Open, Export, mode changes, zo
 and the palette are disabled, and desktop dispatch refuses them through one message
 classification. The mask's own shape/brush controls, coverage controls, canvas, row hover, focus
 movement, native scrolling of a zoomed view and Done/Cancel remain available. Active brush
-strokes refuse selection changes. Between strokes, selecting a different mask/component puts the old brush down;
+strokes refuse selection changes. Between strokes, selecting a different mask/component puts the held brush down;
 an explicit Paint more/Add/New action starts painting on the visible target.
 
 The first successful new-brush stroke completes creation. Each released stroke is one history
@@ -102,7 +102,7 @@ photograph. Green/white tint and both black presentations paint that one grid on
 worker, using an exact 256-code palette. Delivered results retain identity, dimensions and shared
 RGBA; the cache alone keeps the coverage plane. A handoff lease bounds worker and consumer
 buffers through adoption or replacement of a waiting result, and semantic cancellation wakes a
-blocked worker. The [performance design](mask-performance.md) states the unchanged byte bound.
+blocked worker. The [performance design](mask-performance.md) states the byte bound.
 Coverage that finishes before its matching photograph is drained when that photograph is adopted,
 without first waking an undrawable window redraw. A later completion, feedback on unchanged photo
 pixels and an unavailable outcome wake normally; publication before draining prevents lost wakes.
@@ -139,20 +139,19 @@ coverage. Both whole-photo and region overlays are suppressed.
 
 ## Capture bounds and the pointer
 
-The grid capture retains at most 16,384 distinct positions, the existing posted-input bound;
+The grid capture retains at most 16,384 distinct positions, the posted-input bound;
 consecutive positions in one grid cell cost only a count. A failed capture stops growing, reports
 `ResourceLimit` or its original validation error, and cannot post/commit a truncated or empty
 successful stroke. Releasing it discards that stroke's draft and keeps the brush in hand on the
-same target, so the next press is the new stroke. The frozen grid and decimation rule are unchanged; the stored limit
-is still 1,024 positions and the existing 64-segment occupancy limit still applies. Decimation is
+same target, so the next press is the new stroke. The frozen grid and decimation rule apply; the stored limit
+is 1,024 positions and the 64-segment occupancy limit applies. Decimation is
 cached per accepted capture/brush size, so summaries do not repeat whole-path work. No live path
 is tessellated to impersonate coverage.
 
-Nothing is read under the pointer as it moves. The status-bar readout that asked `render.sample`
-on every move was removed on 2026-10-04 (owner): through a stack with Detail, Presence and masks
-the CPU point path then cost minutes, and the desktop ran that wait on the update loop, so the
-window froze with it. A pointer move now publishes its position for a pick and for the evidence
-cursor sync and asks the owner for nothing; `render.sample` remains the API's read of one pixel,
+Nothing is read under the pointer as it moves. A status-bar readout that asks `render.sample`
+on every move does not work: through a stack with Detail, Presence and masks the CPU point path
+costs minutes, and waiting on it in the update loop freezes the window. A pointer move publishes its position for a pick and for the evidence
+cursor sync and asks the owner for nothing; `render.sample` is the API's read of one pixel,
 answered off the owner by its tile service.
 
 A value typed into a generated field but not submitted belongs to the mask and component it was
@@ -165,13 +164,13 @@ selection/disarming, O overrides, capture failures, exact candidate IDs/coverage
 completion fencing, pixel reuse and bound rerendering. Independent reference/exact-buffer tests
 remain the mask equation and source/history authority.
 
-`mask-interactions` is the dedicated 49-frame native regression: disjoint A/B selection, an old
+`mask-interactions` is the dedicated 49-frame native regression: disjoint A/B selection, an
 armed brush put down on selection, live linear/radial/feathered retracing brush coverage versus
 commit, manual hiding during a new gradient, placement under an 8° crop at Fit and 100%, H handle visibility independent of coverage, and coverage suppression/restoration during adjustment hold, cancellation and release.
-Existing mask, viewport, clipping and history scenarios check the surrounding editor integration.
-The final quick and rendered tiers pass, including all 36 native scenarios. Dedicated masked
+The mask, viewport, clipping and history scenarios check the surrounding editor integration.
+The quick and rendered tiers pass, including all 36 native scenarios. Dedicated masked
 Basic/Presence cancellation tests restore exact committed bytes, public sample answers, history
-and coverage, and reject a late draft reply. Workspace capture tests also reject an old overlay
+and coverage, and reject a late draft reply. Workspace capture tests also reject a stale overlay
 mode or colour before the session answer.
 
 The supplied Nikon Z6, Fujifilm X100VI and DJI Air 2S RAW sources each pass 30 native captures and
@@ -183,10 +182,10 @@ and every original hash remains unchanged. This is functional liveness evidence.
 `editor-latency --mode hover` routes native cursor movement through the actual laid-out widget
 tree after a masked Clarity adjustment and a new brush is armed. Input epochs, pointer updates,
 workspace derivation, drawn cursor geometry and renderer readbacks are correlated. CPU geometry
-submission and image readback do not measure display scanout. The final matrix has 18 paced hover runs, 540 emitted moves and 60 separate corresponding GPU
+submission and image readback do not measure display scanout. The matrix has 18 paced hover runs, 540 emitted moves and 60 separate corresponding GPU
 readbacks; hover triggers no point queries, photo jobs, mask mutation or photograph uploads. Bound
-and unbound painting also progress on 24/60 MP inputs. No numeric cursor budget is implied by this
-repair.
+and unbound painting also progress on 24/60 MP inputs. No numeric cursor budget is
+implied.
 
 ## Acceptance matrix
 
@@ -203,33 +202,32 @@ repair.
 | Hover and continuous painting remain bounded and progress | Real widget-route diagnostic, photo-sized paced strokes, capture-limit and progressive-worker tests |
 
 A native capture proves the rendered frame and its correlated state; timing and resource figures
-retain their own sample count, workload and host scope. The 1000-position native diagnostic exceeded
-the event-log ceiling and remains failed; successful 400-position holds and deterministic capture
+retain their own sample count, workload and host scope. The 1000-position native diagnostic exceeds
+the event-log ceiling and fails; successful 400-position holds and deterministic capture
 limit tests establish the stated progress/bounds, without worst-case native latency claims.
 
 ## Allocation and request review
 
-These changes cover `luxforge-core`, the desktop adapter, the shared evidence schema and the
-small disclosure-widget enablement change. Sources still enter through the verified prepared-source
-cache. Coverage workers receive the existing evaluation and release it after their job; the idle
-cache holds only a bounded grid. No new full-photo allocation, source hash/decode path or persistent
-pixel data is introduced.
+The interactions span `luxforge-core`, the desktop adapter and the shared evidence schema.
+Sources enter through the verified prepared-source cache. Coverage workers receive the
+evaluation and release it after their job; the idle cache holds only a bounded grid. They add no
+full-photo allocation, source hash/decode path or persistent pixel data.
 Capture storage is capped at 16,384 snapped positions and 1,024 posted reduced positions.
-Coverage retains the existing 4,096-cell side limit (at most 16 MiB per byte grid); painted RGBA
+Coverage keeps the 4,096-cell side limit (at most 16 MiB per byte grid); painted RGBA
 overlays and native backend staging remain outside the provisional photo-texture ceiling.
 
 The owner plans/validates recipes and identities; workers evaluate coverage and photograph pixels.
 Selection, overlay presentation and unbound mask changes submit no photograph work or uploads when
-their pixel identity is unchanged. Bound edits still use the ordinary narrow mutation refresh;
-history is not listed per move. Point queries and no-op validation allocate no photo frame. No
-ordinary timer or polling loop is added: the coverage worker blocks while idle and wakes on results;
+their pixel identity is unchanged. Bound edits use the ordinary narrow mutation refresh;
+history is not listed per move. Point queries and no-op validation allocate no photo frame. There is no
+ordinary timer or polling loop: the coverage worker blocks while idle and wakes on results;
 the bounded native cursor probe runs only during evidence collection.
 
-Frozen independent reference tests remain the numerical authority. Worker tests verify
+Frozen independent reference tests are the numerical authority. Worker tests verify
 identity fences and buffer reuse. The masking measurements in the [performance specification](../specs/performance.md#native-masking-interaction-qualification)
 record photo-sized native scope separately from rendered correctness and from display scanout.
-The whole-recipe `editor-performance` before/after matrix was not rerun: no effect equation or
-renderer kernel changes, and the measured bottleneck was the desktop hover query path. Targeted
+The whole-recipe `editor-performance` matrix is not run for these interactions, which change no
+effect equation or renderer kernel. Targeted
 native hover and paint diagnostics are the performance evidence, with exact `render.sample` and
 frozen reference tests preserving query/effect correctness. Retained raster and source
 sharing tests prove the reuse claims. Coverage outcomes and narrow owner responses preserve
@@ -238,6 +236,6 @@ UI/API parity, source hashes and committed history.
 ## Remaining scope
 
 Density, edge-aware refinement, model selections, copying masks between photographs and mask
-presets remain outside these repairs. Range masks still need photographic-corpus qualification.
+presets remain outside this design. Range masks still need photographic-corpus qualification.
 Additional modifier shortcuts and relaxed navigation during creation require a separate product
 choice. Native M4 results do not qualify Windows/Linux GPU behaviour.

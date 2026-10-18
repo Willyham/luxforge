@@ -12,8 +12,8 @@
 //! re-analysed. Everything that varies lives where it cannot move a control. A status with no report
 //! behind it is drawn inside the plot's own area ([`HistogramModel::notice`]); the endpoint counts
 //! are the triangles' tooltips ([`HistogramModel::shadow_tooltip`],
-//! [`HistogramModel::highlight_tooltip`]). The plot carries no caption, on hover or otherwise
-//! (owner, 2026-09-26), and nothing is read under the pointer.
+//! [`HistogramModel::highlight_tooltip`]). The plot carries no caption, on hover or otherwise,
+//! and nothing is read under the pointer.
 //!
 //! The described domain is fixed by the [histogram and clipping
 //! contract](../../../../docs/design/basic-and-histogram.md#histogram-and-clipping-contract): the

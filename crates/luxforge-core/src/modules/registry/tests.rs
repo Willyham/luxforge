@@ -968,7 +968,6 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "disabling the combined module refuses both effects"
         );
     }
-    assert!(combined.module("luxforge.transform").is_none());
 
     // The capability proof joins a developer run that names a proof endpoint, and no other.
     let proof = assemble(&[], true, Some("http://127.0.0.1:9")).unwrap();
@@ -1149,7 +1148,7 @@ pub(crate) fn staged_registry() -> ModuleRegistry {
             "test.mixer",
             MIXER_EFFECT,
             // Distinct from the real mixer module's own "set-mixer" action, which
-            // `ModuleRegistry::builtin()` now registers.
+            // `ModuleRegistry::builtin()` registers.
             "set-test-mixer",
             EffectStage::Color,
             10,

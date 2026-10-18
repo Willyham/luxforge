@@ -649,7 +649,7 @@ fn filmstrip_moves_through_the_set_drawing_the_cached_preview_first() {
 /// A warm open's GPU picture stands over the cached preview of the photograph moved to, which stays
 /// the surface's base: once the GPU presents the open photograph's content, its picture is the
 /// photograph on screen, so the preview is let go of — not withdrawn from under it — and the
-/// status bar no longer calls the picture a cached preview.
+/// status bar stops calling the picture a cached preview.
 #[test]
 #[slow]
 fn filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {

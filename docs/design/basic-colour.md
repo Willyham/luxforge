@@ -165,7 +165,7 @@ Findings from inspecting the rendered PNGs:
 - **Skin-like patches**: vibrance +100 leaves the three patches close to their original appearance; saturation +100 visibly pushes them toward a more orange, less natural tone. This is the qualitative effect the skin-hue weighting is designed to produce, and it is visible, not only present in the ratio computed above.
 - No posterization, banding or unexpected artifacts were observed in any flat-colour region or gradient across the reviewed set.
 
-Limitations recorded from this review (in addition to the gamut-clamp hue shift and the skin-heuristic scope already stated above): the chroma sweep and skin patches were only reviewed at one fixed lightness (`L = 0.70`) and one fixed base hue for the chroma sweep (30°, orange-red); a full portrait photograph and a wider set of lightness/hue combinations were not available inside this environment and are left to native rendered review once the units are implemented in the editor (acceptance item 5 of the Basic and histogram plan).
+Limitations recorded from this review (in addition to the gamut-clamp hue shift and the skin-heuristic scope already stated above): the chroma sweep and skin patches were only reviewed at one fixed lightness (`L = 0.70`) and one fixed base hue for the chroma sweep (30°, orange-red); a full portrait photograph and a wider set of lightness/hue combinations were not available inside this environment and are left to native rendered review in the editor (acceptance item 5 of the [Basic and histogram design](basic-and-histogram.md#verification-and-acceptance)).
 
 ## Files
 

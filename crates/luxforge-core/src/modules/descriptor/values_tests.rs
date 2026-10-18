@@ -350,7 +350,7 @@ fn number_parameters_accept_finite_values_in_range_and_reject_everything_else() 
 }
 
 /// A patch action is validated field by field: what the caller named is checked and returned,
-/// nothing declared is filled in, and an action that is not a patch keeps its old behaviour.
+/// nothing declared is filled in, and an action that is not a patch is validated as a whole.
 #[test]
 fn a_patch_action_validates_the_sent_fields_and_fills_no_defaults() {
     let parameter = |name: &str| ParameterDescriptor {

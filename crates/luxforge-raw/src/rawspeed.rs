@@ -693,7 +693,7 @@ mod tests {
         ),
     ];
 
-    /// What a sample's LibRaw-only results must equal, recorded before any mode was routed.
+    /// What a sample's LibRaw-only results must equal, as recorded from LibRaw alone.
     struct Recorded {
         place: &'static str,
         mosaic: String,
@@ -816,10 +816,10 @@ mod tests {
     /// Every catalog mode whose LibRaw decoder RawSpeed may replace, routed through RawSpeed on
     /// every local authentic sample of it and compared with LibRaw: the identical mosaic, every
     /// metadata field but `backend` identical, identical as-shot and perturbed-white-balance
-    /// developments, and each LibRaw-only result equal to what was recorded before routing (the
-    /// evidence manifest's mosaic and development hashes, or the owner and public-fixture pins).
-    /// A mode the catalog routes must pass on every sample found, with every evidence sample of
-    /// it found. A candidate that fails is printed with the reason and must stay on LibRaw.
+    /// developments, and each LibRaw-only result equal to what was recorded from LibRaw alone (the
+    /// evidence manifest's mosaic and development hashes, or the owner and public-fixture pins). A
+    /// mode the catalog routes must pass on every sample found, with every evidence sample of it
+    /// found. A candidate that fails is printed with the reason and must stay on LibRaw.
     ///
     /// `LUXFORGE_RAW_SAMPLE_DIRS` is a path list of directories of authentic RAW files, each file
     /// read once whatever its name; files outside the catalog are skipped:

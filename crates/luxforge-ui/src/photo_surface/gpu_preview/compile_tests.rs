@@ -290,7 +290,7 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
 /// A new sequence compiling over the boundary the GPU frame on screen was drawn from keeps that
 /// frame on screen, under its own tag, until the plan is drawn: never the CPU frame behind it, which
 /// for a stack presented on the GPU is an earlier stack's or an empty one. A plan over another
-/// boundary, another photograph or another part of it, waits behind the CPU frame as before.
+/// boundary, another photograph or another part of it, waits behind the CPU frame.
 #[test]
 #[slow]
 fn a_compiling_sequence_keeps_the_gpu_frame_drawn_over_its_boundary() {

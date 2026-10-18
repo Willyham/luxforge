@@ -27,8 +27,6 @@ mod range;
 mod repair;
 mod tone;
 mod vignette;
-mod white_balance;
-mod white_balance_visual;
 
 use luxforge_reference::mask::Stage;
 

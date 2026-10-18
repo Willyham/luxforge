@@ -70,7 +70,8 @@ directly (not just via the committed-fixture round trip) by
 
 ## What is not here
 
-No production code reads these fixtures yet (the vignette module is a later task). No raster
+The production unit (`crates/luxforge-core/src/modules/vignette/unit.rs`) and
+`crates/luxforge-core/tests/modules/vignette.rs` check against these fixtures. No raster
 images: every case is a scalar mask value or a single output pixel, not a rendered frame -- the
 frame sizes here are chosen only to fix `width`/`height` for the coordinate formulas, not to
 exercise tiling, streaming or any per-frame concern. No real-photo provenance, since these

@@ -100,7 +100,7 @@ fn standard_deviation(codes: &[u8]) -> f64 {
         .sqrt()
 }
 
-/// The owner's report as a rendered regression: Contrast `-c` must not render as `+c`. On a
+/// A rendered regression: Contrast `-c` must not render as `+c`. On a
 /// 256-code grey ramp rendered through a real Basic layer, `-c` pulls the output codes together and
 /// `+c` pushes them apart (the rendered codes' standard deviation falls below and rises above the
 /// source's), and a dark and a light midtone move toward the pivot at `-c` and away from it at

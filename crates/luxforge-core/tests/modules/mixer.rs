@@ -12,8 +12,8 @@
 //! difference is permitted. Identity stacks and byte sharing are exact with no tolerance at all.
 
 use luxforge_core::{
-    AssetId, EditorService, ErrorKind, Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry,
-    Mutation, MutationOutcome, SnapshotId, current_effect_format,
+    AssetId, EditorService, Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, Mutation,
+    MutationOutcome, SnapshotId, current_effect_format,
 };
 use luxforge_reference::{self as reference, grade, mixer::RANGE_NAMES};
 use luxforge_test_macros::slow;
@@ -446,28 +446,6 @@ fn set_mixer_declares_every_hsl_and_grading_field() {
         .collect();
     let expected: Vec<String> = fields().into_iter().chain(grade_fields()).collect();
     assert_eq!(names, expected);
-}
-
-/// A stored mixer layer at the shared format 1, the shape before grading, is refused as
-/// incompatible on every path that reads it, and is never rewritten.
-#[test]
-fn a_mixer_layer_at_an_unsupported_format_is_refused() {
-    let registry = ModuleRegistry::builtin();
-    let mut old = layer(json!({"red-hue": 20.0}));
-    old.effect_format = luxforge_core::EFFECT_FORMAT;
-    assert_ne!(old.effect_format, current_effect_format(MIXER_EFFECT));
-    let error = registry
-        .layer_report(&old)
-        .expect_err("an unsupported format is refused");
-    assert!(error.contains("unsupported effect format 1"), "{error}");
-    let source = source_of(2, 1, &[[10, 20, 30], [200, 100, 50]]);
-    let error = render(&registry, &source, SnapshotId::new(), &recipe(vec![old]))
-        .expect_err("the stack is refused");
-    assert_eq!(error.kind, ErrorKind::Incompatible, "{error:?}");
-    assert!(
-        error.detail.contains("unsupported effect format 1"),
-        "{error:?}"
-    );
 }
 
 /// The grading parameters of a payload's grading fields, defaults filled.

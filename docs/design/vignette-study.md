@@ -3,7 +3,7 @@
 Status: frozen and implemented by the `luxforge.vignette` module, which is checked against it. This
 document, the independent [`f64` reference](../../crates/luxforge-reference/src/vignette.rs)
 and the checked-in [oracle fixtures](../../fixtures/vignette/README.md) are the complete
-specification a future `luxforge.vignette` unit is checked against. It answers the ["Vignette:
+specification the `luxforge.vignette` unit is checked against. It answers the ["Vignette:
 one positional unit"](presence-mixer-vignette.md#vignette-one-positional-unit) section of the
 Presence, mixer and vignette design: a finish-stage layer evaluated after the geometry tail, in
 output-stage pixel coordinates, so a later crop update recentres it exactly.
@@ -211,9 +211,7 @@ bring it down to `1`. Both halves of this are tested directly:
 `positive_amount_never_exceeds_encoded_one_for_a_below_white_input` (the proof, exercised on 2000
 random below-white samples including negative, below-black channels) and
 `a_channel_already_at_or_above_encoded_white_is_passed_through_unchanged` (the honest complement,
-on several above-white samples including the literal random value, linear `1.5868993113623606`,
-that an earlier, over-broad version of this test's property incorrectly flagged as a violation --
-see the comment on that test for the full account).
+on several above-white samples, including linear `1.5868993113623606`).
 
 ## Symmetry and monotonicity
 
@@ -313,11 +311,9 @@ encode/decode, the odds-bias curve, the logistic), each contributing its own `f3
 to the total. The vignette's positive-amount branch calls `encode_ext`/`decode_ext` **exactly
 once each**, per channel -- the same shape as a single Basic exposure or colour operation, which
 already use the tighter default -- and the mask geometry (`shape_radius`, `falloff`) is a handful
-of arithmetic operations plus one `sqrt` or `powf` pair with no chained transcendental stages. No
-production `f32` implementation exists yet to measure against; `1e-6` is the considered starting
-point for that implementation's own verification (per the repository's stated policy for a
-numerical task to freeze its own tolerance), to be tightened or loosened there against measured
-results, not re-derived from first principles.
+of arithmetic operations plus one `sqrt` or `powf` pair with no chained transcendental stages. The
+production `f32` unit (`crates/luxforge-core/src/modules/vignette/unit.rs`) is checked against
+this reference at this tolerance.
 
 ## Limitations
 
@@ -352,11 +348,10 @@ results, not re-derived from first principles.
   `vignette_pixel`, and the private `pixel_uv`/`shape_radius`/`smoothstep`/`falloff` helpers, plus
   the closed-form `corner_radius`).
 - [`crates/luxforge-reference/src/tone.rs`](../../crates/luxforge-reference/src/tone.rs)
-  -- unchanged except for making `encode_srgb_extended`/`decode_srgb_extended` `pub` so this
-  study's positive-amount branch can reuse them instead of duplicating the sRGB OETF a third time
-  in this test tree; no formula in that file changed.
+  -- the public `encode_srgb_extended`/`decode_srgb_extended` this study's positive-amount branch
+  reuses rather than duplicating the sRGB OETF a third time in this test tree.
 - [`crates/luxforge-reference/src/lib.rs`](../../crates/luxforge-reference/src/lib.rs)
-  -- unchanged; already declared `pub mod vignette;` ahead of this task.
+  -- `pub mod vignette;`.
 - [`crates/luxforge-reference/tests/studies/vignette.rs`](../../crates/luxforge-reference/tests/studies/vignette.rs)
   -- the independent proofs (identity, mirror/flip symmetry, monotonicity along a ray, the corner
   saturation condition and its safe grid, centre invariance stated precisely, corners black at

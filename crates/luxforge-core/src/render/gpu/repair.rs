@@ -1,4 +1,4 @@
-//! A repair layer on the GPU (`docs/design/corrections.md`, "Rendering (TASK-003)"): the repair
+//! A repair layer on the GPU (`docs/design/corrections.md`, "Rendering"): the repair
 //! boundary as one spatial step of the plan, its program the numerics study's `repair/repair.wgsl`
 //! and its groups `repair/gpu.rs` describes (`docs/design/corrections-numerics.md`, "GPU form").
 //!

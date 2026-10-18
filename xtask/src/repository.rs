@@ -301,9 +301,6 @@ struct SourceRule {
     reason: &'static str,
 }
 
-/// Every text file type a repository-wide rule reads.
-const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
-
 /// The source directories of the crates a shipped binary links.
 const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-gpu-types/src",
@@ -567,7 +564,7 @@ const SOURCE_RULES: &[SourceRule] = &[
                  its identity; decide applicability from the declared sources",
     },
     // The CPU proxy, a session without a GPU's drag path, is kept in its own modules so it is easy
-    // to see and to remove (owner, 2026-10-06): the core's `cpu_proxy` and the desktop's
+    // to see and to remove: the core's `cpu_proxy` and the desktop's
     // `app/cpu_proxy`. Only they and their named dispatch sites — the preview worker, its queue and
     // its result type, the crate root's re-exports, and the desktop's motion and preview — may name
     // the proxy's items, so the proxy cannot leak back into the main flow.
@@ -1315,19 +1312,8 @@ const SOURCE_RULES: &[SourceRule] = &[
                  decoded_handles.rs makes accepted grid/loupe previews and loupe regions once, \
                  and each controller holds the handle while it may be shown",
     },
-    SourceRule {
-        name: "project-name",
-        tokens: &["lightwell", "Lightwell", "LIGHTWELL"],
-        scope: &["crates", "xtask"],
-        types: TEXT,
-        allowed: &[],
-        mode: Match::Prefix,
-        tests: true,
-        once: false,
-        reason: "the project is Luxforge; its old working name does not come back",
-    },
     // A slow test is marked, not named: `check --quick` reads `#[slow]` and nothing else, so a
-    // test named the old way would silently join the quick tier.
+    // test named `slow_…` instead would silently join the quick tier.
     SourceRule {
         name: "slow-tests-are-marked",
         tokens: &["fn slow_"],
@@ -3310,7 +3296,7 @@ mod tests {
             assert!(error.contains(expected), "{what}: {error}");
             write(path, &before);
         }
-        // The app's, the test kit's and xtask's manifests are now read too.
+        // The app's, the test kit's and xtask's manifests are read too.
         assert_eq!(read(root, JPEG).unwrap(), (4, 6));
     }
 
@@ -3589,7 +3575,7 @@ mod tests {
             fs::write(file, text).unwrap();
         }
         assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
-        // The copies this rule replaced, brought back: the linear tap block's read rectangle and
+        // The copies this rule refuses: the linear tap block's read rectangle and
         // the byte band's second one beside `Resample::reads`.
         for (file, text) in [
             (core.join("render/window.rs"), floor),
@@ -3927,7 +3913,7 @@ fn frame() {}
         );
         assert_eq!(read(root, &["editor-launch"]).unwrap(), (1, 0));
         // Anywhere else in the harness, each spelling is refused: the RAW editor journey's own
-        // launch included, now that it is a scenario row.
+        // launch included, as it is a scenario row.
         refuses_each(
             root,
             "editor-launch",
@@ -4607,41 +4593,6 @@ fn frame() {}
             error.contains("luxforge-app/Cargo.toml:")
                 && error.contains("only luxforge-onnx may depend on ort"),
             "{error}"
-        );
-    }
-
-    #[test]
-    fn the_old_project_name_does_not_return() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_all(
-            root,
-            &[
-                (
-                    "crates/luxforge-core/Cargo.toml",
-                    "[package]\nname = \"luxforge-core\"\n",
-                ),
-                ("xtask/src/main.rs", "// Luxforge's own tasks.\n"),
-                // Only text files are read.
-                ("crates/luxforge-raw/vendor/libraw.cpp", "// lightwell\n"),
-            ],
-        );
-        assert_eq!(read(root, &["project-name"]).unwrap(), (2, 0));
-        refuses_each(
-            root,
-            "project-name",
-            &[
-                (
-                    "crates/luxforge-app/Cargo.toml",
-                    "[dependencies]\nlightwell-core = { path = \"../core\" }\n",
-                ),
-                ("xtask/src/main.rs", "// Lightwell's own tasks.\n"),
-                (
-                    "crates/luxforge-core/tests/fixtures.rs",
-                    "const DIR: &str = \"LIGHTWELL_FIXTURES\";\n",
-                ),
-            ],
-            "old working name",
         );
     }
 

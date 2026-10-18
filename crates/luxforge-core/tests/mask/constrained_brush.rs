@@ -375,7 +375,7 @@ fn a_limited_stroke_holds_its_colour_and_knows_nothing_about_edges() {
 
 /// **A sampled byte equals the rendered byte through a limited stroke.**
 ///
-/// `render.sample` and the rasterizing pass reach the mask through one call that now carries the
+/// `render.sample` and the rasterizing pass reach the mask through one call that carries the
 /// pixel, and a limited stroke is evaluated on the input the masked operation receives. A point query
 /// handed the wrong pixel — the operation's output, or a neighbour — would disagree on the colour
 /// boundary, which is where this sweep concentrates.

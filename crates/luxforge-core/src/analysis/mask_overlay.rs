@@ -26,8 +26,8 @@
 //! component's coverage is a function of that pixel and not of position, and the frame the grid
 //! describes holds that operation's *output*, so the input is supplied by the caller as
 //! [`MaskPixels::Input`] — the recipe prefix up to the mask's first bound layer, evaluated once per
-//! grid cell (proposal P16 of `docs/design/range-study.md`, decided by the owner on 2026-09-23). A
-//! caller with no operation to read one from says so instead, and the grid is refused by name.
+//! grid cell (proposal P16 of `docs/design/range-study.md`). A caller with no operation to read one
+//! from says so instead, and the grid is refused by name.
 use super::overlay::{MAX_OVERLAY_CELLS, cell_pixel};
 #[cfg(test)]
 use crate::ErrorKind;

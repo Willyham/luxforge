@@ -30,11 +30,11 @@ For `NativeUnpacker::Rawspeed` the identified LibRaw decoder must be in the repl
 
 In the pinned LibRaw 0.22.2 every field classification reads is final at identify for every catalogued decoder (`nikon_load_raw`, `nikon_14bit_load_raw`, `unpacked_load_raw`, `fuji_compressed_load_raw`, `packed_dng_load_raw`, `lossless_dng_load_raw`, `lossless_jpeg_load_raw`, `pentax_load_raw`, `panasonic_load_raw`, `panasonicC6_load_raw`, `panasonicC8_load_raw`, `sony_arw2_load_raw`, `olympus_load_raw`, `crxLoadRaw`). Make, model, frame count, DNG version, the decoder and `color.raw_bps` are written only by identify. `unpack` rewrites the raw size and margins only on its legacy four-colour path and in RawSpeed builds, neither of which a catalogued mode reaches. No catalogued decoder, and not `crop_masked_pixels`, writes `filters`, `xtrans_abs` or the margins the CFA phase reads; the decoders read `tiff_bps` but never write it or `raw_bps`. Unpack does rewrite the white level (`crxLoadRaw`, and `unpacked_load_raw` temporarily) and the black levels (`crop_masked_pixels`), which classification does not read and which are taken only after unpack. The step 4 comparison therefore re-validates rather than repairs: it keeps a classified mode honest if a future LibRaw or decoder changes one of these fields.
 
-The qualified DJI Air 2S FC3411 DNG has required OpcodeList3 GainMap (9) followed by per-channel WarpRectilinear (1). `decode` associates them with the unique raw sensor SubIFD, validates their versions, area, finite values and warp geometry, and rejects unknown mandatory operations. `develop` applies the gain in active-area coordinates and then resamples each camera plane through its own chromatic warp before the caller's color matrix and default crop. It recognizes the exact identity green warp and retains those gained pixels without interpolation. It reuses one active-plane scratch buffer and keeps the full-sensor output layout. Crate-private bounded per-channel queries map a corrected point to its sensor location and gain for the neutral picker. `dng_corrections` records the exact operation order, payload hashes, optional operations skipped and interpretation identity. This float path preserves negative values and highlight headroom. The DNG specification calls for clipping after OpcodeList2/3, so these float values are not a strict clipped DNG rendering when an intermediate value leaves [0,1]. This preserves the existing Luxforge RAW contract: scene headroom remains available to later exposure edits, with clipping only at terminal display.
+The qualified DJI Air 2S FC3411 DNG has required OpcodeList3 GainMap (9) followed by per-channel WarpRectilinear (1). `decode` associates them with the unique raw sensor SubIFD, validates their versions, area, finite values and warp geometry, and rejects unknown mandatory operations. `develop` applies the gain in active-area coordinates and then resamples each camera plane through its own chromatic warp before the caller's color matrix and default crop. It recognizes the exact identity green warp and retains those gained pixels without interpolation. It reuses one active-plane scratch buffer and keeps the full-sensor output layout. Crate-private bounded per-channel queries map a corrected point to its sensor location and gain for the neutral picker. `dng_corrections` records the exact operation order, payload hashes, optional operations skipped and interpretation identity. This float path preserves negative values and highlight headroom. The DNG specification calls for clipping after OpcodeList2/3, so these float values are not a strict clipped DNG rendering when an intermediate value leaves [0,1]. This keeps Luxforge's RAW contract: scene headroom remains available to later exposure edits, with clipping only at terminal display.
 
 The public metadata includes validated `active_area`, `default_crop`, `black_cfa`,
-CFA and calibration fields. The selected mode declares the validated raw frame count. The current catalog contains 107
-camera profiles and 126 recording modes; resource and visible-quality
+CFA and calibration fields. The selected mode declares the validated raw frame count. The current catalog contains 259
+camera profiles and 316 recording modes; resource and visible-quality
 qualification remains ongoing.
 
 The ordered DNG path also recognizes FixVignetteRadial (3),
@@ -46,7 +46,7 @@ than claiming blanket SDK bit identity.
 
 ## Embedded previews
 
-`EmbeddedPreviews` lists the images a RAW file carries beside its mosaic and extracts one, for browsing: it never unpacks the mosaic (by LibRaw or RawSpeed) and never consults the camera catalog, so it serves any RAW LibRaw identifies, from any camera. `RawSource::decode` and its catalog and mode checks are separate and unchanged.
+`EmbeddedPreviews` lists the images a RAW file carries beside its mosaic and extracts one, for browsing: it never unpacks the mosaic (by LibRaw or RawSpeed) and never consults the camera catalog, so it serves any RAW LibRaw identifies, from any camera. `RawSource::decode` and its catalog and mode checks are separate.
 
 ```rust
 let file = std::fs::File::open(path)?;
@@ -59,7 +59,7 @@ if let Some(index) = largest {
 println!("{} bytes read", previews.bytes_read());
 ```
 
-**Reading by position.** LibRaw reads the source through a datastream of the adapter's own, in [native/embedded.cpp](native/embedded.cpp) (a sibling of the decode adapter, compiled into the same native library), whose every fetch calls back into Rust for a positional read of the caller's `RandomAccess` source: a `File` (`read_at` on Unix, `seek_read` on Windows), bytes in memory, or a reference, `Box` or `Arc` of either. Small reads come from a cache of eight 4 KiB-aligned 16 KiB blocks, the least recently read replaced first, so identify's many 1–4-byte reads cost one fetch per block; a read of at least a block goes straight to its destination in pieces of at most 1 MiB. Every call answers as LibRaw's own buffer datastream (the one `open_buffer` uses) does, which a test drives both with the same random calls to prove; `gets` follows `fgets`, where the buffer stream writes its terminator one byte late at the end of the data. Every file of the [inventory](../../docs/research/embedded-previews.md) lists exactly what the buffer stream lists for the whole file in memory. Listing read 17 to 205 KB a file there, 121 KB on average.
+**Reading by position.** LibRaw reads the source through a datastream of the adapter's own, in [native/embedded.cpp](native/embedded.cpp) (a sibling of the decode adapter, compiled into the same native library), whose every fetch calls back into Rust for a positional read of the caller's `RandomAccess` source: a `File` (`read_at` on Unix, `seek_read` on Windows), bytes in memory, or a reference, `Box` or `Arc` of either. Small reads come from a cache of eight 4 KiB-aligned 16 KiB blocks, the least recently read replaced first, so identify's many 1–4-byte reads cost one fetch per block; a read of at least a block goes straight to its destination in pieces of at most 1 MiB. Every call answers as LibRaw's own buffer datastream (the one `open_buffer` uses) does, which a test drives both with the same random calls to prove; `gets` follows `fgets`, where the buffer stream writes its terminator one byte late at the end of the data. Every file of the [inventory](../../docs/research/embedded-previews.md) lists exactly what the buffer stream lists for the whole file in memory. Listing reads 17 to 205 KB a file there, 121 KB on average.
 
 **Listing.** After identify the handle lists LibRaw's thumbnail list (at most eight images) with each image's LibRaw index, format, listed dimensions and stored length, and the item's own orientation where LibRaw read one, beside LibRaw's make and model, the visible and raw sizes and the file's EXIF orientation. LibRaw writes `FF D8` over the first two bytes of every JPEG it extracts, and lists Canon's H.265 previews and any TIFF preview whose compression it does not name as JPEGs, so the handle reads each listed JPEG's first eight stored bytes: SOI makes a `Jpeg`, Canon's H.265 header an `H265`, anything else `NotJpeg`. Listed dimensions cannot rank previews (LibRaw lists a Canon CR3's full-size JPEG as 0 × 0); `largest_jpeg` ranks by stored length.
 
@@ -112,8 +112,8 @@ and pinned LibRaw's upstream camera tables remain code-owned.
 
 ## Bounds and liveness
 
-These are RAW adapter limits. JPEG rendering keeps its separate existing
-RGBA8/frame and scratch limits; the RAW increase does not change JPEG behavior.
+These are RAW adapter limits. JPEG rendering has its own
+RGBA8/frame and scratch limits, which these do not change.
 The 512 MiB encoded, 128 MP sensor, and 1.5 GiB per-planar-buffer values are
 approved implementation limits. One authentic selected mode per model has
 adapter qualification; editor measurements are recorded in the resource ledger.
@@ -153,7 +153,7 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw \
   cargo test --release -p luxforge-raw --locked --lib markesteijn_parallel_complete_float_oracle -- --ignored --nocapture
 ```
 
-The Bayer oracle checks the serial RGB planes against an immutable pre-change M4 digest and compares complete normalized mosaics and RGB planes from the serial raster with pooled RCD at one, two, four and the default number of workers, and with changed white balance, one source per process (`nikon_z6.NEF` or `mavic_air_2s.DNG`):
+The Bayer oracle checks the serial RGB planes against an immutable pinned M4 digest and compares complete normalized mosaics and RGB planes from the serial raster with pooled RCD at one, two, four and the default number of workers, and with changed white balance, one source per process (`nikon_z6.NEF` or `mavic_air_2s.DNG`):
 
 ```sh
 LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=nikon_z6.NEF \
@@ -182,7 +182,7 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_POPULAR_DIR=/path/to/popu
   --skip replaceable_catalog_modes
 ```
 
-The third is the routing evidence. It decodes every RAW file in the directories `LUXFORGE_RAW_SAMPLE_DIRS` lists (a path list; each file once, whatever its name) and, for every one in a catalog mode whose decoder is in the replaceable table, decodes it with both unpackers through `RawSource::decode_forcing`. It requires the identical mosaic, every metadata field but `backend` identical, identical as-shot and perturbed-white-balance developments, LibRaw's results equal to those recorded before routing (the [evidence manifest](../../fixtures/modern-camera-evidence.json)'s mosaic and development hashes, or the mosaic pins of `tests/real_files.rs` for the modes without an evidence entry), and the catalog's own decode to name the mode's unpacker. It prints a row per candidate mode and fails unless every routed mode is exact on every sample found, with every evidence sample of it found:
+The third is the routing evidence. It decodes every RAW file in the directories `LUXFORGE_RAW_SAMPLE_DIRS` lists (a path list; each file once, whatever its name) and, for every one in a catalog mode whose decoder is in the replaceable table, decodes it with both unpackers through `RawSource::decode_forcing`. It requires the identical mosaic, every metadata field but `backend` identical, identical as-shot and perturbed-white-balance developments, LibRaw's results equal to the LibRaw-only references (the [evidence manifest](../../fixtures/modern-camera-evidence.json)'s mosaic and development hashes, or the mosaic pins of `tests/real_files.rs` for the modes without an evidence entry), and the catalog's own decode to name the mode's unpacker. It prints a row per candidate mode and fails unless every routed mode is exact on every sample found, with every evidence sample of it found:
 
 ```sh
 LUXFORGE_RAW_SAMPLE_DIRS=/path/to/selection:/path/to/popular:/path/to/corpus:/path/to/owner/raw \

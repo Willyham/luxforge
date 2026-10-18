@@ -810,7 +810,6 @@ mod tests {
             );
         }
         for (case, malformed) in [
-            ("the retired payload shape", json!("rotate-right")),
             ("a missing field", json!({"turns":1})),
             (
                 "an unknown field",

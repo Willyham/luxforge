@@ -10,8 +10,8 @@
 //! same call with the same arguments.
 //!
 //! **The pixel is the second argument, and it is the input of the operation the mask modulates**
-//! (proposal P12 of `docs/design/range-study.md`, decided there). A geometric component ignores it
-//! and is bit-identical across the change; a range selection is answerable from nothing else, and a
+//! (proposal P12 of `docs/design/range-study.md`). A geometric component ignores it exactly; a
+//! range selection is answerable from nothing else, and a
 //! second entry point for it would double the contract for one argument. What the value-based kinds
 //! then cost — a whole-stage rectangle, no thin-feature supersample, and a selection that moves when
 //! a layer ahead of it is reordered — is stated in [`range`] and in the user guide rather than
@@ -279,9 +279,9 @@ type ArtifactCheck = fn(&str, Option<u32>, Option<u32>, u64) -> Result<(u32, u32
 /// place it can be read exactly.
 ///
 /// The overlay reads that same input — the mask's first bound layer's, once per display cell
-/// ([proposal P16](../../../../docs/design/range-study.md#proposals), decided and built) — so the
-/// sentence no longer says there is none. It still says where the truth is, because at Fit the cell's
-/// own pixel is a downscaled one and coverage of the average is not the average of coverages.
+/// ([proposal P16](../../../../docs/design/range-study.md#proposals)), and the sentence says so. It
+/// also says where the truth is, because at Fit the cell's own pixel is a downscaled one and
+/// coverage of the average is not the average of coverages.
 const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · the overlay reads that input too, and at Fit it reads a downscaled pixel: the 100% view is the truth";
 
 /// How many colours one component of a sampling kind holds, and what one of them declares.

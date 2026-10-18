@@ -1467,20 +1467,17 @@ fn a_boundary_arrives_a_frames_chunks_at_a_time() {
 /// as a caller holds a boundary handed as texels, handed to the surface frame by frame until the
 /// surface has it, then let go. Each frame records what the surface has staged, what the
 /// GPU-preview slot holds and the process's footprint; the process's own peak footprint catches
-/// what falls between frames. `LUXFORGE_ARRIVAL=whole` uploads the boundary in its first frame, as
-/// before the upload was spread; anything else spreads it at [`UPLOAD_PER_FRAME`]. Run each in its
-/// own process, so the peak is the arrival's.
+/// what falls between frames. The upload is spread at [`UPLOAD_PER_FRAME`]. Run it in its own
+/// process, so the peak is the arrival's.
 #[test]
-#[ignore = "a functional measurement of a boundary's arrival: LUXFORGE_ARRIVAL=spread|whole, one \
-            process each"]
+#[ignore = "a functional measurement of a boundary's arrival, in its own process"]
 fn a_boundary_arrival_measured() {
     let test = "a_boundary_arrival_measured";
     let Some((device, queue)) = headless(test) else {
         return;
     };
-    let whole = std::env::var("LUXFORGE_ARRIVAL").is_ok_and(|mode| mode == "whole");
     let mut pipeline = own_pipeline(&device, &queue);
-    pipeline.set_upload_per_frame(if whole { u64::MAX } else { UPLOAD_PER_FRAME });
+    pipeline.set_upload_per_frame(UPLOAD_PER_FRAME);
     let mut sampler = luxforge_process::Sampler::new();
     let mut footprint = || {
         let memory = sampler.read().memory;
@@ -1508,8 +1505,7 @@ fn a_boundary_arrival_measured() {
     let boundary = GpuBoundary::new(texels, width, height, 2, BoundaryFormat::Float).unwrap();
     let (held, _) = footprint();
     eprintln!(
-        "{test}: {} — boundary {:.1} MB; baseline {:.1} MB, held {:+.1} MB",
-        if whole { "whole" } else { "spread" },
+        "{test}: boundary {:.1} MB; baseline {:.1} MB, held {:+.1} MB",
         mb(bytes),
         mb(baseline),
         mb(held - baseline)

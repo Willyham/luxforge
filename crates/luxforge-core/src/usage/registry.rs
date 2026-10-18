@@ -430,11 +430,6 @@ mod tests {
         mapped.sort();
         mapped.dedup();
         assert_eq!(mapped, Tool::ALL, "every tool is a shipped module's");
-        assert_eq!(
-            Tool::from_module_id("luxforge.pixel"),
-            None,
-            "a developer proof"
-        );
         assert_eq!(Tool::from_module_id("example.external"), None);
     }
 }

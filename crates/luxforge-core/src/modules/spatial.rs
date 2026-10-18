@@ -21,7 +21,7 @@ pub(super) const MAX_SPATIAL_UNITS: usize = 4;
 
 /// The largest number of **masked** spatial layers one recipe may hold, masked Presence and Detail
 /// layers counted together (`docs/design/masking.md`, "Limits"): 16, the figure for masks and for
-/// masked colour layers (owner, 2026-10-03).
+/// masked colour layers.
 ///
 /// Every spatial layer, masked or not, is a stage boundary and therefore a sequential full frame —
 /// the operation reads the finished frame before it and writes the next one, so no two of them

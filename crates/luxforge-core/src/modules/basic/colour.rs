@@ -145,8 +145,8 @@ fn vibrance_weight_of(lab: Oklab, c: f32) -> f32 {
 /// unit, not per pixel), scales `a`/`b` by the single combined factor `k_v * k_s`, and converts
 /// back once.
 ///
-/// This is mathematically identical to running the old separate `Vibrance` then `Saturation` units
-/// in sequence: both scale `(a, b)` about the achromatic axis with `L` untouched and vibrance's
+/// This is mathematically identical to running separate vibrance then saturation steps in
+/// sequence: both scale `(a, b)` about the achromatic axis with `L` untouched and vibrance's
 /// weight is a pure function of the *input* pixel's chroma and hue either way, so composing the
 /// two gains before scaling changes no arithmetic on `a`/`b`. The only difference from the
 /// sequential pair is that the sequential path round-trips through the independently rounded
@@ -161,7 +161,7 @@ fn vibrance_weight_of(lab: Oklab, c: f32) -> f32 {
 /// survives the cast); combined with `vibrance = 0`, which gives `k_v = 1.0` exactly regardless of
 /// the per-pixel weight (the weight is multiplied by a zero gain), the combined factor is `0.0`
 /// exactly and `a = b = 0.0` exactly regardless of the input: neutral vibrance with saturation
-/// -100 is exact grey, matching the old `Saturation::new(-100.0)`'s exactness.
+/// -100 is exact grey.
 #[derive(Debug)]
 pub(super) struct ColourAdjust {
     /// The stored parameter values, kept for [`PointwiseColor::describe`] and the finiteness
@@ -557,20 +557,18 @@ mod tests {
     }
 
     /// The independent statement of both parameters, applied to one pixel through the production
-    /// `PointwiseColor` unit (the fused `ColourAdjust`, replacing the old separate `Vibrance` then
-    /// `Saturation` units the frozen fixtures were originally checked against).
+    /// `PointwiseColor` unit (the fused `ColourAdjust`).
     fn apply_basic_colour(rgb: [f32; 3], vibrance: f64, saturation: f64) -> [f32; 3] {
         let mut row = row_of(rgb);
         ColourAdjust::new(vibrance, saturation).apply_row(0, 0, &mut row);
         row[0]
     }
 
-    /// Replicates the pre-fusion two-unit path exactly: convert to Oklab, apply vibrance's
+    /// The sequential two-step path, exactly: convert to Oklab, apply vibrance's
     /// chroma-/hue-dependent gain to `a`/`b`, convert back, convert to Oklab *again* from that
     /// result, apply saturation's uniform gain, convert back. Built from the same private helpers
     /// the production `ColourAdjust` unit uses, so it is not a third independent reference — it is
-    /// the two-round-trip composition the fused unit replaces, kept here only to prove the fused
-    /// unit agrees with it.
+    /// the two-round-trip composition, kept here only to prove the fused unit agrees with it.
     fn sequential_vibrance_then_saturation(
         rgb: [f32; 3],
         vibrance: f64,
@@ -646,13 +644,10 @@ mod tests {
     }
 
     /// Every one of the 144 frozen fixture cases, run through the production `f32` fused unit
-    /// (`ColourAdjust`, one Oklab round trip per pixel instead of the two the fixtures were
-    /// originally generated against), within the design's frozen tolerance
+    /// (`ColourAdjust`, one Oklab round trip per pixel), within the design's frozen tolerance
     /// `1e-5 + 1e-5 * |reference|`.
     ///
-    /// Maximum observed error over the 144 cases: **2.3565749481813114e-6** — smaller than the
-    /// 3.478e-6 the pre-fusion two-unit path measured against the same fixtures, consistent with
-    /// removing one Oklab round trip's rounding rather than adding any — well inside the frozen
+    /// Maximum observed error over the 144 cases: **2.3565749481813114e-6**, well inside the frozen
     /// tolerance, which is at least 1e-5 for every case and grows with the magnitude of the
     /// reference value.
     #[test]
@@ -718,7 +713,7 @@ mod tests {
         }
     }
 
-    /// The fused `ColourAdjust` unit agrees with running the two steps it replaces (vibrance's own
+    /// The fused `ColourAdjust` unit agrees with running the two steps it fuses (vibrance's own
     /// Oklab round trip, then saturation's) to within the design's frozen tolerance
     /// `1e-5 + 1e-5 * |reference|`, over a dense 33³ linear cube spanning `[-0.2, 1.5]` per channel
     /// (including out-of-range values above white and below black), for a representative spread of

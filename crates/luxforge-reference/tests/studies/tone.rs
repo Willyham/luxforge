@@ -663,14 +663,12 @@ fn whites_moves_the_raw_value_at_white_while_highlights_leaves_it_practically_un
 
 #[test]
 fn blacks_moves_the_neighbourhood_of_code_zero_far_more_than_highlights_does() {
-    // Unlike the earlier bump-windowed family (which was exactly zero outside
-    // a fixed window), the odds-bias family has no hard window: every stage
-    // has *some* effect everywhere except exactly at 0 and 1 (see
-    // `odds_bias`). So Highlights does move a near-black pixel a little; the
-    // claim this test proves is that Blacks moves it far more, not that
-    // Highlights leaves it untouched. Measured at encoded ~0.02 (near-black):
-    // Blacks' effect is 18x-107x Highlights' effect across -100/-50/50/100;
-    // 5x is a safe floor.
+    // The odds-bias family has no hard window: every stage has *some* effect
+    // everywhere except exactly at 0 and 1 (see `odds_bias`). So Highlights
+    // does move a near-black pixel a little; the claim this test proves is
+    // that Blacks moves it far more, not that Highlights leaves it untouched.
+    // Measured at encoded ~0.02 (near-black): Blacks' effect is 18x-107x
+    // Highlights' effect across -100/-50/50/100; 5x is a safe floor.
     let near_black = [0.02, 0.02, 0.02];
     for amount in [-100.0, -50.0, 50.0, 100.0] {
         let blacks_only = ToneParams {

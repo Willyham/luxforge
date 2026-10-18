@@ -2,17 +2,17 @@
 
 ## Scope
 
-The owner selected Cloudflare R2 for an independently retained sample corpus:
+The sample corpus is retained independently in Cloudflare R2:
 approximately 250 dedicated RAW cameras, including older bodies still in use,
 and the last five flagship generations of the main iPhone, Google Pixel and
 Samsung Galaxy S families. Add more devices on demand. This is a selection
 target, not a measured 99% active-device coverage claim.
 
-The reviewed [targets](../../fixtures/sample-corpus-targets.json), dated
-2026-10-02, contain 250 camera identities and 46 phone variants: the released
+The reviewed [targets](../../fixtures/sample-corpus-targets.json) contain
+250 camera identities and 46 phone variants: the released
 iPhone 14–18 families (including iPhone Air), Pixel 7–11, and Galaxy S22–S26.
-The selection retains every existing camera profile and adds common older
-bodies and compacts; it is curated rather than a global popularity ranking.
+The selection includes the [modern camera](modern-camera-support.md) profiles
+and common older bodies and compacts; it is curated rather than a global popularity ranking.
 
 The [manifest](../../fixtures/sample-corpus.json) pins 341 CC0 files totalling
 13,080,184,249 bytes (12.18 GiB), all with qualified source, unpacked-integer,
@@ -31,8 +31,8 @@ Missing licensed files remain explicit coverage gaps.
 Use a private `luxforge-samples` R2 Standard bucket. Store immutable originals
 under a content-addressed SHA-256 key and pin source identity, source URL,
 license, byte count and qualification expectations in a checked-in manifest.
-Never publish owner originals licensed for local testing only. A later
-manifest revision can add samples without replacing old source objects.
+Never publish owner originals licensed for local testing only. A
+manifest revision can add samples without replacing stored source objects.
 After all referenced objects are verified, `publish-index` also archives the
 manifest under `manifests/<manifest-sha256>.json`, so the bucket retains the
 selection and provenance independently of the upstream site and local checkout.
@@ -67,8 +67,8 @@ invocations. `clean` explicitly removes selected, hash-verified tool-cache
 files, including files preserved by an earlier invocation's `--cleanup`.
 
 Qualified samples compare recorded mosaic and development evidence; candidate
-samples report unsupported or unqualified rather than count as passed. Newly
-accepted baselines are an explicit reviewed manifest change, never a test's
+samples report unsupported or unqualified rather than count as passed. Accepting
+a baseline is an explicit reviewed manifest change, never a test's
 automatic response to changed output.
 Portable checks freeze the integer mosaic, recording mode, sensor/crop geometry,
 correction metadata and colour matrices, plus output dimensions, finiteness and
@@ -96,13 +96,13 @@ The [workflow](../../.github/workflows/sample-corpus.yml) schedules Mondays at
 04:23 UTC, with four deterministic shards, at most two simultaneous jobs and a
 30-minute timeout per job. It downloads each source once across the four shards,
 uses two transfer workers per job, deletes downloaded test files, caches only
-build dependencies and retains reports for 14 days. The full current run and qualified-only selection each read
-12.18 GiB per week, because every retained source is now qualified. AWS CLI,
+build dependencies and retains reports for 14 days. The full run and the qualified-only selection each read
+12.18 GiB per week, because every retained source is qualified. AWS CLI,
 Rust and Actions are pinned. GitHub has the bucket-only reader secrets and
 account variable. The scheduled workflow is on the default branch. Its recorded hosted run
-37304142552 at `6a53f7d3` fails all four qualifier shards (12, 8, 7 and 8
-failures); no successful complete hosted run is recorded, so current-main
-Linux timing and compatibility evidence remain outstanding. No pull-request event receives R2 access.
+fails all four qualifier shards (12, 8, 7 and 8 failures) and no complete
+hosted run has passed, so Linux timing and compatibility evidence remain
+outstanding. No pull-request event receives R2 access.
 
 ## Acceptance
 
