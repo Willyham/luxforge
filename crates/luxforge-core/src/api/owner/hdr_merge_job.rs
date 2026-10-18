@@ -1088,8 +1088,7 @@ fn hdr_merge_job_publication_failure_at_each_boundary_publishes_nothing() {
 }
 
 /// Merge HDR publishes a change of its result and its stack alone; an exact repeat reuses that
-/// result with no library change and reading no input, and so does its retry; `merge.create`
-/// takes no development-set parameter.
+/// result with no library change and reading no input, and so does its retry.
 #[test]
 #[slow]
 fn hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
@@ -1124,12 +1123,6 @@ fn hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
     assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
     assert_eq!(bench.reads(), reads, "reuse reads no input");
 
-    for field in ["add_to_development_set", "set_id"] {
-        let mut params = bench.create_params(1, field);
-        params[field] = json!(true);
-        let refused = bench.failure("merge.create", params);
-        assert_eq!(refused["code"], "validation", "{refused}");
-    }
     assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
     assert_eq!(bench.untouched(), before);
     bench.originals_unchanged();

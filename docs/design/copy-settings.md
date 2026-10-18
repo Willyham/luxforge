@@ -6,7 +6,7 @@ Copy settings reads chosen adjustment groups from one photograph into a settings
 
 ## Boards
 
-Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [copy-settings/html](copy-settings/html/index.html). The photographs are the Develop and catalog boards' own; the values, names and times are illustrative. The filmstrip's header reads "Development set", drawn before the filmstrip held the Develop folder; it is now the folder's path.
+Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [copy-settings/html](copy-settings/html/index.html). The photographs are the Develop and catalog boards' own; the values, names and times are illustrative. The boards' filmstrip header reads "Development set"; the app shows the Develop folder's path there.
 
 | Board | Shows |
 | --- | --- |
@@ -26,11 +26,11 @@ Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each o
 
 ## What is copied
 
-The first delivery carries the **adjustment groups**: the groups of every presettable field-patch action, which is exactly what a preset carries. Today these are Basic's White balance, Tone and Colour; the Tone curve; Detail's groups; Presence; the colour mixer's Hue, Saturation and Luminance; and the vignette. The groups are derived from the registered modules' control descriptors ([settings groups](#programmability)), so a module added later with presettable patches, such as colour grading, appears in the chooser with no change here. Copy carries values, never a recomputing step: copying Basic's Tone group after [Auto tone](auto-tone.md) carries the values Auto set on the source, not an Auto step re-analysed on each target.
+Copy carries the **adjustment groups**: the groups of every presettable field-patch action, which is exactly what a preset carries. These are Basic's White balance, Tone and Colour; the Tone curve; Detail's groups; Presence; the colour mixer's Hue, Saturation and Luminance; and the vignette. The groups are derived from the registered modules' control descriptors ([settings groups](#programmability)), so a module added later with presettable patches, such as colour grading, appears in the chooser with no change here. Copy carries values, never a recomputing step: copying Basic's Tone group after [Auto tone](auto-tone.md) carries the values Auto set on the source, not an Auto step re-analysed on each target.
 
 **White balance follows each photograph's kind**, as presets do. The White balance group copied from a RAW photograph is the RAW development's (`set-raw`: As shot, or a temperature and tint in kelvin). Copied from a JPEG, it is Basic's relative temperature and tint. A RAW white balance pasted onto a JPEG is skipped, and so is a JPEG's relative pair pasted onto a RAW photograph's global target. Nothing converts between the two. The paste reports each skip with its reason; it is not a failure. For the chooser's captions, `set-raw`'s `white-balance` parameter declares a default of `as-shot`: a RAW photograph left at As shot captures `{white-balance: as-shot}` and reads **Original**, and one with a custom temperature and tint reads **Custom**.
 
-**Stays with each photograph** and is not copied: crop and orientation, lens correction, perspective, the RAW look and masks. Each is either per-photograph geometry, not presettable by an earlier decision, or needs a transfer policy that is not designed yet ([later](#later)). The chooser says so in one line, with no disabled checkboxes for them.
+**Stays with each photograph** and is not copied: crop and orientation, lens correction, perspective, the RAW look and masks. Each is either per-photograph geometry, not presettable, or needs a transfer policy that is not designed yet ([later](#later)). The chooser says so in one line, with no disabled checkboxes for them.
 
 **Masks.** Copy reads only the global layer of each module, as capture does, and paste writes only the global layers. A masked layer on the source is not copied, and one on the target is neither read nor changed.
 
@@ -47,7 +47,7 @@ One clipboard per desktop window, held in the desktop's view state and lost when
 
 The values are read **when Copy runs**. A later edit to the source does not change the clipboard, and neither does editing or deleting a library preset. A newer copy replaces the clipboard. Nothing is written to the system clipboard, and agents do not see the desktop's clipboard ([parity](#programmability)).
 
-**The remembered choice** is the set of groups the last confirmed Copy checked in this window. It starts as every adjustment group except White balance, the owner's default, matching the create-preset form, because white balance is usually per photograph. `⌘C` copies the remembered choice. The chooser opens with it checked. Paste from previous uses it too.
+**The remembered choice** is the set of groups the last confirmed Copy checked in this window. It starts as every adjustment group except White balance, matching the create-preset form, because white balance is usually per photograph. `⌘C` copies the remembered choice. The chooser opens with it checked. Paste from previous uses it too.
 
 ## Copy
 
@@ -82,15 +82,15 @@ Paste from previous captures the remembered choice from the photograph this wind
 
 ### The filmstrip selection
 
-The filmstrip gains a selection, with the open photograph always in it:
+The filmstrip has a selection, with the open photograph always in it:
 
 | Gesture | Effect |
 | --- | --- |
-| Click | Opens the photograph and selects it alone, as today |
+| Click | Opens the photograph and selects it alone |
 | `⌘`-click | Adds or removes a photograph other than the open one, without opening it |
 | `⇧`-click | Selects the range from the open photograph to the clicked one, without opening it |
 | `⌘A` (focus not in a text field) | Selects the whole filmstrip |
-| Arrow keys, Escape | Arrow keys step as today and select the new photograph alone; Escape selects only the open photograph |
+| Arrow keys, Escape | Arrow keys step to the next or previous photograph and select it alone; Escape selects only the open photograph |
 | Right press | Opens the menu (below) |
 
 Selected cells draw a quiet accent border and tint, and the open cell keeps its full accent border. The strip's header says "4 of 9 selected" whenever more than one photograph is selected. The selection is the desktop's view state. It is cleared when the Develop folder changes, and photographs that leave the filmstrip leave the selection.
@@ -103,7 +103,7 @@ With more than one photograph selected, `⌘V` pastes to **all** of them. After 
 
 `⌘C` and `⇧⌘C` copy from the active photograph. `⌘V`, the grid's right-press menu (Copy settings, Copy settings…, Paste settings to N) and the Info panel's **Paste settings to N** all paste to the selection. They send `batch.apply-settings {targets: {kind: selection}}` synchronously in the update of the gesture, as Apply preset… does, so it names the selection on screen; a stale view's refusal reads the view again.
 
-The Info panel's Develop band shows a **clipboard card** whenever the clipboard holds settings: "Settings from DSC_4471.NEF", the group count, elapsed copy time and entry, and the group names. The Paste button sits under it, before Apply preset… and Export N…. With an empty clipboard the band is as it is today. One batch of this desktop's runs at a time, shared with Apply preset… and Export, and the band and status bar report its progress as theirs do. Over Removed, paste is refused as the other batches are.
+The Info panel's Develop band shows a **clipboard card** whenever the clipboard holds settings: "Settings from DSC_4471.NEF", the group count, elapsed copy time and entry, and the group names. The Paste button sits under it, before Apply preset… and Export N…. With an empty clipboard the band shows neither the card nor the Paste button. One batch of this desktop's runs at a time, shared with Apply preset… and Export, and the band and status bar report its progress as theirs do. Over Removed, paste is refused as the other batches are.
 
 ### Confirmation and report
 
@@ -123,7 +123,7 @@ Text fields keep their own `⌘C`, `⌘V` and `⌘A`. These bindings apply only 
 | `⌥⌘V` | Paste from previous into the open photograph | Not bound |
 | `⌘A` | Select the whole filmstrip | Unchanged (select all) |
 
-The title bar gains **Copy** and **Paste** icon buttons before Undo, in both workspaces. Copy opens the chooser, because a press is the deliberate gesture that should show what is copied. The command palette lists Copy settings, Copy settings…, Paste settings (with the target count when more than one photograph is selected) and Paste settings from previous photograph, each disabled with its reason when it cannot run.
+The title bar has **Copy** and **Paste** icon buttons before Undo, in both workspaces. Copy opens the chooser, because a press is the deliberate gesture that should show what is copied. The command palette lists Copy settings, Copy settings…, Paste settings (with the target count when more than one photograph is selected) and Paste settings from previous photograph, each disabled with its reason when it cannot run.
 
 ## Programmability
 
@@ -147,8 +147,8 @@ An agent copies and pastes with the same calls. The desktop's clipboard and film
 ## Engineering constraints
 
 - **Owner and UI threads.** Captures, pastes and batch submissions run as owner tasks off the update loop, except the Select paste naming `{kind: selection}`, which is synchronous in the gesture's update as every selection-target library request is ([performance rule 12](../engineering/performance-rules.md#rules)). Nothing is computed in `view()`.
-- **No new renders.** Capture reads payloads only. A paste into the open photograph costs the ordinary commit and one preview job. A batch costs one `edit.apply-settings` per photograph.
-- **Bounds.** A clipboard is one settings set within the existing 16-action and 64-field bounds, about a kilobyte. The filmstrip selection is at most the filmstrip's size, the Develop folder's at most 100,000 photographs. A batch is bounded by `MAX_LIBRARY_BATCH`.
+- **No extra renders.** Capture reads payloads only. A paste into the open photograph costs the ordinary commit and one preview job. A batch costs one `edit.apply-settings` per photograph.
+- **Bounds.** A clipboard is one settings set within the 16-action and 64-field bounds, about a kilobyte. The filmstrip selection is at most the filmstrip's size, the Develop folder's at most 100,000 photographs. A batch is bounded by `MAX_LIBRARY_BATCH`.
 - **Source preservation.** A paste writes only recipe history entries. Originals are untouched, and an unavailable module refuses the paste explicitly rather than silently dropping its effect.
 
 ## Acceptance
@@ -182,12 +182,10 @@ An agent copies and pastes with the same calls. The desktop's clipboard and film
 
 ## Decisions
 
-Owner, 2026-10-07:
-
-1. The first delivery copies adjustment groups only, the presettable settings. Crop, orientation, lens correction, perspective, the RAW look and masks are later.
+1. Copy carries adjustment groups only, the presettable settings. Crop, orientation, lens correction, perspective, the RAW look and masks are later.
 2. Every group except White balance is checked by default, and neutral groups are included so the target matches the source. The last confirmed choice is remembered for the window, and `⌘C` copies it without asking.
-3. Develop's filmstrip gains multi-selection, and `⌘V` pastes to it.
-4. Paste from previous (`⌥⌘V`) is in the first delivery.
+3. Develop's filmstrip has multi-selection, and `⌘V` pastes to it.
+4. Paste from previous (`⌥⌘V`) is included.
 
 Recorded defaults, which the implementer may refine within this contract: the title-bar placement of Copy and Paste; Copy's button opening the chooser; one in-memory clipboard per window, not written to the system clipboard; the `Paste settings from <source>` label; a confirmation for every paste to more than one photograph; the clipboard card in Select's Info panel; the filmstrip selection gestures; Paste from previous targeting only the open photograph; and the sizes, wording and layout of the boards.
 
@@ -204,6 +202,6 @@ Recorded defaults, which the implementer may refine within this contract: the ti
 
 ## Performance review
 
-Copy reads stored entry payloads through `asset.state` and `preset.capture` on an owner task. It neither opens originals nor renders. Paste uses the existing composite planner and cached verified source preparation; a changed entry follows the ordinary preview path. No full-frame allocations or image cache are added. The clipboard is bounded by the settings schema (16 actions, 64 fields per action), shared through an `Arc`; each window holds one capture and one chooser.
+Copy reads stored entry payloads through `asset.state` and `preset.capture` on an owner task. It neither opens originals nor renders. Paste uses the composite planner and cached verified source preparation; a changed entry follows the ordinary preview path. No full-frame allocations or image cache are added. The clipboard is bounded by the settings schema (16 actions, 64 fields per action), shared through an `Arc`; each window holds one capture and one chooser.
 
-The owner validates bounded settings and resolves batch targets, then the existing library lane advances one photograph at a time. Validation and no-op checks compare payloads. Single paste reads back its changed entry; batch completion resynchronizes the open photograph and catalog counts. Copy and selection alone schedule no preview or upload. Batch monitoring reuses the authoritative job subscription; there is no new polling timer. Chooser captions are captured once per open, then values are captured again at confirmation. Filmstrip derivation draws only visible cells and stepping allocates no selection. No render algorithm changes, so the exact-buffer tests compare paste with direct actions and the native scenario checks existing rendered output. No 24 MP timing run or performance improvement is claimed: this plan explicitly requires functional and rendered verification, with no new render path.
+The owner validates bounded settings and resolves batch targets, then the library lane advances one photograph at a time. Validation and no-op checks compare payloads. Single paste reads back its changed entry; batch completion resynchronizes the open photograph and catalog counts. Copy and selection alone schedule no preview or upload. Batch monitoring reuses the authoritative job subscription; there is no polling timer. Chooser captions are captured once per open, then values are captured again at confirmation. Filmstrip derivation draws only visible cells and stepping allocates no selection. Paste adds no render algorithm, so the exact-buffer tests compare paste with direct actions and the native scenario checks the ordinary rendered output. No 24 MP timing run or performance improvement is claimed: the feature requires functional and rendered verification and adds no render path.

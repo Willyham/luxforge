@@ -1377,9 +1377,8 @@ mod tests {
 
     /// The production preparation of each supplied RAW file — decode, development, DNG
     /// corrections and the camera conversion — at its as-shot gains and at a custom white balance,
-    /// and the sensor neutral picker over a grid of upright points, keep the bits they had before
-    /// the RAW preparation clean-ups. The digests were captured on the owner's M4; elsewhere the
-    /// test prints them. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding the files and run
+    /// and the sensor neutral picker over a grid of upright points, keep their pinned digests. The
+    /// digests were captured on the owner's M4; elsewhere the test prints them. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding the files and run
     /// in release:
     ///
     /// ```text
@@ -2303,8 +2302,7 @@ mod jpeg_tests {
 
     /// Every scan layout decodes, and each non-interleaved file (one separate scan per component)
     /// decodes to exactly the bytes of its interleaved twin, which holds the same coefficients:
-    /// 4:2:0, whose vertically subsampled chroma the previous decoder (zune-jpeg 0.5.15) read
-    /// wrongly and the import therefore refused, as well as 4:4:4 and 4:2:2.
+    /// 4:2:0, 4:4:4 and 4:2:2.
     ///
     /// Every fixture here started from the same 48x32 pattern, encoded with libjpeg-turbo's
     /// `cjpeg -quality 85 -sample HxV -baseline` at the named chroma subsampling (2x2, 1x1 or 2x1
@@ -2336,162 +2334,12 @@ mod jpeg_tests {
         }
     }
 
-    /// Turning decoded rows upright places every pixel where the `image` crate's
-    /// `apply_orientation`, which the import used before, puts it, for all eight EXIF orientations
-    /// on an odd-sized image whose every pixel is distinct.
-    #[test]
-    fn upright_placement_matches_the_previous_orientation_code() {
-        let (width, height) = (7_u32, 5_u32);
-        let stored = image::RgbaImage::from_fn(width, height, |x, y| {
-            image::Rgba([x as u8, y as u8, (x * 16 + y) as u8, 255])
-        });
-        for orientation in 1..=8_u8 {
-            let mut expected = image::DynamicImage::ImageRgba8(stored.clone());
-            expected
-                .apply_orientation(image::metadata::Orientation::from_exif(orientation).unwrap());
-            let expected = expected.to_rgba8();
-            let (upright_width, upright_height) = if orientation >= 5 {
-                (height, width)
-            } else {
-                (width, height)
-            };
-            assert_eq!(expected.dimensions(), (upright_width, upright_height));
-            let mut placed = vec![0; (width * height * 4) as usize];
-            for y in 0..height as usize {
-                for x in 0..width as usize {
-                    let (ux, uy) =
-                        upright_position(orientation, width as usize, height as usize, x, y);
-                    let to = (uy * upright_width as usize + ux) * 4;
-                    placed[to..to + 4].copy_from_slice(&stored.get_pixel(x as u32, y as u32).0);
-                }
-            }
-            assert_eq!(placed, expected.into_raw(), "orientation {orientation}");
-        }
-    }
-
-    /// The previous import path, `image` 0.25.9 (zune-jpeg 0.5.15) behind the same header walk,
-    /// as it was: its outcome, and on success its upright dimensions, orientation and RGBA.
-    fn previous_import(bytes: &[u8]) -> Result<(u32, u32, u8, Vec<u8>), ErrorKind> {
-        use image::{ImageDecoder, ImageReader};
-        let luxforge_jpeg::Header {
-            width: w,
-            height: h,
-            components,
-        } = luxforge_jpeg::header(bytes).map_err(|error| Error::from(error).kind)?;
-        if w == 0 || h == 0 || w > 16384 || h > 16384 || u64::from(w) * u64::from(h) > 64_000_000 {
-            return Err(ErrorKind::ResourceLimit);
-        }
-        if ![1, 3].contains(&components) {
-            return Err(ErrorKind::UnsupportedColor);
-        }
-        let reader =
-            ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
-        let mut decoder = reader.into_decoder().map_err(|_| ErrorKind::Decode)?;
-        if let Some(profile) = decoder.icc_profile().unwrap() {
-            crate::profile::check(&profile, components).map_err(|error| error.kind)?;
-        }
-        let orientation = decoder.orientation().unwrap();
-        let mut upright =
-            image::DynamicImage::from_decoder(decoder).map_err(|_| ErrorKind::Decode)?;
-        upright.apply_orientation(orientation);
-        Ok((
-            upright.width(),
-            upright.height(),
-            orientation.to_exif(),
-            upright.to_rgba8().into_raw(),
-        ))
-    }
-
-    /// Every committed s0 JPEG opens as it did through the previous decoder: the same refusal kind,
-    /// or the same upright dimensions and orientation with every channel within the decoders'
-    /// rounding (libjpeg's integer IDCT, fancy upsampling and colour conversion against
-    /// zune-jpeg's). The one difference is the 4:2:0 non-interleaved file, which the import refused
-    /// before because zune-jpeg read it wrongly (a checked comparison, not an assumption: its
-    /// pixels are far from the adapter's there).
-    #[test]
-    fn every_fixture_opens_as_through_the_previous_decoder() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0");
-        let mut names: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".jpg"))
-            .collect();
-        names.sort();
-        assert_eq!(names.len(), 23);
-        for name in names {
-            let bytes = std::fs::read(dir.join(&name)).unwrap();
-            let now = open_source_bytes(bytes.clone());
-            let before = previous_import(&bytes);
-            match (now, before) {
-                (Err(now), Err(before)) => assert_eq!(now.kind, before, "{name}"),
-                (Ok(now), Ok((width, height, orientation, rgba))) => {
-                    assert_eq!((now.width, now.height), (width, height), "{name}");
-                    assert_eq!(now.orientation, orientation, "{name}");
-                    let largest = now
-                        .rgba
-                        .iter()
-                        .zip(&rgba)
-                        .map(|(a, b)| a.abs_diff(*b))
-                        .max()
-                        .unwrap();
-                    if name == "jpeg-scan-420-noninterleaved.jpg" {
-                        assert!(largest > 32, "{name}: zune-jpeg misread it by {largest}");
-                    } else {
-                        assert!(largest <= DECODER_TOLERANCE, "{name}: {largest} codes");
-                    }
-                }
-                (now, before) => panic!(
-                    "{name}: now {:?}, before {:?}",
-                    now.map(|_| ()),
-                    before.map(|_| ())
-                ),
-            }
-        }
-    }
-
-    /// The largest channel difference between libjpeg's and zune-jpeg's decode of the committed
-    /// fixtures, measured.
-    const DECODER_TOLERANCE: u8 = 3;
-
-    /// The previous decode as the import ran it, for timing: `image` 0.25.9's reader with the same
-    /// limits, its ICC and orientation reads, the decode to RGB, `apply_orientation`, and the copy
-    /// to RGBA into the frame, after the same header walk.
-    fn previous_decode(bytes: &[u8]) -> Arc<Vec<u8>> {
-        use image::{ImageDecoder, ImageReader, Limits};
-        luxforge_jpeg::header(bytes).unwrap();
-        let mut reader =
-            ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
-        let mut limits = Limits::default();
-        limits.max_image_width = Some(16384);
-        limits.max_image_height = Some(16384);
-        limits.max_alloc = Some(512 * 1024 * 1024);
-        reader.limits(limits);
-        let mut decoder = reader.into_decoder().unwrap();
-        std::hint::black_box(decoder.icc_profile().unwrap());
-        let orientation = decoder.orientation().unwrap();
-        let mut upright = image::DynamicImage::from_decoder(decoder).unwrap();
-        upright.apply_orientation(orientation);
-        let upright = upright.into_rgb8();
-        let mut frame = crate::render::zeroed_frame(
-            Raster::expected_len(upright.width(), upright.height()).unwrap(),
-        );
-        for (dst, src) in crate::render::frame_mut(&mut frame)
-            .chunks_exact_mut(4)
-            .zip(upright.as_raw().chunks_exact(3))
-        {
-            dst[..3].copy_from_slice(src);
-            dst[3] = 255;
-        }
-        frame
-    }
-
-    /// Decode-only wall time of the files named in `LUXFORGE_JPEG_TIMING` (colon-separated), the
-    /// previous `image`/zune-jpeg path against the libjpeg adapter's `decode_upright`, each the
-    /// median of `LUXFORGE_JPEG_SAMPLES` (default 7) after one warm-up, run twice: previous first
-    /// in each round, then the adapter first. The file is read once, outside the clock; hashing
-    /// and capture metadata are not timed. With `LUXFORGE_JPEG_ONLY=previous|adapter|none` it
-    /// decodes each file once through that path and nothing else, for a peak-memory reading of the
-    /// whole process (`/usr/bin/time -l`). A measurement, not a gate:
+    /// Decode-only wall time of the files named in `LUXFORGE_JPEG_TIMING` (colon-separated)
+    /// through `decode_upright`, the median of `LUXFORGE_JPEG_SAMPLES` (default 7) after one
+    /// warm-up. The file is read once, outside the clock; hashing and capture metadata are not
+    /// timed. With `LUXFORGE_JPEG_ONLY=decode|none` it decodes each file once, or not at all, and
+    /// nothing else, for a peak-memory reading of the whole process (`/usr/bin/time -l`). A
+    /// measurement, not a gate:
     ///
     /// ```text
     /// LUXFORGE_JPEG_TIMING=/path/24mp.jpg:/path/60mp.jpg \
@@ -2505,54 +2353,27 @@ mod jpeg_tests {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(7);
-        let adapter = |bytes: &[u8]| decode_upright(bytes).unwrap().rgba;
-        let centre = |values: Vec<f64>| {
-            luxforge_testbase::Distribution::of(values)
-                .expect("LUXFORGE_JPEG_SAMPLES is at least 1")
-                .p50
-        };
         for path in paths.split(':') {
             let bytes = std::fs::read(path).unwrap();
             match std::env::var("LUXFORGE_JPEG_ONLY").as_deref() {
-                Ok("previous") => {
-                    std::hint::black_box(previous_decode(&bytes));
-                    continue;
-                }
-                Ok("adapter") => {
-                    std::hint::black_box(adapter(&bytes));
+                Ok("decode") => {
+                    std::hint::black_box(decode_upright(&bytes).unwrap());
                     continue;
                 }
                 Ok(_) => continue,
                 Err(_) => {}
             }
-            let time = |decode: &dyn Fn(&[u8]) -> Arc<Vec<u8>>| {
+            let time = || {
                 let start = std::time::Instant::now();
-                std::hint::black_box(decode(&bytes));
+                std::hint::black_box(decode_upright(&bytes).unwrap());
                 start.elapsed().as_secs_f64() * 1000.0
             };
-            time(&previous_decode);
-            time(&adapter);
-            let mut rounds = Vec::new();
-            for previous_first in [true, false] {
-                let (mut previous, mut ours) = (Vec::new(), Vec::new());
-                for _ in 0..samples {
-                    if previous_first {
-                        previous.push(time(&previous_decode));
-                        ours.push(time(&adapter));
-                    } else {
-                        ours.push(time(&adapter));
-                        previous.push(time(&previous_decode));
-                    }
-                }
-                rounds.push(serde_json::json!({
-                    "order": if previous_first { "previous first" } else { "adapter first" },
-                    "previous_median_ms": centre(previous),
-                    "adapter_median_ms": centre(ours),
-                }));
-            }
+            time();
+            let decode = luxforge_testbase::Distribution::of((0..samples).map(|_| time()))
+                .expect("LUXFORGE_JPEG_SAMPLES is at least 1");
             println!(
                 "{}",
-                serde_json::json!({"file": path, "samples": samples, "rounds": rounds})
+                serde_json::json!({"file": path, "samples": samples, "median_ms": decode.p50})
             );
         }
     }

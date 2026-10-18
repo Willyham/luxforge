@@ -395,9 +395,10 @@ fn solved(input: &SampleGrid) -> AutoToneReport {
 
 /// A saturated colour with a channel at zero, such as turquoise water the Look carries out of
 /// gamut, is not black: shadow clipping counts only samples with every channel at 0. Counted as
-/// clipping, 2% of such points left Blacks no acceptable value, so it stopped at +60 and the second
-/// sweep's Exposure fell to hold the median, greying the whole photograph (DSC_2247: Exposure
-/// −2.37, Whites and Blacks +60). Now the frame takes its neutral twin's Whites and Blacks.
+/// clipping, 2% of such points would leave Blacks no acceptable value, so it would stop at +60 and
+/// the second sweep's Exposure would fall to hold the median, greying the whole photograph
+/// (DSC_2247: Exposure −2.37, Whites and Blacks +60). The frame takes its neutral twin's Whites and
+/// Blacks.
 #[test]
 fn auto_tone_blacks_ignore_a_colour_with_a_channel_at_zero() {
     let frame = |cyan: bool| {
@@ -414,8 +415,8 @@ fn auto_tone_blacks_ignore_a_colour_with_a_channel_at_zero() {
     let (report, twin) = (solved(&frame(true)), solved(&frame(false)));
     assert_eq!(report.bands.shadow_clip, twin.bands.shadow_clip);
     assert!(report.unmet.is_empty(), "{:?}", report.unmet);
-    // Not stopped at the bound that clips least for want of an acceptable value. Realigned Blacks
-    // reaches no clipping on this frame, so it may rest at the other bound.
+    // Not stopped at the bound that clips least for want of an acceptable value. Blacks reaches no
+    // clipping on this frame, so it may rest at the other bound.
     assert!(report.values.blacks < BOUNDS[5].1, "{report:?}");
     let endpoints = |values: AutoToneValues| [values.whites, values.blacks];
     assert_eq!(endpoints(report.values), endpoints(twin.values));
@@ -431,9 +432,9 @@ fn auto_tone_blacks_ignore_a_colour_with_a_channel_at_zero() {
 
 /// Whites and Blacks are held to the clipping they cause: what remains at the bound that clips
 /// least is their floor, and the allowance is counted above it. Speculars far above white, which
-/// no Whites value brings under it, once left Whites no acceptable value, so it stopped at −60
-/// and dimmed every other highlight; now the frame solves as it does with them flagged as clipped
-/// in the source.
+/// no Whites value brings under it, would otherwise leave Whites no acceptable value, so it would
+/// stop at −60 and dim every other highlight; the frame solves as it does with them flagged as
+/// clipped in the source.
 #[test]
 fn auto_tone_whites_and_blacks_ignore_clipping_their_bound_leaves() {
     let speculars = |flagged: bool| {

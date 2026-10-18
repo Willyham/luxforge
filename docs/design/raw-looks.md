@@ -1,6 +1,6 @@
 # RAW looks
 
-Status: phase 1 (the Standard look) is implemented, including the Amount control disabled on a Neutral look, and its supplied-file native look journeys pass on the M4; the native rendered tier with the owner manifest and final measurement are outstanding. Phase 2 (Match camera) is planned. The owner decided on 2026-10-05 that new RAW photos start from a Luxforge look rather than the bare neutral development, with matching the camera's own preview as a setting, and accepted the design's defaults the same day ([decided](#decided)). Phase 2, Match camera, follows on the same layer and payload. [Task plan](../../tasks/raw/raw-looks.json).
+Status: phase 1 (the Standard look) is implemented, including the Amount control disabled on a Neutral look, and qualified on the M4: its look journeys pass on the supplied files, and verify quick and the rendered tier with the owner manifest pass. Final measurement is outstanding. Phase 2 (Match camera) is planned. New RAW photos start from a Luxforge look rather than the bare neutral development, with matching the camera's own preview as a setting ([decided](#decided)). Phase 2, Match camera, follows on the same layer and payload. [Task plan](../../tasks/raw/raw-looks.json).
 
 ## Why
 
@@ -30,7 +30,7 @@ The look is a pointwise colour layer, `stage: Color`, **order 3**: after Basic (
 
 The layer compiles to **one pointwise unit** that runs four steps in this order, each frozen against an independent `f64` reference in `crates/luxforge-reference/src/look.rs`. It is one unit because Amount blends the look's output with the unit's own input, which a later unit no longer has. A Neutral look, or amount 0, compiles to no unit and keeps the identity path.
 
-1. **Tone.** A monotone curve `T` over **encoded luminance**, the sRGB transfer continued past `[0, 1]` that [Basic tone](basic-tone.md#working-tone-domain) and the [Tone curve](tone-curve.md) already use, with the Tone curve's floor-subtracted luminance-ratio reconstruction, so hue is kept. `T` is the Tone curve's open monotone interpolant (Fritsch–Butland PCHIP) over at most 24 knots, with a **look tail policy**: the knots span `[0, x_max]`, where `x_max = encode(2^H)` is the brightest scene value the look rolls off (`H` the headroom above sensor white). Below 0 the first segment continues linearly, so negative luminance stays finite and monotone. Above `x_max` the curve holds its last value, which is at most 1. The Tone curve's own tails, the unit-slope tails outside `[0, 1]`, are unchanged and its unit stays byte-identical: the look shares the interpolant's construction, not the Tone curve's unit. The curve folds in the baseline lift: it maps the development's scene mid-grey to display mid-grey.
+1. **Tone.** A monotone curve `T` over **encoded luminance**, the sRGB transfer continued past `[0, 1]` that [Basic tone](basic-tone.md#working-tone-domain) and the [Tone curve](tone-curve.md) already use, with the Tone curve's floor-subtracted luminance-ratio reconstruction, so hue is kept. `T` is the Tone curve's open monotone interpolant (Fritsch–Butland PCHIP) over at most 24 knots, with a **look tail policy**: the knots span `[0, x_max]`, where `x_max = encode(2^H)` is the brightest scene value the look rolls off (`H` the headroom above sensor white). Below 0 the first segment continues linearly, so negative luminance stays finite and monotone. Above `x_max` the curve holds its last value, which is at most 1. The Tone curve's own tails, the unit-slope tails outside `[0, 1]`, are its own and its unit is unaffected: the look shares the interpolant's construction, not the Tone curve's unit. The curve folds in the baseline lift: it maps the development's scene mid-grey to display mid-grey.
 2. **Chroma.** A uniform Oklab chroma gain `c` at constant Oklab lightness and hue: Basic's Saturation at `s = 100 (c − 1)`, which scales Oklab `a` and `b` by exactly `c` ([Basic colour](basic-colour.md)), through the core's shared Oklab conversions.
 3. **Path to white.** A colour whose largest linear channel `m` passes a knee `k` after tone and chroma is mixed toward the grey of its own luminance `Y`, `rgb' = Y + t (rgb − Y)`, until its largest channel is `k + (1 − k)(1 − e^{−(m − k)/(1 − k)})`, which approaches 1: `t = max(0, (target − Y) / (m − Y))`. So it reaches white at the display boundary instead of clipping one channel at a time and shifting hue. Luminance is kept exactly, chroma never grows, a colour at or below the knee is unchanged, and the target is continuous with slope one at the knee. It is a closed form, so the GPU cost is fixed. The mix keeps the colour's chromaticity line to its grey, not its Oklab hue, so a strongly compressed colour can drift a few degrees of Oklab hue on its way to white.
 4. **Amount.** `out = in + a · (look(in) − in)` in linear light, `a = amount / 100`, amount 0–200; 0 compiles to nothing, 100 is the look. Past 100 it extrapolates, as Lightroom's profile Amount does.
@@ -60,7 +60,7 @@ One fixed look, chosen on the corpus and frozen as knots and a chroma gain in `m
 
 Medians and percentiles are nearest-rank, as everywhere in the workspace. An encoded error of 0.011 is about three output codes.
 
-- **Placement.** The cameras' JPEGs put mid-grey 1.15 EV above the bare development (median over the corpus at the best shape), more than the +0.5 EV assumed before the study. At the frozen Standard the exposure each camera's preview still needs is −0.10, +0.03 and +0.23 EV at the quartiles; the spread is wide, from about −1 EV (a Leica M10, a Pentax K-3 Mark III, a Fujifilm X-T30, a DJI FC7303) to +1 EV and beyond (a Canon EOS R3, a DJI FC4382), with Canon bodies mostly above the median. One file per camera cannot separate a camera's rendering from its scene's metering, so these are not per-camera figures.
+- **Placement.** The cameras' JPEGs put mid-grey 1.15 EV above the bare development (median over the corpus at the best shape). At the frozen Standard the exposure each camera's preview still needs is −0.10, +0.03 and +0.23 EV at the quartiles; the spread is wide, from about −1 EV (a Leica M10, a Pentax K-3 Mark III, a Fujifilm X-T30, a DJI FC7303) to +1 EV and beyond (a Canon EOS R3, a DJI FC4382), with Canon bodies mostly above the median. One file per camera cannot separate a camera's rendering from its scene's metering, so these are not per-camera figures.
 - **Contrast.** `p = 1.6`, a log–log slope of 1.32 at grey. A headroom of 1.0 or 1.5 EV fits within noise of each other; 1.5 EV keeps more room for Basic's Exposure and Highlights, and sensor white renders to 0.938 linear (code 248), so a clipped sky still reads white.
 - **Chroma.** The cameras' Oklab chroma is 1.08, 1.21 and 1.42 times the Standard-toned development's at the quartiles (114 files with enough coloured mid-tones); the gain is the median, 1.2.
 - **Knee.** 0.8: colours whose largest channel stays below 0.8 are untouched.
@@ -73,13 +73,13 @@ Medians and percentiles are nearest-rank, as everywhere in the workspace. An enc
 | Chroma gain | 1.2 |
 | Path-to-white knee | 0.8 |
 
-**Owner review.** The study writes three contact sheets of 24 corpus frames, each Neutral, Standard and the camera's preview side by side (`LUXFORGE_LOOK_SHEET`). The owner reviewed them on 2026-10-05 and approved these numbers, which are frozen. Where Standard and the cameras still differ on the sheets, the cameras are more saturated in greens and blue skies and some lift deep shadows further (Active D-Lighting and similar), which is what Match camera is for.
+**Owner review.** The study writes three contact sheets of 24 corpus frames, each Neutral, Standard and the camera's preview side by side (`LUXFORGE_LOOK_SHEET`). These numbers are approved from the sheets and frozen. Where Standard and the cameras still differ on the sheets, the cameras are more saturated in greens and blue skies and some lift deep shadows further (Active D-Lighting and similar), which is what Match camera is for.
 
 ## Phase 2: Match camera
 
 A Camera look is a Standard-shaped payload whose tone and chroma were fitted to the photo's embedded camera preview. Fitting is statistical, never pixel-aligned, so framing differences, in-camera lens correction and the preview's resolution do not matter.
 
-**Inputs.** Deterministic source data, read on the source worker, not rendered stack pixels from the GPU or tile service: the photo's **as-shot development** (the Original's look input: RAW layer only, nothing from Basic) downscaled to at most 1024 px, and its **largest embedded JPEG** (`EmbeddedPreviews::largest_jpeg`, cut at its last EOI as the 100% region already does), decoded at the DCT scale that gives at most 1024 px, upright. If the held development has custom white balance, reuse a cached as-shot fit or develop the retained mosaic at its captured gains on the source worker under the existing development-memory gate; do not change the current recipe or publish that fit input as its rendition. Only an sRGB or Adobe RGB preview (by ICC profile or EXIF colour space) is fitted, converted to linear sRGB; another is refused with its reason.
+**Inputs.** Deterministic source data, read on the source worker, not rendered stack pixels from the GPU or tile service: the photo's **as-shot development** (the Original's look input: RAW layer only, nothing from Basic) downscaled to at most 1024 px, and its **largest embedded JPEG** (`EmbeddedPreviews::largest_jpeg`, cut at its last EOI as the 100% region already does), decoded at the DCT scale that gives at most 1024 px, upright. If the held development has custom white balance, reuse a cached as-shot fit or develop the retained mosaic at its captured gains on the source worker under the development-memory gate; do not change the current recipe or publish that fit input as its rendition. Only an sRGB or Adobe RGB preview (by ICC profile or EXIF colour space) is fitted, converted to linear sRGB; another is refused with its reason.
 
 **Fit** (recorded defaults, frozen in the fit study):
 
@@ -94,13 +94,13 @@ A Camera look is a Standard-shaped payload whose tone and chroma were fitted to 
 **Where it runs.** Never on the catalog owner. The fit is a function of the original only (its as-shot development and its preview), not of the stack, so it is cached per source identity beside the prepared source and reused until the source leaves the cache.
 
 - **At first open,** when the preference is Match camera: the source worker computes the fit after decoding, extending `SourceWork::run`'s current `await_first_open` step with a hook that makes the as-shot development and the original's bytes available before those bytes are released and returns opaque first-open data; `first_open` then proposes `match-camera-look` with it, on the owner, reading no pixels. This extends the [first-open contract](lens-and-perspective.md#modules-api-and-history), which today reads metadata only.
-- **On request** (`edit.match-camera-look`, the Look section's Camera choice): the action defers a source-fit job through the existing bounded source worker, keyed by source identity and as-shot development, and is replayed with the cached resolved payload. The source queue admits eight waiting tasks; cancellation and shared-client interest follow source jobs, and a changed source or stale target refuses with conflict. This requires a source-worker fit result contract; the tile service's park/replay limits apply to rendered pixel reads, not this source computation.
+- **On request** (`edit.match-camera-look`, the Look section's Camera choice): the action defers a source-fit job through the bounded source worker, keyed by source identity and as-shot development, and is replayed with the cached resolved payload. The source queue admits eight waiting tasks; cancellation and shared-client interest follow source jobs, and a changed source or stale target refuses with conflict. This requires a source-worker fit result contract; the tile service's park/replay limits apply to rendered pixel reads, not this source computation.
 
 **When it cannot.** A photo with no usable preview (Canon R5 Mark II and R8 carry none; a 160 px thumbnail is not one), an unsupported colour space or too few usable pixels gets no Camera look. At first open it keeps its Standard look and the preparation's `first_open` report carries the module's error with the reason; on request the action is refused with `unavailable:` and the reason. Nothing falls back silently.
 
 ## Starting a new photo
 
-**Standard and Neutral are in the Original.** A new RAW photograph's Original (`EditorService::new_photograph`) holds the look the `raw_look` preference names, beside the RAW development layer. This needs no pixels, so a batch Develop of picks costs nothing more, and the catalog's rendered tiers and batch exports of photos never opened in Develop carry the look, because those render the current entry without a first open. A new hook, `ToolModule::original`, lets a module contribute a layer to a new photograph's Original from its kind, metadata and the preferences; the look module is its first user. Before and after compares against the Original, so Before shows the starting look, not the flat development.
+**Standard and Neutral are in the Original.** A new RAW photograph's Original (`EditorService::new_photograph`) holds the look the `raw_look` preference names, beside the RAW development layer. This needs no pixels, so a batch Develop of picks costs nothing more, and the catalog's rendered tiers and batch exports of photos never opened in Develop carry the look, because those render the current entry without a first open. The hook `ToolModule::original` lets a module contribute a layer to a new photograph's Original from its kind, metadata and the preferences; the look module is its first user. Before and after compares against the Original, so Before shows the starting look, not the flat development.
 
 **Match camera is a first-open entry.** A fit needs pixels, so with the preference at Match camera the Original holds Standard, and the first preparation at revision 0 commits `Look Match camera` by the `system` actor after it, beside the lens entry, in registry order. Undo returns to Standard. A photo whose fit was refused stays at revision 0 and is asked again at its next preparation, as a lens proposal is.
 
@@ -108,7 +108,7 @@ A Camera look is a Standard-shaped payload whose tone and chroma were fitted to 
 
 **A disabled look module** is skipped like any unavailable module, so new photos then start from the bare development; a photo that already holds a look reports its look as an unavailable effect, as for any missing provider.
 
-**Existing photos are untouched.** Photos already in a catalog keep their recipes and render as before; choosing a look in their Look section is an ordinary edit. The preference applies to photos created after it changes.
+**Existing photos are untouched.** Photos already in a catalog keep their recipes and renders; choosing a look in their Look section is an ordinary edit. The preference applies to photos created after it changes.
 
 ## Controls, API and history
 
@@ -121,7 +121,7 @@ A Camera look is a Standard-shaped payload whose tone and chroma were fitted to 
 - **`query.sample-look`** answers the stored curve sampled at 257 points over `[0, x_max]`, the chroma gain and the amount, as `query.sample-curve` does, and the identity over `[0, 1]` with chroma 1 on a Neutral photo or one with no look; `recipe.describe` reports `look`, `amount`, `chroma`, the knot count and `fit`.
 - **History labels**: `Look Standard`, `Look Neutral`, `Look Match camera`, `Look amount 80`, `Reset Look`.
 - **Preference** `raw_look`: `standard` (default) or `neutral` in phase 1, `camera` added in phase 2; General row **Starting look for new RAW photos**, beside the lens switch; takes effect for photographs created from then on, and for Match camera at their first preparation. It changes no saved recipe.
-- **Presets.** The look is not presettable ([decided](#decided)). Lightroom import's `CameraProfile` rows keep their mapping, with the reason text updated from "Luxforge keeps its own neutral rendering" to "Luxforge's looks are its own".
+- **Presets.** The look is not presettable ([decided](#decided)). Lightroom import's `CameraProfile` rows keep their mapping: Lightroom's default profiles map to neutral, because Luxforge's looks are its own.
 
 ## GPU and reference
 
@@ -145,13 +145,11 @@ Under [GPU-first](gpu-first.md), the look unit is one WGSL program, `lf_look_loo
 
 ## Decided
 
-The owner, on 2026-10-05, after noticing that photos which look vivid in the catalog look flat in Develop:
-
-- New RAW photos start from a Luxforge look (Standard) by default rather than the bare neutral development, replacing "neutral development is the initial direction" for the starting point. The development itself stays neutral.
+- New RAW photos start from a Luxforge look (Standard) by default rather than the bare neutral development. The development itself stays neutral.
 - Matching the camera's own preview is offered as a setting.
 - Standard is built first; the architecture carries Match camera.
 
-The owner accepted these defaults on 2026-10-05:
+Settled defaults:
 
 | Question | Decided | Not chosen |
 | --- | --- | --- |

@@ -4,7 +4,7 @@
 //! so each reads its colours from the [`Theme`] it is given and no global holds a palette. What
 //! Iced styles itself (an unstyled scrollable, a checkbox, a text input's defaults, a pick list and
 //! its menu, the window's clear colour) comes from an `iced::Theme` built from the roles and held
-//! inside, so Luxforge Dark draws exactly what the fixed `iced::Theme` drew before themes.
+//! inside, so Luxforge Dark draws exactly what a fixed `iced::Theme` of its palette draws.
 
 use super::Palette;
 use iced::theme::{self, Base};
@@ -269,8 +269,8 @@ mod tests {
         );
     }
 
-    /// The window's clear colour, text colour and mode are what the fixed `iced::Theme` gave
-    /// before themes, so Luxforge Dark's window draws as it did.
+    /// The window's clear colour, text colour and mode are what a fixed `iced::Theme` of Luxforge
+    /// Dark's palette gives, so its window draws the same.
     #[test]
     fn luxforge_dark_draws_what_the_fixed_iced_theme_drew() {
         let palette = Palette::luxforge_dark();

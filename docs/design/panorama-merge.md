@@ -1,10 +1,10 @@
 # Panorama merges
 
-Status: planned. Panorama implementation is not authorized; the HDR parts the owner asked to align to this design are the kind-tagged merge boundary (delivered) and the merge preview for HDR (in progress). On 2026-10-11 the owner asked for a panorama merge design and chose its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; selection only, with no automatic grouping, which the owner later asked for on 2026-10-16 ([grouping in Select](catalog.md#grouping-inside-a-view)); automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to today's 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
+Status: implemented, with synthetic frames only; natural-panorama quality is unqualified and photo-sized costs are unmeasured ([evidence](#evidence-and-acceptance)). Its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; a selection, or a panorama Select groups ([grouping in Select](catalog.md#grouping-inside-a-view)); automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to the camera files' 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
 
 ## Boards
 
-Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [merges/html](merges/html/index.html). The bracket is made from the catalog boards' ferry frames. The panorama frames are cut from the owner's Sapa drone photograph. Names, values, sizes and times are illustrative. The boards draw the earlier pair of actions, Pick merged and Import merged, and a Development set; these are now one action, **Merge HDR** or **Merge panorama**, which makes the result in its catalog folder, and the sheet's buttons are Cancel and Merge.
+Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [merges/html](merges/html/index.html). The bracket is made from the catalog boards' ferry frames. The panorama frames are cut from the owner's Sapa drone photograph. Names, values, sizes and times are illustrative. The boards draw a pair of actions, Pick merged and Import merged, and a Development set; the app has one action, **Merge HDR** or **Merge panorama**, which makes the result in its catalog folder, and the sheet's buttons are Cancel and Merge.
 
 | Board | Shows |
 | --- | --- |
@@ -27,7 +27,7 @@ Choices the boards make within the design:
 
 ## Outcome and boundaries
 
-Overlapping frames shot by turning one camera become one editable panorama in Select. **Merge panorama** creates it in its catalog folder as [HDR merges](hdr-merge.md) do: a virtual result in the grid that leads a collapsed stack of its originals. Its durable float pixels are saved under the catalog's artifacts, with its own recipe, history, folder and collection memberships. Opening, editing or exporting it never requires another merge, and the originals stay byte-identical and independently pickable. Removal, library undo and redo, Put back, retention, Empty Removed and rerun are the HDR lifecycle unchanged. A panorama is a second **merge kind** over the boundary HDR built: a derived image source, a merge record with versioned provenance, and a result-led stack.
+Overlapping frames shot by turning one camera become one editable panorama in Select. **Merge panorama** creates it in its catalog folder as [HDR merges](hdr-merge.md) do: a virtual result in the grid that leads a collapsed stack of its originals. Its durable float pixels are saved under the catalog's artifacts, with its own recipe, history, folder and collection memberships. Opening, editing or exporting it never requires another merge, and the originals stay byte-identical and independently pickable. Removal, library undo and redo, Put back, retention, Empty Removed and rerun are the HDR lifecycle unchanged. A panorama is a second **merge kind** over HDR's boundary: a derived image source, a merge record with versioned provenance, and a result-led stack.
 
 This design covers:
 
@@ -52,11 +52,11 @@ It does not cover the following:
   - editable seams or masks.
 - **Output and editing:**
   - content-aware or generative edge fill;
-  - Upright-style perspective correction of the result beyond the projection's levelling, which the existing perspective module offers;
+  - Upright-style perspective correction of the result beyond the projection's levelling, which the perspective module offers;
   - raising the limits for camera files;
   - HDR presentation or new export formats.
 
-Export uses the existing JPEG contract within its 65,535-pixel side.
+Export uses the JPEG contract within its 65,535-pixel side.
 
 ## Grid workflow
 
@@ -82,7 +82,7 @@ Select draws this workflow with HDR's code (`crates/luxforge-app/src/{state,app,
 
 ## The merge preview
 
-Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#panorama-merges)). Like Lightroom's Photo Merge preview, **Merge HDR** and **Merge panorama** open a sheet with a picture of the merge and its settings, rather than merging at once. It is built in the desktop for both kinds: [HDR's](hdr-merge.md#in-the-desktop) and [a panorama's](#in-the-desktop). The [boards](#boards) draw it.
+Like Lightroom's Photo Merge preview, **Merge HDR** and **Merge panorama** open a sheet with a picture of the merge and its settings, rather than merging at once ([decisions](../decisions.md#panorama-merges)). It is built in the desktop for both kinds: [HDR's](hdr-merge.md#in-the-desktop) and [a panorama's](#in-the-desktop). The [boards](#boards) draw it.
 
 ### What the person sees
 
@@ -91,7 +91,7 @@ Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#
 - **The status line** under the picture names the preview's scope ("Preview from 1,024-pixel frames") and its key diagnostic. For HDR, that is the alignment residual and whether highlights or shadows were extended. For a panorama, it is the resolved projection, the field of view and the crop's loss.
 - **Settings.** HDR's settings are the frames with their exposures and Reference, Alignment and Deghosting (Auto or Off) and the folder. A panorama's are the projection (Auto, Perspective, Cylindrical, Spherical), Boundary Warp 0–100, the frames with Reference, and the folder.
 - **Output** shows the size and source bytes the merge will save.
-- **Overlays.** The owner chose three:
+- **Overlays.** There are three:
   - HDR's **Show deghost overlay** tints each moving region and labels the exposure it came from ("From 0 EV", or "From −2 EV · fallback").
   - A panorama's **crop and coverage** shows the whole stitch with its ragged edge, dims what the crop drops and draws the crop rectangle, with "Crop loses N% at the edges".
   - A panorama's **frame outlines** number each frame 1…N in stack order.
@@ -101,7 +101,7 @@ Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#
 - **Changes.** A setting change redraws the picture from the retained proxies and registration: a projection, Boundary Warp, Deghosting or overlay change is a redraw. A change that needs registration again (Alignment, Reference, an exposure override) runs it on the proxies. Neither reads the frames again.
 - **Refusals.** A refusal the preview finds ("Cannot stitch: DSC_4107.NEF shares no detail with the other frames") replaces the picture, disables Merge and keeps the sheet open, so the person can change settings or Cancel.
 - **Merging.** Merge closes the sheet and shows the pending row. The merge reuses the preview's spooled frames, proxies and registration, so nothing is read or aligned twice, and the settings shown are the ones merged. Cancel discards the preview's spool.
-- **Last settings.** ⌥-click on Merge HDR or Merge panorama merges at once with the kind's last settings: the settings of the person's last merge of that kind, kept in the desktop's [remembered state](preferences.md). The folder is excluded and comes from the plan as today. With none remembered, ⌥-click uses the defaults.
+- **Last settings.** ⌥-click on Merge HDR or Merge panorama merges at once with the kind's last settings: the settings of the person's last merge of that kind, kept in the desktop's [remembered state](preferences.md). The folder is excluded and comes from the plan. With none remembered, ⌥-click uses the defaults.
 
 ### Commands
 
@@ -112,13 +112,13 @@ The preview is programmable. The desktop sends only these requests. They are bui
 | `merge.preview` | `kind`, targets, the kind's options and an optional `plan_id`. Answers a cancellable `merge-preview` job whose result is `{preview_id, revision, kind, options, path?, width, height, diagnostics?, overlays?, output?: {width, height, scale, source_bytes}, refusal?}`; a refused revision has no picture, diagnostics or output. `path` is a display-referred JPEG under the catalog's preview cache. `overlays` is data in the picture's coordinates: motion regions with their source input and exposure (HDR), and the covered region, crop rectangle and frame quadrilaterals (panorama). A client draws them, so an agent reads the same facts. |
 | `merge.preview-update` | `preview_id` and the kind's full new options. Answers the next revision from the retained proxies, as a short job. Stale updates for the same preview are cancelled. |
 | `merge.preview-close` | Discards a preview, its spool and its pictures, answering `{preview_id, closed}`. |
-| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, reading and aligning nothing, and equals a merge without a preview bit for bit. Its options must equal the preview's latest revision's, and a stale `preview_id` is `conflict`. A preview still preparing is continued. Without it, the job behaves as today. |
+| `merge.create` | Accepts `preview_id`. When given, the job starts from the preview's spool and registration, reading and aligning nothing, and equals a merge without a preview bit for bit. Its options must equal the preview's latest revision's, and a stale `preview_id` is `conflict`. A preview still preparing is continued. Without it, the job reads and aligns the frames itself. |
 
 Each client has at most one open preview; opening another closes the first. A preview occupies the merge lane while it reads and aligns, like a merge. Once ready, its spool stays on disk, counted against the kind's temporary-disk ceiling, until it is merged, closed, or idle for 30 minutes, or until its client disconnects. Its job and spool are cleaned up as a merge's are, including after a restart. A preview never publishes anything and is not a library change.
 
 ## Panorama processing contract
 
-The owner settled the scope. The numerical algorithms, thresholds, feature detector, solver, blending method, interpolation kernel and layout details are delegated engineering choices within this contract. Do not add an owner-review, reference-matching or research gate before implementing them. Pin any added dependency, keep its notices, and record manual reviews as deferred. Prefer pure Rust code in `luxforge_core::merge::panorama`; OpenCV is not adopted.
+The scope is settled. The numerical algorithms, thresholds, feature detector, solver, blending method, interpolation kernel and layout details are delegated engineering choices within this contract. Do not add an owner-review, reference-matching or research gate before implementing them. Pin any added dependency, keep its notices, and record manual reviews as deferred. Prefer pure Rust code in `luxforge_core::merge::panorama`; OpenCV is not adopted.
 
 ### Validating inputs
 
@@ -132,16 +132,16 @@ The owner settled the scope. The numerical algorithms, thresholds, feature detec
 
 - **RAW frames** develop through the shared verified development, as HDR frames do. The reference frame's as-shot white balance and calibration apply to every frame, then each frame is normalized by its exposure from the settings, as HDR resolves it. Required embedded optical corrections (DNG opcodes) apply as they do for HDR.
 - **Lens profiles.** When the lens module's detection would select a profile for the reference frame on first open (distortion `KnownUnapplied` and an eligible Lensfun profile), the job applies that profile's distortion model to every frame before registration. Provenance records the profile key, and the result's optics ledger reports it baked. Otherwise the solver fits one shared radial term, recorded as fitted, and an uncorrected or unknown distortion is left to the fit.
-- **JPEG frames** decode through the shared JPEG decode, with its embedded ICC profile honoured (Display P3 phone files among them), into float32 linear sRGB/D65. A JPEG's in-camera correction is unknown, so no profile is applied; the shared radial fit absorbs what remains. This adds a JPEG-to-linear path, used only by merges. HDR stays RAW-only by the owner's decision.
+- **JPEG frames** decode through the shared JPEG decode, with its embedded ICC profile honoured (Display P3 phone files among them), into float32 linear sRGB/D65. A JPEG's in-camera correction is unknown, so no profile is applied; the shared radial fit absorbs what remains. This JPEG-to-linear path is used only by merges. HDR is RAW-only.
 - **Clipping evidence.** RAW frames carry the sensor-clipping level as HDR's do. JPEG frames mark a sample clipped where any encoded channel is at 255. Clipped samples steer seams away and are down-weighted in photometric fits.
 - **The working space** is float32 linear sRGB/D65, keeping negative gamut components and values above one, as for HDR. The result is not tone-mapped.
 - **The frame path** (`luxforge_core::merge::panorama::frames`) reads, develops and spools one frame at a time, outside the source worker's plane gate, into HDR's spool format with an analysis proxy (and a colour proxy for a preview). A frame may be multiplied by its exposure scale as it is spooled; its clipping evidence is taken before that scale. A lens profile is applied as the reference renderer applies a lens layer: each output pixel centre mapped through the profile's distortion with its cover scale and sampled bilinearly with clamped taps. A warped pixel's clipping evidence is the largest level among the taps it reads.
-- **JPEG colour profiles.** A merge accepts any RGB matrix/TRC profile (sRGB, Display P3, Adobe RGB and others) and converts it relative colorimetrically through the D50 connection space. It refuses a profile whose CICP tag disagrees with its matrix and curves as `unsupported-profile`, and reads a file with no profile as sRGB. Below 255, a JPEG pixel's level is its largest channel's linear value at its own tone curve. Opening a JPEG in the editor still accepts sRGB only.
+- **JPEG colour profiles.** A merge accepts any RGB matrix/TRC profile (sRGB, Display P3, Adobe RGB and others) and converts it relative colorimetrically through the D50 connection space. It refuses a profile whose CICP tag disagrees with its matrix and curves as `unsupported-profile`, and reads a file with no profile as sRGB. Below 255, a JPEG pixel's level is its largest channel's linear value at its own tone curve. Opening a JPEG in the editor accepts sRGB only.
 - **Tolerances.** A JPEG frame matches an independent f64 reference within 5 × 10⁻⁴ absolute in linear sRGB. That reference is the IEC 61966-2-1 transfer, and for Display P3 the matrix derived from the primaries' chromaticities. A lens-baked RAW frame matches the reference crate's f64 lens warp of the same development within 10⁻⁶, relative to the larger of one and the value. A RAW frame with no profile is the shared development bit for bit. `cargo test -p luxforge-core panorama_frames` checks all three.
 
 ### Registration
 
-Registration is built as pure numerics in `luxforge_core::merge::panorama` (`proxy`, `features`, `matching`, `bundle`, `registration`); no job runs it yet.
+Registration is pure numerics in `luxforge_core::merge::panorama` (`proxy`, `features`, `matching`, `bundle`, `registration`), which the panorama job runs.
 
 - **Conventions.** Coordinates are full-resolution upright frame pixels, pixel `(x, y)` centred at `(x, y)`, with the principal point at the frame's centre. Camera and world directions have `x` right, `y` down and `z` forward. A frame's rotation takes world directions to its camera's. The shared lens records the ideal offset `p` from the centre at `p·(1 + k·|p|²/R²)`, with `R` half the frame's diagonal; `k` stays within ±0.14, where every point of the frame has one ideal point.
 - **Analysis proxies.** Each developed frame streams, in bands of any height, into an analysis proxy reduced by an integer box factor to at most 1,536 pixels a side. It holds each box's `log2` Rec. 709 luminance and whether the box is usable (finite, unclipped and above 2⁻¹⁶). That is 5 bytes a proxy pixel, under 12 MiB for a 60 MP frame. Thresholds stated in proxy pixels scale by the box factor, and every result is in full-resolution pixels.
@@ -218,18 +218,18 @@ Registration's tolerances are under [Registration](#registration). The stitch's,
 
 ## Large derived sources
 
-The owner chose to raise the limits for derived sources rather than scale panoramas down: a derived source may be up to **65,000 pixels a side and 512 MP** (6 GiB of float32 RGB), inside JPEG's 65,535-pixel side. Camera files keep their current limits (16,384 a side, 128 MP, 1.5 GiB decoded), and so does every HDR result, since an HDR result is never larger than its reference frame.
+Derived sources have raised limits, so panoramas are not scaled down: a derived source may be up to **65,000 pixels a side and 512 MP** (6 GiB of float32 RGB), inside JPEG's 65,535-pixel side. Camera files keep their limits (16,384 a side, 128 MP, 1.5 GiB decoded), and so does every HDR result, since an HDR result is never larger than its reference frame.
 
-Today every derived source is prepared into one whole-frame `LinearImage`, and the GPU surface uploads it whole: at most 2 × 2 textures of 8,192, charged to the 2 GiB preview budget. Export, catalog previews, samples and the Dehaze light already render through windowed GPU tiles, but they cut their windows from that one allocation. The reference renderer evaluates whole frames, bounded at 512 MiB of output. None of these holds a 512 MP source, so a source past the camera limits becomes a **paged source**.
+A resident source is prepared into one whole-frame `LinearImage`, and the GPU surface uploads it whole: at most 2 × 2 textures of 8,192, charged to the 2 GiB preview budget. Its export, catalog previews, samples and Dehaze light render through windowed GPU tiles cut from that one allocation. The reference renderer evaluates whole frames, bounded at 512 MiB of output. None of these holds a 512 MP source, so a source past the camera limits is a **paged source**.
 
 ### Storage
 
 Storage and preparation are implemented (`crates/luxforge-core/src/artifacts/derived_source.rs` and its `paged_source.rs`).
 
-- **Two classes.** A derived source within the camera limits is resident: stored and prepared exactly as before, as every HDR result is. A larger one is paged. Which class a source is follows from its dimensions alone (`SourceClass::of`).
-- **Limits.** `layout()`'s one bound is split into declared plane limits (`crate::source::PlaneLimits`): `CAMERA_SOURCE` and `RESIDENT_DERIVED_SOURCE` (16,384 a side, 128 MP, 1.5 GiB of planes, every whole `LinearImage`), `PAGED_DERIVED_SOURCE` (65,000 a side, 512,000,000 pixels, 6 GiB) and `RENDERED_FRAME` (the camera limits, for frames and stages the renderer allocates whole). The chunk side stays 1,024 and each chunk at most 16 MiB; level 0 holds at most 4,096 chunks and a source at most 5,462 over all its levels; a manifest of either format is at most 1 MiB.
+- **Two classes.** A derived source within the camera limits is resident: stored and prepared as one whole frame, as every HDR result is. A larger one is paged. Which class a source is follows from its dimensions alone (`SourceClass::of`).
+- **Limits.** `layout()` takes declared plane limits (`crate::source::PlaneLimits`): `CAMERA_SOURCE` and `RESIDENT_DERIVED_SOURCE` (16,384 a side, 128 MP, 1.5 GiB of planes, every whole `LinearImage`), `PAGED_DERIVED_SOURCE` (65,000 a side, 512,000,000 pixels, 6 GiB) and `RENDERED_FRAME` (the camera limits, for frames and stages the renderer allocates whole). The chunk side is 1,024 and each chunk at most 16 MiB; level 0 holds at most 4,096 chunks and a source at most 5,462 over all its levels; a manifest of either format is at most 1 MiB.
 - **Manifest format 2** is a paged source's: `{format: 2, width, height, colour, sample, layout, chunk_side, reduction: "area-average-2x2", crop?, levels: [{width, height, chunks: [{x, y, width, height, bytes, sha256}]}]}`, level 0 first. Each further level halves the one before, rounding up, down to the first whose long side is at most 4,096. Each of its pixels is the area average of the one, two or four pixels of the level before that it covers: their sum in binary64, top-left, top-right, bottom-left, bottom-right, from the first, divided by their count and rounded once to binary32. One pixel alone keeps its exact value. Chunk origins are multiples of the even chunk side, so every block lies in one chunk of the level before. The pyramid adds about a third to the source's bytes.
-- **Shapes.** Format 1 stays a resident source's and format 2 a paged source's. A format 1 manifest with paged dimensions, a format 2 manifest with resident dimensions, another level count, level size or grid, another reduction, and any unknown field or format are `incompatible` and kept.
+- **Shapes.** Format 1 is a resident source's and format 2 a paged source's. A format 1 manifest with paged dimensions, a format 2 manifest with resident dimensions, another level count, level size or grid, another reduction, and any unknown field or format are `incompatible` and kept.
 - **Writing.** `DerivedSourceWriter::begin_paged` returns a `PagedSourceWrite`. Its `put(ordinal, planes)` takes level-0 chunks as a producer emits them, in any order, each encoded, hashed, staged, synced and renamed at once. `finish` builds each further level from the stored chunks of the level before, each chunk of the next level from the up to four chunks it covers, read back and verified one at a time. It then writes the manifest last and syncs `sources/` once. The writer never holds a level whole, and its scratch stays within 48 MiB. A failure or cancellation leaves no manifest. `write_with` routes paged dimensions through the same writer, so a caller writing chunk by chunk needs no other path.
 - **The catalog** records every level's chunks, level 0 first, as the source's chunks (`derived_source_chunks`, at most 5,462). Retention, collection and Empty Removed therefore keep or release every level with its source, as they do a resident source's one grid.
 
@@ -239,7 +239,7 @@ Storage and preparation are implemented (`crates/luxforge-core/src/artifacts/der
 - **Reading chunks.** Chunks of every level are read on demand through the source's chunk cache, most recently used kept longest, at most 1.5 GiB (`CHUNK_CACHE_BYTES`). Each chunk is hashed when read. A missing or damaged chunk fails only what needed it, naming its level and ordinal (`derived source <id> level <l> chunk <n> is corrupt` or `is missing`), and is not kept.
 - **The plane gate** counts bytes as well as leases. A development's planes, a paged source's overview, every chunk its cache keeps and its resident level are all charged to it. The cache grows only while every lease's bytes together stay within 3 GiB: one camera-sized source beside a full cache. Past that it gives up its own least recently used chunks or reads a chunk through without keeping it. A paged source's leases keep the worker waiting, as a resident source's planes do, until the editor lets the source go.
 - **Windows and levels.** `PagedSource::window` reads a rectangle of any level, grown by a halo and clamped to the level, assembled from the chunks it touches. A window may be as wide as its level and holds at most 1.5 GiB of planes. `PagedSource::resident_level` reads the largest level within the camera limits whole on first request and holds it like an ordinary source's planes. If the gate would not admit it even with the cache emptied, the read is refused as `resource-limit`.
-- **Paths that need a whole frame** — recipe evaluation, renders, samples and rendered catalog previews — refuse a paged source with `resource-limit`, naming it and saying it has no whole frame. They never allocate one. Each reads levels and windows once its path is delivered, as the sections below describe.
+- **Paths that need a whole frame** — recipe evaluation, renders, samples and rendered catalog previews — refuse a paged source with `resource-limit`, naming it and saying it has no whole frame. They never allocate one: rendering, samples, previews and export read levels and windows instead, as the sections below describe.
 
 ### Rendering, samples and export
 
@@ -251,14 +251,14 @@ Implemented. Opening a paged photograph asks the source worker for its resident 
 - **Export** streams full-resolution GPU tiles from level-0 windows. Each tile's window is read through the chunk cache on its first upload and dropped once on the GPU. A band of tiles wider than the runner's source of two 8,192-texel textures is read in windows side by side (`WINDOW_SIDE`). A band's codes are capped at 256 MiB (`STREAM_BAND_BYTES`): the stream takes the tallest tile side whose band fits (`band_sides`), so a 65,000-pixel-wide band is 1,024 rows high, never 2,048. A chunk that fails to read fails the export with its error. This is the full-size 8-bit export. A resized, 16-bit or sharpened [export setting](export-settings.md#paged-sources) holds its whole output stage on the GPU, which a paged source's stage passes: past 2 × 8,192 a side (`texture-limit`) or past the stream's budget (`tiles-budget`), before any band. When the GPU cannot stream the stack or the output, or the reference is requested, the export renders in the reference's banded mode.
 - **Staged sweeps** whose stage would pass 2 × 8,192 on a side (`SWEEP_STAGE_SIDE_LIMIT`) are drawn chained instead, each tile's chain over its own window. A stack that cannot be chained falls back to the banded reference, naming `tiles-budget`.
 - **Catalog previews** render from the resident level.
-- **Bounds on large stages.** The Dehaze light's reduction grid scales its factor so the grid stays within its current bound. Presence keeps its declared 10,000-pixel scale cap. The 512-pixel spatial halo bound is unchanged.
+- **Bounds on large stages.** The Dehaze light's reduction grid scales its factor so the grid stays within its bound. Presence keeps its declared 10,000-pixel scale cap. The spatial halo bound is 512 pixels.
 - **No whole frame.** Nothing plans or allocates level 0 whole, on the CPU or the GPU. `PreviewSource::whole` refuses a paged source with `resource-limit`, naming it.
 
 ### The reference on paged sources
 
 The CPU reference remains the oracle, so it has a **banded mode** (`crates/luxforge-core/src/render/bands.rs`). It evaluates the output stage in full-width bands, each from a window of level 0 with the stack's halos and its exact spatial semantics, and streams the bands to the export encoder, the analysis or a test. The same mode reads any rectangle of the output as bytes or linear values, and reduces the output to a view by the reference's own linear-light area average, band by band.
 
-- **Windows.** Producing a rectangle of the output walks it back through the stack: through each exact geometry, a resample's taps with their margin, a spatial operation's summed halo and a repair's own rectangle. That names the window of level 0 to read and the window of each spatial or repair stage to materialize, and one windowed evaluation builds them. A spatial tile's value does not depend on the rectangle it is cut to, and the last pass writes the whole render's rows over the rectangle, so the output is the whole-frame render byte for byte. A resample whose reads cannot be bounded is refused by name (`resource-limit`); no stack the modules build today has one.
+- **Windows.** Producing a rectangle of the output walks it back through the stack: through each exact geometry, a resample's taps with their margin, a spatial operation's summed halo and a repair's own rectangle. That names the window of level 0 to read and the window of each spatial or repair stage to materialize, and one windowed evaluation builds them. A spatial tile's value does not depend on the rectangle it is cut to, and the last pass writes the whole render's rows over the rectangle, so the output is the whole-frame render byte for byte. A resample whose reads cannot be bounded is refused by name (`resource-limit`); no stack the modules build has one.
 - **First pass.** Whole-stage statistics are computed before any band, in stage order, each from its input stage read in full-width bands through the stack before it. A spatial operation's global estimates, such as the Dehaze light, come from one reduction built band by band, each block summed in the one order every reduction sums in, so the estimate equals the whole frame's bit for bit. A repair (Clone and Heal) evaluates its operations over the read set of every destination once and holds that working set for every band.
 - **Reduction factor.** The Dehaze light's reduction is 16-pixel blocks up to about 67 MP; on a larger stage its factor grows in steps of 16 until the grid is within its 262,144-block bound (`estimate_reduction`). The GPU's light link reduces at the same factor.
 - **Bounds.** A band is at most 2,048 rows and at most the 512 MiB evaluated-frame limit of output, which bounds a band, not the frame. The windows one band reads and builds (the level-0 window, every stage's frame and the band's output) hold at most 512 MiB; a band past that is cut in two along its longer side until each piece fits. A window may be as wide as a paged source but is otherwise held to the camera limits. Cancellation is read between pieces and bands and by every pass inside one.
@@ -266,7 +266,7 @@ The CPU reference remains the oracle, so it has a **banded mode** (`crates/luxfo
 
 **Export and analysis.** The export of a paged source and `analysis.request` at full resolution use the banded mode. The export renders every output its [settings](export-settings.md#paged-sources) ask for band by band, each band the whole-frame reference's rows: full size at 8 or 16 bits, resized by a streaming Lanczos-3 and sharpened as the bands arrive. A streamed format encodes each band as it is rendered, and a held one (a size limit, WebP) assembles its output frame from them. The GPU streams a paged export first; the banded mode encodes it when the export asks for the reference, on an owner with no GPU provider, or when the GPU falls back, its result naming the reference renderer with the GPU's reason. The analysis counts each band and adds the counts, giving the report of the whole output without holding it.
 
-Paged sources are qualified with `derived-paged`, a generated derived entry in the GPU corpus of 20,000 × 8,000 (160 MP), through the banded reference: its overview below 100%, its level-0 window at 100%, its samples and its export. No corpus run has measured it yet; its histogram and the minimap's overview are recorded as gaps.
+Paged sources are qualified with `derived-paged`, a generated derived entry in the GPU corpus of 20,000 × 8,000 (160 MP), through the banded reference: its overview below 100%, its level-0 window at 100%, its samples and its export. Its histogram and the minimap's overview are recorded as gaps.
 
 ### Memory
 
@@ -274,20 +274,20 @@ A paged source's process cost is bounded by:
 
 - its chunk cache;
 - its resident level (at most 1.5 GiB);
-- the GPU windows within the existing preview and tile budgets;
+- the GPU windows within the preview and tile budgets;
 - export's band cap.
 
 No component holds level 0 whole. The measurement task reports the real peaks; no total-memory bound is claimed beyond those budgets.
 
 ## Generalizing the merge boundary
 
-HDR's boundary was built for one kind. A panorama needs these changes. They also change the [HDR design](hdr-merge.md)'s stored shapes and commands, which describe them.
+Both kinds share the merge boundary below. The [HDR design](hdr-merge.md)'s stored shapes and commands describe it too.
 
 The kinds, stack members, provenance, catalog format, commands, jobs, lane, ceilings, usage exemption and desktop words below are implemented, and so are the [merge preview](#the-merge-preview)'s commands for both kinds. Both providers are registered (`crates/luxforge-core/src/merge/providers.rs`): schemas list `hdr` and `panorama`, each with its options. The panorama job, its preview and its publication (`crates/luxforge-core/src/merge/panorama/job.rs` and `preview.rs`) run the production stitch through a narrow seam (`stitching.rs`: plan, render a chunk from frame windows read one at a time, draw the preview). A build without a stitch would answer a panorama's provider unavailable on `merge.plan` and refuse a panorama `merge.create`, `merge.rerun` or `merge.preview` as `not-ready` naming `luxforge.panorama`. Browse, `stack.inspect` and `merge.inspect` read a panorama's provenance. The desktop offers panorama merges [in Select](#in-the-desktop).
 
-- **Kinds.** `MergeKind` gains `Panorama` (`"panorama"`). `merges.kind` accepts it, and browse reads it rather than refusing it as `incompatible`.
-- **Stack members.** `merge_inputs.offset_ev` becomes nullable: HDR members keep their EV offset, while panorama members have none and carry their position in the stack's order. Browse's reference ordinal comes from the provenance's reference, not from the zero offset.
-- **Provenance.** `MergeProvenance` (format 2) holds kind-tagged parameters and resolution: `HdrParameters`/`HdrResolution` as today, or `PanoramaParameters` (projection, boundary warp, reference) and `PanoramaResolution`. `PanoramaResolution` holds:
+- **Kinds.** `MergeKind` has `Panorama` (`"panorama"`) beside HDR's kind. `merges.kind` accepts it, and browse reads it.
+- **Stack members.** `merge_inputs.offset_ev` is nullable: HDR members keep their EV offset, while panorama members have none and carry their position in the stack's order. Browse's reference ordinal comes from the provenance's reference, not from the zero offset.
+- **Provenance.** `MergeProvenance` (format 2) holds kind-tagged parameters and resolution: `HdrParameters`/`HdrResolution`, or `PanoramaParameters` (projection, boundary warp, reference) and `PanoramaResolution`. `PanoramaResolution` holds:
   - the profile or fitted radial term;
   - focal length;
   - rotations and residuals;
@@ -299,13 +299,13 @@ The kinds, stack members, provenance, catalog format, commands, jobs, lane, ceil
   - the warp mesh and crop.
 
   `match_key` hashes kind-tagged parameters. `MergeInput.frame` keeps the shared header fields, with exposure as recorded.
-- **Catalog format.** The current catalog format (2) carries these shapes. Other formats are refused; there are no migrations before the first public release. The HDR design's stored-shape paragraphs are updated in the same change.
+- **Catalog format.** The current catalog format (2) carries these shapes. Other formats are refused; there are no migrations before the first public release.
 - **Commands.** `merge.plan`, `merge.create`, `merge.rerun`, `merge.preview` and `merge.preview-update` take `kind` (`hdr` or `panorama`; `merge.plan` requires it; a rerun's is its merge's). Kind-specific options live under `hdr` or `panorama`, and a field of the other kind is refused as `validation`. A panorama's are `panorama: {reference?, projection?: auto|perspective|cylindrical|spherical, boundary_warp?: 0–100}`, the reference named by path; a rerun keeps each recorded option it does not name. Input bounds are per kind (HDR 2–9, panorama 2–32). Refusals are typed per provider, name the frames by file name and carry `kind` in their data.
   - **A panorama's plan** reads headers only: [validating inputs](#validating-inputs) as far as headers tell, no reference unless one is named, and a provisional size (`estimates.provisional`) from the frames' focal length and sensor size (the 35 mm equivalent, or the focal length times the camera's crop factor in the lens profile index) and their count, laid in one row overlapping by a third on a cylinder, with `estimates.scale` when the limits predict a scale below 1. Registration decides the final size.
   - **The match key** of a panorama does not depend on the order the frames are named in, since registration decides the stack's order: two requests for the same frames and options are one merge.
   - **`merge.inspect`** answers a panorama's resolved projection and field of view, and the result's optics ledger: the baked profile's distortion when one was baked, else a derived source's.
 - **Jobs.** The job kinds are `hdr-merge` and `panorama-merge`. They share one merge lane: one running merge of either kind and one waiting, with a further request refused as `resource-limit`. Stages are named per kind. A panorama's are `reading` ("Reading 2 of 7", the planned reference first, so its white balance and lens profile develop the rest; each frame's features are detected as it is spooled, and the decoded frames are held to the header rules again), `matching` (registration, then the stitch's plan, which sizes the result), `stitching` ("Stitching 3 of 12", chunk by chunk from bounded windows of the spooled frames, resident or paged by the result's size) and `saving` (the frames' signatures checked again). The result is named "<reference stem> Panorama", takes the reference frame's metadata, and leads a stack of its frames left to right in the result (top to bottom, then left to right, for several rows); the provenance records every frame in that order. Publication is HDR's one transaction.
-- **Spool reads.** The spool is shared, and both kinds read it by bands rather than one seek and read a row. This is the read pattern behind HDR's measured 60 MP × 9 fusion limit, and HDR's fusion benefits from it too. A panorama's spool may hold proxies' features and seam maps beside the frames.
+- **Spool reads.** The spool is shared, and both kinds read it in bands of whole rows, not one seek and read a row: row-by-row reads bound HDR's 60 MP × 9 fusion whenever the spool had left the file cache. A panorama's spool may hold proxies' features and seam maps beside the frames.
 - **Ceilings.** The provisional temporary-disk ceiling is per kind: 16 GiB for HDR, and 64 GiB for a panorama (32 frames of 60 MP at 14 bytes a pixel, plus a 512 MP result). Each is preflighted against the volume's free space as HDR's is. Scratch stays explicitly accounted: 256 MiB for HDR and 512 MiB for a panorama, refusing before allocation.
 - **Usage statistics.** A panorama `merge.create` or `merge.rerun` is an explicit exemption in the usage registry until the owner approves a `panorama-merge` event. It is never counted as `hdr-merge`. `merge-remove` and `merge-restore` count both kinds.
 - **Desktop.** Select's merge state, menu, options sheet, pending row, badges, stack words, Info band and refusal text take the kind from the plan or the stack, not from a constant.
@@ -332,8 +332,8 @@ Ordinary correctness, recovery and rendered checks ship with the working feature
    - Remove merge, undo and redo with no second merge;
    - a relaunch with the originals moved away.
 
-   The `hdr-merge` journey and existing JPEG and RAW journeys remain valid. The `panorama-merge` scenario (`xtask/src/panorama_merge_smoke.rs`) generates a four-frame row of 1.5 MP JPEGs and a ten-frame row of 24 MP JPEGs whose result is about 150 MP. It runs three launches: `select` makes both merges through the menu, the sheet and ⌥-click; `develop` opens the results from the catalog folders they were filed in, edits and exports them; and `offline` reopens them with the frames renamed away. It passes in the rendered tier on the M4.
-6. After delivery, natural panoramas, the owner's own where available (the Z6, X100VI and Air 2S among them), qualify seams, levelling, colour, crop losses and warp quality. Photo-sized measurements behind the host lock report:
+   The `hdr-merge` journey and the JPEG and RAW journeys stay valid. The `panorama-merge` scenario (`xtask/src/panorama_merge_smoke.rs`) generates a four-frame row of 1.5 MP JPEGs and a ten-frame row of 24 MP JPEGs whose result is about 150 MP. It runs three launches: `select` makes both merges through the menu, the sheet and ⌥-click; `develop` opens the results from the catalog folders they were filed in, edits and exports them; and `offline` reopens them with the frames renamed away. It passes in the rendered tier on the M4.
+6. Natural panoramas, the owner's own where available (the Z6, X100VI and Air 2S among them), qualify seams, levelling, colour, crop losses and warp quality. Photo-sized measurements behind the host lock report:
    - merge stages, cold and warm;
    - cancellation latency;
    - temporary disk;
@@ -344,7 +344,7 @@ Ordinary correctness, recovery and rendered checks ship with the working feature
 
    Measured inputs are 24 and 60 MP frames, 5 and 32 of them.
 
-The implementation answers the [performance-rules checklist](../engineering/performance-rules.md#review-checklist). When delivered, update this design, the HDR design's shared shapes, [feature status](../features.md), the [user guide](../user-guide.md), the [catalog design](catalog.md#hdr-and-other-merges) and command documentation.
+The implementation answers the [performance-rules checklist](../engineering/performance-rules.md#review-checklist).
 
 ## Numerical references
 

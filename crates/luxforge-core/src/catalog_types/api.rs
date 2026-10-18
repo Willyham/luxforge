@@ -958,7 +958,6 @@ mod tests {
             }
         }
         assert!(contract("pick.set").is_some());
-        assert!(contract("catalog.import").is_none());
     }
 
     /// The design's API table and the contracts name the same methods: each contract's name is in

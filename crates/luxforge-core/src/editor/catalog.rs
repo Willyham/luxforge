@@ -1294,13 +1294,12 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Every marker but the current one — the earlier development formats up to 16 and a future one
-    /// alike — is refused by name and left exactly as it is, with no artifact or index directory
-    /// made for it.
+    /// Every marker but the current one — none, the one before it and a later one alike — is
+    /// refused by name and left exactly as it is, with no artifact or index directory made for it.
     #[test]
     #[slow]
     fn catalog_format_any_other_marker_is_refused_by_name_unchanged() {
-        for marker in [0, 1, 15, 16, CATALOG_FORMAT + 1] {
+        for marker in [0, CATALOG_FORMAT - 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
@@ -1355,11 +1354,11 @@ mod tests {
         }
     }
 
-    /// A current-format database without the catalog's application mark — a development catalog
-    /// from before the format was reset to 1 — is refused and keeps every byte.
+    /// A database of the current format without the catalog's application mark is refused and
+    /// keeps every byte.
     #[test]
-    fn catalog_format_one_without_the_application_mark_is_refused_unchanged() {
-        let catalog = temp("unmarked-format-1.sqlite");
+    fn catalog_format_the_current_marker_without_the_application_mark_is_refused_unchanged() {
+        let catalog = temp("unmarked-current-format.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         service.import(&fixture()).unwrap();
         drop(service);
@@ -1663,12 +1662,12 @@ mod tests {
         );
     }
 
-    /// A refused catalog left with a write-ahead log, as one an earlier version stopped without
-    /// closing is, keeps both files byte for byte: the refusing connection neither checkpoints the
+    /// A refused catalog left with a write-ahead log, as one another build stopped without closing
+    /// is, keeps both files byte for byte: the refusing connection neither checkpoints the
     /// log into the catalog nor removes it as it closes. The refusal names the marker it read.
     #[test]
     fn a_refused_catalog_keeps_its_write_ahead_log_byte_for_byte() {
-        for marker in [16, CATALOG_FORMAT + 1] {
+        for marker in [CATALOG_FORMAT - 1, CATALOG_FORMAT + 1] {
             let source = temp("refused-wal-source.sqlite");
             let mut service = EditorService::open(&source).unwrap();
             service.import(&fixture()).unwrap();
@@ -2345,7 +2344,7 @@ mod tests {
     /// commit carrying stroke data through the same `mask.add-stroke` request a hand-drawn stroke
     /// takes.
     ///
-    /// `store_strokes` now writes only what a table does not already know is stored, rather than
+    /// `store_strokes` writes only what a table does not already know is stored, rather than
     /// every reference the recipe carries; this proves that shortcut never skips a stroke that was
     /// only ever *referenced*, not stored, by reopening the catalog afterwards and resolving every
     /// entry's every reference, whichever path put it there.

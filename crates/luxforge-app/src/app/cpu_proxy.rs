@@ -1,6 +1,6 @@
 //! The desktop half of the CPU proxy: the drag path of a session the GPU does not draw at all — no
 //! adapter, which a launch with `--no-gpu-render` or a host with only a software adapter answers
-//! too, or a lost device (owner, 2026-10-06). The core half is `luxforge_core`'s `cpu_proxy`.
+//! too, or a lost device. The core half is `luxforge_core`'s `cpu_proxy`.
 //! Everything only this path uses on the desktop lives here, and this module and its tests are the
 //! one place to remove it.
 //!

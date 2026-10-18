@@ -1,6 +1,6 @@
 # Mask performance and Performance panel polish
 
-Status: implemented with scoped native M4 qualification, authorized by the owner on 2026-10-02.
+Status: implemented with scoped native M4 qualification.
 
 ## Outcome
 
@@ -54,10 +54,8 @@ paint slot admits one worker-owned RGBA result, including a pass still painting,
 cancellation or queue destruction. The consumer holds the slot through adoption or replacement of
 its previous waiting result, then releases it; a retained waiting result owns no lease. At most two
 RGBA grids belong to the handoff, including the transient old/new consumer pair: eight bytes per
-cell plus the one-byte coverage cache, at most nine bytes per cell. This stays within the former
-handoff's maximum, which included UI RGBA conversion and separate cached, queued, worker and
-consumer coverage copies. The presenter's existing frames and
-GPU slots retain their own bounds. No image cache, source read, point raster,
+cell plus the one-byte coverage cache, at most nine bytes per cell. The presenter's frames and
+GPU slots keep their own bounds. No image cache, source read, point raster,
 thread, timer or scratch-budget increase is introduced. Existing coverage-cell and input-grid limits
 remain in force. Total editor memory remains a separate qualification.
 
@@ -65,12 +63,12 @@ The owner only handles bounded preferences and the existing cancellation operati
 coalesces preference saves, waits for the last save on normal close, caps pending cancels at four,
 and refreshes only the Performance model for otherwise idle samples. Active work and evidence keep
 the ordinary full update path. Unchanged GPU tiles keep their pixels, layouts and uniforms; changed
-placement and frame identities still update through the same presenter.
+placement and frame identities update through the same presenter.
 
 A coverage result that precedes its matching photograph does not wake an undrawable redraw.
 The desktop publishes adopted photo content before draining coverage in its existing after-message
 hook. A completion already queued is found by that drain; a later completion sees the published
-content and wakes normally. Unbound coverage on unchanged pixels and unavailable outcomes still
+content and wakes normally. Unbound coverage on unchanged pixels and unavailable outcomes
 wake immediately. This adds only two atomic content stamps, no timer, runtime hop or pixel buffer.
 The wake/publication, progressive feedback and failed-photograph tests guard liveness.
 
@@ -79,17 +77,17 @@ Performance-rules review for the finished change:
 | Question | Answer |
 | --- | --- |
 | Original reads, hashing and decoding | No changed request path reads original payloads. The existing verified source cache and worker remain the only preparation path. |
-| Image-sized allocations and sharing | The existing RGBA coverage grid moves to the worker and is shared through `Arc<Vec<u8>>`, within the previous maximum at nine bytes/cell as bounded above. Coverage completions no longer clone or retain the byte plane. Cell and presenter limits remain unchanged. |
+| Image-sized allocations and sharing | The RGBA coverage grid lives on the worker and is shared through `Arc<Vec<u8>>`, at most nine bytes/cell as bounded above. Coverage completions do not clone or retain the byte plane. Cell and presenter limits are unchanged. |
 | Point queries, validation and no-op checks | No new rasterization; frozen component evaluation and existing input-grid contracts remain in force. |
 | Owner work | Bounded atomic preference reads/writes and the existing `job.cancel`; no frame work. |
 | Desktop completions | Preferences, Cancel and idle samples add no asset/history fetch, preview job or pixel upload. Active edits retain the existing required paths. |
 | Timers and polls | No new timer, subscription or worker thread. The existing after-message hook also drains ready coverage after publishing the photo; idle Performance-only updates use the scoped path. The paint slot blocks and wakes on release or cancellation. The existing one-second sampler is gated by expansion and visibility. |
 | Unchanged work and caches | The existing coverage key and one-grid/input-grid bounds are unchanged. Cache hits share coverage rather than copying it; tests compare exact pixels and source release. Each GPU tile stores 96 bytes of last-written uniforms, bounded by the existing tile count; byte equality skips unchanged writes. No new image cache. |
 | Photo-sized measurement | Matched native 24/60 MP `editor-latency --mode paint --mask-overlay --samples 240` measures this interaction and all worker legs. Results and limits are in [performance](../specs/performance.md#mask-feedback-and-the-coverage-handoff). A separate `editor-performance` core-render comparison is not claimed. |
-| Exactness and sharing evidence | Frozen mask/reference and renderer tests, all 256 overlay codes against the old arithmetic, cache-hit painted bytes, source-release, handoff-bound/cancellation and progressive identity checks; native Metal surface readbacks and correlated mask/viewport captures. |
+| Exactness and sharing evidence | Frozen mask/reference and renderer tests, all 256 overlay codes against the per-cell arithmetic, cache-hit painted bytes, source-release, handoff-bound/cancellation and progressive identity checks; native Metal surface readbacks and correlated mask/viewport captures. |
 
 ## Decisions
 
-The owner's request authorizes performance fixes and the panel follow-ups above. Algorithm
+Algorithm
 quality, stroke representation and existing memory bounds remain the current contracts. A proposed
 optimization that needs a consequential quality or extra-memory tradeoff remains a proposal.

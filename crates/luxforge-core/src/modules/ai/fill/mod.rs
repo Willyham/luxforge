@@ -21,7 +21,7 @@
 //!    answer lost, from the candidate's seed.
 //! 6. **Blend** ([`blend`]). A push-pull seam correction meets the input's colour and tone at the
 //!    edge, then a Laplacian pyramid carries detail across it band by band. What the region covers
-//!    enters neither. A Replace skips both (owner, 2026-10-11): carrying the edge's difference into
+//!    enters neither. A Replace skips both: carrying the edge's difference into
 //!    a new object leaves a lighter box or halo around it, so it composites over the region's own
 //!    feathered edge.
 //! 7. **Patch.** The candidate is the tight bounds of the coverage: the blended fill decoded to

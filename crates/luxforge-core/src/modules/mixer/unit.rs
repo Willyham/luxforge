@@ -466,8 +466,8 @@ impl Mixer {
 /// One Oklab round trip per pixel around `stage`.
 ///
 /// Each stage's `apply` is `#[inline(always)]` so that it, and the HSL stage's `amounts`, compile
-/// into these row loops. Left to the inliner, they were per-pixel calls, and HSL alone ran about 7%
-/// slower than the separate unit it replaced (`measure_the_mixer_colour_cost_at_24_mp`).
+/// into these row loops. Left to the inliner, they become per-pixel calls, and HSL alone runs about
+/// 7% slower than a separate unit (`measure_the_mixer_colour_cost_at_24_mp`).
 #[inline]
 fn round_trip(rgb: &mut [[f32; 3]], stage: impl Fn(Oklab) -> Oklab) {
     for pixel in rgb {

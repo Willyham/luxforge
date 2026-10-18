@@ -4,9 +4,8 @@
 //! over the planes the entry developed with the change as a leading step, then released, which
 //! redevelops the mosaic and lands the exact picture at rest, at Fit and again at 100%. The moving
 //! GPU frame is reported against the release's picture at rest, at Fit the whole frame and at 100%
-//! the visible region, and fails only on a gross error (the owner's decision of 2026-10-06). Both
-//! drags keep the
-//! tint in force (the first, from As shot, the camera's as-shot tint); and a double-click reset on
+//! the visible region, and fails only on a gross error. Both drags keep the tint in force (the
+//! first, from As shot, the camera's as-shot tint); and a double-click reset on
 //! Temperature, Tint and Exposure after the committed jump the first press makes: Temperature and
 //! Tint back to As shot, labelled `Reset White balance`, whose fields then show the camera's
 //! as-shot equivalent, and Exposure back to 0 EV. Basic's band carries no edited dot on the
@@ -346,12 +345,12 @@ fn development_gains(frame: &Value) -> Result<[f32; 3]> {
 }
 
 /// The worst 16 × 16 block, in ΔE00, past which a moving white-balance frame is a gross error
-/// rather than the approximation's own difference from the release (owner, 2026-10-06).
+/// rather than the approximation's own difference from the release.
 const GROSS_WORST_BLOCK: f64 = 10.0;
 
 /// The moving GPU white-balance frame against the release's picture at rest, over the photograph
 /// on screen — the whole frame at Fit, the visible region at 100% — as the pointwise statistics
-/// and verdict report it: reported, not gated (owner, 2026-10-06), but for a gross error, a worst
+/// and verdict report it: reported, not gated, but for a gross error, a worst
 /// block past [`GROSS_WORST_BLOCK`].
 fn white_balance_report(moving: &Frame, settled: &Frame) -> Result<Value> {
     let rect = moving.visible_photo()?;
@@ -1347,7 +1346,7 @@ const PASSING: [&str; 5] = [
 /// Released, the commit redevelops the mosaic, and the GPU draws the exact picture at rest with
 /// its own report. The moving GPU frame is reported against that picture at rest, the whole frame
 /// at Fit and the visible region at 100%, and fails only past a worst block of
-/// [`GROSS_WORST_BLOCK`] (owner, 2026-10-06). The plan checks one history entry.
+/// [`GROSS_WORST_BLOCK`]. The plan checks one history entry.
 fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     use crate::gpu_preview_smoke::{at_rest_after, gpu_drawn, span_events, ticks};
     let kelvin = drag.kelvin;

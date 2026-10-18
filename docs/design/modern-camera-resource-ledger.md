@@ -1,15 +1,14 @@
 # Modern camera resource ledger
 
-Status: design and measurement ledger for the modern-camera expansion, applying
-the [owner-approved RAW admission contract](architecture.md#limits)
+Status: design and measurement ledger for modern camera support, applying
+the [RAW admission contract](architecture.md#limits)
 against real camera files. This is an implementation contract, not a
 process RSS limit or a broad quality claim. All 100 selected models have
-authentic adapter qualification. JPEG limits remain independent and
-unchanged.
+authentic adapter qualification. JPEG limits are independent.
 
 ## Scope and accounting rules
 
-JPEG keeps the existing [architecture](architecture.md#limits) evaluated-frame and
+JPEG keeps the [architecture's](architecture.md#limits) evaluated-frame and
 aggregate-scratch limits; RAW uses the same [admission contract](architecture.md#limits).
 The standalone raw probe has separate diagnostic checks and must not be used
 as evidence that the editor admits a camera mode. A decoder limit is not a
@@ -21,9 +20,9 @@ bytes/pixel; the terminal RGBA display buffer is 8-bit `4 bytes/pixel`.
 
 | Work item | 24 MP | 40 MP | 128 MP | Liveness implication |
 | --- | ---: | ---: | ---: | --- |
-| Encoded RAW source at the approved 512 MiB ceiling | 512 MiB | 512 MiB | 512 MiB | RAW-only admission bound; JPEG limits remain independent. |
+| Encoded RAW source at the 512 MiB ceiling | 512 MiB | 512 MiB | 512 MiB | RAW-only admission bound; JPEG limits remain independent. |
 | Immutable u16 mosaic | 45.8 MiB | 76.3 MiB | 244.1 MiB | Retained by the source while WB or a source redevelopment is possible. |
-| One planar RGB float frame | 274.7 MiB | 457.8 MiB | 1,464.8 MiB | A 128 MP frame is below the approved 1.5 GiB per-buffer bound. |
+| One planar RGB float frame | 274.7 MiB | 457.8 MiB | 1,464.8 MiB | A 128 MP frame is below the 1.5 GiB per-buffer bound. |
 | One terminal RGBA8 display/upload frame | 91.6 MiB | 152.6 MiB | 488.3 MiB | The terminal buffer is 8-bit; GPU/shared-memory copies still need accounting. |
 | Two planar RGB float frames | 549.3 MiB | 915.5 MiB | 2,929.7 MiB | Old plus new RAW development or reference input plus output at a resample boundary; not a count of GPU preview jobs. |
 | Mosaic plus two planar RGB frames | 595.1 MiB | 991.8 MiB | 3,173.8 MiB | Does not include native decoder scratch, allocator retention, or GPU/shared-memory copies. |
@@ -46,13 +45,13 @@ serialized recipe/source metadata does not contain the mosaic. Committed white-b
 The reference renderer can hold input and output frames at a resample boundary. Crop and orientation views share developed planes. Production GPU rendering uploads a RAW's three crop-window float planes once, then derives view boundaries, chains, scratch and staged-sweep textures on the GPU. The surface and tile worker have separate 2 GiB budgets. GPU textures on Apple unified memory remain physical memory costs; capture/readback and resources outside the budgets need separate accounting. Source admission follows actual buffer references, not queue state; no per-buffer or per-device limit establishes a process-wide peak.
 
 Native RCD and Markesteijn workspaces are additional to these formulas. The
-standalone probe recorded historical peak RSS of approximately 425 MiB for
+standalone probe recorded peak RSS of approximately 425 MiB for
 24 MP Z6 RCD and 707 MiB for 40.2 MP X100VI Markesteijn in
 [the RAW backend research](../research/raw-backend-selection.md#measured-scope-and-limits) (those are decoder-stage trials,
 not current editor limits). Scratch generally scales with implementation and
 working tiles rather than only final pixel count, so a 128 MP value cannot be
 extrapolated as a release guarantee. The adapter sets LibRaw's
-`max_raw_memory_mb = 512` normally and `1024` only for the owner-approved
+`max_raw_memory_mb = 512` normally and `1024` only for the
 Sony ARW6 Compressed HQ decoder; those are LibRaw working-space ceilings.
 The [corpus support measurement](corpus-camera-support.md) records Sony HQ
 at about 1.15 GiB peak process RSS for decode/two developments.
@@ -61,7 +60,7 @@ reached, and it does not make a 512 MiB process budget true.
 
 ## Authentic baseline measurements
 
-The available current Sony samples were run through the repository's native
+The available Sony samples were run through the repository's native
 `qualify_profiles` develop qualifier. Each sample ran in a fresh process with
 source preservation, decode, as-shot development, and perturbed-WB
 development. The command shape was:
@@ -94,9 +93,8 @@ temperature/tint, neutral picking, rotation/crop/undo, historical preview and
 zoom changes. The second process reopens the committed state and matches the
 captured photo pixels. Sources remained unchanged.
 
-The following are sampled first-process peak RSS, with roughly 50 ms sampling,
-release binary `82b2f010b105760f8fe156bf3bd74b42e9c9c7069b43ac168af9dff3d559dd03`.
-Each row has three trials; filesystem cache was not purged. Captures and GPU
+The following are sampled first-process peak RSS, with roughly 50 ms sampling
+of a release binary. Each row has three trials; filesystem cache was not purged. Captures and GPU
 resources contribute to process RSS, and GPU memory is not isolated. These are
 observations rather than a hard process ceiling or a timing baseline.
 
@@ -112,25 +110,14 @@ observations rather than a hard process ceiling or a timing baseline.
 The local correlated state, events and captures are under
 `artifacts/modern-camera-full-final/raw-editor/run/`. These photo-sized results
 show why the decoder's per-buffer bound cannot be treated as an editor process
-budget; even the current 40 MP path reaches approximately 2 GiB in this journey.
-
-The same full verification ran the standard 24/60 MP JPEG performance checks.
-The 24 MP slider-to-presented-frame p95 was 83.21 ms (30 samples), settled
-histogram p95 106.3 ms (two samples), and scratch high-water mark 13.46 MiB.
-Sampled peak RSS medians were 503.4 MiB at 24 MP and 981.2 MiB at 60 MP (five
-samples each). Idle CPU was 1.68% of one core over 30 seconds, missing the
-provisional <1% target. These default sample counts are functional observations,
-not a performance baseline or a RAW memory guarantee. The full summary is
-`artifacts/modern-camera-full-final/summary.md`.
+budget; even the 40 MP path reaches approximately 2 GiB in this journey.
 
 ## High-resolution editor measurements
 
-The final build (`83243ad47ccf7f5afe7ef9323ab504a9789c26d4ad9a2aa4a4a9b8c537efdaca`)
-passed 27 edit/history/reopen trials across these six models and the three owner
-originals, three per source, using the
-same roughly 50 ms process-RSS sampling and hidden native Metal editor. The
-source originals remained unchanged. Filesystem cache was not purged, and GPU
-memory was not isolated. Captures and correlated state are under
+The hidden native Metal editor passes 27 edit/history/reopen trials across these
+six models and the three owner originals, three per source, measured with the
+same roughly 50 ms process-RSS sampling. The source originals are unchanged.
+Filesystem cache was not purged, and GPU memory was not isolated. Captures and correlated state are under
 `artifacts/modern-camera-100-final/raw-editor/run/`.
 
 | Source | Median first-process peak MiB | Maximum peak MiB |
@@ -149,27 +136,17 @@ existing allocations; it does not make a file's encoded size representative of
 editor memory. Resolution drives decoded memory, while compression and required
 corrections also affect processing time.
 
-The Q2 journey exceeded the old 25-second evidence deadline while still producing
-valid correlated frames. Scripted evidence now has a 60-second application
-bound and the RAW harness has a 70-second process bound. Its completed first
-processes took about 32–33 seconds across the three trials. These whole-journey
+Scripted evidence has a 60-second application bound and the RAW harness a
+70-second process bound; the Q2 journey's first processes take about 32–33
+seconds across the three trials. These whole-journey
 measurements include multiple developments and captures; they are not slider
 latency measurements or controlled performance baselines.
-
-The complete final verification passed its functional checks, including 19
-rendered scenarios and all 27 RAW edit/reopen trials. Its standard JPEG timing
-components ran above the host-load threshold (one-minute averages 10.00–10.87,
-threshold 8), so their timing verdicts are explicitly unreliable. Observed
-slider p95 was 84.48 ms, settled histogram p95 109.9 ms, scratch high-water mark
-13.46 MiB, and 24/60 MP median peak RSS 497.4/981.7 MiB. Idle CPU was 1.85%.
-These numbers are not performance acceptance or a baseline. The full report is
-`artifacts/modern-camera-100-final/summary.md`.
 
 ## Modes and measured resource context
 
 These are measured encoded sizes and native sensor dimensions from the selected
-CC0 files. Planar bytes are `sensor pixels × 12`. These rows preserve the
-measured resource context used when the RAW budget was approved; admission still
+CC0 files. Planar bytes are `sensor pixels × 12`. These rows are the
+measured resource context behind the RAW budget; admission also
 requires profile identity, source evidence and mode qualification. A valid matrix
 and successful standalone unpack do not establish broad image-quality support.
 
@@ -209,7 +186,7 @@ references and measured native/display phases.
 
 ## Practical recommendation
 
-Keep JPEG's existing frame and scratch limits. For RAW, use the [approved admission
+JPEG keeps its frame and scratch limits. RAW uses the [admission
 contract](architecture.md#limits) while qualification
 continues. Prefer qualified single-frame modes whose measured liveness fits source/development budgets; release native scratch before upload and keep source-cache replacement byte-accounted and gated by actual references. Account separately for GPU source uploads, boundaries, chains and staged textures on both devices, reference fallback, captures and resources outside their budgets. Measure complete editor workflows at each supported resolution before making process-memory claims;
 128 MP modes remain qualification work. A process-wide 128 MP claim

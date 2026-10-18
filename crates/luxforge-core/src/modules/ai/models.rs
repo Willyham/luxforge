@@ -418,7 +418,7 @@ pub(crate) const KLEIN_TEXT_ENCODER: ModelFile = ModelFile {
 /// The backends `luxforge-diffusion` serves klein under: Metal on macOS, the CPU elsewhere.
 pub(crate) const DIFFUSION_BACKENDS: &[&str] = &["metal", "diffusion-cpu"];
 
-/// The qualified model (owner, 2026-10-11): 1024 px, four flow steps, one candidate at a time;
+/// The qualified model: 1024 px, four flow steps, one candidate at a time;
 /// about 5 GiB resident for a removal and 9 GiB with the text encoder for Replace, as measured.
 pub(crate) const KLEIN: GenerativeModel = GenerativeModel {
     id: "generative-klein-4b",

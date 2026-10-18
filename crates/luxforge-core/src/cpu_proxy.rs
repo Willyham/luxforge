@@ -1,5 +1,5 @@
 //! The CPU proxy: the drag path of a session the GPU does not draw at all — no adapter, a lost
-//! device, `--no-gpu-render` (owner, 2026-10-06). Everything only that path uses lives here, and
+//! device, `--no-gpu-render`. Everything only that path uses lives here, and
 //! this module is the one place to remove it from the core.
 //!
 //! A proxy source is the prepared source reduced once to the size the display can show, by the

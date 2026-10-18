@@ -596,17 +596,16 @@ mod tests {
     /// what `modules/registry/compile.rs`'s stage-only callers pay on every plan, `draft.set`, a
     /// composite step and a query, per `docs/engineering/performance-rules.md`'s vignette row —
     /// at 60 MP (9504x6336) with roundness negative, so the superellipse branch's `powf` tables are
-    /// the ones this measures. Before this task the constructor filled both tables eagerly, so this
-    /// cost was `O(width + height)` on every one of those calls; after, construction is `O(1)` and
-    /// the tables are never built at all unless a call actually reads a pixel through `apply_row`,
-    /// which none of `describe`, `is_finite` or a stage-only compile does.
+    /// the ones this measures. Construction is `O(1)` and the tables are never built at all
+    /// unless a call actually reads a pixel through `apply_row`, which none of `describe`,
+    /// `is_finite` or a stage-only compile does; a constructor that filled both tables eagerly
+    /// would cost `O(width + height)` on every one of those calls.
     ///
-    /// A build from before this task carries no comparable instrumentation — the tables were
-    /// simply always built — so "before" is reconstructed in this same binary: the per-entry
-    /// arithmetic a lazy build runs is exactly what the old eager constructor ran, proved unchanged
-    /// by the oracle tests above, so forcing both tables to build immediately after construction
-    /// (one call that reads a pixel) costs exactly what building them inside the constructor did.
-    /// Both figures therefore come from the same binary, run and host.
+    /// The eager cost ("before") is reconstructed in this same binary: the per-entry arithmetic a
+    /// lazy build runs is exactly what an eager constructor would run, proved by the oracle tests
+    /// above, so forcing both tables to build immediately after construction (one call that reads a
+    /// pixel) costs exactly what building them inside the constructor would. Both figures therefore
+    /// come from the same binary, run and host.
     ///
     /// Ignored by default because it is a measurement, not a pass/fail property: run it with
     /// `cargo test --release --package luxforge-core --lib modules::vignette::unit::tests::

@@ -48,7 +48,7 @@ Big-LaMa is still the standard permissive baseline. Code and weights are Apache-
 - Baseline shortlist: **Big-LaMa** (the maturity leader, with Apache code and weights, Core ML and ONNX ports, and a well-understood behaviour envelope) and **MI-GAN** (MIT code and weights, about 10× fewer parameters, 512 max). Both are sub-second to low-second on an M4 GPU at 512–1024 (estimate, from 51M and 6M parameters and the iPad Pro M2 figures). No M4-specific LaMa benchmark was found.
 - A feed-forward baseline covers blemishes, sensor dust, wires, small objects and texture fills well. It will leave shadows and reflections unless they are painted into the mask, and it gives no variations.
 - MAT and FcF are excluded because MAT is CC BY-NC and FcF bundles StyleGAN2-ADA code under an NVIDIA non-commercial licence. ZITS/ZITS++ add a line-detector dependency for modest gains, and their structure-prior advantage is superseded by diffusion models.
-- CoordFill and RETHINED are interesting as fast, high-resolution fill engines. CoordFill's weight terms are unclear, and RETHINED has no code licence, so both need owner or author clarification before use.
+- CoordFill and RETHINED are interesting as fast, high-resolution fill engines. CoordFill's weight terms are unclear, and RETHINED has no code licence, so both need the authors' clarification before use.
 
 ### Gaps
 - No published M4 (or any Apple M-series Mac) timing for Big-LaMa or MI-GAN in PyTorch MPS, Core ML or ONNX Runtime CoreML EP. This needs local measurement.
@@ -190,7 +190,7 @@ Everyone crops around the mask, runs the model at its native size (512–2048), 
 - SD-Inpaint downscales the mask to latent resolution, which "can cause some inconsistencies and result in artifacts"; the authors recommend dilating masks — [CLIPAway](https://github.com/YigitEkin/CLIPAway)
 - ASUKA (2026) targets diffusion and rectified-flow inpainting's "unwanted object insertion" and "color inconsistency". It uses reconstruction priors plus a VAE decoder reformulated as local harmonisation — [arXiv 2601.15368](https://arxiv.org/abs/2601.15368)
 - Linear HDR input to LDR-trained latent models: logarithmic encoding maps HDR into "a distribution that is naturally aligned with the latent space", so LDR-trained VAEs can be reused. "HDR … can be handled effectively without redesigning generative models, provided that the representation is chosen to align with their learned priors" — [arXiv 2604.11788](https://arxiv.org/abs/2604.11788)
-- Luxforge-specific context: repairs are proposed after source development and before global colour, in content coordinates, as immutable patches — [corrections design](../../design/corrections.md)
+- Luxforge-specific context: repairs run after source development and before global colour, in content coordinates, as immutable patches — [corrections design](../../design/corrections.md)
 
 ### Inferences
 Proposed pipeline for 24–60 MP (**inference; to validate by measurement**):
@@ -311,9 +311,9 @@ Only a few candidates are fully permissive in both code and weights: **LaMa** (A
 
 ### Inferences
 - A GPL-3.0-or-later app can **download** Apache-2.0 or MIT weights (LaMa, MI-GAN, FLUX.2 klein 4B, Qwen-Image-Edit-2511) at the user's request without licence friction.
-- OpenRAIL++-M weights (RORem, OSOR-SDXL, SDXL-inpainting) are not OSI or FSF licences. Luxforge could still fetch them on explicit user action as a separately licensed download, with the use restrictions shown. Whether that meets Luxforge's "open-source dependencies" pillar is **an owner decision, not a licence incompatibility with the GPL code itself** (inference; not legal advice).
+- OpenRAIL++-M weights (RORem, OSOR-SDXL, SDXL-inpainting) are not OSI or FSF licences. Luxforge could still fetch them on explicit user action as a separately licensed download, with the use restrictions shown. Luxforge offers them so under the [AI editing design](../../design/ai-editing.md#decisions)'s quality-first policy; their use restrictions are **not a licence incompatibility with the GPL code itself** (inference; not legal advice).
 - Non-commercial weights (FLUX.1-dev family, ObjectClear family, Qwen-Image 2.1, MAT) should be treated as **evaluation references or "user-run local service" providers only**, never a bundled or default download.
-- The Places2 "non-commercial research" data terms are a provenance concern for every classical inpainter, LaMa included. The weight licences themselves are permissive, but the owner should record this caveat when choosing LaMa or MI-GAN.
+- The Places2 "non-commercial research" data terms are a provenance concern for every classical inpainter, LaMa included. The weight licences themselves are permissive, and training-data provenance is not a selection criterion ([AI editing](../../design/ai-editing.md#decisions)).
 - "HF tag apache-2.0" on a LoRA or fine-tune of a restricted base (OmniEraser, RORem, PowerPaint v2-1) does not remove the base's terms. Evaluate the whole weight chain.
 
 ### Gaps
@@ -337,14 +337,13 @@ Only a few candidates are fully permissive in both code and weights: **LaMa** (A
 - CORNE (287,012 effect-aware pairs) is Apache-2.0, a candidate fine-tuning corpus, provenance caveats aside — [OSOR repo](https://github.com/Zhouqm-Git/osor)
 
 ### Inferences
-- Recommended qualification order for Luxforge's existing plan (inference):
+- Recommended qualification order (inference):
   1. Big-LaMa (+ MI-GAN) as the shipped-quality floor and the pipeline test bed for crop, encode, detail and noise, and compositing.
-  2. OSOR-SDXL and RORem-4S on M4 via Core ML, MLX or sd.cpp, measuring quality on shadows and reflections, runtime, memory and determinism. This pends an owner decision on accepting OpenRAIL++-M downloads.
+  2. OSOR-SDXL and RORem-4S on M4 via Core ML, MLX or sd.cpp, measuring quality on shadows and reflections, runtime, memory and determinism.
   3. FLUX.2 klein 4B inpaint, zero-shot with a fixed "empty scene" prompt, plus an optional explicit contact band, as the Apache-only generative path. If promising, consider a removal LoRA trained on CORNE and owner-captured pairs.
   4. ObjectClear/TurboClear, OmniEraser and a remote provider as **reference ceilings only**.
-- Replace the existing proposal's "PowerPaint" and "SDXL-inpainting" evaluation candidates with **OSOR-SDXL / RORem** (same SDXL licence class, much better removal) and add **FLUX.2 klein 4B**. PowerPaint (SD1.5, no effect handling) is superseded.
 
 ### Gaps
-- None of the generative candidates has an M4 measurement. The M4 timings above are estimates.
+- This research has no M4 measurement of the generative candidates; the M4 timings above are estimates, and the prototype's measurements are in [`probes/object-removal`](../../../probes/object-removal/README.md#generative-fill).
 - Whether OSOR-SDXL's one-step output quality holds at 512–1024 crops of real 24–60 MP photos with high-ISO grain is unknown.
 - No licence-clean, effect-aware, M4-fast model exists as of September 2026. Creating one would be a training project with its own data-provenance questions.

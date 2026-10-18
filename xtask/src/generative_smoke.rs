@@ -9,7 +9,7 @@
 //! shows AI editing's setup with Set up; the fake generator's grant and install go through the API
 //! as any client's would. A stroke across the boundary of two quadrants is the selection; Generate is captured
 //! while it runs (the ring and the status bar's progress), Escape cancels it, Generate runs to its
-//! one candidate (owner, 2026-10-11), Regenerate adds one more, and the first is chosen again and
+//! one candidate, Regenerate adds one more, and the first is chosen again and
 //! previewed on the canvas. A second client accepts the desktop's newest job's candidate. A prompt makes the action
 //! Replace and offers the Replace add-on, whose Add goes through the consent notice; Replace
 //! then runs and Accept commits it. Last, the second client turns the experiment off while Remove

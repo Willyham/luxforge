@@ -135,8 +135,8 @@ const SMALL: [(u32, u32); 4] = [(31, 17), (17, 31), (64, 64), (48, 12)];
 /// The stages the conservative rectangle is checked on exhaustively.
 const BOUNDS: [(u32, u32); 4] = [(23, 19), (19, 23), (32, 32), (48, 12)];
 
-/// The seeds one kind's sweeps draw from. They are the per-kind tests' own seeds where the suite
-/// replaced one, so the recorded floors below are figures and not guesses.
+/// The seeds one kind's sweeps draw from. The recorded floors below were measured with them, so
+/// they are figures and not guesses.
 struct Seeds {
     sparse: u64,
     dense: u64,

@@ -11,7 +11,7 @@
 //! size by an independent area-weighted average of its linear light ([`tolerance::reduce_srgb8`]),
 //! or at 100% its visible region, unreduced.
 //!
-//! It records the picture as the design's two kinds, by its recorded default of 2026-10-05:
+//! It records the picture as the design's two kinds:
 //!
 //! - **The picture at rest**, against the reference: the stack's picture at rest as the editor
 //!   plans and draws it — at Fit, 33% and 50% its tiles at full resolution, each over its window
@@ -45,7 +45,7 @@
 //! and read back whole for the luminance histogram and the diagnostics; their counts against the
 //! reference frame's, from the core's own reducer, by the earth mover's distance within a quarter
 //! of a code on each of R, G, B and luminance and each clipping counter within 0.1% of the output
-//! pixel count (owner, 2026-10-05), the summed bin difference reported beside them. A stack whose
+//! pixel count, the summed bin difference reported beside them. A stack whose
 //! tiles the GPU cannot draw is a gap naming why.
 //!
 //! **The minimap's overview** is the GPU's ([`overview_kind`]): the stack's picture at rest planned
@@ -1114,8 +1114,8 @@ fn picture(
 }
 
 /// The softer frame a drag at 100% or more draws when the region's slot passes the GPU-preview
-/// budget ([`crate::app::gpu_preview`]'s `budget-reduced`, accepted by the owner on 2026-10-07
-/// subject to this qualification): the stack planned whole at the reduced stage of the view's
+/// budget ([`crate::app::gpu_preview`]'s `budget-reduced`, subject to
+/// this qualification): the stack planned whole at the reduced stage of the view's
 /// area, the region's size times `magnification`, drawn by `surface` as the editor draws it, then
 /// magnified over `rect`, the region of the full stage, bilinearly in linear light, standing in for
 /// the photo surface's sampler. Against `expected`, the reference's region, and `at_rest`, the
@@ -1579,9 +1579,9 @@ const HISTOGRAM_NOT_RENDERED: &str = "no GPU counts were taken of this stack";
 /// (`luxforge_core::analysis`) over the exact whole frame, and the GPU's counts, `gpu`, against
 /// them with the tiles they were taken over, by the earth mover's distance within
 /// [`tolerance::HISTOGRAM_EMD_CODES`] on each of R, G, B and luminance, the luminance histograms
-/// the two frames', and each clipping counter within 0.1% of the output pixel count (owner,
-/// 2026-10-05). The summed bin difference and the [diagnostics](histogram_diagnostics) are
-/// reported beside them and not judged. A gap naming why the GPU took no counts where it could
+/// the two frames', and each clipping counter within 0.1% of the output pixel count. The summed
+/// bin difference and the [diagnostics](histogram_diagnostics) are reported beside them and not
+/// judged. A gap naming why the GPU took no counts where it could
 /// not, or why its frame is not the one it counted, never a pass. With no counts asked for at all,
 /// the kind is not rendered by the GPU, neither a pass nor a failure.
 fn histogram_kind(

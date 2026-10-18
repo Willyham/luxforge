@@ -2,7 +2,7 @@
 
 [Knowledge base index](README.md)
 
-**Status: proposals and unexecuted experiments.** This chapter translates the evidence into engineering questions. It does not accept a new product decision, implement an effect, or expand S0/M1. Existing [module/API design](../../design/modules-and-api.md), [history specification](../../specs/edit-history.md), [source recovery](../../specs/source-recovery.md) and [product decisions](../../decisions.md) remain authoritative.
+**Status: proposals and unexecuted experiments.** This chapter translates the evidence into engineering questions. It does not accept a product decision or implement an effect. Existing [module/API design](../../design/modules-and-api.md), [history specification](../../specs/edit-history.md), [source recovery](../../specs/source-recovery.md) and [product decisions](../../decisions.md) remain authoritative.
 
 ## Architectural lessons worth evaluating
 
@@ -13,7 +13,7 @@
 | [SDK tracking](sdk-and-interoperability.md) separates interactive redraw from history commit | Model drag drafts separately from committed commands; cancel stale work and publish the final state once | Existing core history/transaction ownership remains the authority |
 | [Preview paths](previews-and-performance.md) optimize different jobs | Give thumbnail, Fit, 100% and export work explicit quality/resolution purposes; key reuse on relevant source, recipe and color state | Measure before building many caches or complex schedulers |
 | [Scale-sensitive detail](detail-and-local-contrast.md) and AI support differ at proxy size | Inspect noise/sharpening at appropriate resolution; validate approximate previews against final output | Never present a proxy measurement as full-resolution quality evidence |
-| Masks and AI have dependencies | Track auxiliary assets and invalidation; expose pending/recompute/failure states to both UI and agents | Future work; no mask/AI runtime added to M1 |
+| Masks and AI have dependencies | Track auxiliary assets and invalidation; expose pending/recompute/failure states to both UI and agents | [Masks](../../design/masking.md) are implemented; [AI editing](../../design/ai-editing.md) is planned |
 | Rendered pixels and editable state are different artifacts | Export should capture an explicit committed revision and immutable job inputs | Already consistent with accepted history/export intent |
 | XMP syntax does not specify the processor | Separate metadata import from recipe interpretation and rendered equivalence | The [preset importer](../../design/presets.md#mapping) transfers values and reports the rest; it claims no rendered equivalence |
 
@@ -49,6 +49,6 @@ Use Luxforge's [rendered-evidence requirements](../../engineering/development.md
 - Obtain an official SDK package and compare its schema/signatures with the mirrored references.
 - Read the follow-up Fast Local Laplacian literature for approximation and scheduling ideas; do not assume adoption in current Lightroom.
 - Build a licensed fixture set with ramps, edges, textures, color targets and supported camera recording modes.
-- Decide whether the goal is a useful perceptual control or compatibility with an Adobe rendering. The latter requires a separately scoped calibration effort and may remain unattainable from public evidence.
+- The goal is a useful perceptual control whose slider responses follow Lightroom's ([Lightroom alignment](../../design/lightroom-alignment.md)), not compatibility with an Adobe rendering, which would need a separately scoped calibration effort and may remain unattainable from public evidence.
 
 Exact tone curves, local-contrast kernels, Dehaze estimation, current model weights, processing order and internal color representations remain open. They are not suitable acceptance criteria until specified independently for Luxforge or established by reproducible evidence.

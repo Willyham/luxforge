@@ -8,7 +8,7 @@ of the design: one row per event, one profile per session, 90-day expiry, no con
 provisioned dashboards.
 
 It is a reference for running and testing the pipeline on one machine. **It is not a hosted service.**
-Nothing here provisions, deploys or publishes anything. The hosted Cloudflare backend now lives in
+Nothing here provisions, deploys or publishes anything. The hosted Cloudflare backend lives in
 [Willyham/luxforge-backend](https://github.com/Willyham/luxforge-backend); [DEPLOYMENT.md](DEPLOYMENT.md)
 describes its current contract, test-tenant relay and separate production activation checklist.
 
@@ -32,7 +32,7 @@ flowchart LR
 | `clickhouse/` | `initdb/001-schema.sql` (tables and views), `config.d/privacy.xml`, `users.d/users.xml` |
 | `grafana/` | `Dockerfile` (plugin baked in), `provisioning/`, and the five dashboards in `dashboards/` |
 | `test.sh`, `tests/` | The stack test and the client test (below), with the stack test's synthetic scenario |
-| `install-feeds.py` | The update store's installer: the publication key's forced command, which installs a deploy archive of the update feeds ([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds), [deployment](DEPLOYMENT.md#16-the-update-feed-route)) |
+| `install-feeds.py` | The update store's installer: the publication key's forced command, which installs a deploy archive of the update feeds ([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds), [deployment](DEPLOYMENT.md#the-update-feed-route)) |
 | `probe.sh`, `probe.py` | The synthetic reference-contract probe: generated data and local statuses/limits/replies; do not run against the hosted endpoint ([live test alternative](DEPLOYMENT.md#the-desktop-against-the-live-test-tenant)) |
 | `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([hosted privacy checks](DEPLOYMENT.md#activation-checklist)) |
 | `DEPLOYMENT.md` | The activation checklist for `api.luxforge.app` |
@@ -79,7 +79,7 @@ docker compose -f compose.yaml -f compose.grafana-local.yaml up -d
 ```
 
 Publishing a port needs a network with a route out, so this override gives the Grafana container one.
-Its telemetry, update checks and plugin downloads stay off, but it is no longer isolated: do not use
+Its telemetry, update checks and plugin downloads stay off, but it is not isolated: do not use
 the override on a server (use an SSH tunnel or a private reverse proxy that logs no client addresses).
 
 Stop and delete everything, including the stored rows:
@@ -258,7 +258,7 @@ it does not run `tests/client_test.py` against the hosted stores. See the full
 | Hop | Configuration |
 | --- | --- |
 | Ingress | Never reads a peer address; no header but `Content-Type` and `Content-Length`; logs only fixed messages and aggregate counters; the optional per-installation limiter is in memory only |
-| Vector | The source captures no header or query parameter; log namespace on, so a row is exactly the JSON the ingress sent and the sink rejects unknown columns; the API, internal metrics, console and file sinks are off; warning-level logs showed counts and component names only in the tests |
+| Vector | The source captures no header or query parameter; log namespace on, so a row is exactly the JSON the ingress sent and the sink rejects unknown columns; the API, internal metrics, console and file sinks are off; warning-level logs show counts and component names only in the tests |
 | ClickHouse | All system log tables removed (no query log), `log_queries` off, console logging at warning level, crash reports off, no `default` user |
 | Grafana | Analytics, update and plugin checks, news and feedback links off; no anonymous access, sign-up, snapshots to external services, public dashboards or Gravatar; access (router) logging off and the request logger silenced; `/metrics` off; plugin downloads off |
 | Docker | Container logs are `json-file`, capped at 3 files of 5 MB each |

@@ -4,8 +4,7 @@
 
 The 100% source selection, tracking-mode redraw, GPU processing, Camera Raw cache and slider
 release-note claims were rechecked on 2026-09-27. The [Luxforge investigation](../interactive-adjustments.md)
-connects those findings to the current preview code and proposes viewport rendering, interaction
-scheduling and targeted caching/GPU work. It makes no new Lightroom timing claim.
+connects those findings to Luxforge's preview design. It makes no new Lightroom timing claim.
 
 ## Several kinds of cached image data
 

@@ -17,8 +17,7 @@
 //!
 //! * **The photograph only.** A rectangle `[left, top, right, bottom]` in frame pixels, the right
 //!   and bottom edges exclusive, the shape the editor records per frame as `photo_rect`. Nothing
-//!   outside it is read, so the canvas beside a photograph cannot dilute a figure (owner,
-//!   2026-09-30).
+//!   outside it is read, so the canvas beside a photograph cannot dilute a figure.
 //! * **Candidate and reference.** The candidate is the frame under test (the GPU frame on screen
 //!   at settlement); the reference is the frame that replaces it (the CPU's). The signed
 //!   lightness difference is candidate minus reference, so a positive figure means the candidate
@@ -492,13 +491,12 @@ impl Class {
     }
 
     /// The limits a paged derived source's overview is held to (`docs/design/gpu-first.md`,
-    /// "Tolerance by output kind"): the stack drawn over its resident level, its spatial
-    /// parameters scaled to the level, against the banded reference of level 0 reduced to the same
-    /// view. Twice the class's own, the recorded default of 2026-10-13, but for the pointwise
-    /// worst block, 2.5 from the corpus's measurement (owner, 2026-10-16): a pointwise stack over a
-    /// reduced source differs from the reduction of its output where a curve bends across the
-    /// detail the level averages, which Basic's scene scale does at every edge, and a spatial one
-    /// by its scaled reach.
+    /// "Tolerance by output kind"): the stack drawn over its resident level, its spatial parameters
+    /// scaled to the level, against the banded reference of level 0 reduced to the same view. Twice
+    /// the class's own, the recorded default, but for the pointwise worst block, 2.5 from the
+    /// corpus's measurement: a pointwise stack over a reduced source differs from the reduction of
+    /// its output where a curve bends across the detail the level averages, which Basic's scene
+    /// scale does at every edge, and a spatial one by its scaled reach.
     pub const fn overview_limits(self) -> Limits {
         let Limits {
             mean,

@@ -3,7 +3,7 @@
 Scope: runtimes that Luxforge (GPL-3.0-or-later, Rust, iced 0.14 + wgpu 27, Apple M4 first, Windows/Linux portable) could use for (1) a SAM-style encoder once per image plus a prompt decoder on every hover, (2) feed-forward inpainting (LaMa, which needs FFT ops) and possibly diffusion, and (3) semantic segmentation (sky, person, salient subject, depth). Versions and dates below come from GitHub release/tag APIs and crates.io unless a source says otherwise. Where I estimate, I say so.
 
 Project context checked in this worktree:
-- `docs/design/masking-workspace.md` line 76 frames the choice: tract keeps "the toolchain rule and the licence rule" with a smaller operator set, while ONNX Runtime is broader and native. The capability contract rejects `local-runtime` today.
+- The [AI editing design](../../design/ai-editing.md#the-inference-port-and-runtime) chooses ONNX Runtime through `ort`, with Core ML where qualified and the CPU provider otherwise, on the prototype's measurements; tract is re-measured when it loads the models. The capability contract rejects `local-runtime` today.
 - `docs/decisions.md` line 16 sets the toolchain rule: all development tooling is Rust (`cargo xtask`), with no second toolchain.
 - Luxforge already statically builds a native C++ dependency, LibRaw, from pinned source (`docs/research/raw-backend-selection.md` line 3), so a pinned native library is precedented. A downloaded prebuilt binary is not.
 - `Cargo.lock` pins `wgpu 27.0.1`, `iced 0.14.0`, `metal 0.32.0` and `objc2 0.6.4`.
@@ -500,10 +500,10 @@ On macOS, static linking (the pyke default, tract, candle, burn) avoids signing 
 ### Gaps
 - No measured first-load compile times for SAM or LaMa under ORT CoreML on M4, and no measured final binary sizes, were found.
 
-## What should Luxforge measure, and what is the provisional recommendation?
+## What should Luxforge measure?
 
 ### Takeaway
-No single runtime is proven for all three workloads on the M4. Measure **ort (CPU and CoreML EP) against tract (CPU and Metal)** on the actual models, behind one small inference-port trait, with exact-output checks. Prefer tract if it meets the hover and encoder budgets, because it keeps the toolchain and licence rules and builds from source. Adopt ort+CoreML (static, hash-pinned binary) if tract misses them. Treat direct Core ML via objc2 as a later Mac-only accelerator for ANE-friendly encoders, not the portable baseline. Defer diffusion; if it is ever needed, evaluate stable-diffusion.cpp or Core ML separately.
+No single runtime is publicly proven for all three workloads on the M4. Measure **ort (CPU and CoreML EP) against tract (CPU and Metal)** on the actual models, behind one small inference-port trait, with exact-output checks. tract would keep the toolchain and licence rules and build from source, but on the prototype it loads only one of the five pinned models, so ort with Core ML (static, hash-pinned binary) is the measured choice ([AI editing](../../design/ai-editing.md#the-inference-port-and-runtime)). Treat direct Core ML via objc2 as a later Mac-only accelerator for ANE-friendly encoders, not the portable baseline. Diffusion is evaluated separately; the generative tier runs on stable-diffusion.cpp.
 
 ### Cited Findings
 - ort can front tract with one line (`ort::set_api(ort_tract::api())`), which makes an A/B harness cheap — [ort v2.0.0-rc.10](https://github.com/pykeio/ort/releases/tag/v2.0.0-rc.10)
@@ -551,14 +551,11 @@ No single runtime is proven for all three workloads on the M4. Measure **ort (CP
 - clean build time with and without a C++ toolchain;
 - codesign/notarize check of the bundle.
 
-**Decision rules to propose to the owner** (proposal, not a decision):
-1. If tract meets the decoder budget (under about 10 ms p95 on CPU) and gets the encoder under about 300 ms on Metal, with exact outputs, choose tract.
-2. If ORT CoreML is several times faster on encoders or LaMa, choose ort+CoreML. Pin the pyke archive hash plus attestation in `xtask`, link statically, and add per-OS provider fallbacks: DirectML or WebGPU on Windows, CPU with optional user CUDA on Linux.
-3. LaMa on any Core ML path must keep fp32 (or bf16) FFC. Check whether DFT nodes force CPU partitions, and consider an FFT-free export or GPU-only placement.
-
-The 300 ms threshold is a UX guess, not a spec. The owner should set the actual budgets.
+**Constraints on the chosen runtime:**
+1. Pin the pyke archive hash plus attestation in `xtask`, link statically, and add per-OS provider fallbacks: DirectML or WebGPU on Windows, CPU with optional user CUDA on Linux.
+2. LaMa on any Core ML path must keep fp32 (or bf16) FFC. Check whether DFT nodes force CPU partitions, and consider an FFT-free export or GPU-only placement.
 
 **Portability:** Windows (DirectML is in maintenance, Windows ML needs 24H2) and Linux (no GPU EP in pyke's default Linux build except WebGPU/CUDA) mean the portable baseline is CPU. Tract's CPU path and ORT's CPU path should both be compared there too.
 
 ### Gaps
-- The recommendation depends entirely on measurements that do not yet exist publicly for these models on M4. Every performance threshold above is a proposal pending owner-set budgets.
+- No public measurements exist for these models on M4; the prototype's are in [`probes/object-removal`](../../../probes/object-removal/README.md#measurements), and the budgets are the [AI editing design](../../design/ai-editing.md#budgets-and-limits)'s.

@@ -404,7 +404,7 @@ mod tests {
     use serde_json::json;
 
     /// A listing as a developer launch forced with `--developer` answers it, with the person's
-    /// choice of `third` stored and an old flag's value kept.
+    /// choice of `third` stored and an unrecognized flag's value kept.
     fn listed() -> FlagList {
         serde_json::from_value(json!({
             "flags": [

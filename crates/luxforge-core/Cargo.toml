@@ -11,8 +11,8 @@ luxforge-gpu-types = { path = "../luxforge-gpu-types" }
 # The GPU preview's held boundary is rgba16float for JPEGs and rgba32float for RAW linear renders.
 # `std` lets x86_64 detect F16C at run time (the baseline x86_64 target has none at compile time),
 # so a boundary texel converts in hardware there. A build with Iced already has it, through
-# `iced_graphics`; a core-only build (the CLI, the core's tests) did not. aarch64 converts in
-# hardware either way, and the bits are the same. It adds no package.
+# `iced_graphics`; a core-only build (the CLI, the core's tests) has it only through this. aarch64
+# converts in hardware either way, and the bits are the same. It adds no package.
 half = { version = "=2.7.1", default-features = false, features = ["std"] }
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
@@ -44,7 +44,7 @@ zeroize.workspace = true
 [features]
 # Skips the drive-cache flush of every durable write (`atomic_file::flush`) and the catalog's
 # `synchronous=FULL`, for test builds only: on macOS each flush is an `F_FULLFSYNC` the whole host
-# queues for, and it was most of the core's unit-test time. Only `[dev-dependencies]` tables turn it
+# queues for, and it dominates the core's unit-test time. Only `[dev-dependencies]` tables turn it
 # on (`cargo xtask check-repository`'s `disk-flush-only-in-tests` rule), so a `cargo build` of any
 # binary never has it. See docs/engineering/development.md#tests-skip-the-disk-flush.
 test-skip-disk-flush = []

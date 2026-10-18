@@ -223,11 +223,10 @@ impl MaskedInput {
 ///
 /// The run is walked **operation by operation** rather than as one flat stream of units, because a
 /// masked operation is blended against its own input and an unmasked one is not. An unmasked
-/// operation is applied exactly as before: every unit in order, with the finite check over the whole
-/// slice after each unit rather than per pixel inside it, so the hot loop stays branch-free and the
-/// run fails as soon as a unit has produced a non-finite value. Flattening the units of consecutive
-/// unmasked operations into one stream, which is what this used to do, produces the same arithmetic
-/// in the same order.
+/// operation applies every unit in order, with the finite check over the whole slice after each
+/// unit rather than per pixel inside it, so the hot loop stays branch-free and the run fails as
+/// soon as a unit has produced a non-finite value. Flattening the units of consecutive unmasked
+/// operations into one stream would produce the same arithmetic in the same order.
 ///
 /// `scratch` is the snapshot a masked operation takes of the pixels it is handed, one
 /// [`MaskedInput`] each: the pixel's input, which the blend is against, and its coverage. Its length
@@ -362,8 +361,8 @@ fn apply_masked_operation(
 /// Which pixels inside a masked operation's bounds run its units. Production runs them only at the
 /// pixels that do not keep their input ([`MaskedInput::keeps_input`]). A test chooses
 /// [`UnitSkip::Never`] to run them at every pixel inside the bounds, which is what the skip is
-/// compared against bit for bit, and a measurement chooses it for the rule before the skip existed.
-/// Choosing it changes no value a render produces, only how many pixels the units run over, and so
+/// compared against bit for bit, and a measurement chooses it to time the units at every admitted
+/// pixel against the skip. Choosing it changes no value a render produces, only how many pixels the units run over, and so
 /// whether a non-finite value they produce at a pixel whose coverage is zero fails the render.
 ///
 /// The choice belongs to the thread that runs the row, as a masked spatial tile's copy rule does
