@@ -20,7 +20,7 @@ pub const SCOPED_SECRETS: &[(&str, &str, &str)] = &[
         "Sign the update record",
     ),
     (
-        "LUXFORGE_UPDATE_PUBLISH_SSH_KEY",
+        "LUXFORGE_UPDATE_PUBLISH_TOKEN",
         "update-feeds.yml",
         "Publish the feeds to the update store",
     ),
@@ -262,8 +262,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Publish the feeds to the update store
         env:
-          LUXFORGE_UPDATE_PUBLISH_SSH_KEY: ${{ secrets.LUXFORGE_UPDATE_PUBLISH_SSH_KEY }}
-        run: ssh
+          LUXFORGE_UPDATE_PUBLISH_TOKEN: ${{ secrets.LUXFORGE_UPDATE_PUBLISH_TOKEN }}
+        run: curl
 ";
 
     fn tree(release: &str, feeds: &str) -> tempfile::TempDir {
@@ -297,8 +297,8 @@ jobs:
         refused(
             RELEASE,
             &FEEDS.replace(
-                "        run: ssh\n",
-                &format!("        run: ssh\n      - name: Other\n        env:\n          K: {key}\n        run: x\n"),
+                "        run: curl\n",
+                &format!("        run: curl\n      - name: Other\n        env:\n          K: {key}\n        run: x\n"),
             ),
             "LUXFORGE_UPDATE_SIGNING_KEY may reach only the step `Sign the update record` of .github/workflows/release.yml",
         );
@@ -341,8 +341,8 @@ jobs:
         // Not at all.
         refused(
             RELEASE,
-            &FEEDS.replace("${{ secrets.LUXFORGE_UPDATE_PUBLISH_SSH_KEY }}", "x"),
-            "LUXFORGE_UPDATE_PUBLISH_SSH_KEY is referenced 0 times",
+            &FEEDS.replace("${{ secrets.LUXFORGE_UPDATE_PUBLISH_TOKEN }}", "x"),
+            "LUXFORGE_UPDATE_PUBLISH_TOKEN is referenced 0 times",
         );
         // A step outside a steps list (a matrix entry) is not a step.
         refused(

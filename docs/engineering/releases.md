@@ -84,7 +84,7 @@ Released builds find newer releases through the update feeds at `https://api.lux
 - With the repository variable `LUXFORGE_PUBLISH_UPDATES` set to `true`, the release's publish job signs `luxforge-VERSION-updates.json` with the update key and uploads it with the other assets. A macOS build that is not notarized is left out of the record, so unsigned macOS candidates are never offered.
 - After each successful release run, the **Update feeds** workflow regenerates every feed from the records of all published releases and publishes them to the API's update store. It can only read the repository: if it fails, the release stays as it was published, and you rerun **Actions → Update feeds → Run workflow** on `main` once the cause is fixed.
 
-Only one workflow step receives each key: **Sign the update record** receives `LUXFORGE_UPDATE_SIGNING_KEY`, and **Publish the feeds to the update store** receives `LUXFORGE_UPDATE_PUBLISH_SSH_KEY`. `cargo xtask check-repository` fails if either reaches anything else.
+Only one workflow step receives each secret: **Sign the update record** receives `LUXFORGE_UPDATE_SIGNING_KEY`, and **Publish the feeds to the update store** receives `LUXFORGE_UPDATE_PUBLISH_TOKEN`. `cargo xtask check-repository` fails if either reaches anything else.
 
 ### One-time setup
 
@@ -106,13 +106,27 @@ Do these in order. Until the last one, releases publish no record and no feed.
    ```
 
    The file holds base64 of the key's 32-byte seed, the form `generate_keys -x` writes. Keep an **offline backup** of it, encrypted and away from this Mac and GitHub, for example on an encrypted removable drive in a safe place, then delete the exported file. The Keychain copy stays on your Mac.
-4. **Provision the update store** on the production API host, with its publication account and key, as the deployment guide's [update feed route](../../services/usage-statistics/DEPLOYMENT.md#the-update-feed-route) describes. It ends with three settings in **Settings → Secrets and variables → Actions**:
+4. **Create the publication token**, once the `luxforge-updates` Worker of [Willyham/luxforge-backend](https://github.com/Willyham/luxforge-backend) is deployed. The Worker accepts a token of 32 to 512 characters from `A-Za-z0-9._~+/=-`; this makes a 43-character one:
+
+   ```sh
+   TOKEN=$(openssl rand -base64 32 | tr -d '\n=' | tr '+/' '-_')
+   ```
+
+   Set its SHA-256 as the Worker's secret, then store the token itself as the repository secret, in the same shell:
+
+   ```sh
+   printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1 | npx wrangler secret put PUBLISH_TOKEN_SHA256 --name luxforge-updates
+   printf %s "$TOKEN" | gh secret set LUXFORGE_UPDATE_PUBLISH_TOKEN -R Willyham/luxforge
+   unset TOKEN
+   ```
+
+   It ends with one setting in **Settings → Secrets and variables → Actions**:
 
    | Name | Kind | Value |
    | --- | --- | --- |
-   | `LUXFORGE_UPDATE_PUBLISH_SSH_KEY` | Secret | The publication key's private half, used for nothing else |
-   | `LUXFORGE_UPDATE_PUBLISH_DESTINATION` | Variable | `ssh://luxforge-feeds@api.luxforge.app:PORT` |
-   | `LUXFORGE_UPDATE_PUBLISH_KNOWN_HOSTS` | Variable | The host key line, as `ssh-keyscan` prints it and checked against the host's fingerprint |
+   | `LUXFORGE_UPDATE_PUBLISH_TOKEN` | Secret | The publication token, used for nothing else |
+
+   The workflow posts to `release/update.json`'s `feed_base_url` followed by `publications`, so it needs no destination or host key. The Worker keeps only the hash: to replace the token, run both commands again with a new one. Step 6 of the deployment guide's [update feed route](../../services/usage-statistics/DEPLOYMENT.md#the-update-feed-route) checks the route from outside after the first publication.
 
 5. **Switch publication on** with the repository variable `LUXFORGE_PUBLISH_UPDATES` set to `true`. Unset or `false` publishes nothing; any other value fails the release before it builds. The next release signs its record and publishes the feeds. To publish the feeds of earlier releases with records straight away, run **Update feeds** on `main`.
 
