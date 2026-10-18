@@ -287,10 +287,10 @@ fn through_the_safe_api(width: u32, height: u32, rgba: &[u8], settings: &Setting
     started.finish().unwrap()
 }
 
-/// With Optimise off, the encode writes byte for byte what the crate's encode through `mozjpeg`'s
-/// safe API wrote before it had its own session: for 4:4:4 and 4:2:0, a high and a low quality
-/// (where the tables pass 255 and the frame becomes extended sequential), a density, an EXIF
-/// segment and an ICC profile, and edges that are no multiple of a block.
+/// With Optimise off, the encode writes byte for byte what an encode through `mozjpeg`'s safe API
+/// writes: for 4:4:4 and 4:2:0, a high and a low quality (where the tables pass 255 and the frame
+/// becomes extended sequential), a density, an EXIF segment and an ICC profile, and edges that are
+/// no multiple of a block.
 #[test]
 fn optimise_off_writes_the_bytes_the_safe_api_wrote() {
     let profile: Vec<u8> = (0..70_000).map(|i| (i % 249) as u8).collect();

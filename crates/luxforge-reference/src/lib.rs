@@ -3,7 +3,7 @@
 //! (colour, the Tone curve, the DNG corrections, HDR exposure merges and their alignment, panorama
 //! scenes and their rotating cameras, the RAW look, the Lightroom alignment rounds' measures and
 //! fits, mask and its guided upsampler, mixer, the mixer's grading, Presence, the preview error
-//! measure, range, the Clone and Heal repairs, tone, vignette, white balance), and the declared
+//! measure, range, the Clone and Heal repairs, tone, vignette), and the declared
 //! tolerance of each output kind against the reference renderer in [`tolerance`].
 //!
 //! Every reference is written directly from its study's formulas — the standard sRGB transfer
@@ -45,7 +45,6 @@ pub mod srgb;
 pub mod tolerance;
 pub mod tone;
 pub mod vignette;
-pub mod white_balance;
 
 pub use rng::SplitMix64;
 

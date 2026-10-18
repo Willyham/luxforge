@@ -858,10 +858,10 @@ fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
 
 /// The budget a chained masked plan's boundary is held to before it is derived reads the pooled
 /// figure, beside the source the surface holds, which the same budget charges. Over a 100% region,
-/// a budget the slot and the source fit to the byte derives the boundary, though the figure the
-/// desktop held a plan to before the pool — every plane of every spatial step in a texture of its
-/// own, with the passes' parameters and no link's intermediate — passes it, and so does that figure
-/// with the intermediates, what each link holding its own scratch charged. A byte less names
+/// a budget the slot and the source fit to the byte derives the boundary, though the unpooled
+/// figure — every plane of every spatial step in a texture of its own, with the passes' parameters
+/// and no link's intermediate — passes it, and so does that figure with the intermediates, what
+/// each link holding its own scratch would charge. A byte less names
 /// `budget-exceeded`, with the pooled figure and what the budget leaves the slot in `over_budget`.
 #[test]
 fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fits() {
@@ -882,7 +882,7 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         let format = request.format;
         let chain = chain_charge(&steps, size, origin, format);
         assert_eq!(chain.intermediates.len(), 4, "five links");
-        // Each pass's 256-byte parameter slice, as the old figure counted them.
+        // Each pass's 256-byte parameter slice, as the unpooled figure counts them.
         let parameters: u64 = plan
             .spatial
             .iter()
@@ -923,7 +923,8 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         editor.gpu.summary()["drag"]["over_budget"],
         serde_json::json!({"requested": pooled, "budget": pooled - 1})
     );
-    // The pooled figure exactly, which the old figure and the slot of unshared links both pass.
+    // The pooled figure exactly, which the unpooled figure and the slot of unshared links both
+    // pass.
     editor.gpu.budget = Some(source + pooled);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
     let summary = editor.gpu.summary();

@@ -20,8 +20,8 @@ use luxforge_testkit::client::Owner;
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
-/// Exercise method resolution outside core: an inaccessible Provider method used to resolve
-/// through Deref and read the raw module's available descriptor.
+/// Exercise method resolution outside core: a Provider method answers the registry's descriptor,
+/// never the raw module's available one through Deref.
 #[test]
 fn registry_availability_is_consistent_through_public_lookups() {
     let disabled = ["luxforge.basic".to_owned()];

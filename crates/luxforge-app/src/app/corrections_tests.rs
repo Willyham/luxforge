@@ -332,9 +332,9 @@ fn presses_add_one_entry_each_with_their_labels_and_parity() {
         c.editor.status.text
     );
 
-    // A drag paints a stroke. Until repair rendering lands, a search over an earlier correction
-    // is refused, which is the no-source path: the stroke stays drafted under the notice and an
-    // `⌥`-click finishes it with that source.
+    // A drag paints a stroke. Where no automatic source qualifies, the stroke stays drafted under
+    // the no-source notice and an `⌥`-click finishes it with that source; either way it is one
+    // entry.
     c.press([0.5, 0.5], Modifiers::default(), CanvasHit::Add);
     for step in 1..=10 {
         c.drag([0.5 + 0.01 * f64::from(step), 0.5]);

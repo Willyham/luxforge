@@ -385,20 +385,6 @@ impl<'a> PlaneMut<'a> {
         self.geometry
     }
 
-    /// Only the frozen reference passes write one value at a time.
-    #[cfg(test)]
-    pub(super) fn set(&mut self, x: i64, y: i64, value: f32) {
-        let index = self.geometry.index(x, y);
-        self.data[index] = value;
-    }
-
-    /// Every value of the rectangle, row-major: the frozen reference's pooled vertical pass cuts
-    /// its strips from them.
-    #[cfg(test)]
-    pub(super) fn values_mut(&mut self) -> &mut [f32] {
-        self.data
-    }
-
     pub(super) fn as_plane(&self) -> Plane<'_> {
         Plane {
             geometry: self.geometry,

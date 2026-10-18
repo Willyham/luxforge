@@ -576,7 +576,7 @@ fn luxforge_ctl_commands_batch_stops_after_an_input_read_error() {
     impl std::io::Read for BrokenInput {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
             self.0 += 1;
-            // A second read ends the test rather than hanging on the old retry loop.
+            // A second read ends the input, so a batch that retried would end rather than hang.
             if self.0 > 1 {
                 return Ok(0);
             }

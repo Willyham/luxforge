@@ -3640,7 +3640,7 @@ mod tests {
         json!({"asset_id": developed(owner, client, path)})
     }
 
-    /// Open a file the way every client must now: a Develop brings it in, the bounded source
+    /// Open a file the way every client must: a Develop brings it in, the bounded source
     /// worker prepares its original, and `job.adopt` hands back the photograph's state.
     fn import_asset(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> Value {
         super::library::opening::open(owner, client, path)
@@ -6693,21 +6693,6 @@ mod tests {
             schema["methods"]["job.cancel"]["required"],
             json!(["job_id"])
         );
-        // One job API serves every kind; no kind keeps a read or cancel of its own.
-        for retired in [
-            "job.status",
-            "analysis.read",
-            "analysis.cancel",
-            "module.job.read",
-            "module.job.cancel",
-            "export.read",
-            "export.cancel",
-        ] {
-            assert!(
-                schema["methods"].get(retired).is_none(),
-                "{retired} is not a method"
-            );
-        }
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

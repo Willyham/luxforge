@@ -42,13 +42,12 @@ pub fn renderer_limits() -> [wgpu::Limits; 2] {
     })
 }
 
-/// Whether the software adapter is adopted: the owner's decision of 2026-10-05
-/// (`docs/decisions.md`, "GPU-first rendering") that a session with no usable hardware adapter
-/// draws through the GPU path on the platform's software adapter (Mesa's lavapipe on Linux, WARP
-/// on Windows) once it is measured fast enough that dragging is not badly laggy, and until then is
-/// a proposal. Off: on 2026-10-06 lavapipe missed the drag thresholds in a container on the
-/// owner's M4 (`docs/specs/performance.md`, "Software adapters"), so a session whose only adapter
-/// is a software one draws the reference renderer's frames unless its launch passes
+/// Whether the software adapter is adopted (`docs/decisions.md`, "GPU-first rendering"): a session
+/// with no usable hardware adapter draws through the GPU path on the platform's software adapter
+/// (Mesa's lavapipe on Linux, WARP on Windows) once it is measured fast enough that dragging is not
+/// badly laggy, and until then that is a proposal. Off: lavapipe misses the drag thresholds in a
+/// container on the M4 (`docs/specs/performance.md`, "Software adapters"), so a session whose only
+/// adapter is a software one draws the reference renderer's frames unless its launch passes
 /// `--software-adapter` ([`choose`]).
 pub const SOFTWARE_ADAPTER_ADOPTED: bool = false;
 

@@ -6,7 +6,7 @@
 #     that cannot write retries briefly and then drops the batch, so a slow or stopped ClickHouse
 #     fills the buffer, the source stops answering, and the ingress times out, drops and then
 #     refuses with 429;
-#   - no metadata (path, peer, headers, timestamps) is added to a row: with the new log namespace
+#   - no metadata (path, peer, headers, timestamps) is added to a row: with the log namespace on
 #     the row is exactly the decoded JSON object, and the sink rejects a row with any unknown column;
 #   - no API, no internal metrics, no console or file sink.
 schema:

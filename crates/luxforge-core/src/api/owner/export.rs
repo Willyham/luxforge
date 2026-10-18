@@ -1125,9 +1125,9 @@ fn streamed(
 }
 
 /// A held format's 8-bit `size` frame from `bands` of its output, the GPU's or the banded
-/// reference's, allocated once at its size. It has no cap (owner, 2026-10-08 and 2026-10-13):
-/// `export.plan` reports the memory in advance and warns above 24 MP, and an allocation the host
-/// cannot make is refused as `resource-limit`, never an abort.
+/// reference's, allocated once at its size. It has no cap: `export.plan` reports the memory in
+/// advance and warns above 24 MP, and an allocation the host cannot make is refused as
+/// `resource-limit`, never an abort.
 fn assemble(
     bands: impl Iterator<Item = Result<(u32, Pixels), Error>>,
     (width, height): (u32, u32),

@@ -7,9 +7,9 @@ open in Luxforge without writing a custom JSON-lines or TCP client.
 
 ## Goal
 
-A small Rust binary named `luxforge-ctl` in the existing `luxforge-cli` package.
+A small Rust binary named `luxforge-ctl` in the `luxforge-cli` package.
 It attaches to the desktop's authenticated loopback API and calls the same registry operations the
-desktop uses. `luxforge-json` remains the separate headless catalog owner and is unchanged.
+desktop uses. `luxforge-json` remains the separate headless catalog owner.
 
 The CLI is a thin client. It does not render or edit pixels itself, launch another owner, bypass
 validation, or write recipes/catalog data directly. A successful edit is a normal API transaction
@@ -30,8 +30,8 @@ with the same history and undo behavior as an edit made in the desktop.
   file as it quits. Stopping the listener closes existing connections and joins their workers,
   releasing held requests before removing discovery. The core owns the registry's format and its reader (`LiveSessionEntry`,
   `running_sessions`, `LocalServer::register`); the desktop's catalog selection
-  (`CatalogSelection`, `CATALOG_FILE`) is the core's, beside `LaunchPreferences`, and the CLI no
-  longer reads it.
+  (`CatalogSelection`, `CATALOG_FILE`) is the core's, beside `LaunchPreferences`; the CLI does not
+  read it.
 - **The session file.** `catalog.with_extension("live-session.json")`, written to a temporary file
   created owner-only (0600 on Unix) and renamed over the path, so a reader never sees a partial file.
   The CLI accepts only the current `luxforge-jsonl-1` protocol and an IPv4 loopback address, and
@@ -127,10 +127,9 @@ considered only after real command use shows a need.
   schema, make a revision-checked edit, and wait for a long-running job.
 - No-session, stale-sidecar, malformed protocol, authentication, validation and revision-conflict
   failures are clear and preserve API error structure.
-- Requests stay within the existing bounded JSON-lines protocol and loopback transport; no
+- Requests stay within the bounded JSON-lines protocol and loopback transport; no
   permission authority or direct catalog writes are added.
-- The command output is scriptable, and the user guide documents only commands that exist after
-  implementation.
+- The command output is scriptable, and the user guide documents only commands that exist.
 
 ## Decisions
 

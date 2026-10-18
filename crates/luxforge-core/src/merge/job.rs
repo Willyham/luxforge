@@ -1544,7 +1544,7 @@ mod tests {
         fs::write(path, bytes).expect("spool written");
     }
 
-    /// The read the banded one replaced: one seek and one read a window row.
+    /// The unbanded read: one seek and one read a window row.
     fn read_by_rows(file: &mut File, width: u32, bounds: PixelRect) -> Window {
         let (w, h) = (bounds.width as usize, bounds.height as usize);
         let mut window = Window {

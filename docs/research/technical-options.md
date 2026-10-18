@@ -10,7 +10,7 @@ Recorded alternatives: [egui/eframe](https://github.com/emilk/egui) (immediate m
 
 ## Rendering
 
-[wgpu](https://wgpu.rs/) provides Metal, Vulkan and DirectX 12 backends for presentation and later processing. Backend support does not imply every GPU supports every format or compute feature: probe capabilities and budget resources. Start with CPU decode and a CPU reference renderer, upload a bounded preview once and transform it on the GPU while dragging. Use the CPU path for correctness comparisons and headless export, with shared coordinate and color definitions and declared tolerances between paths. Do not build a whole GPU image graph for the first crop tool; tiling and pyramids become essential as neighborhood operations grow, and selective invalidation, memory accounting and cancellation matter before exotic kernels.
+[wgpu](https://wgpu.rs/) provides Metal, Vulkan and DirectX 12 backends for presentation and processing. Backend support does not imply every GPU supports every format or compute feature: probe capabilities and budget resources. The GPU is the renderer of record ([GPU-first](../design/gpu-first.md)); the whole-frame CPU reference renderer is the correctness oracle, with shared coordinate and color definitions and a declared tolerance between the two. Tiling and pyramids become essential as neighborhood operations grow, and selective invalidation, memory accounting and cancellation matter before exotic kernels.
 
 ## Linux VM testing
 
@@ -18,18 +18,18 @@ Recorded alternatives: [egui/eframe](https://github.com/emilk/egui) (immediate m
 
 ## Image processing and RAW
 
-| Component | Proposed role | Limits |
+| Component | Role | Limits |
 | --- | --- | --- |
 | [image-rs](https://github.com/image-rs/image) | JPEG decode and encode behind an adapter; PNG later | Not color management or RAW development |
 | [Little CMS](https://littlecms.com/color-engine/) | ICC transformations and CPU color reference (MIT) | Does not obtain the monitor profile or define the OS surface color contract |
-| [LibRaw](https://www.libraw.org/about) | Preferred RAW decoding trial: pixels, sensor metadata, embedded previews | LGPL-2.1/CDDL-1.0; production rendering is explicitly out of its scope |
-| [RawSpeed](https://github.com/darktable-org/rawspeed) | Benchmark alternative when unpacking is a measured bottleneck | Supplies sensor data only; qualify coverage, integration and license |
+| [LibRaw](https://www.libraw.org/about) | RAW identify, unpacking, sensor metadata and embedded previews | LGPL-2.1/CDDL-1.0; production rendering is explicitly out of its scope |
+| [RawSpeed](https://github.com/darktable-org/rawspeed) | Sensor-mosaic unpacking for the recording modes where it is exact and faster ([evaluation](rawspeed-evaluation.md)) | Supplies sensor data only; qualify coverage, integration and license |
 | [Rawler/DNGLab](https://github.com/dnglab/dnglab) | Rust RAW decoder to investigate if camera support or integration justifies it | LGPL-2.1; supported extensions do not establish rendering quality |
 | [libvips](https://www.libvips.org/) | Possible future thumbnail and batch helper | A second image system needs a measured workload first |
 
 LibRaw's [camera list](https://www.libraw.org/supported-cameras) includes the original Nikon Z6 and the Fujifilm X100VI, qualified by build features; its HE/HE* exclusions name other Nikon models, not the owner's Z6. Actual recording modes still need fixtures, and an embedded JPEG is not proof of RAW development.
 
-The owner is open to a new RAW library if existing options fail. Escalation: measure I/O, unpack, demosaic, color and preview upload independently on real Z6 and X100VI files; compare LibRaw, RawSpeed and Rawler at equivalent output stages; fix scheduling or contribute a targeted patch; consider a fork or a narrow new decoder only for a reproducible gap with a latency target and correctness corpus. Age or language alone is not evidence of poor performance. Full RAW support also needs black and white levels, mosaic interpretation including X-Trans demosaic, camera-to-working-space conversion, white balance, highlight handling and a pleasing default rendition; lens corrections and noise reduction are explicit decisions. JPEG temperature is a creative adjustment of rendered pixels, not RAW white balance; familiar slider names do not imply Adobe-identical algorithms.
+A new RAW library is an option if existing options fail. Escalation: measure I/O, unpack, demosaic, color and preview upload independently on real Z6 and X100VI files; compare LibRaw, RawSpeed and Rawler at equivalent output stages; fix scheduling or contribute a targeted patch; consider a fork or a narrow new decoder only for a reproducible gap with a latency target and correctness corpus. Age or language alone is not evidence of poor performance. Full RAW support also needs black and white levels, mosaic interpretation including X-Trans demosaic, camera-to-working-space conversion, white balance, highlight handling and a pleasing default rendition; lens corrections and noise reduction are explicit decisions. JPEG temperature is a creative adjustment of rendered pixels, not RAW white balance; familiar slider names do not imply Adobe-identical algorithms.
 
 ## Catalog and storage
 

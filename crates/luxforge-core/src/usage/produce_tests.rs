@@ -49,8 +49,8 @@ fn usage_changed_tools_names_each_group_whose_layers_differ_and_ignores_identity
     );
 
     // An effect no built-in tool provides is no tool's change.
-    let proof = recipe(vec![Layer::new("luxforge.pixel.replace", json!({}))]);
-    assert!(changed_tools(&registry, &recipe(vec![]), &proof).is_empty());
+    let unprovided = recipe(vec![Layer::new("example.unprovided", json!({}))]);
+    assert!(changed_tools(&registry, &recipe(vec![]), &unprovided).is_empty());
 }
 
 #[test]

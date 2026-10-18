@@ -40,9 +40,9 @@ use std::sync::Arc;
 
 pub use luxforge_gpu_types::BoundaryFormat;
 
-/// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones (owner,
-/// 2026-10-02). A Fit stage is at most 8 MP, and a cropped stage's or a percentage zoom's window
-/// is what the display shows plus the margins its boundaries need: a RAW region's `f32` boundary
+/// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones. A Fit
+/// stage is at most 8 MP, and a cropped stage's or a percentage zoom's window is what the display
+/// shows plus the margins its boundaries need: a RAW region's `f32` boundary
 /// with Clarity's margin is up to 212 MB in the largest window the M4's display holds. The photo
 /// surface derives it on the GPU from the source it holds, into its slot's boundary texture.
 pub const BOUNDARY_MAX_BYTES: u64 = 256 * 1024 * 1024;

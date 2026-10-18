@@ -150,7 +150,7 @@ fn a_start_that_edits_says_no_photograph_is_open() {
 }
 
 /// The crop's start refused for a request in flight or a previewed entry says why and sends
-/// nothing; it used to return without a word.
+/// nothing.
 #[test]
 fn a_refused_crop_start_says_why() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);

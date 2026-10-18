@@ -12,15 +12,13 @@
 //!
 //! The picture is two kinds. **At rest**, the editor's GPU picture of the stack at rest — its
 //! tiles at full resolution reduced to the view at Fit, 33% and 50%, its view plan over the visible
-//! window at 100% — is gated against the reference, as the owner decided. **In motion**, the frame a
-//! drag draws over the boundary the surface derives from the source is reported against the
-//! picture at rest it settles to and against the reference, with the same statistics and limits,
-//! but not gated, as the owner decided on 2026-10-07
-//! ([decisions](../../docs/decisions.md#owner-decisions-2026-10-07)).
+//! window at 100% — is gated against the reference. **In motion**, the frame a drag draws over the
+//! boundary the surface derives from the source is reported against the picture at rest it settles
+//! to and against the reference, with the same statistics and limits, but not gated.
 //! `--gate-motion against-rest` or `--gate-motion against-reference` gates it on demand, so a run
 //! can show its misses as failures. At 100% the softer frame a drag past the budget draws instead
-//! is measured on every cell and reported, not gated: the qualification the owner's acceptance of
-//! it asked for.
+//! is measured on every cell and reported, not gated: it is accepted subject to this
+//! qualification.
 //!
 //! Export is judged over the whole output stage: the GPU's export of each stack, streamed in tiles
 //! by the desktop's GPU tile worker as the export lane streams it, against the reference export by
@@ -81,14 +79,12 @@ impl GateMotion {
     }
 }
 
-/// What the picture in motion is, until the owner decides what a drag's frame is held to.
-const MOTION_NOT_GATED: &str =
-    "not gated: reported against the picture at rest and the reference (owner, 2026-10-07)";
+/// What the picture in motion is held to: reported against the picture at rest and the reference.
+const MOTION_NOT_GATED: &str = "not gated: reported against the picture at rest and the reference";
 
-/// What the softer frame a drag past the budget draws at 100% is held to: accepted by the owner on
-/// 2026-10-07 subject to explicit qualification, which this report is; reported, never gated.
-const SOFTER_NOT_GATED: &str =
-    "reported, not gated: accepted subject to qualification (owner, 2026-10-07)";
+/// What the softer frame a drag past the budget draws at 100% is held to: accepted subject to
+/// explicit qualification, which this report is; reported, never gated.
+const SOFTER_NOT_GATED: &str = "reported, not gated: accepted subject to qualification";
 
 /// The softer frame's kind name in the report's results.
 const SOFTER: &str = "softer motion at 100%";
@@ -577,7 +573,7 @@ impl Extremes {
 }
 
 /// Where the reading the gate judges by is recorded.
-const DEFAULT: &str = "docs/decisions.md, Owner decisions, 2026-10-07";
+const DEFAULT: &str = "docs/decisions.md, Accepted defaults and scope";
 
 /// One comparison over a view's cells of a class: how many are within the limits and past them,
 /// and the figures.

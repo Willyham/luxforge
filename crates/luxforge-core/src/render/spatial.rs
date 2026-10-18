@@ -640,7 +640,7 @@ fn run_tile_in(
     // one that does.
     let copy = tile_copy();
     let before = match mask {
-        Some(mask) if copy != TileCopy::Never && !reaches(mask.bounds(), tile) => {
+        Some(mask) if copy == TileCopy::Proved && !reaches(mask.bounds(), tile) => {
             Some(Coverage::zero())
         }
         Some(mask) if copy == TileCopy::Proved && !mask.reads_pixels() => {
@@ -944,20 +944,17 @@ fn blend(
 /// Which masked tiles are copied rather than run. Production copies every tile proved to have zero
 /// coverage. A test chooses [`TileCopy::Never`] to render the same stack with every masked tile run
 /// through the chain and blended at every pixel, which is what a copy is compared against byte for
-/// byte, and a measurement chooses [`TileCopy::OutsideBounds`] for the rule before the proof
-/// existed. Choosing either changes no output, only how much work that output costs — which is the
-/// claim the comparison proves.
+/// byte. The choice changes no output, only how much work that output costs — which is the claim
+/// the comparison proves.
 ///
 /// The choice belongs to the thread that runs the tile, so one test's rule never reaches the tiles
 /// another test runs at the same time. A stage below the parallel threshold runs every tile on the
-/// thread that asked for the frame; a measurement at photo size sets the rule on every pool thread
-/// as well.
+/// thread that asked for the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum TileCopy {
-    Never = 0,
-    OutsideBounds = 1,
-    Proved = 2,
+    Never,
+    Proved,
 }
 
 #[cfg(not(test))]
@@ -2596,7 +2593,7 @@ mod tests {
         (255.0 * encode_reference(linear.clamp(0.0, 1.0)) + 0.5).floor() as u8
     }
 
-    /// The tolerance this task freezes for spatial float work: an exact code everywhere except
+    /// The frozen tolerance for spatial float work: an exact code everywhere except
     /// within `1e-5 + 1e-5·|value|` of the threshold between two codes, where one code of
     /// difference is permitted because production filters in f32.
     fn assert_spatial_code(actual: u8, expected: f64, case: &str) {
@@ -3388,13 +3385,12 @@ mod tests {
         operations
     }
 
-    /// The charge at the production sizes is byte for byte the figure the halo-bounded charge
-    /// (`tile + 2 × remaining halo` a side) gave before it was made honest, so the budget's
-    /// concurrency and high-water mark there are unchanged: all three Presence units, and Detail's
+    /// The charge at the production sizes, pinned byte for byte so the budget's concurrency and
+    /// high-water mark there do not move unnoticed: all three Presence units, and Detail's
     /// sharpening and noise reduction, at 6000 × 4000 and 10000 × 6000, masked and not.
     #[test]
-    fn the_charge_at_the_production_sizes_is_what_it_was() {
-        let before: [(&str, u64); 8] = [
+    fn the_charge_at_the_production_sizes() {
+        let pinned: [(&str, u64); 8] = [
             ("presence 6000x4000 masked false", 157_487_264),
             ("presence 6000x4000 masked true", 170_070_176),
             ("detail 6000x4000 masked false", 28_946_224),
@@ -3405,8 +3401,8 @@ mod tests {
             ("detail 10000x6000 masked true", 32_091_952),
         ];
         let operations = production_operations();
-        assert_eq!(operations.len(), before.len());
-        for ((name, stage, operation), (expected_name, expected)) in operations.iter().zip(before) {
+        assert_eq!(operations.len(), pinned.len());
+        for ((name, stage, operation), (expected_name, expected)) in operations.iter().zip(pinned) {
             assert_eq!(name, expected_name);
             let plan = SpatialPlan::new(operation, *stage, Tiling::Halo).unwrap();
             assert_eq!(plan.working_set(), expected, "{name}");
@@ -3417,8 +3413,8 @@ mod tests {
     /// The charge covers every tile's own chain, and the slot that runs it, on stages whose last
     /// partial tile is narrower than the summed halo. There the tile beside it keeps an unshrunk
     /// side: one 4 px blur in 37 px tiles over 150 rows leaves a 2 px last row, so the row before
-    /// it writes 37 × 39 pixels where the halo-bounded charge counted 37 × 37, 65,028 bytes for a
-    /// chain and a slot that hold 65,916.
+    /// it writes 37 × 39 pixels where a halo-bounded charge would count 37 × 37, 65,028 bytes for
+    /// a chain and a slot that hold 65,916.
     #[test]
     fn the_charge_covers_a_tile_beside_a_partial_tile_narrower_than_the_halo() {
         use crate::{mask_field::MaskSampling, path::StrokeTable};
@@ -5125,13 +5121,6 @@ mod tests {
     // Measurement.
     // -----------------------------------------------------------------------------------------
 
-    /// Set the tile-copy rule on this thread and on every thread of the pool, for a measurement at
-    /// photo size, whose tiles run on the pool.
-    fn set_tile_copy_everywhere(copy: TileCopy) {
-        set_tile_copy(copy);
-        rayon::broadcast(|_| set_tile_copy(copy));
-    }
-
     #[test]
     #[ignore = "measurement, run explicitly in release"]
     fn spatial_timing() {
@@ -5268,124 +5257,6 @@ mod tests {
                         );
                     }
                 }
-            }
-        }
-        reset_masked_tile_counts();
-    }
-
-    /// Release-only measurement, run explicitly:
-    ///
-    /// ```sh
-    /// cargo test --release --locked --package luxforge-core -- --ignored masked_spatial_zero_coverage_timing --nocapture
-    /// ```
-    ///
-    /// A masked Presence layer on an in-memory 24 MP frame whose mask reaches **most of the frame's
-    /// rectangle but covers little of it**: tiles inside `bounds()` whose coverage is zero at every
-    /// pixel. Three shapes, each one the rectangle cannot see through — a diagonal gradient whose
-    /// bounds are a triangle's bounding box, a whole-mask inversion of a radial (bounds are the
-    /// whole stage, coverage is zero inside the ellipse), and a luminance range (a value-based
-    /// component, whose bounds are always the whole stage). The copied-tile count says how many
-    /// tiles skipped the unit chain.
-    ///
-    /// Each shape is rendered under the rule before the per-tile proof existed — copy only outside
-    /// `bounds()` — and under the proof, alternating the two run by run and swapping which goes
-    /// first, so a host other sessions are loading skews both alike. Every pair of frames is
-    /// asserted byte-identical.
-    #[test]
-    #[ignore = "measurement, run explicitly in release"]
-    fn masked_spatial_zero_coverage_timing() {
-        use crate::{Component, ComponentMode, Layer, LayerId, Mask, PRESENCE_EFFECT};
-
-        let registry = ModuleRegistry::builtin();
-        let (width, height) = (6000_u32, 4000_u32);
-        let source = gradient(width, height);
-        let one = |kind: &str, payload: serde_json::Value, invert: bool| -> Mask {
-            let mut mask = Mask::new("Mask 1");
-            let name = mask.next_component_name(kind);
-            mask.components
-                .push(Component::new(name, ComponentMode::Add, kind, payload));
-            mask.invert = invert;
-            mask
-        };
-        let shapes = [
-            (
-                "diagonal gradient toward the top-left corner",
-                one(
-                    "linear",
-                    json!({"x0": 0.55, "y0": 0.55, "x1": 0.35, "y1": 0.35}),
-                    false,
-                ),
-            ),
-            (
-                "inverted radial (a vignette)",
-                one(
-                    "radial",
-                    json!({"x": 0.75, "y": 0.5, "radius_x": 0.72, "radius_y": 0.55,
-                           "angle": 0.0, "feather": 20.0}),
-                    true,
-                ),
-            ),
-            (
-                "luminance range 70 to 100",
-                one(
-                    "luminance-range",
-                    json!({"low": 70.0, "low_feather": 10.0, "high": 100.0,
-                           "high_feather": 0.0}),
-                    false,
-                ),
-            ),
-        ];
-        for (shape, mask) in shapes {
-            let stack = crate::Recipe {
-                format: crate::RECIPE_FORMAT,
-                layers: vec![Layer {
-                    id: LayerId::new(),
-                    effect_id: PRESENCE_EFFECT.into(),
-                    effect_format: crate::current_effect_format(crate::PRESENCE_EFFECT),
-                    payload: json!({"clarity": 100.0}),
-                    mask: Some(mask.id.clone()),
-                    artifacts: Vec::new(),
-                }],
-                masks: vec![mask],
-                ..Recipe::default()
-            };
-            // Warm the source, then measure.
-            let context = RenderContext::new();
-            byte_in(&context, &registry, &source, &stack);
-            let rules = [
-                ("outside bounds", TileCopy::OutsideBounds),
-                ("proved", TileCopy::Proved),
-            ];
-            let mut samples = [Vec::new(), Vec::new()];
-            let mut counts = [(0, 0), (0, 0)];
-            let runs = 6;
-            for run in 0..runs {
-                let mut frames = Vec::new();
-                for step in 0..2 {
-                    let which = (run + step) % 2;
-                    set_tile_copy_everywhere(rules[which].1);
-                    reset_masked_tile_counts();
-                    let started = std::time::Instant::now();
-                    let raster = byte_in(&context, &registry, &source, &stack);
-                    samples[which].push(started.elapsed().as_secs_f64() * 1000.0);
-                    counts[which] = masked_tile_counts();
-                    frames.push(raster);
-                }
-                set_tile_copy_everywhere(TileCopy::Proved);
-                assert_eq!(
-                    frames[0].rgba.as_ref(),
-                    frames[1].rgba.as_ref(),
-                    "{shape}: the two rules render the same bytes"
-                );
-            }
-            for (index, (rule, _)) in rules.iter().enumerate() {
-                let ms = Distribution::of(samples[index].iter().copied()).expect("runs ran");
-                let (copied, evaluated) = counts[index];
-                println!(
-                    "{width}x{height} presence clarity +100, {shape}, copy {rule}: p50 {:.0} ms, \
-                     max {:.0} ms over {runs} runs; tiles copied {copied}, evaluated {evaluated}",
-                    ms.p50, ms.max,
-                );
             }
         }
         reset_masked_tile_counts();

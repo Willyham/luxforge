@@ -375,7 +375,7 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         state["stale"] == json!(false),
         format!("{what}: the shown counts are stale"),
     )?;
-    // The plot carries no caption at all, neither under it nor on hover (owner, 2026-09-26).
+    // The plot carries no caption at all, neither under it nor on hover.
     ensure(
         state.get("caption").is_none() && state["tooltips"].get("plot").is_none(),
         format!(
@@ -692,7 +692,7 @@ fn radius(rect: [u32; 4]) -> i64 {
     (per_source.ceil() as i64 + 3).max(4)
 }
 
-/// What changed between two captures of the same screen, where the inspector's words used to make
+/// What changed between two captures of the same screen, where the inspector's words must not make
 /// the tools panel move: every pixel of the tools panel, and the status bar column by column.
 ///
 /// The tools panel is the capture right of the photo surface and its 1 pt divider, between the

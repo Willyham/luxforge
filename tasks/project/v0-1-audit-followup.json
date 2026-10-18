@@ -3,7 +3,7 @@
   "plan_id": "v0-1-audit-followup",
   "title": "Complete the release audit follow-up fixes",
   "objective": "Close the remaining advised correctness and resource-lifecycle defects while preserving originals and honest native qualification.",
-  "context_summary": "The owner authorized merging the first audit fixes to main and continuing with the remaining advised fixes. Current main contains the audited first batch; the design defines the authorized follow-up and separates absent native inputs from deliverable code.",
+  "context_summary": "Main contains the audited first batch of fixes; the design defines the authorized follow-up and separates absent native inputs from deliverable code.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -254,7 +254,7 @@
       ],
       "acceptance_criteria": [
         "Changed behaviors pass available focused/lint checks; unrelated baseline failures are retained by name under the repository verification rules, and quick reports its actual outcome.",
-        "The public retry reproduction no longer mutates later work; originals stay unchanged.",
+        "The public retry reproduction does not mutate later work; originals stay unchanged.",
         "Feature status, user guide, roadmap and audit report distinguish implemented fixes from remaining qualification."
       ],
       "test_strategy": {
@@ -269,7 +269,7 @@
         ],
         "expected_results": [
           "Changed behaviors pass available focused/lint checks; unrelated baseline failures are retained by name under the repository verification rules, and quick reports its actual outcome.",
-          "The public retry reproduction no longer mutates later work; originals stay unchanged.",
+          "The public retry reproduction does not mutate later work; originals stay unchanged.",
           "Feature status, user guide, roadmap and audit report distinguish implemented fixes from remaining qualification."
         ]
       }
@@ -284,7 +284,7 @@
       "extra_context": [
         "Implementation authorized by the owner. Minimum model: 6.1-Sol High; Astra coordinates integration and validation. Routine engineering choices are delegated within the design.",
         "Native hardware and private corpus inputs are late qualification requirements, not prerequisites for independent code delivery.",
-        "On the owner's M4 Pro / Metal on 2026-10-16: the vignette scenario passes with correlated state, logs and captures, and the native Contrast readback is not separately recorded; the macOS native-watcher gate passes; the full tier ran with the private manifest (the GPU gate incomplete only on the paged derived source's known gaps) and its timing components started below the load threshold. Remaining: Windows watcher delivery, macOS signing extraction on its target system, and Linux native GPU evidence."
+        "On the owner's M4 Pro / Metal: the vignette scenario passes with correlated state, logs and captures, and the native Contrast readback is not separately recorded; the macOS native-watcher gate passes; the full tier ran with the private manifest (the GPU gate incomplete only on the paged derived source's known gaps) and its timing components started below the load threshold. Remaining: Windows watcher delivery, macOS signing extraction on its target system, and Linux native GPU evidence."
       ],
       "context_links": [
         {

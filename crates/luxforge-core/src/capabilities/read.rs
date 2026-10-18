@@ -14,8 +14,8 @@
 //!
 //! On the module lane the task opens a [`StageReader`] over the plan and reads bounded rectangles
 //! of linear values. Every read comes from the reference renderer ([`ReferenceReads`]) on the
-//! lane's own thread, whatever tile provider the host gave the owner (owner, 2026-10-07: every AI
-//! input is a reference read), so an answer is byte-identical to the reference renderer's own read
+//! lane's own thread, whatever tile provider the host gave the owner (every AI input is a
+//! reference read), so an answer is byte-identical to the reference renderer's own read
 //! of the same rectangle on any host. A reader holds one reference session for its life, so a
 //! spatial prefix's frames are evaluated once however many rectangles are read, and released when
 //! the reader is dropped. Every read checks the job's cancellation first and the reference checks it

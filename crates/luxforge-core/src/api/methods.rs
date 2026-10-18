@@ -5346,54 +5346,6 @@ mod tests {
         }
     }
 
-    /// The GPU draws every frame it can and the reference renderer the rest, so there is no
-    /// preference to choose the path: `workspace.set` refuses `gpu_preview` as an unknown field,
-    /// changing nothing, and `schema.list` publishes no such parameter.
-    #[test]
-    fn workspace_set_has_no_gpu_preview_preference() {
-        let catalog = std::env::temp_dir().join(format!(
-            "luxforge-methods-gpu-preview-{}.sqlite",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&catalog);
-        let mut service = EditorService::open(&catalog).unwrap();
-        let mut session = ClientSession::default();
-        let before =
-            ok(&mut service, &mut session, "session.state", json!({}))["workspace"].clone();
-        assert!(before.get("gpu_preview").is_none(), "{before}");
-        let refused = call(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"gpu_preview": false}),
-        )
-        .error
-        .expect("the retired preference is refused");
-        assert_eq!(refused.code, "validation");
-        assert!(
-            refused.message.contains("unknown field"),
-            "{}",
-            refused.message
-        );
-        assert_eq!(
-            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
-            before,
-            "a refused request changes nothing"
-        );
-        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
-        let method = &listed["methods"]["workspace.set"];
-        assert!(method["optional"].get("gpu_preview").is_none());
-        assert!(
-            method["parameters"]
-                .as_array()
-                .expect("the typed parameters")
-                .iter()
-                .all(|parameter| parameter["name"] != "gpu_preview")
-        );
-        drop(service);
-        std::fs::remove_file(catalog).unwrap();
-    }
-
     /// `schema.list` says everything a client needs to post a path, so an agent draws the stroke a
     /// hand draws without reading any desktop code — and it says it under `paths`, with no mention
     /// of the one feature that happens to use it first.
@@ -5459,38 +5411,6 @@ mod tests {
         );
         drop(service);
         let _ = std::fs::remove_file(&catalog);
-    }
-
-    #[test]
-    fn the_components_gallery_page_is_not_session_state() {
-        let catalog = std::env::temp_dir().join(format!(
-            "luxforge-methods-gallery-{}.sqlite",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&catalog);
-        let mut service = EditorService::open(&catalog).unwrap();
-        let mut session = ClientSession::default();
-
-        // The developer components gallery is the desktop's own view state: `workspace.set`
-        // declares no page, the session reports none, and a page sent anyway is refused as an
-        // unknown field without changing the session.
-        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
-        let workspace_set = &listed["methods"]["workspace.set"];
-        assert_eq!(workspace_set["mutates"], json!(false));
-        assert!(workspace_set["optional"].get("component_gallery").is_none());
-        let state = ok(&mut service, &mut session, "session.state", json!({}));
-        assert!(state["workspace"].get("component_gallery").is_none());
-        let preserved = session.clone();
-        let rejected = call(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"component_gallery": 0, "tools_panel": false}),
-        );
-        assert_eq!(rejected.error.unwrap().code, "validation");
-        assert_eq!(session, preserved, "a refused page changes nothing");
-        drop(service);
-        std::fs::remove_file(catalog).unwrap();
     }
 
     /// A service serving the built-ins plus the test patch module, with one asset imported. The

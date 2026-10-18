@@ -1147,8 +1147,8 @@ fn a_non_finite_unit_value_where_coverage_is_zero_fails_neither_the_render_nor_a
 /// under four masks: two linear gradients, whose rectangles admit about a twentieth and all of the
 /// frame, and two luminance bands, whose rectangles are always the whole stage and which select a
 /// minority of it. Each masked case is measured twice, back to back, with the rule set on every
-/// pool thread: the units at every pixel the rectangle admits, as before the zero-coverage skip,
-/// and the skip itself. Each render prints its wall time and the process's CPU time, and each
+/// pool thread: the units at every pixel the rectangle admits ([`UnitSkip::Never`]), and with the
+/// zero-coverage skip ([`UnitSkip::Proved`]). Each render prints its wall time and the process's CPU time, and each
 /// masked case the least cost per pixel of its rows on one thread, which a loaded host disturbs
 /// least. The source is a programmatically filled 6000 × 4000 gradient, on which the bright band
 /// selects the brightest part of the frame in long runs and the middle band a diagonal band in

@@ -126,19 +126,6 @@ impl Denoise {
         &self.thresholds
     }
 }
-#[cfg(test)]
-impl Denoise {
-    /// The kernels and thresholds of each level the unit holds: with [`Self::details`], what the
-    /// frozen reference in `exactness.rs` runs.
-    pub(super) fn levels(&self) -> (&[[Kernel; 2]], &[[f32; 2]]) {
-        (&self.kernels, &self.thresholds)
-    }
-
-    /// The luminance and colour details the unit holds.
-    pub(super) fn details(&self) -> [f32; 2] {
-        [self.luminance_detail, self.colour_detail]
-    }
-}
 impl SpatialUnit for Denoise {
     fn identity(&self) -> crate::OperationIdentity {
         crate::OperationIdentity::new(

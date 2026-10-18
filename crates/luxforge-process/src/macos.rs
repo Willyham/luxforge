@@ -1,13 +1,13 @@
 //! macOS: `proc_pid_rusage` for CPU time and memory, the IORegistry for GPU time and the system
 //! default Metal device for GPU allocations.
 //!
-//! Two facts decide the sources, both measured on the owner's M4 on 2026-09-23 with a Metal compute
-//! probe. `task_power_info_v2`'s GPU utilisation stays 0 on Apple silicon, so it cannot be used.
-//! The GPU driver instead publishes, on each user client under an `IOAccelerator`, the process
-//! that created it (`IOUserClientCreator`, such as `pid 88026, luxforge`) and an `AppUsage` array
-//! with one dictionary per command queue whose `accumulatedGPUTime` is in nanoseconds: 0.80 s
-//! against 0.82 s of command-buffer time. `AppUsage` is an undocumented key, so its absence is
-//! reported as unavailable with that reason, never as zero.
+//! Two facts decide the sources, both measured on the owner's M4 with a Metal compute probe.
+//! `task_power_info_v2`'s GPU utilisation stays 0 on Apple silicon, so it cannot be used. The GPU
+//! driver instead publishes, on each user client under an `IOAccelerator`, the process that created
+//! it (`IOUserClientCreator`, such as `pid 88026, luxforge`) and an `AppUsage` array with one
+//! dictionary per command queue whose `accumulatedGPUTime` is in nanoseconds: 0.80 s against 0.82 s
+//! of command-buffer time. `AppUsage` is an undocumented key, so its absence is reported as
+//! unavailable with that reason, never as zero.
 use crate::{Gpu, Memory, MemoryKind, Unavailable};
 use core_foundation::{
     array::CFArray,

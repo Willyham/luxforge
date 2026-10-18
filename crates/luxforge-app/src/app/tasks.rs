@@ -339,9 +339,9 @@ pub(crate) fn request() -> MutationRequest {
 /// It is the pool and not the task's own future because of how iced 0.14 runs a task:
 /// `iced_winit::update` polls every new task once, synchronously, on the update loop before it
 /// hands the stream to the runtime, so a future that never awaits completes in that poll and its
-/// work runs on the update loop. That is what this helper did until 2026-10-04, when a hover
-/// readout's `render.sample` through a spatial stack held the window for minutes, and a RAW
-/// white-balance release held it for the whole redevelopment (0.5 to 1.6 s measured). The pool
+/// work runs on the update loop: a hover readout's `render.sample` through a spatial stack would
+/// hold the window for minutes, and a RAW white-balance release for the whole redevelopment (0.5
+/// to 1.6 s measured). The pool
 /// costs one runtime hop per answer — a displayed frame while a redraw is in flight, measured at
 /// about 8 ms on a slider release's committed frame — which is why the gesture's `draft.set` and
 /// preview job do not come through here at all ([`draft_set_now`]), and why nothing else may wait

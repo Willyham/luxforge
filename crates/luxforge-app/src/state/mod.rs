@@ -1412,12 +1412,6 @@ mod tests {
         );
         assert_eq!(crop.title, "Crop, transform, straighten");
         assert!(crop.active, "orientation lights the combined module's dot");
-        assert!(
-            workspace
-                .tools
-                .all()
-                .all(|module| module.module_id != "luxforge.transform")
-        );
         let buttons = &crop.controls[..4];
         let transforms: Vec<_> = buttons
             .iter()

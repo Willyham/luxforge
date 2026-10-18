@@ -454,10 +454,9 @@ fn corners_go_black_at_amount_minus_100_whenever_corner_mask_is_one() {
 // encoded white (an out-of-gamut input already preserved from an earlier
 // stage) is passed through completely unchanged by the "else" branch, so it
 // stays exactly as far above 1 as it started, by design (see the mirror test
-// below). The first version of this test asserted the blanket claim and
-// failed on a randomly sampled channel at linear 1.587 (encoded ~1.224,
-// already above white before `apply` ran); fixed here to sample only
-// below-white channels, which is the domain the property actually covers.
+// below). So this samples only below-white channels, the domain the
+// property covers: a channel at linear 1.587 (encoded ~1.224) is already
+// above white before `apply` runs, and the blanket claim fails on it.
 // ---------------------------------------------------------------------------
 
 fn encode_ext(l: f64) -> f64 {

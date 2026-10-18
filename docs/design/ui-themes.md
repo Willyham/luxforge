@@ -1,13 +1,13 @@
 # UI themes
 
-Status: **implemented.** The owner asked on 2026-10-04 for UI themes, ideally importing the themes [Omarchy](https://github.com/omacom/omarchy) ships. On 2026-10-05 the owner accepted four things ([decisions](../decisions.md#ui-themes)):
+Status: **implemented** ([decisions](../decisions.md#ui-themes)):
 
-- themes, light ones included, in place of "Dark theme only; a light theme is not planned" ([product decisions](../decisions.md#develop-workspace), 2026-09-20);
+- themes, light ones included;
 - a surround held neutral;
 - each theme's own accent;
-- a few bundled Omarchy themes.
+- a few bundled [Omarchy](https://github.com/omacom/omarchy) themes.
 
-The visual language's first principle, "the photograph is the only colour on screen" ([Develop workspace](develop-workspace.md#principles)), now holds for the default theme alone. The remaining questions run on the [recorded defaults](#proposals-with-recorded-defaults) below.
+The visual language's first principle, "the photograph is the only colour on screen" ([Develop workspace](develop-workspace.md#principles)), holds for the default theme alone. The remaining questions run on the [recorded defaults](#proposals-with-recorded-defaults) below.
 
 ## Where it lives
 
@@ -17,16 +17,16 @@ The visual language's first principle, "the photograph is the only colour on scr
 - **The runtime theme**, `luxforge_ui::Theme` and its `Palette`, in `crates/luxforge-ui/src/theme/`. `theme.rs` keeps the sizes, the fonts and the fixed colours.
 - **The desktop's theme**: the mapping from the core's tokens, the launch read, the change, the fallback and following Omarchy in `app/themes.rs`; the folder import in `app/theme_folder.rs`; the read of Omarchy's current theme in `app/omarchy_current.rs`; the Appearance tab's plain data in `state/themes.rs`.
 
-The [preferences](preferences.md) the owner decided on 2026-10-04 meet themes in two places. The **canvas background** fills the canvas around the photograph: Theme, the theme's surround and the default; Dark, `#19191b`; Black; or an 18% grey, `#777777`. The **interface size** scales everything Iced draws, whatever the theme.
+The [preferences](preferences.md) meet themes in two places. The **canvas background** fills the canvas around the photograph: Theme, the theme's surround and the default; Dark, `#19191b`; Black; or an 18% grey, `#777777`. The **interface size** scales everything Iced draws, whatever the theme.
 
 ## What a theme is
 
-A theme is a named set of colours for the interface, chosen by the person and kept outside every catalog. The default theme, **Luxforge Dark**, is the [visual language](develop-workspace.md#visual-language) exactly. Six popular Omarchy themes are built in beside it ([bundled themes](#bundled-themes)). Any other theme comes from an import, of an Omarchy theme folder or of a Luxforge theme document, and is stored as a Luxforge theme, so once imported it no longer depends on the folder it came from. The desktop draws it; every client can read it; nothing else in Luxforge reads it.
+A theme is a named set of colours for the interface, chosen by the person and kept outside every catalog. The default theme, **Luxforge Dark**, is the [visual language](develop-workspace.md#visual-language) exactly. Six popular Omarchy themes are built in beside it ([bundled themes](#bundled-themes)). Any other theme comes from an import, of an Omarchy theme folder or of a Luxforge theme document, and is stored as a Luxforge theme, so once imported it does not depend on the folder it came from. The desktop draws it; every client can read it; nothing else in Luxforge reads it.
 
 ## Rules
 
 - **A theme never changes a photograph.** It changes no recipe, history entry, render, histogram, sample or export byte. No catalog or recipe names it, and switching theme reads no asset, starts no preview job and writes no catalog. This is the [flags'](settings-and-flags.md#rules) rule, applied to the person's appearance.
-- **Only colours.** Type, sizes, spacing, radii and the panel density are the visual language's in every theme and keep their tests, and the interface size preference scales them alike whatever the theme. The density acceptance (the histogram, Basic and every section header on screen at 1440 × 900 at 100%) holds unchanged.
+- **Only colours.** Type, sizes, spacing, radii and the panel density are the visual language's in every theme and keep their tests, and the interface size preference scales them alike whatever the theme. The density acceptance (the histogram, Basic and every section header on screen at 1440 × 900 at 100%) holds.
 - **The photograph's surround stays neutral.** A theme's surround is held to at most 0.010 OKLCh chroma, at the theme's own lightness. Luxforge Dark's canvas, `#19191b`, carries 0.004, and none of its surfaces reaches 0.010. A tinted surround shifts how the photograph's colours are seen, which is why colour-critical viewing asks for a neutral one. A theme chooses how dark or light the surround is, never its hue.
   - The histogram plot always draws the theme's surround.
   - Around the photograph, the canvas background preference decides. Its Dark, Black and Grey choices stay the fixed greys they are in every theme.
@@ -101,57 +101,57 @@ A theme may also set any token explicitly, which wins over its derivation. Luxfo
 
 The token names are the API's, and the widget crate's palette has a field of the same name for each. The core and the widget crate cannot see each other, so each keeps the list, and a desktop test holds the two lists equal. A value is `#rrggbb`, or `#rrggbbaa` for the two tokens drawn with alpha. The first ten are the colour roles.
 
-| Token | Luxforge Dark | Replaced the constant | Drawn as |
-| --- | --- | --- | --- |
-| `surround` | `#19191b` | `CANVAS` | Behind the histogram plot; around the photograph when the canvas background is Theme |
-| `background` | `#202023` | `PANEL` | Side panels, status bar, Settings sheet |
-| `surface` | `#232326` | `BAR` | Title bar, floating strips, notices |
-| `control` | `#2c2c31` | `CONTROL` | Buttons, chips, text fields |
-| `text` | `#e8e8ea` | `TEXT_PRIMARY` | Primary text |
-| `text_secondary` | `#a8a8ae` | `TEXT_SECONDARY` | Secondary text |
-| `text_tertiary` | `#77777f` | `TEXT_TERTIARY` | Tertiary text, disabled controls |
-| `accent` | `#e2b46a` | `ACCENT` | State marks |
-| `accent_ink` | `#1a1408` | `PRIMARY_INK` | Ink on the accent |
-| `error` | `#e5534b` | `CLIPPING_HIGHLIGHT` where it marks an invalid value or failure | Invalid values, unavailable reasons |
-| `text_label` | `#c9c9ce` | `TEXT_LABEL` | Labels; a slider's, field's or toggle's is mixed from it (below) |
-| `text_faint` | `#55555c` | `TEXT_FAINT`, `CLIP_TRIANGLE_REST` | A finished job's duration; an empty clipping triangle |
-| `text_bright` | `#f0f0f2` | `TEXT_BRIGHT` | A notice's title, the file name |
-| `text_identity` | `#8a8a90` | `TEXT_IDENTITY` | The title bar's dimensions and format |
-| `text_current_row` | `#f2f2f4` | `TEXT_CURRENT_ROW` | The current history row's label |
-| `chip_label` | `#b0b0b6` | `CHIP_LABEL` | An unselected chip's label |
-| `strip_icon` | `#b9b9bf` | `STRIP_ICON` | A mode-strip tool's icon at rest |
-| `mode_fixed_ink` | `#99999c` | `MODE_FIXED_INK` | A fixed mode control's glyph |
-| `border` | `#ffffff0f` | `BORDER` (6% white) | Outlines |
-| `scrim` | `#00000059` | The palette's and the Settings sheet's 35% black | Behind a modal sheet |
-| `rule` | `#313134` | `RULE` | A group header's rule |
-| `band_border` | `#2f2f32` | `BAND_BORDER`, `DIVIDER` | Module band borders, the shell's dividers |
-| `chrome_border` | `#343437` | `CHROME_BORDER` | Floating chrome's outline |
-| `strip_rule` | `#39393c` | `STRIP_RULE`, `NOTICE_BORDER` | The mode strip's rule, a neutral notice's outline |
-| `notice_warning_border` | `#65553d` | `NOTICE_WARNING_BORDER` | A notice that needs a decision |
-| `notice_error_border` | `#713634` | `NOTICE_ERROR_BORDER` | A notice that reports a failure |
-| `histogram_border` | `#242426` | `HISTOGRAM_BORDER` | The histogram plot's outline |
-| `thumbnail_border` | `#212123` | `THUMBNAIL_BORDER` | A coverage thumbnail's outline |
-| `rail` | `#3a3a40` | `RAIL` | The empty slider rail |
-| `rail_fill` | `#a3a3aa` | `RAIL_FILL` | The rail's fill |
-| `rail_backdrop` | `#202023` | `PANEL` under a declared rail | The panel held to the surround's chroma bound, under a declared rail at 85% |
-| `zero_tick` | `#5a5a62` | `ZERO_TICK` | The zero tick |
-| `thumb` | `#ececee` | `THUMB` | The resting handle |
-| `thumb_outline` | `#111113` | `THUMB_OUTLINE` | The handle's ring |
-| `sparkline_area` | `#353539` | `SPARKLINE_AREA` | The area under a sparkline |
-| `tab_track` | `#28282c` | `TAB_TRACK`, `SEGMENT_TRACK` | Tab and segment tracks |
-| `tab_selected` | `#3b3b41` | `TAB_SELECTED`, `SEGMENT_SELECTED` | The selected tab or segment |
-| `row_hover` | `#29292c` | `ROW_HOVER` | A row under the pointer |
-| `list_row_current` | `#2f2f32` | `LIST_ROW_CURRENT` | The current row |
-| `icon_hover` | `#303033` | `ICON_HOVER` | An icon button under the pointer |
-| `selected_fill` | `#3e372e` | `SELECTED_FILL` | A selected chip |
-| `icon_selected_fill` | `#3e372f` | `ICON_SELECTED_FILL` | A selected icon button |
-| `strip_selected` | `#413a30` | `STRIP_SELECTED` | A selected mode-strip tool |
-| `mask_row_selected` | `#37322c` | `MASK_ROW_SELECTED` | The open mask's row |
-| `revealed_row` | `#5b4932` | `REVEALED_ROW` | A row the command palette has revealed |
-| `menu_surface` | `#2a2a2e` | `MENU_SURFACE` | A menu |
-| `menu_border` | `#3f3f43` | `MENU_BORDER` | A menu's outline |
-| `menu_item_hover` | `#37373b` | `MENU_ITEM_HOVER` | A menu item under the pointer |
-| `menu_separator` | `#3b3b3f` | `MENU_SEPARATOR` | A menu's separator |
+| Token | Luxforge Dark | Drawn as |
+| --- | --- | --- |
+| `surround` | `#19191b` | Behind the histogram plot; around the photograph when the canvas background is Theme |
+| `background` | `#202023` | Side panels, status bar, Settings sheet |
+| `surface` | `#232326` | Title bar, floating strips, notices |
+| `control` | `#2c2c31` | Buttons, chips, text fields |
+| `text` | `#e8e8ea` | Primary text |
+| `text_secondary` | `#a8a8ae` | Secondary text |
+| `text_tertiary` | `#77777f` | Tertiary text, disabled controls |
+| `accent` | `#e2b46a` | State marks |
+| `accent_ink` | `#1a1408` | Ink on the accent |
+| `error` | `#e5534b` | Invalid values, unavailable reasons |
+| `text_label` | `#c9c9ce` | Labels; a slider's, field's or toggle's is mixed from it (below) |
+| `text_faint` | `#55555c` | A finished job's duration; an empty clipping triangle |
+| `text_bright` | `#f0f0f2` | A notice's title, the file name |
+| `text_identity` | `#8a8a90` | The title bar's dimensions and format |
+| `text_current_row` | `#f2f2f4` | The current history row's label |
+| `chip_label` | `#b0b0b6` | An unselected chip's label |
+| `strip_icon` | `#b9b9bf` | A mode-strip tool's icon at rest |
+| `mode_fixed_ink` | `#99999c` | A fixed mode control's glyph |
+| `border` | `#ffffff0f` | Outlines |
+| `scrim` | `#00000059` | Behind a modal sheet |
+| `rule` | `#313134` | A group header's rule |
+| `band_border` | `#2f2f32` | Module band borders, the shell's dividers |
+| `chrome_border` | `#343437` | Floating chrome's outline |
+| `strip_rule` | `#39393c` | The mode strip's rule, a neutral notice's outline |
+| `notice_warning_border` | `#65553d` | A notice that needs a decision |
+| `notice_error_border` | `#713634` | A notice that reports a failure |
+| `histogram_border` | `#242426` | The histogram plot's outline |
+| `thumbnail_border` | `#212123` | A coverage thumbnail's outline |
+| `rail` | `#3a3a40` | The empty slider rail |
+| `rail_fill` | `#a3a3aa` | The rail's fill |
+| `rail_backdrop` | `#202023` | The panel held to the surround's chroma bound, under a declared rail at 85% |
+| `zero_tick` | `#5a5a62` | The zero tick |
+| `thumb` | `#ececee` | The resting handle |
+| `thumb_outline` | `#111113` | The handle's ring |
+| `sparkline_area` | `#353539` | The area under a sparkline |
+| `tab_track` | `#28282c` | Tab and segment tracks |
+| `tab_selected` | `#3b3b41` | The selected tab or segment |
+| `row_hover` | `#29292c` | A row under the pointer |
+| `list_row_current` | `#2f2f32` | The current row |
+| `icon_hover` | `#303033` | An icon button under the pointer |
+| `selected_fill` | `#3e372e` | A selected chip |
+| `icon_selected_fill` | `#3e372f` | A selected icon button |
+| `strip_selected` | `#413a30` | A selected mode-strip tool |
+| `mask_row_selected` | `#37322c` | The open mask's row |
+| `revealed_row` | `#5b4932` | A row the command palette has revealed |
+| `menu_surface` | `#2a2a2e` | A menu |
+| `menu_border` | `#3f3f43` | A menu's outline |
+| `menu_item_hover` | `#37373b` | A menu item under the pointer |
+| `menu_separator` | `#3b3b3f` | A menu's separator |
 
 The fixed colours keep their constants and are not tokens: `CANVAS` as the canvas background's Dark choice, `CANVAS_BLACK` and `CANVAS_GREY`; the clipping colours, `CLIPPING_BOTH` and the overlay palette; the mask overlay tints; the histogram channels; `TEMPERATURE_RAIL`, `TINT_RAIL` and every declared rail; `GUIDE`, `RENDER_BAR_TRACK` and the compare and mask canvases' `PHOTO_HANDLE`, `PHOTO_HANDLE_OUTLINE`, `PHOTO_GRIP`, `PHOTO_LABEL` and `PHOTO_ANCHOR`, drawn over the photograph; `AGENT_CONNECTED`; `SWATCH_OUTLINE`; the coverage thumbnail's black `THUMBNAIL_BACKGROUND`, which is the mask's own zero; the mask glyphs' `MASK_GLYPH_OUTLINE` and `MASK_GLYPH_PHOTO`; and the black `CHROME_SHADOW` and `MENU_SHADOW`.
 
@@ -159,7 +159,7 @@ The [catalog](catalog.md)'s Select, Missing originals and filmstrip chrome draws
 
 The tools panel draws three more the same way, fitted exactly to the Module panels board: a module band is the background 90% toward the control (`#2b2b30`), a sub-group's capitals are the secondary text 24% toward the control (`#8a8a90`), and a slider's, field's or toggle's label is the label tier 52% toward the secondary text (`#b8b8bd`). Each sits a step from its neighbours in the module, group and control hierarchy, and a light theme's darker control makes its bands a step darker than its panel.
 
-Luxforge Dark's palette in the widget crate is built from these values exactly, alpha included, so it draws what the constants drew. The desktop draws that palette whenever Luxforge Dark is active, and builds any other theme's palette from the core's resolved tokens. A desktop test holds the core's Luxforge Dark within one code per channel of the widget crate's.
+Luxforge Dark's palette in the widget crate is built from these values exactly, alpha included. The desktop draws that palette whenever Luxforge Dark is active, and builds any other theme's palette from the core's resolved tokens. A desktop test holds the core's Luxforge Dark within one code per channel of the widget crate's.
 
 ### Legibility
 
@@ -185,7 +185,7 @@ An imported theme's own ink (its text or accent) that misses its floor is moved 
 
 The accent marks state: the current history entry, the active mode, a module's edited dot, a dragged thumb, Apply and the render bar. The visual language reserves red and blue for clipping, and keeps the mask overlay's green and white apart from both. Luxforge Dark's amber is 27 to 50 ΔE00 from all four, but an imported accent can sit close to one. Among Omarchy's built-in themes, nine accents are under 15 ΔE00 from a reserved colour. Two of them are under 10: Tokyo Night's blue, Omarchy's default theme, at 8.7 from the shadow-clipping blue, and Nord's at 9.7.
 
-Every theme keeps its own accent (owner, 2026-10-05), so an imported theme looks like itself. Its report notes an accent under 15 ΔE00 from a reserved colour. The clipping and mask colours stay recognisable by where they draw: in the histogram's corners, and as overlays on the photograph's own pixels, where the accent never draws.
+Every theme keeps its own accent, so an imported theme looks like itself. Its report notes an accent under 15 ΔE00 from a reserved colour. The clipping and mask colours stay recognisable by where they draw: in the histogram's corners, and as overlays on the photograph's own pixels, where the accent never draws.
 
 ## Omarchy themes
 
@@ -256,11 +256,9 @@ These figures are the implementation's, run on Omarchy's 22 built-in palettes at
 | Accent under 15 ΔE00 from a reserved colour | 9 of 22: Tokyo Night 8.74, Nord 9.72, Ethereal 11.03, Catppuccin Latte 12.55, Catppuccin 12.85 and Lupine 13.44 from the shadow-clipping blue; Hackerman 10.59 from the mask green; Ristretto 13.90 from the clipping red; Kanagawa 14.87 from the mask white |
 | Control derived, because `lighter_background` equals the background | Last Horizon, Solitude |
 
-They differ from the earlier prototype's figures (Python, not the implementation) in three places. Rose Pine's surround, at 0.0104, is neutralised, where the prototype counted 11 themes. A derived tier stops short in 16 themes rather than 18, and the secondary tier in 8 rather than 9. And Catppuccin Latte's accent is 12.55 ΔE00 from the blue rather than 12.6.
-
 ### Bundled themes
 
-The owner decided on 2026-10-05 to bundle a few popular Omarchy themes, beside imports from a folder. The recorded default is six:
+A few popular Omarchy themes are bundled, beside imports from a folder. The recorded default is six:
 
 | Theme | Mode | Why |
 | --- | --- | --- |
@@ -281,7 +279,7 @@ Kanagawa (6.4k stars) is left out because its accent is its text colour, so its 
   - Tokyo Night, Everforest, Gruvbox and Catppuccin Latte have their text moved to its floor, by 0.55 to 3.41 ΔE00. No bundled theme's accent is moved.
   - Catppuccin Latte, Everforest and Nord have the error ink moved in lightness.
   - All six have the tertiary tier stop short, and all but Catppuccin the secondary too.
-  - Tokyo Night, Catppuccin, Nord and Catppuccin Latte keep accents under 15 ΔE00 from a reserved colour, as decided.
+  - Tokyo Night, Catppuccin, Nord and Catppuccin Latte keep accents under 15 ΔE00 from a reserved colour.
   - Each takes its control from `lighter_background`.
 
 ## Library and API
@@ -314,7 +312,7 @@ Every method is a host method listed by `schema.list`. The mutating methods take
 | `theme.export` | no | `theme_id` | `{file_name, content}`, a Luxforge theme document |
 | `theme.delete` | yes | `theme_id`, `mutation` | `{outcome, deleted, deduplicated}`. A built-in theme and the active theme are refused by name |
 
-`preferences.read` also answers `theme` and `theme_follows_omarchy` ([following Omarchy](#following-omarchy)). `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background gains its proposed `theme` choice the same way, checked and announced as its other choices are.
+`preferences.read` also answers `theme` and `theme_follows_omarchy` ([following Omarchy](#following-omarchy)). `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background's `theme` choice is checked and announced as its other choices are.
 
 `format` is `omarchy` or `luxforge`. The client reads the files and sends their text, as it does for `preset.import`, because the core reads no user-chosen file ([module capabilities](../decisions.md#module-capabilities)). For Omarchy, `files` maps each file name the reader takes to its text, each at most 64 KiB. A name the reader does not take is refused by name rather than ignored. `folder` is the theme folder's own name, not a path, at most 128 bytes; it names the theme unless `name` does and is kept in the origin, and `format: luxforge` refuses it. A Luxforge theme document carries its format marker; a document of another shape or marker is refused without being read further.
 
@@ -340,7 +338,7 @@ The widget crate has its own Iced theme type, `luxforge_ui::Theme`. It holds the
 
 ### Appearance tab
 
-The Settings sheet gains a third tab, **Appearance**, between General and Experiments. It lists Luxforge Dark first, then the bundled themes, then the imported themes by name. Each row shows:
+The Settings sheet's **Appearance** tab sits between General and Experiments. It lists Luxforge Dark first, then the bundled themes, then the imported themes by name. Each row shows:
 
 - five swatches: surround, background, surface, text and accent;
 - the name;
@@ -353,7 +351,7 @@ Where Omarchy records a current theme, the tab opens with a **Follow Omarchy's t
 
 Clicking a row applies it at once through `preferences.set {theme}`, and the sheet and the workspace behind it redraw in the new theme. While the theme follows Omarchy's there, the click also turns following off. **Import Omarchy theme…** takes a theme folder or a folder of theme folders ([importing a folder](#importing-a-folder)). **Import theme file…** takes a Luxforge document. A row's menu, from its More button or a right-click, holds Export…, Copy import report and Delete. Built-in rows have no Delete, and Delete on the active row is refused with its reason, in the tab and the status bar. Stored themes this build cannot read are listed at the end with their reasons, and kept.
 
-The palette gains **Settings · Appearance** and one **Theme: \<name\>** entry per theme. Which tab is open stays this desktop's own view state, as it is for the other tabs.
+The palette has **Settings · Appearance** and one **Theme: \<name\>** entry per theme. Which tab is open is this desktop's own view state, as it is for the other tabs.
 
 ### Importing a folder
 
@@ -363,7 +361,7 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
 
 ### Following Omarchy
 
-The owner decided on 2026-10-15 that, where Omarchy runs, the active theme follows Omarchy's current theme whenever the library holds it, until the person chooses a theme themselves.
+Where Omarchy runs, the active theme follows Omarchy's current theme whenever the library holds it, until the person chooses a theme themselves.
 
 - **Omarchy's current theme** is the slug Omarchy recorded when it last applied one. The desktop reads Omarchy 4's `~/.local/state/omarchy/current/theme.name`, then Omarchy 3.3 to 3.8's `~/.config/omarchy/current/theme.name`, then, for Omarchy 3.0 to 3.2, which wrote no name, the folder name `~/.config/omarchy/current/theme` links to. The first that answers is the slug. A name file is a regular file read through a bounded reader; a slug is trimmed and must be a folder's own name of at most 128 bytes. Nothing of Omarchy's is written. Only Linux looks, and never an evidence run or a hidden launch, so no automated launch reads the person's Omarchy state.
 - **The theme that is it** is the first in the library's order whose origin is an Omarchy folder naming the same theme as the slug, ignoring case, by the import's own naming rule. A cloned repository's `omarchy-` prefix and `-theme` suffix therefore do not matter, and a bundled theme comes before an imported one. A theme imported from a Luxforge document never matches. Where the library holds no such theme, nothing changes; Luxforge does not import it on its own.
@@ -399,7 +397,6 @@ The owner decided on 2026-10-15 that, where Omarchy runs, the active theme follo
   - following Omarchy: the launch draws and stores Omarchy's theme; a switch in Omarchy is followed when the window regains focus, and a theme the library does not hold changes nothing; a theme chosen by hand turns following off with the request an independent client sends; the switch turned on again chooses Omarchy's theme; away from Omarchy nothing is read and no switch is shown;
   - the read of Omarchy's current theme in each release's layout, with names that are not a folder's refused;
   - a theme change, counted as sending no `asset.state`, `history.list` or preview job.
-- **Pixel identity.** The release build before the runtime theme and the build after it captured the gallery's 104 states and the `workspace` scenario's frames under Luxforge Dark. The gallery's 14 board pages decode to identical pixels. Every other frame is identical outside the Performance section's live figures (memory, CPU, GPU, sparkline ends and job times), which differ in the same frames and regions between two runs of the earlier build.
 - **The `theme` smoke scenario**, in the `rendered` tier, at 1440 × 900 on `orientation-1.jpg`:
   - It imports a set of synthetic Omarchy themes (`fixtures/themes/omarchy/`) through the Appearance tab's own messages: a dark one and a light one imported, one named like a bundled theme listed as built in, and one without an accent failed with the reader's reason. Importing the dark one again is listed as already imported.
   - It switches to Nord, the dark import and the light import, sets the canvas background to Grey and back, and exports. A second client then chooses Luxforge Dark with `preferences.set`, and it exports again.
@@ -407,7 +404,7 @@ The owner decided on 2026-10-15 that, where Omarchy runs, the active theme follo
   - In the pixels, exactly: the title bar's dominant colour is the surface, the status bar's and the state panel's the background, a control holds the control token, and the canvas beside the photograph the surround, or `#777777` at Grey under the light theme. The surround carries at most 0.010 OKLCh chroma.
   - The photograph, found by the surround each frame records, has the same rectangle and pixels in every frame where the sheet is closed, and the two exports have the same SHA-256.
 - **Review captures.** The workspace, the Appearance tab and the gallery's 14 pages were captured in Luxforge Dark, each bundled theme and each of Omarchy's other 16 built-in themes, imported from Omarchy at the pinned commit. They are evidence for the owner's review, not committed boards. No region was left in Luxforge Dark's colours, every surround is neutral, and no text was found illegible. Two things to review: White's accent is a grey, so its state marks barely stand out; and the fixed histogram channel fills read pastel over a light surround.
-- **Timing** against the build before the runtime theme ([performance](../specs/performance.md#ui-themes-measured-on-the-m4)): the 24 MP drag's input to presented frame and the workspace derivation per message are unchanged within the host's spread. Launch to first frame is about 23 ms later at p50, all of it before the process starts, in copying a 1.4 MB larger executable into the background bundle; the application's own startup is unchanged.
+- **Timing**: the 24 MP drag's input to presented frame, the workspace derivation per message and launch to first frame are recorded in [performance](../specs/performance.md#ui-themes-measured-on-the-m4).
 
 ## Performance rules checklist
 
@@ -416,23 +413,23 @@ The owner decided on 2026-10-15 that, where Omarchy runs, the active theme follo
 - **Point queries:** none.
 - **Owner thread:** each `theme.*` method reads or rewrites one bounded document. An import parses at most 64 KiB per file and derives about seventy colours. No frame work.
 - **Desktop messages:** a theme change sends no `asset.state`, `history.list`, preview job or upload. It redraws once, and each canvas cache rebuilds once. The event sync reads the preferences and the library only on their own events.
-- **Timers, polls and subscriptions:** none added. The event sync's existing wake also runs with no photograph open. The window's focus event, on the existing event subscription, reads one name file of at most 130 bytes off the update loop; after each message, deciding whether to follow Omarchy costs two comparisons unless something that decides it changed.
-- **Repeated work and caches:** no new cache. Each existing canvas cache's key gains the theme's generation.
-- **Timing:** the style functions sit on the per-message view path, so the drag latency and the workspace derivation are measured once, before and after.
+- **Timers, polls and subscriptions:** none added. The event sync's wake also runs with no photograph open. The window's focus event, on the desktop's event subscription, reads one name file of at most 130 bytes off the update loop; after each message, deciding whether to follow Omarchy costs two comparisons unless something that decides it changed.
+- **Repeated work and caches:** no cache of its own. Each canvas cache's key includes the theme's generation.
+- **Timing:** the style functions sit on the per-message view path, so the drag latency and the workspace derivation are measured.
 - **Exactness:** no effect is added. The theme scenario checks that the photograph's pixels and an export's bytes are the same under every theme.
 
 ## Decisions
 
-Decided by the owner on 2026-10-05, and on 2026-10-15 for following Omarchy, and recorded in [decisions](../decisions.md#ui-themes):
+Recorded in [decisions](../decisions.md#ui-themes):
 
 | Question | Decided |
 | --- | --- |
-| Themes, and light ones | Themes replace "dark only", light ones included. Luxforge Dark stays the default |
+| Themes, and light ones | Themes, light ones included. Luxforge Dark is the default |
 | Tinted chrome | Allowed in any theme but Luxforge Dark, which keeps the principle that the photograph is the only colour on screen |
 | The surround | Near-neutral in every theme (at most 0.010 OKLCh chroma), at the theme's lightness |
 | An accent near a reserved colour | Each theme keeps its own accent; the report notes one under 15 ΔE00 from a reserved colour |
 | Bundled themes | A few popular Omarchy themes, beside imports from a folder |
-| Following Omarchy's current theme (2026-10-15) | Where Omarchy runs, the active theme follows Omarchy's current one when the library holds it, through a preference on by default that choosing a theme turns off. A theme the library does not hold is not imported or drawn ([following Omarchy](#following-omarchy)) |
+| Following Omarchy's current theme | Where Omarchy runs, the active theme follows Omarchy's current one when the library holds it, through a preference on by default that choosing a theme turns off. A theme the library does not hold is not imported or drawn ([following Omarchy](#following-omarchy)) |
 
 ### Proposals with recorded defaults
 
@@ -443,8 +440,8 @@ Luxforge runs on these until the owner revises them.
 | Which themes are bundled | Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest ([bundled themes](#bundled-themes)) | Another set, such as all 22 of Omarchy's built-in themes, or a second light theme (Rose Pine or Flexoki Light) |
 | Contrast | 7:1 for primary text; 4.5:1 for labels and secondary text; 3:1 for tertiary text, the accent and the error ink. An imported theme's own ink is moved to its floor and reported (6 of the 22). A Luxforge document that misses a floor is refused | Refuse an import that misses a floor; or accept it and only warn |
 | Omarchy forms | Omarchy 4 and Omarchy 3 palettes, `light.mode`, and `alacritty.toml` where there is no palette (37 of the 145 reachable curated community themes) | The Omarchy 4 palette only |
-| The canvas background | A fourth choice, Theme, the theme's surround, as the new default; Dark, Black and Grey stay fixed greys | No Theme choice: themes never set the canvas around the photograph, only the histogram plot |
-| Where | A Settings › Appearance tab for the theme list. The canvas background and interface size stay General rows, as decided on 2026-10-04 | A Theme row in General, with the library managed elsewhere |
+| The canvas background | A fourth choice, Theme, the theme's surround, as the default; Dark, Black and Grey stay fixed greys | No Theme choice: themes never set the canvas around the photograph, only the histogram plot |
+| Where | A Settings › Appearance tab for the theme list. The canvas background and interface size stay General rows | A Theme row in General, with the library managed elsewhere |
 | Following the system's light or dark appearance | Later | In this plan, with a theme chosen for each |
 
 ## Recorded engineering defaults

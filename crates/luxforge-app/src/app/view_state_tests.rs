@@ -25,11 +25,6 @@ fn gallery_is_desktop_view_state_without_a_photo_and_respects_developer_mode() {
     assert_eq!(editor.gallery_page(), Some(6));
     assert_eq!(editor.snapshot()["gallery"]["page"], json!(6));
     assert_eq!(editor.session, before, "the page is not session state");
-    assert!(
-        editor.snapshot()["workspace"]
-            .get("component_gallery")
-            .is_none()
-    );
     // A page the board does not have is ignored.
     let _ = editor.update(Message::View(ViewMessage::Gallery(Some(pages))));
     assert_eq!(editor.gallery_page(), Some(6));

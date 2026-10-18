@@ -1,6 +1,6 @@
 # Lightroom import
 
-Status: decided, planned (2026-10-06); nothing is built. The owner decided all eleven questions on 2026-10-06 ([decided](#decided)) and asked for a task plan without authorizing implementation ([task plan](../../tasks/lightroom/lightroom-import.json)). How close an imported photograph *looks* to Lightroom's rendering is the separate [Lightroom alignment](lightroom-alignment.md) design; this one needs it only to raise fidelity, never to function.
+Status: decided and planned; nothing is built, and implementation is not authorized ([task plan](../../tasks/lightroom/lightroom-import.json)). Its eleven questions are [decided](#decided). How close an imported photograph *looks* to Lightroom's rendering is the separate [Lightroom alignment](lightroom-alignment.md) design; this one needs it only to raise fidelity, never to function.
 
 ## Why
 
@@ -8,7 +8,7 @@ Most photographers who would try Luxforge have years of work in Lightroom Classi
 
 ## What already exists
 
-- **The settings mapping.** [Preset import](presets.md#import) already parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette and RAW white balance, with Detail sharpening/noise reduction and manual perspective still unsupported despite their delivered modules, and every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
+- **The settings mapping.** [Preset import](presets.md#import) parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette and RAW white balance, with Detail sharpening/noise reduction and manual perspective unsupported though their modules are delivered, and every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
 - **Places for what is imported.** The [catalog](catalog.md): developed photographs with fingerprints, catalog folders, collections and collection groups, library changes with undo, missing originals and Locate. [Versions](versions-and-lineage.md): named references to retained history entries. Crop and orientation, [lens and perspective](lens-and-perspective.md), [masks](masking.md) (linear, radial, brush, luminance and colour range) and the [RAW looks](raw-looks.md).
 - **The research.** Lightroom's [storage and sidecars](../research/lightroom/storage-and-history.md) and the [levels of XMP interoperability](../research/lightroom/sdk-and-interoperability.md#xmp-interoperability-has-several-levels).
 
@@ -57,7 +57,7 @@ Table and column names here are from public descriptions of the format and are t
 
 ### Photographs
 
-Each Lightroom photograph in scope ([L1](#decided)) becomes a catalog photograph the way a developed pick does ([developing picks](catalog.md#developing-picks)): a bounded read streams its fingerprint and reads its RAW interpretation without developing it, then the asset is created with its Original. The Original is what a new photograph of its kind gets today, the starting look included.
+Each Lightroom photograph in scope ([L1](#decided)) becomes a catalog photograph the way a developed pick does ([developing picks](catalog.md#developing-picks)): a bounded read streams its fingerprint and reads its RAW interpretation without developing it, then the asset is created with its Original. The Original is what a new photograph of its kind gets, the starting look included.
 
 - **Already in the catalog.** A file whose bytes match a photograph already in the catalog is linked to it, as Develop links it, and its Lightroom edit is added as a named version ("Lightroom") instead of replacing the current entry.
 - **Missing originals.** A file Lightroom references but that is not found is listed in the report with its last known path and is not imported; the import can be run again once the drive is connected ([re-running](#re-running-and-re-mapping)). A photograph cannot be created without a verified fingerprint.
@@ -79,7 +79,7 @@ Each photograph's Lightroom settings become **one history entry**, `Imported fro
 | Other profiles, monochrome, grain, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
 | Local corrections | [Masks](#masks) | Phase 2 |
 
-The importer applies the alignment's calibrated value conversions where they exist and the preset table's existing rules where they do not, including the uncalibrated RAW white-coordinate conversion; each row of the report says which. Calibrated RAW Kelvin/tint preset import is included in the alignment's RAW white-balance round (owner, 2026-10-07). An imported head has moved beyond Original, so first preparation does not append an automatic lens entry; the importer explicitly maps the Lightroom lens switch.
+The importer applies the alignment's calibrated value conversions where they exist and the preset table's existing rules where they do not, including the uncalibrated RAW white-coordinate conversion; each row of the report says which. Calibrated RAW Kelvin/tint preset import is included in the alignment's RAW white-balance round. An imported head has moved beyond Original, so first preparation does not append an automatic lens entry; the importer explicitly maps the Lightroom lens switch.
 
 ### Masks
 
@@ -115,7 +115,7 @@ A mask some of whose adjustments are unsupported keeps the rest. A mask with no 
 
 Organization is journalled in explicit bounded parts, as Develop commits its prepared batches, under `MAX_LIBRARY_BATCH` (50,000 library items, not photographs). Each completed photograph, its entry and import provenance are committed atomically, with retries naming the parts already applied and cancellation keeping finished photographs. Each photograph's edit is its own history entry.
 
-**There is no import undo** (owner, 2026-10-07). The current library-undo and Send back guards remain: entries beyond Original, named versions or collection memberships prevent sending a photograph back. Remove follows the existing [catalog removal rule](catalog.md#removing). Undo of a photograph's imported edit remains ordinary history navigation, without undoing its import or organization.
+**There is no import undo.** The library-undo and Send back guards apply: entries beyond Original, named versions or collection memberships prevent sending a photograph back. Remove follows the existing [catalog removal rule](catalog.md#removing). Undo of a photograph's imported edit is ordinary history navigation, without undoing its import or organization.
 
 `version.create` names an existing retained entry and changes no head; it does not create the entry. The importer must append validated entries branched from Original for virtual copies, snapshots and linked Lightroom edits, then name them, preserving the master's current entry or an existing photograph's head. It uses the shared immutable entry and version invariants.
 
@@ -190,8 +190,6 @@ The importer reads files the person owns, for interoperability, with Luxforge's 
 7. **No fidelity claim** beyond what the alignment has measured.
 
 ## Decided
-
-The owner decided every question on 2026-10-06. Eight are the recommendation; L4 and L7 differ from it. On 2026-10-07 the owner narrowed L7 to the grid tier only and kept the current catalog removal rule with no import undo.
 
 | # | Question | Decided | Not chosen |
 | --- | --- | --- | --- |
