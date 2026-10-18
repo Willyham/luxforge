@@ -144,6 +144,16 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     if launch.refused() {
         luxforge_gpu::refuse_gpu_stage();
     }
+    // The empty canvas's art plays only where a hardware GPU draws the window and someone may be
+    // watching: a software adapter would draw every frame on the CPU, and an evidence or hidden
+    // launch keeps one composed frame, the same in every capture.
+    let hardware = matches!(
+        launch,
+        crate::adapters::LaunchRenderer::Gpu { software: false }
+    );
+    if !hardware || config.evidence.is_some() || config.hidden {
+        luxforge_ui::empty_canvas::hold_still();
+    }
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     // Nothing here moves, copies or deletes a catalog: the one chosen is opened, or created.
     let catalog = config

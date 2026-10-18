@@ -3059,10 +3059,7 @@ mod tests {
         inputs.render_error = render_error.as_ref();
         let mut workspace = Workspace::default();
         workspace.derive(&inputs);
-        assert_eq!(
-            workspace.canvas.photo,
-            canvas::PhotoView::Empty("Open a photograph".into())
-        );
+        assert_eq!(workspace.canvas.photo, canvas::PhotoView::Closed);
 
         // Once a photograph is actually on the GPU, the placeholder never applies.
         let mut inputs = scene.inputs();
@@ -3378,10 +3375,7 @@ mod tests {
             workspace.tools.status.message(),
             Some("Loading tool modules…")
         );
-        assert_eq!(
-            workspace.canvas.photo,
-            canvas::PhotoView::Empty("Open a photograph".into())
-        );
+        assert_eq!(workspace.canvas.photo, canvas::PhotoView::Closed);
         workspace.derive(&scene.inputs());
         assert_eq!(
             workspace.tools.status.message(),

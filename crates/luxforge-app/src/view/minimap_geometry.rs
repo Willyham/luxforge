@@ -65,7 +65,7 @@ impl NavStage {
     /// photograph is drawn.
     pub(crate) fn drawn(model: &CanvasModel, surfaces: &Surfaces<'_>) -> Option<Self> {
         match (&model.photo, surfaces.draft, surfaces.stage) {
-            (PhotoView::Empty(_), _, _) => None,
+            (PhotoView::Closed | PhotoView::Empty(_), _, _) => None,
             (PhotoView::Draft, Some(draft), Some(_)) => Some(Self::crop_box(draft.box_size())),
             (PhotoView::Plain | PhotoView::Draft, _, _) => {
                 surfaces.photo?;
@@ -787,7 +787,7 @@ mod tests {
         };
         assert_eq!(NavStage::drawn(&plain, &unrendered), None);
         let empty = CanvasModel {
-            photo: PhotoView::Empty("Open a photograph".into()),
+            photo: PhotoView::Closed,
             ..model
         };
         assert_eq!(NavStage::drawn(&empty, &surfaces), None);

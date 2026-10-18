@@ -134,15 +134,19 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
             Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
-            _ => empty("Open a photograph"),
+            _ => empty(INVITATION),
         },
+        (PhotoView::Closed, _, _) => {
+            let fill = model.background;
+            luxforge_ui::empty_canvas(INVITATION, move |palette| background_colour(fill, palette))
+        }
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
         (PhotoView::Draft, _, _) => match model.dimensions {
             Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
-            _ => empty("Open a photograph"),
+            _ => empty(INVITATION),
         },
     };
     match model.zoom {
@@ -699,6 +703,9 @@ impl canvas::Program<Message, Theme> for CompareLoadingBar {
         iced::mouse::Interaction::None
     }
 }
+
+/// What the empty canvas invites, under its art ([`luxforge_ui::empty_canvas`]).
+const INVITATION: &str = "Open a photograph";
 
 /// The canvas with nothing to draw: the invitation to open a photograph, or why the open one has no
 /// preview. Title-sized, so a long reason still reads as one line of chrome rather than a headline.
@@ -1315,7 +1322,7 @@ pub(crate) fn drawn_photo(
     let drafting = matches!(model.photo, PhotoView::Draft)
         && surfaces.draft.is_some()
         && surfaces.stage.is_some();
-    if drafting || matches!(model.photo, PhotoView::Empty(_)) {
+    if drafting || matches!(model.photo, PhotoView::Closed | PhotoView::Empty(_)) {
         return None;
     }
     let dimensions = model.dimensions?;
@@ -1620,7 +1627,7 @@ mod tests {
             (
                 "nothing is open",
                 CanvasModel {
-                    photo: PhotoView::Empty("Open a photograph".into()),
+                    photo: PhotoView::Closed,
                     ..base.clone()
                 },
             ),
@@ -1840,7 +1847,7 @@ mod tests {
 
         // Nothing is drawn: no photograph open, or none rendered yet at Fit.
         let empty = CanvasModel {
-            photo: PhotoView::Empty("Open a photograph".into()),
+            photo: PhotoView::Closed,
             ..model.clone()
         };
         assert_eq!(drawn_photo(&empty, &surfaces, canvas, (0.0, 0.0)), None);
