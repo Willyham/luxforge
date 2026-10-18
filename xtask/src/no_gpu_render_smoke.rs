@@ -11,7 +11,7 @@
 //! settled ones at rest among them. Every tick of a drag takes the CPU path naming `no-adapter` and
 //! asks for no boundary: it asks the reference for the drafted stack's display-size proxy, and the
 //! drag's frames are those proxies, labelled approximate, at Fit's bounds at 100% too, where the
-//! view magnifies them (owner, 2026-10-06). Each release draws the reference's frame of the
+//! view magnifies them. Each release draws the reference's frame of the
 //! committed stack, labelled exact: its reduction at Fit and its exact frame at 100%. No dissolve
 //! starts, and the desktop reports no other renderer. The adapter that drew the window is
 //! identified in every frame: the window is still composited by it, and only the photograph's

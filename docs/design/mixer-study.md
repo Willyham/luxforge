@@ -168,7 +168,7 @@ Degrees; a negative value moves those hues back toward the lower centre. The lar
 
 ### Lesson: half the gap
 
-The first mixer rotated each pixel by the raised-cosine blend of the two neighbouring ranges' rotations, with `±100` reaching half the gap in the direction of travel. That kept one slider monotone (slope floor `1 − pi/4 = 0.2146`) but left red `+100` at 11.88 degrees and aqua `+100` at 34.64, which read as too little travel against the familiar behaviour of moving a colour well toward its neighbour; opposing neighbours folded (slope `1 − pi/2`). A blend of per-range rotations has slope exactly one at every centre, so its slope inside a gap falls to `1 − (pi/2)(delta / g)` and one slider folds the map once its reach passes `2/pi ≈ 0.64` of the gap; the warp moves the centres themselves and lets the slopes there follow.
+Rotating each pixel by the raised-cosine blend of the two neighbouring ranges' rotations, with `±100` reaching half the gap in the direction of travel, keeps one slider monotone (slope floor `1 − pi/4 = 0.2146`) but leaves red `+100` at 11.88 degrees and aqua `+100` at 34.64, which reads as too little travel against the familiar behaviour of moving a colour well toward its neighbour; opposing neighbours fold (slope `1 − pi/2`). A blend of per-range rotations has slope exactly one at every centre, so its slope inside a gap falls to `1 − (pi/2)(delta / g)` and one slider folds the map once its reach passes `2/pi ≈ 0.64` of the gap; the warp moves the centres themselves and lets the slopes there follow.
 
 Lightroom publishes no numbers for its hue sliders. Community estimates of its `±100` sweep range from about 30 to about 60 degrees, and every guide describes `±100` as moving a colour well toward the adjacent named colour (Blue `−100` toward aqua, Yellow `+100` toward green). Measured here, Blue `−100` moves `58.89` degrees toward aqua and Yellow `+100` moves `27.82` degrees, to within 5 degrees of the green centre. That is context for the constant, not an equivalence claim.
 
@@ -187,9 +187,9 @@ C_out = f * C
 
 **A decrease is applied in full; only an increase is ramped.** The two branches meet at `f = 1` when `s = 0`, so the factor is continuous in the sliders. Because the weights sum to exactly one in f32 as in f64, every saturation slider at `−100` makes `s = −(w_i + w_{i+1}) = −1` exactly and `f = 0` exactly for **every** pixel, near-greys and the darkest included, and the result reconstructs to three identical channels (see [Exact greys](#exact-greys)). `every_saturation_slider_at_minus_100_greys_every_colour_exactly` checks it over 7 `L` × 6 chroma levels down to `1e-9` × 720 hues; the unit test `every_saturation_slider_at_minus_100_makes_every_pixel_exactly_grey` checks `f = 0.0` at 36 000 hues × 4 ramp values and bit-equal channels over 200 000 pseudo-random pixels (saturated, near-grey, near-black and out of range); `every_saturation_slider_at_minus_100_renders_exact_greys` checks `R == G == B` on every output pixel of a 277 440-pixel colourful image through both render paths. `a_saturation_decrease_is_not_ramped_and_an_increase_is` holds the two branches.
 
-Had the ramp also scaled the decrease, a pixel of chroma `C < C0` would keep `C (1 − w_c(C))` under a full desaturation. That was the first behaviour; measured residuals it left:
+Had the ramp also scaled the decrease, a pixel of chroma `C < C0` would keep `C (1 − w_c(C))` under a full desaturation. The residuals a ramped decrease leaves, measured:
 
-| Input (sRGB) | Oklab `C` | `w_c` | Residual chroma with a ramped decrease | Now |
+| Input (sRGB) | Oklab `C` | `w_c` | Residual chroma with a ramped decrease | Unramped decrease |
 | --- | --- | --- | --- | --- |
 | near-black blue `(2, 2, 6)` | 0.017270 | 0.949 | 0.000878 | 0 (codes `(2, 2, 2)`) |
 | near-black warm `(6, 4, 2)` | 0.010573 | 0.543 | 0.004833 | 0 |

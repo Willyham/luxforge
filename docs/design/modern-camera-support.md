@@ -25,7 +25,7 @@ source preservation, mosaic/float correctness, calibrated dimensions and crop,
 then representative background editor/history/reopen workflows. Separate each
 mode's demonstrated evidence from outstanding controlled color/scene coverage.
 
-The [owner-approved RAW resource contract](architecture.md#limits) is separate from JPEG, whose limits are unchanged. High-resolution models, container compression, missing crop
+The [RAW resource contract](architecture.md#limits) is separate from JPEG's limits. High-resolution models, container compression, missing crop
 metadata, per-green black levels and DNG correction layouts may require shared
 capabilities before a profile can be enabled. Never inflate the support count
 with guessed entries or bypass required corrections to admit a model.
@@ -43,10 +43,10 @@ colour-changing white balance. Their second development reference repeats unity 
 The [corpus manifest](../../fixtures/sample-corpus.json) pins source URLs,
 licenses, metadata and M4 development hashes. The
 [independent unpack evidence](../../fixtures/corpus-camera-evidence.json)
-records references for the 209 added sources, from the LibRaw-only path or,
-for the Galaxy S22 JPEG XL DNG, libjxl 0.11.2. The existing focused
+records references for 209 sources, from the LibRaw-only path or,
+for the Galaxy S22 JPEG XL DNG, libjxl 0.11.2. The focused
 [evidence](../../fixtures/modern-camera-evidence.json) and
-[selection](../../fixtures/modern-camera-selection.json) remain valid for their
+[selection](../../fixtures/modern-camera-selection.json) cover their
 130-source scope. Development hashes are regressions, not independent
 photographic colour ground truth. The complete frozen repeat takes 670.067
 seconds on the M4, including source hashing and two developments per source;
@@ -60,7 +60,7 @@ RGB DNGs bypass demosaic; the S22 JPEG XL sample matches independent libjxl
 integer output exactly. Selected phones without licensed files, including all
 selected iPhones, remain acquisition gaps.
 
-Eleven background Metal editor journeys cover new phone/layout/correction
+Eleven background Metal editor journeys cover the corpus's phone/layout/correction
 families and both monochrome cameras, with exact reopen and source-preservation
 checks; the [corpus design](corpus-camera-support.md#native-editor-evidence)
 lists their scope.
@@ -69,9 +69,8 @@ lists their scope.
 
 Each mode below was identified from what the adapter reads (decoder, bit depth,
 stored frame, frame count and container marker), not from the sample's label,
-and qualified from the listed raw.pixls.us sample. C-RAW samples on bodies whose
-RAW mode was already admitted share that mode: Canon RAW and C-RAW use one
-decoder, bit depth and size.
+and qualified from the listed raw.pixls.us sample. A C-RAW sample shares its body's
+RAW mode: Canon RAW and C-RAW use one decoder, bit depth and size.
 
 | Camera | Sample | Mode | Selector | Mosaic SHA-256 |
 | --- | --- | --- | --- | --- |
@@ -107,9 +106,9 @@ decoder, bit depth and size.
 Sony's lossless compressed ARW is stored in 512-pixel tiles, so LibRaw reports a
 padded frame larger than the uncompressed sensor; the mode declares that frame
 (`frame_size`) and LibRaw's inset crops to the same visible area as the
-uncompressed mode. The new Nikon bodies' lossless modes require maker-note
+uncompressed mode. The Z6III, Z50II and Z5II lossless modes require maker-note
 compression 3, so a High Efficiency file (compression 13 or 14) matches no mode
-even without the earlier High Efficiency refusal. The R6 Mark II 6405 and R5 4697
+even without the High Efficiency refusal before unpack. The R6 Mark II 6405 and R5 4697
 samples are Dual Pixel RAW: a second full-size CRX track beside the primary one.
 The adapter decodes only the primary frame, as it does for the 5D Mark IV's Dual
 Pixel CR2; that frame averages about twice the second frame's signal, as the
@@ -122,15 +121,15 @@ The EOS R10 has no C-RAW sample in the raw.pixls.us index: its four samples
 
 ### Refused recording modes
 
-These stay refused, each for a concrete reason:
+These are refused, each for a concrete reason:
 
 | Files | Refusal | Reason |
 | --- | --- | --- |
-| Nikon High Efficiency and High Efficiency★ NEF (Z9 5147, Z8 6618, Zf 6886, Z6III 7815, Z50II 7763, Z5II 7743) | Unsupported compression, before unpack | JPEG XS payload that neither LibRaw 0.22.2 nor RawSpeed decodes; the owner waits for upstream LibRaw support. The message says to record Lossless compressed RAW |
+| Nikon High Efficiency and High Efficiency★ NEF (Z9 5147, Z8 6618, Zf 6886, Z6III 7815, Z50II 7763, Z5II 7743) | Unsupported compression, before unpack | JPEG XS payload that neither LibRaw 0.22.2 nor RawSpeed decodes; Luxforge waits for upstream LibRaw support. The message says to record Lossless compressed RAW |
 | APS-C crop sizes on full-frame bodies (R6 4661 at 3584×2386, R6 Mark II 6404 at 3936×2612, A7R V 6239 at 6304×4180, A7C II 6869 and A7 IV 6936 at 4736×3132) | Unsupported recording mode | These particular shapes have no qualified catalog selector; exact sampled alternate frames can be admitted, but a listed camera does not admit every crop setting |
 | Small and medium RAW sizes | Unsupported recording mode | Unsampled recording sizes remain unqualified; the retained corpus includes observed reduced/converted DNG modes with their own exact frame selectors |
 
-The high-resolution profiles use the approved RAW-only resource contract in
+The high-resolution profiles use the RAW-only resource contract in
 [the resource ledger](modern-camera-resource-ledger.md). For DNGs whose decoder
 reports a trimmed active bottom, a bounded profile value reconciles that exact
 delta while preserving the source ActiveArea for correction coordinates. The
@@ -138,13 +137,13 @@ SL2 profile records LibRaw's 19-row trim; the full raw mosaic is retained.
 A demonstrated mode does not qualify every recording setting or, for drones,
 every camera module. The Mavic 3 Pro Cine fixture covers its 4032×3024 module.
 
-The native M4 Pro editor passed 39 edit/history/reopen trials across ten
-representative modern models and the three original owner fixtures. The checks
+The native M4 Pro editor passes 39 edit/history/reopen trials across ten
+representative modern models and the three owner fixtures. The checks
 cover temperature/tint, individual channel WB, neutral picking, exposure,
 rotation/crop/undo, historical previews and exact reopened displayed pixels.
-The final build additionally passed 27 edit/reopen trials across six larger/Leica
-models and the three owner originals. Full verification also passed 19 general
-rendered scenarios and the independent RAW numerical reference. The resource ledger records sampled process memory
+It also passes 27 edit/reopen trials across six larger/Leica models and the
+three owner originals, beside 19 general rendered scenarios and the independent
+RAW numerical reference. The resource ledger records sampled process memory
 and its limits. For the popular modes, the background `raw-editor` journey
 passed on Sony A7 IV compressed (6932), Fujifilm X-T5 uncompressed (6124),
 Nikon Z6III lossless (7819), Nikon Z50II lossless (7762) and Canon 90D RAW
@@ -158,7 +157,7 @@ qualification remain separate work.
 
 ### RawSpeed-routed modes
 
-64 previously measured catalog modes have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. A candidate is routed when it is exact on every local authentic sample of it and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. Every exact candidate passed the speed gate, so none was moved back to LibRaw: the lowest ratio is the Panasonic S5's 1.50×, and every other mode is 1.84× or more. The last column is each sample's median `RawSource::decode` time (identify, unpack and the mosaic copy, bytes in memory, nothing developed) with LibRaw forced and with RawSpeed, and their ratio, from 16 alternating observations per unpacker ([performance](../specs/performance.md#rawspeed-unpacking)). Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. The full corpus regression preserves those modes' frozen references. Newly added modes retain LibRaw unless separately shown exact and faster through RawSpeed; membership of the decoder table alone does not route them.
+64 catalog modes have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. A candidate is routed when it is exact on every local authentic sample of it and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. Every exact candidate passes the speed gate: the lowest ratio is the Panasonic S5's 1.50×, and every other mode is 1.84× or more. The last column is each sample's median `RawSource::decode` time (identify, unpack and the mosaic copy, bytes in memory, nothing developed) with LibRaw forced and with RawSpeed, and their ratio, from 16 alternating observations per unpacker ([performance](../specs/performance.md#rawspeed-unpacking)). Each sample is decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal the recorded references: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. The full corpus regression preserves those modes' frozen references. A mode added to the catalog stays on LibRaw unless separately shown exact and faster through RawSpeed; membership of the decoder table alone does not route them.
 
 | Mode | Decoder | Samples (raw.pixls.us id) | Routed | Unpack p50, LibRaw → RawSpeed |
 | --- | --- | --- | --- | --- |
@@ -289,42 +288,42 @@ colour/detail, unsampled modes and native Windows/Linux editor evidence remain
 outstanding. Nikon High Efficiency and High Efficiency★ remain refused until
 upstream support is pinned and qualified. Sony A7 V Compressed HQ (8846) and
 lossless compressed (8845) are delivered; other compression and crop settings
-need their own decoder and authentic qualification. Existing metadata,
-corrections, source preservation and history remain regressions. New coverage
+need their own decoder and authentic qualification. Metadata,
+corrections, source preservation and history are regressions. New coverage
 requires quick and rendered checks; feature completion carries the scoped timing
 and full verification before a broader support claim.
 
 ## Coverage and resource scope
 
-- Exact model set follows the agreed broadly used modern mix and available
+- Exact model set follows a broadly used modern mix and available
   decoder evidence; selection must not hide popular high-resolution models simply
   because they require more memory.
-- The [approved RAW-specific allocation budget](architecture.md#limits) applies; JPEG limits stay independent. A
+- The [RAW-specific allocation budget](architecture.md#limits) applies; JPEG limits stay independent. A
   process-wide RSS claim still requires measured editor liveness evidence.
 
 ## Performance checklist
 
-- Source reads, hashes, unpacking and development stay on the existing verified
+- Source reads, hashes, unpacking and development stay on the verified
   source worker. Cache hits, retained mosaics and source exposure/WB reuse keep
-  the existing source-signature path.
+  the source-signature path.
 - Sparse sensor repairs add at most 65,536 index/value pairs, shared with the
   source. Their sorted coordinate list is also bounded. List membership uses
   binary search; constant-marker scans are linear in the bounded sensor size.
-  No new full RGB copy is introduced. Ordered DNG warps reuse one active-area
-  float plane after native demosaic scratch is released, as in the original
-  Air 2S path, within the [approved RAW limits](architecture.md#limits); aggregate editor RSS is measured separately and
+  There is no extra full RGB copy. Ordered DNG warps reuse one active-area
+  float plane after native demosaic scratch is released, as in the
+  Air 2S path, within the [RAW limits](architecture.md#limits); aggregate editor RSS is measured separately and
   high-resolution editor evidence is recorded in the resource ledger.
 - The neutral picker checks at most 65,536 sparse replacements and samples its
   fixed patch with binary-search lookup. It does not develop or rasterize a
   frame. No decoding, color conversion or hashing moves onto the catalog owner.
-- The only desktop admission change is the set of RAW filename extensions in
-  Open. Preview, history, upload and cached source messages retain their existing
-  triggers. No timers, polls or subscriptions are added.
+- On the desktop, admission touches only the set of RAW filename extensions in
+  Open. Preview, history, upload and cached source messages keep their own
+  triggers; there are no timers, polls or subscriptions for it.
 - Native and full editor measurements are scoped in the resource ledger and
-  verification evidence. These changes make no speedup or process-memory-bound
+  verification evidence. This support makes no speedup or process-memory-bound
   claim; loaded-host timings are not a baseline.
 - Exact tests compare stage-ordered gains/warps to separate reference stages,
   sparse correction to an undamaged mosaic, and physical green-site calibration
-  to an independently calculated result. Existing original-source hashes,
+  to an independently calculated result. Original-source hashes,
   independent Air 2S numerical samples and editor history/reopen checks remain
-  required. Crop/orientation continue sharing the developed float planes.
+  required. Crop/orientation share the developed float planes.

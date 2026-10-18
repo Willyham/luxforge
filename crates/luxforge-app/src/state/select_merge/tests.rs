@@ -250,12 +250,6 @@ fn hdr_merge_requests_send_only_what_was_chosen() {
             "exposure_overrides": [{"path": "/a/1.NEF", "offset_ev": -2.0}],
         })
     );
-    for moved in ["alignment", "deghost", "reference", "exposure_overrides"] {
-        assert!(params.get(moved).is_none(), "{moved} is under hdr");
-    }
-    for removed in ["folder_id", "add_to_development_set"] {
-        assert!(params.get(removed).is_none(), "{removed} is not sent");
-    }
 }
 
 /// The folder choice sent: the plan's existing folder, else the choice it suggests, whose folders

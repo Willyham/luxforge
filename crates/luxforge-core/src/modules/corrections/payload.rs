@@ -48,8 +48,7 @@ impl Default for RepairPayload {
 }
 
 /// One operation of the repair layer, in application order: a Clone or Heal drawn with a stroke,
-/// or a frozen patch (TASK-008). Stored as compact JSON in each kind's field order; `kind` says
-/// which.
+/// or a frozen patch. Stored as compact JSON in each kind's field order; `kind` says which.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum Operation {

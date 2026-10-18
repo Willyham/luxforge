@@ -33,7 +33,7 @@ fn valid_segments(value: &str, separator: char, alphabetic_segments: bool) -> bo
         })
 }
 
-/// Module and effect identity: lowercase words separated by dots, e.g. `luxforge.pixel.replace`.
+/// Module and effect identity: lowercase words separated by dots, e.g. `example.module.effect`.
 pub(crate) fn valid_identity(value: &str) -> bool {
     valid_segments(value, '.', true)
 }
@@ -1511,7 +1511,7 @@ fn check_declared<'a>(
     }
     // A correction is one photograph's: its identity, and the geometry and sources an action on it
     // carries, mean nothing on another photograph, so no preset may capture or apply an action
-    // that names one (`docs/design/corrections.md`, decided 2026-10-07).
+    // that names one (`docs/design/corrections.md`).
     if declarer == Declarer::Module
         && kind == "action"
         && declared.preset

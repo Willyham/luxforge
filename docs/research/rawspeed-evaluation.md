@@ -2,7 +2,7 @@
 
 Question: can [RawSpeed](https://github.com/darktable-org/rawspeed) replace LibRaw 0.22.2 in `luxforge-raw` for faster parsing with the same functionality?
 
-Answer, adopted by the owner on 2026-09-30: **do not replace LibRaw. Keep LibRaw for identify, metadata and CR3, and use RawSpeed only to fill the sensor mosaic for the recording modes where it is exact and faster.** The implementation contract is [RawSpeed unpacking](../design/rawspeed-unpack.md). A full replacement cannot keep current behaviour: it loses CR3, changes samples and changes white levels, crops and black levels.
+Answer: **do not replace LibRaw. Keep LibRaw for identify, metadata and CR3, and use RawSpeed only to fill the sensor mosaic for the recording modes where it is exact and faster.** The implementation contract is [RawSpeed unpacking](../design/rawspeed-unpack.md). A full replacement cannot keep current behaviour: it loses CR3, changes samples and changes white levels, crops and black levels.
 
 ## What was measured
 
@@ -43,11 +43,11 @@ These are not routed at all:
 
 About a third of popular-camera files would open 130–550 ms faster. CR3 and Sony ARW, together about 60%, gain nothing.
 
-With OpenMP, RawSpeed alone decodes Fujifilm compressed in about 68 ms, ARW in about 17 ms and Panasonic 2–3× faster again. Luxforge does not use OpenMP, and a Rayon executor for RawSpeed's parallel regions is not part of the adopted work.
+With OpenMP, RawSpeed alone decodes Fujifilm compressed in about 68 ms, ARW in about 17 ms and Panasonic 2–3× faster again. Luxforge does not use OpenMP, and the hybrid has no Rayon executor for RawSpeed's parallel regions.
 
 ## How the pixels must be taken
 
-LibRaw can call RawSpeed itself when built with `USE_RAWSPEED3`, and the first probe used that hook. It has three defects that rule it out:
+LibRaw can call RawSpeed itself when built with `USE_RAWSPEED3`. That hook has three defects that rule it out:
 
 - **Curves.** RawSpeed applies its own linearization curves, dithered by default, which moves about 72% of lossless NEF samples down by one code and ARW samples by up to ±8. With dithering disabled by a source patch, RawSpeed's own curve still differs from LibRaw's on Nikon lossy NEF: 11,181 of 24,498,560 Z6II samples.
 - **Silent fallback.** When RawSpeed fails, the hook quietly decodes with LibRaw instead. It did so on the Z50II and Z5II samples. A routed mode must fail explicitly.
@@ -85,6 +85,6 @@ Standalone RawSpeed decoded every sample except CR3, High Efficiency NEF, Sony A
 
 Unpacking runs on source open and cache misses only. White-balance and exposure edits develop from the retained mosaic, so they do not change.
 
-- **Owner Z6.** Measured after routing: cold saved-WB preparation falls from 303 to 162 ms p50, 141 ms saved ([performance](../specs/performance.md#rawspeed-unpacking)). The 546 ms figure this evaluation started from predates later development work.
+- **Owner Z6.** Routing takes cold saved-WB preparation from 303 to 162 ms p50, 141 ms saved ([performance](../specs/performance.md#rawspeed-unpacking)).
 - **Popular compressed NEF, CR2, lossless RAF, ORF and DNG sources.** Open time falls by 130–550 ms per photo.
 - **Owner X100VI and CR3, ARW and uncompressed sources.** No change.

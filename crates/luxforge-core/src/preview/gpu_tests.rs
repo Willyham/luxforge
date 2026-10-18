@@ -1363,7 +1363,7 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
 /// gesture over the view starts from — over the window the region reads, every texel the whole
 /// stage's. A Detail drag reads the light of the stack it started from, the slot's still; a Basic
 /// drag between them, which changes the light's input by its tone, computes it every tick from the
-/// source with Detail left out, the owner's decision.
+/// source with Detail left out.
 #[test]
 fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let rect = crate::modules::Region {

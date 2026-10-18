@@ -473,8 +473,8 @@ impl ToolModule for LookModule {
     /// `Look Standard` (with its amount when it is not 100) or `Look Neutral`, the values `look`,
     /// `amount`, `chroma`, the knot count `knots` and `fit`, and neutral exactly when the look is
     /// the current Standard at amount 100, the look a new RAW photo starts from, so a client's
-    /// edited mark stays dark for it and lights for Neutral or another amount (the owner's
-    /// decision). A neutral report still renders the look.
+    /// edited mark stays dark for it and lights for Neutral or another amount. A neutral report
+    /// still renders the look.
     fn describe(
         &self,
         effect_id: &str,

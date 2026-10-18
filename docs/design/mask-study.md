@@ -73,7 +73,7 @@ them is not bit-identical to this reference even though it is within tolerance o
 
 ### Legal distances
 
-A stored distance — the linear axis's mask-space length, a radial radius, later a brush radius — is
+A stored distance — the linear axis's mask-space length, a radial radius, a brush radius — is
 legal when it is finite and
 
 ```text
@@ -126,10 +126,9 @@ empty component list composes to `m = 0`, so an empty mask selects nothing rathe
 
 ### What settles P2
 
-The design's recorded default was Zadeh, for idempotence. The measured comparison confirms it, and
-the margin is not close. The alternative implemented alongside it is the coherent product algebra —
+Zadeh is chosen for idempotence, and the measured comparison's margin is not close. The alternative implemented alongside it is the coherent product algebra —
 the probabilistic sum `1 - (1 - m)(1 - c)` for add, `m(1 - c)` for subtract, `m * c` for intersect —
-stated as a whole algebra rather than as the design's `m(1 - c)` alone, because a `max` union with a
+stated as a whole algebra rather than as `m(1 - c)` alone, because a `max` union with a
 product difference is neither family and has neither family's properties.
 
 | Property the component list needs | Zadeh | Product |
@@ -150,8 +149,8 @@ product difference is neither family and has neither family's properties.
   add-only component lists of 300 randomized masks four times each and asserts bit-identical
   coverage: `max` is exact and commutative, so reordering is free. The product algebra is
   order-independent *mathematically* and not in `f64` — the accumulated product rounds differently —
-  measuring `1.943e-16`. That is negligible in size and fatal in kind: `mask.reorder` could no
-  longer promise that moving a component leaves the pixels alone.
+  measuring `1.943e-16`. That is negligible in size and fatal in kind: `mask.reorder` could not
+  promise that moving a component leaves the pixels alone.
 - **Arithmetic cost.** `max` and `min` introduce no rounding at all
   (`the_algebras_own_rounding_is_orders_below_the_frozen_tolerance` asserts the result is one of the
   two operands, exactly). The only rounding the algebra itself contributes is one `1 - c` per
@@ -320,8 +319,7 @@ Two more properties are proved, over 2000 and 300 randomized payloads:
 
 ### What settles P3
 
-**Confirmed: a radial selects inside.** The design's default stands, and it is not only a taste
-argument.
+**A radial selects inside**, and not only as a matter of taste.
 
 - The two readings are *exact* complements: a component's inversion and its coverage sum to exactly
   `1.0` at every sampled point, with no measured deviation at all
@@ -405,7 +403,7 @@ s = if hard { if d <= R { 1 } else { 0 } }
 stroke = s * amount
 ```
 
-**The minimum distance, not the maximum profile.** The design states one stroke's coverage as the
+**The minimum distance, not the maximum profile.** One stroke's coverage can be written as the
 maximum over its segments of the capsule profile; the frozen spelling evaluates the profile once, at
 the smallest distance. The two are the same number *bit for bit* — the profile is nonincreasing in
 `d`, and `max` returns one of its operands exactly — and
@@ -484,8 +482,8 @@ which they are because folding one sample by `min` against `+infinity` returns t
 distance exactly.
 
 **The multiply is last, after `flow`, and only a constrained stroke performs it.** An unconstrained
-stroke evaluates exactly the expression the profile above ends with, with no `* 1.0` appended, so the
-delivered brush's bit-identity is untouched by this section
+stroke evaluates exactly the expression the profile above ends with, with no `* 1.0` appended, so an
+unconstrained stroke's bit-identity is untouched by the constraint
 (`an_unconstrained_stroke_is_unchanged_by_the_colour_constraint`, by bit pattern). `(profile ·
 amount) · k` is the frozen association; `profile · (amount · k)` is algebraically equal, within
 tolerance and not bit-identical, and is forbidden by the [transcription rule](#transcription) like
@@ -504,8 +502,8 @@ Four properties follow from the similarity's own range, and each is proved rathe
 (`the_colour_constraint_only_ever_removes_coverage`):
 
 - `k` is in `[0, 1]` for every finite pixel, so a constrained stroke's coverage is **never above** the
-  same stroke unconstrained. The [conservative box](#the-conservative-box) therefore still bounds the
-  component exactly, unchanged: coverage is still exactly zero wherever `d > R`.
+  same stroke unconstrained. The [conservative box](#the-conservative-box) therefore bounds the
+  component exactly: coverage is exactly zero wherever `d > R`.
 - `k` is exactly `1.0` at the seed colour and out to `PLATEAU · radius` of it, because `smooth(1)` is
   exactly `1.0` — so a constrained stroke over the colour it was seeded on is *the same stroke*, bit
   for bit, as the unconstrained one.
@@ -515,9 +513,9 @@ Four properties follow from the similarity's own range, and each is proved rathe
   rather than merely close.
 
 **What it costs the rest of the mask.** A constrained stroke makes its component a *value-based* one
-in the sense the [range study](range-study.md#what-a-range-selection-reads) defines: coverage is no
-longer a function of position alone, so the component answers `reads_pixels`, the
-[overlay's refusal](range-study.md#proposals) applies to it, and what it selects moves when a layer
+in the sense the [range study](range-study.md#what-a-range-selection-reads) defines: coverage is not
+a function of position alone, so the component answers `reads_pixels`, the overlay reads it at
+the mask's input site ([P16](range-study.md#proposals)), and what it selects moves when a layer
 ahead of the masked one changes the operation's input. Its **geometric** feature width is unaffected
 and is still the answer `min_feature_px` gives, because the colour test draws no ramp across the
 frame for a pixel grid to miss — the same answer, and the same reason, as
@@ -620,7 +618,8 @@ segment lies inside the box of its two endpoints.
 
 - **The grid index is a production concern, not a numerical one.** Its correctness is the exactness
   property above — a stroke the pixel cannot reach contributes exactly nothing — and the cell size,
-  the occupancy cap and the refusal are the transcription task's to choose and to measure. Nothing
+  the occupancy cap and the refusal are chosen and measured with the production unit
+  ([the occupancy cap](masking.md#the-occupancy-cap)). Nothing
   about the field changes with them.
 - **The pixel rectangle is not frozen here**, only the mask-space box. Turning a mask-space box into
   a conservative pixel rectangle is the same closed form the radial's already uses, with the same two
@@ -685,23 +684,20 @@ which the `s = 0` identity above makes bit-identical rather than merely close.
 
 ## Limitations and what this study does not settle
 
-- **The position range is not settled.** The design stores `x, y` in `[0, 1]`, which forbids a
-  gradient endpoint or a radial centre outside the frame — both of which the gesture naturally
-  allows, and both of which are ordinary edits (a gradient whose coverage never reaches 0 inside the
-  frame cannot be expressed with endpoints inside it). Every formula above is total on finite inputs
-  and `legal_payloads_never_produce_non_finite_coverage` exercises coverage from `-2` to `4` in both
-  axes, so **nothing in the frozen mathematics changes if the range is widened**; only the validation
-  rule and the payload contract do. The recommendation is `[-1, 2]` — one stage extent of overshoot
-  on each side, which keeps every stored coordinate bounded and every derived distance inside the
-  ceiling above. This is a product and validation decision, not a numerical fact, so it is recorded
-  here for the owner rather than decided. **Decided on 2026-09-23: widened to `[-1, 2]`**, as recommended; the
-  design and the validation rule carry it and nothing in the mathematics above changed.
+- **The position range is a validation rule, not a numerical fact.** Stored `x, y` are in
+  `[-1, 2]`, one stage extent of overshoot on each side, because a gradient endpoint or a radial
+  centre outside the frame is an ordinary edit (a gradient whose coverage never reaches 0 inside the
+  frame cannot be expressed with endpoints inside it), and that range keeps every stored coordinate
+  bounded and every derived distance inside the ceiling above. Every formula above is total on finite
+  inputs and `legal_payloads_never_produce_non_finite_coverage` exercises coverage from `-2` to `4` in
+  both axes, so **nothing in the frozen mathematics depends on the range**; only the validation rule
+  and the payload contract do.
 - **Composed coverage is C⁰ at component crossings**, measured above, and that is the price of the
   frozen algebra's exactness properties. If the crease turns out to matter in practice, the product
   algebra is the alternative and its cost is stated: reorder, duplicate and re-run stop being
   identities.
 - **No fixture file is frozen.** Coverage is a pure function of a handful of numbers with no colour
-  space or transfer function in it, so the transcription tasks test the production unit against this
+  space or transfer function in it, so the production unit is tested against this
   reference in process, pixel by pixel. A committed JSON oracle would be a third artefact to keep in
   step for no coverage the direct comparison does not already give. The vignette and mixer studies
   freeze fixtures because their inputs are pixels; this one's are payloads.
@@ -743,7 +739,7 @@ randomized comparison uses a fixed SplitMix64 seed, so the figures are reproduci
 - [Vignette study](vignette-study.md) — the positional coverage field, the `smooth` falloff, the explicit hard-step case and the tolerance this study follows.
 - [Content-space edits](content-space-edits.md) — the content stage mask space is defined against.
 - [Instant previews](instant-preview.md) — why normalized storage keeps a masked recipe proxy eligible.
-- [Colour mixer mathematics](mixer-study.md) — the study format, and the Oklab basis the range selections will reuse.
+- [Colour mixer mathematics](mixer-study.md) — the study format, and the Oklab basis the range selections reuse.
 - [Range-selection mathematics](range-study.md) — the Oklab chromaticity metric, the refine mapping and the value-based answers [the colour constraint](#the-colour-constraint) reuses unchanged.
 - [Architecture](architecture.md) — the per-side and per-buffer limits the distance ceiling is reasoned against.
 - [Performance rules](../engineering/performance-rules.md) — the point-query and per-pixel cost rules the frozen forms are chosen under.

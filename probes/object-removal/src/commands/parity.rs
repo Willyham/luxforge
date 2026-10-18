@@ -4,8 +4,7 @@
 //! This is a correctness check, not a benchmark: each model runs a fixed, deterministic,
 //! seeded input once per backend (load, then a first run, then three more "warm" runs whose
 //! median is reported). It is not the timing tier (`bench`, `measure`) and draws no performance
-//! conclusion; see `docs/design/object-removal.md`'s "What the prototype must show" for the
-//! M4 measurements that belong in TASK-006 instead.
+//! conclusion.
 //!
 //! A model whose test input is itself model output (both decoders take a segmenter's own
 //! embeddings) is seeded by running that encoder once, on ort-cpu, regardless of which backends
@@ -163,7 +162,7 @@ fn seeded_normalized_image(seed: u64, shape: [usize; 4]) -> Tensor {
 /// LaMa's test input: a smooth per-channel gradient in `[0, 1]` (so the mean/max diffs below are
 /// not dominated by high-frequency noise a resize would blur differently per backend) plus
 /// seeded low-amplitude noise, and a centred square hole. `mask` is 1 inside the hole, 0 outside,
-/// matching the "fill this in" convention `fill::remove` (TASK-003) composites against.
+/// matching the "fill this in" convention `fill::remove` composites against.
 fn lama_inputs(seed: u64, size: usize) -> (Tensor, Tensor) {
     let mut rng = Rng::new(seed);
     let mut image = vec![0f32; 3 * size * size];

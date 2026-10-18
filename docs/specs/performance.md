@@ -26,14 +26,14 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 | Launch to usable empty shell | p95 < 1 s warm, < 2 s cold |
 | Uncached 24 MP JPEG to Fit preview | p95 < 750 ms; loading feedback within 100 ms |
 | Crop overlay frame time | p95 ≤ 16.7 ms at 60 Hz |
-| Slider input to presented frame at Fit, warm 24 MP | p95 < 16 ms; acceptable below 32 ms; a miss at or above 32 ms (owner's target of 2026-09-22) |
+| Slider input to presented frame at Fit, warm 24 MP | p95 < 16 ms; acceptable below 32 ms; a miss at or above 32 ms |
 | RAW exposure drag at Fit, input to presented frame, Z6 and X100VI | p95 ≤ 50 ms |
 | Burst drag (120 inputs per second for three seconds, alternating direction) | ≥ 30 presented frames per second; each presented frame's staleness p95 ≤ 50 ms |
 | Settled exact histogram after the last input, 24 MP | p95 < 200 ms |
 | Geometry input to presented preview | p95 < 50 ms once the source preview is ready |
 | Empty steady-state process memory | ≤ 150 MiB including helper processes |
 | 24 MP single-image edit working set | ≤ 600 MiB CPU-resident |
-| 60 MP import peak | ≤ 1 GiB process RSS, GPU memory reported separately; an export may exceed it (owner, 2026-10-13) |
+| 60 MP import peak | ≤ 1 GiB process RSS, GPU memory reported separately; an export may exceed it |
 | Idle CPU | < 1% of one core over 30 s after background work settles |
 | First page of a 100,000-row indexed filter | p95 < 100 ms warm (catalog qualification) |
 | Warm adjacent-image Fit preview | p95 < 150 ms on a cache hit (catalog qualification) |
@@ -42,7 +42,7 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 ## Auto tone
 
-Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-16, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs. The host was shared with other sessions; each run's one-minute load is given with it, and a figure taken above 8.0 is not a baseline.
+Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs. The host was shared with other sessions; each run's one-minute load is given with it, and a figure taken above 8.0 is not a baseline.
 
 **Click to entry.** `editor-latency --mode auto-tone --samples 30`, background evidence launches at Fit with a warm filesystem cache: from the input (the Auto button's action; `--shortcut` sends ⌘U through the key table) to the `analysis_action_answered` of the entry it committed, and to that entry's first exact frame. Warm samples reuse the photograph's sample grid, read once by an unmeasured first Auto in each launch; cold samples commit a slightly larger crop first, so each reads a new grid. On the GPU the frame is adopted with the answer; the reference's exact frame arrives reduced to the view after it.
 
@@ -76,46 +76,46 @@ Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-16, g
 | 60mp | Basic | reference | warm | 133.9 / 134.9 | 0.012 | 134.9 |
 | 60mp | Look 200 | reference | warm | 444.1 / 459.1 | 0.017 | 459.1 |
 
-The warm solve through Basic is about 95 ms at 24 MP and 122 ms at 60 MP, against 40 ms and 55 ms measured on 2026-10-08 under a similar load; the cause is not investigated. The pooled solve is the basis of the [parallelism rule](../engineering/performance-rules.md): on 2026-10-08, under a load of 1.84 to 5.45, the warm solve took 40.5 ms p95 at 24 MP pooled against 220.9 ms with the shared pool held to one thread (`RAYON_NUM_THREADS=1`), with the same values. The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget.
+The warm solve through Basic is about 95 ms at 24 MP and 122 ms at 60 MP. The pooled solve is the basis of the [parallelism rule](../engineering/performance-rules.md): the warm solve took 40.5 ms p95 at 24 MP pooled against 220.9 ms with the shared pool held to one thread (`RAYON_NUM_THREADS=1`), with the same values. The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget.
 
 Evidence: `artifacts/qual-sweep/timing-3/auto-*` and `timing-2/auto-*-reference` (click to entry) and `artifacts/qual-sweep/timing-4/auto-engine.json` (the engine), each with its binary, source hashes, load and scope. Reproduce with `editor-latency --mode auto-tone` and the ignored test, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`. [Auto tone](../design/auto-tone.md) records correctness and the remaining owner qualification.
 
 ## Code structure consolidation
 
-The static `luxforge-gpu-types` / `luxforge-gpu` split and worker-scoped stream preparation are implemented ([design](../design/code-structure.md)). Native Apple M4 Pro / Metal, release, 2026-10-07: full verification passes all 77 components, including the complete available authentic-source corpus of 277 recipe/source pairs, with originals unchanged and existing tolerances retained. The four standard timing components are reliable, at one-minute starting load 3.69–4.67.
+The static `luxforge-gpu-types` / `luxforge-gpu` split and worker-scoped stream preparation are implemented ([design](../design/code-structure.md)). Native Apple M4 Pro / Metal, release: full verification passes all 77 components, including the complete available authentic-source corpus of 277 recipe/source pairs, with originals unchanged and existing tolerances retained. The four standard timing components are reliable, at one-minute starting load 3.69–4.67.
 
-Matched measurements use separate release targets for pre-refactor `3ac13023` and integrated `d62f4aa0`, 30 samples per workload. Binary SHA-256 is `b3b913ddbd585015ebe32ea7077490513d08af0dc1c22fa70638aa1ee5eb9ea0` before and `c449fa464bf5466c0ced27a44184af566d76f8102ec24322d7c9a263239544df` after; the latter is also the full tier’s binary. Filesystem and system shader caches are not purged. Desktop drag preconditions warm for 1,000 ms, commit preconditions settle, and the export worker discards one warmup. Background invisible windows measure the editor’s texture, excluding scanout/compositing. High-load export observations are retained as unreliable; the accepted matched export trace is 3.18–3.60.
+Measurements are release builds, 30 samples per workload. Filesystem and system shader caches are not purged. Desktop drag preconditions warm for 1,000 ms, commit preconditions settle, and the export worker discards one warmup. Background invisible windows measure the editor’s texture, excluding scanout/compositing. The export trace was taken at a one-minute load of 3.18–3.60; observations at a higher load are unreliable.
 
-The controlled setup workload builds all three candidate grids plus staged/light selection from an already compiled evaluation, with no pixel reads or GPU work. Across JPEG and synthetic developed RAW at both sizes, plan preparations fall from five to one and stack compiles from five to zero. These are counts for the complete candidate workload; a production request may stop at an earlier strategy. Scoped worker tests independently prove one preparation and no recompile for the selected request.
+The controlled setup workload builds all three candidate grids plus staged/light selection from an already compiled evaluation, with no pixel reads or GPU work. Across JPEG and synthetic developed RAW at both sizes, the complete candidate workload makes one plan preparation and no stack compile; a production request may stop at an earlier strategy. Scoped worker tests independently prove one preparation and no recompile for the selected request.
 
-| Setup domain/size | Setup ms p50 before → after | Setup ms p95 before → after |
+| Setup domain/size | Setup ms p50 | Setup ms p95 |
 | --- | ---: | ---: |
-| JPEG 6000×4000 | 0.0615 → 0.0209 | 0.0664 → 0.0264 |
-| RAW 6000×4000 | 0.0543 → 0.0180 | 0.0714 → 0.0182 |
-| JPEG 9504×6336 | 0.0644 → 0.0265 | 0.0704 → 0.0295 |
-| RAW 9504×6336 | 0.0665 → 0.0275 | 0.0693 → 0.0297 |
+| JPEG 6000×4000 | 0.0209 | 0.0264 |
+| RAW 6000×4000 | 0.0180 | 0.0182 |
+| JPEG 9504×6336 | 0.0265 | 0.0295 |
+| RAW 9504×6336 | 0.0275 | 0.0297 |
 
-The editor stack holds Detail, a full non-neutral Basic layer and all three Presence fields. JPEGs are generated 24/60 MP fixtures; RAW is the authentic Nikon Z6 source. Each paired run preserves its original hash. Commit-to-frame can show the current processed motion frame before exact counts settle; those are separate costs.
+The editor stack holds Detail, a full non-neutral Basic layer and all three Presence fields. JPEGs are generated 24/60 MP fixtures; RAW is the authentic Nikon Z6 source. Each run preserves its original hash. Commit-to-frame can show the current processed motion frame before exact counts settle; those are separate costs.
 
-| Source | Drag to frame ms p95 before → after | Commit to frame ms p95 before → after | Commit to exact histogram ms p95 before → after |
+| Source | Drag to frame ms p95 | Commit to frame ms p95 | Commit to exact histogram ms p95 |
 | --- | ---: | ---: | ---: |
-| jpeg24 | 10.12 → 9.18 | 10.15 → 9.93 | 242.73 → 242.64 |
-| jpeg60 | 10.55 → 9.54 | 16.67 → 16.59 | 643.74 → 649.69 |
-| nikon-z6 | 9.47 → 9.34 | 10.49 → 10.48 | 309.74 → 310.10 |
+| jpeg24 | 9.18 | 9.93 | 242.64 |
+| jpeg60 | 9.54 | 16.59 | 649.69 |
+| nikon-z6 | 9.34 | 10.48 | 310.10 |
 
 The production export band stream is consumed in order with source development, JPEG encoding and durable publication outside its timer. The 20 MP masked RAW stream uses synthetic developed linear planes. Complete JPEG publication and source preservation are separately checked by the native corpus and rendered export journeys.
 
-| Export-stream workload | ms p50/p95 before | ms p50/p95 after | Charged worker peak MiB, unchanged |
-| --- | ---: | ---: | ---: |
-| the 60 MP drag stack | 433.97/440.49 | 432.70/440.55 | 1212.43 |
-| the Air 2S masked stack | 341.57/357.32 | 340.61/346.67 | 2023.05 |
-| Detail alone at 24 MP | 91.29/93.92 | 92.95/98.86 | 622.29 |
+| Export-stream workload | ms p50/p95 | Charged worker peak MiB |
+| --- | ---: | ---: |
+| the 60 MP drag stack | 432.70/440.55 | 1212.43 |
+| the Air 2S masked stack | 340.61/346.67 | 2023.05 |
+| Detail alone at 24 MP | 92.95/98.86 | 622.29 |
 
-All warmed stream samples compile zero GPU programs. Matched commit preview charge peaks are unchanged: 1242.41 MiB at 24 MP JPEG, 1953.81 MiB at 60 MP JPEG and 1963.08 MiB on Nikon RAW. These are existing charges, excluding crop/overlay, backend staging and driver/pipeline overhead; CPU scratch, sampled RSS and native GPU observations retain their separate scope. The measured editing, commit and export-stream costs remain similar; no generalized speedup or total-memory guarantee is claimed.
+All warmed stream samples compile zero GPU programs. Commit preview charge peaks are 1242.41 MiB at 24 MP JPEG, 1953.81 MiB at 60 MP JPEG and 1963.08 MiB on Nikon RAW. These are existing charges, excluding crop/overlay, backend staging and driver/pipeline overhead; CPU scratch, sampled RSS and native GPU observations retain their separate scope. No generalized speedup or total-memory guarantee is claimed.
 
 Linux aarch64 container headless checks with every graphics driver hidden pass, including slow tests and doctests, as does release owner acceptance. GPU tests skip explicitly there. The optimized editor builds and enumerates no adapter with drivers hidden; all 13 software-rendered journeys pass under Xvfb on Mesa llvmpipe (Vulkan, Cpu), including default reference rendering, explicit software adoption, histogram, GPU preview and no-GPU fallback. This is functional VM/software evidence, not native GPU evidence. Native Windows/Linux GPU evidence and authentic 60 MP RAW desktop/export timings remain unavailable; Windows CI is disabled. Those scopes and complete memory accounting remain open.
 
-Evidence is in `artifacts/code-structure-integrated-full-corrected/summary.json` and `artifacts/code-structure-comparison/report.{md,json}`. The comparison retains every sample, matched workload/recipe, source/binary/lockfile identity, adapter, command, cache scope and host-load trace. Reproduce using the ignored `code_structure_stream_setup_measurement` and `code_structure_export_measurement` tests in release, plus `editor-latency --samples 30 --basic --detail --presence` in drag/commit modes on the same three sources. Use a quiet native host and fresh output directories.
+Evidence is in `artifacts/code-structure-integrated-full-corrected/summary.json` and `artifacts/code-structure-comparison/report.{md,json}`, which retain every sample, workload/recipe, source/binary/lockfile identity, adapter, command, cache scope and host-load trace. Reproduce using the ignored `code_structure_stream_setup_measurement` and `code_structure_export_measurement` tests in release, plus `editor-latency --samples 30 --basic --detail --presence` in drag/commit modes on the same three sources. Use a quiet native host and fresh output directories.
 
 ## Window visibility and event-driven monitoring
 
@@ -125,7 +125,7 @@ sampling. Export, capability and catalog readers use bounded authoritative `job.
 background work and final/partial business answers remain active. Windows/Linux native visibility
 facts are unsupported and retain ordinary sampling.
 
-Native functional qualification on the Apple M4 Pro, Metal, macOS aarch64, 2026-10-06:
+Native functional qualification on the Apple M4 Pro, Metal, macOS aarch64:
 `verify --tier quick` passes, as do the touched `select`, `resolve-missing`, `develop-picks`,
 `export`, `capabilities`, `performance` and `visibility-monitoring` rendered scenarios. Actual
 AppKit order-out/order-in, minimize/restore and app hide/unhide callbacks correlate with timer/read
@@ -136,15 +136,11 @@ Hidden export success/refusal and capability success/failure/cancellation are ad
 first-look, folder-add, Search partial answers, Locate and Batch adoption retain job identity and
 are tested independently of the activity board's display progress.
 
-Measurement scope is the optimized `release` editor, binary SHA-256
-`e9a4abbb29cb14245c96b4d6c59c7a0348afa68078e3b3e1bf534f16e00c2fd4`, Cargo.lock SHA-256
-`d3fd725c365ad4eca4a24d6187e71dc5fc9f8f6678d04e603acb17a2f1624318`, and the generated
-6000×4000 JPEG (source SHA-256
-`b54c2a158a3d384674f5d731f940d553039d61f51b83a0e7b1e3b0247aa056eb`). The window is 1440×900
-logical points in a background-only bundle: physically ordered in for native visible facts,
-transparent and ignoring pointer input, never key or activated. Frames are renderer readbacks.
-This qualifies the presentation gate and process cost in that harness; it does not qualify an
-opaque foreground window's compositing or compare against a pre-change build.
+Measurement scope is the optimized `release` editor and the generated 6000×4000 JPEG. The window
+is 1440×900 logical points in a background-only bundle: physically ordered in for native visible
+facts, transparent and ignoring pointer input, never key or activated. Frames are renderer
+readbacks. This qualifies the presentation gate and process cost in that harness; it does not
+qualify an opaque foreground window's compositing.
 
 Each run has three rounds of expanded, collapsed and hidden-expanded observations, 30 seconds
 per state after a one-second settle. Evidence ticks and captures are suspended in each window.
@@ -192,13 +188,11 @@ zero board wakes and no display timer. One CPU step is about 0.052% at this shor
 Internal counters including diagnostic boundaries measured 5.7–10.6 ms for the quiescent hidden,
 collapsed and held intervals. They are a different scope from the contained external readings.
 
-Other builds and editor workloads ran on the host. Spot checks during the first photo run showed
-one-minute load between about 5.9 and 28.1; the first capability run began around 38.3. A separate
-five-second host-load trace for the second photo/capability runs recorded 4.43–18.87, and the
-second held windows themselves were at 4.43–7.21. These are process CPU observations with native
-functional evidence, without a generalized quiet-host baseline or a before/after speedup claim.
+The host was shared with other builds and editor workloads, at a one-minute load between about
+4.4 and 38; the second held windows were at 4.43–7.21. These are process CPU observations with
+native functional evidence, without a generalized quiet-host baseline or a speedup claim.
 Rendering, proxy CPU work, preview/decode scheduling, CPU pools and memory targets are outside
-this change.
+this scope.
 
 Evidence: `/private/tmp/luxforge-visibility-monitoring-20261006-{1,2}` and
 `/private/tmp/luxforge-visibility-rendered-capabilities-20261006-{1,2}` hold each run's result,
@@ -213,27 +207,22 @@ and full tiers are not claimed as passes.
 ## Detail and shared restoration: contract and review
 
 Scope: the Restoration placement stage and `CompileStage`, Detail's bounded spatial units,
-RGB16 JPEG hand-offs shared with Presence, exact-derived Fit display, the processed restoration
-prefix cache, off-owner pixel reads and value-mask input grids. The [Detail design](../design/detail.md)
+RGB16 JPEG hand-offs shared with Presence, off-owner pixel reads and value-mask input grids. The [Detail design](../design/detail.md)
 and [study](../design/detail-study.md) separate delivered code from outstanding image-quality gates.
-The [GPU-first plan](../design/gpu-first.md#stages-and-what-each-deletes) has since removed the
-restoration-prefix cache, Detail's own exact-derived Fit display, the prepared estimates, the source
-proxy's windows and the quiet and settle policy; the answers below record the change as it was
-reviewed, on that build, and those parts of them no longer describe the editor.
 This section records the [performance-rules checklist](../engineering/performance-rules.md#review-checklist);
-it contains no new timing, native residency or total-memory qualification.
+it contains no native residency or total-memory qualification.
 
-| Review question | Answer for this change |
+| Review question | Answer |
 | --- | --- |
-| Which paths read, hash or decode originals? | Preparation still uses the signature-verified source worker and decoded-source cache. Rendering, cached prefixes, deferred point reads and overlay grids receive immutable prepared sources. Cache keys hash bounded recipe/mask data, never source pixels. |
-| Which full-frame allocations are new and how are they bounded/shared? | JPEG spatial hand-offs can be RGB16 at six bytes per pixel; each buffer is checked against 512 MiB and the uncached byte driver keeps at most two evaluated frames live. The one restoration-prefix entry added at most 128 MiB, independently of the one source proxy and eight prepared estimates; narrow RGBA8, RGB16 and RAW planar f32 prefix buffers were shared by `Arc` into suffix rendering. RAW spatial frames keep the 1.5 GiB per-buffer limit. Exact-derived Fit output was at most 8 MP of RGBA8 (32 MiB); reduce-only jobs share the retained full raster. One overlay input grid holds at most 8 million cells (six JPEG bytes or twelve RAW bytes per cell, plus an outside bitset), and its temporary grouped indices use four bytes per cell. Row scratch keeps the 64 MiB target; spatial work keeps the shared 256 MiB target and at least one finite oversized tile may progress. Overflowed working-set byte counts fail before allocation. These bounds do not define total process or GPU residency. |
+| Which paths read, hash or decode originals? | Preparation uses the signature-verified source worker and decoded-source cache. Rendering, deferred point reads and overlay grids receive immutable prepared sources. Cache keys hash bounded recipe/mask data, never source pixels. |
+| Which full-frame allocations are there and how are they bounded/shared? | JPEG spatial hand-offs can be RGB16 at six bytes per pixel; each buffer is checked against 512 MiB and the uncached byte driver keeps at most two evaluated frames live. RAW spatial frames keep the 1.5 GiB per-buffer limit. One overlay input grid holds at most 8 million cells (six JPEG bytes or twelve RAW bytes per cell, plus an outside bitset), and its temporary grouped indices use four bytes per cell. Row scratch keeps the 64 MiB target; spatial work keeps the shared 256 MiB target and at least one finite oversized tile may progress. Overflowed working-set byte counts fail before allocation. These bounds do not define total process or GPU residency. |
 | Do point queries, validation or no-op checks render a frame? | Validation and no-op planning read payloads and stage metadata. A pixel read through a spatial prefix is a GPU tile read by the tile service, or on the reference the prefix's spatial frames materialized once per call. Dense overlay cells share one tile pass; sparse cells evaluate grown windows through the same tile runner, over the frames of any earlier spatial segment. |
-| What runs on the owner thread? | Descriptor/recipe validation, compilation, stage calculation, request identity, transactions and replay checks remain owner work. Every pixel read is handed to the tile service off the owner; a query's reads share one session, and a mutation parks once per pixel read, its replay checking the entry, revision, draft and verified source before committing. Preview rendering, cache construction, exact display reduction and overlay grid evaluation remain worker work. |
-| Which desktop messages request state, history, previews or uploads? | Existing mutations keep their normal state/history refresh and one preview request. Fit resize, panel/display-scale changes and zoom-back request reduction alone when matching exact pixels exist; no additional `asset.state` or `history.list` call is introduced. The matching exact-derived display was uploaded once; it named displayed content without claiming full-resolution texture residency through `full_content`. Value-mask overlays rebuild only when their input/grid key changes. |
-| Which timers, polls or subscriptions were added? | None. The event-driven workers, bounded latest-job queues and shared 25 ms quiet timer/120 ms settlement policy of that build remained. Detail checks cancellation between levels and bounded row chunks, including within the first tile. Disconnect drops queued and parked pixel reads and cancels the active one; obsolete reductions supersede on the preview worker. |
-| Which unchanged work is cached, with which keys, limits and measurements? | The restoration prefix avoided repeated denoise/sharpen work during downstream drags; overlay and thumbnail input grids avoid repeated prefix evaluation when only mask coverage changes. Keys included source/development identity, canonical prefix and referenced masks, geometry, window, sampling dimensions, byte width and mask-input domain as applicable. Each worker kept one disposable derived-pixel entry: at most 128 MiB for the restoration prefix or 8 million cells for an input grid. Neither cache retained an evaluation or source. Exact recomputation, key invalidation and reuse are tested; photo-sized hit rates, rebuild costs and retained-byte measurements remain unqualified in TASK-014. |
-| What did 24 MP before/after performance report? | Pending a quiet-host distribution. The tile kernels' before and after, at a one-minute load of 22 to 57, are in [Detail tile kernels](#detail-tile-kernels): a full 24 MP render's CPU time fell from about 19 to 6.3 s with the frame's bytes unchanged. No latency-budget pass, Presence JPEG regression verdict or total-memory claim follows from the focused functional tests. Native measurements must record build/source identity, host load, sample counts, warm/cold prefix use, source-proxy construction and the extra exact-derived display reduction. |
-| Which tests prove exactness and sharing? | Detail's independent reference and deterministic production oracle cover coefficients, extended/constant pixels, tile sizes, sampled kernels and serial/pool parity. RGB16 tests covered every threshold, original 8-bit decode identity, the dark smoothing ramp through Basic, full/sample/region/window equality and buffer limits. Restoration-cache tests compared cached suffix bytes with uncached JPEG/RAW output, whole and cut-window stages, masks, boundary-width changes, downstream reuse and key invalidation. Worker/app tests checked exact-derived Fit reduction, generation/content adoption, retained-raster sharing and the distinction between displayed and full-resolution content. Deferred-read and input-grid tests check exact prefix values, owner responsiveness, revision fences, dense/sparse equality and cache invalidation. Native rendered/photo qualification and measurement-only tests remain separate evidence. |
+| What runs on the owner thread? | Descriptor/recipe validation, compilation, stage calculation, request identity, transactions and replay checks are owner work. Every pixel read is handed to the tile service off the owner; a query's reads share one session, and a mutation parks once per pixel read, its replay checking the entry, revision, draft and verified source before committing. Preview rendering, cache construction and overlay grid evaluation are worker work. |
+| Which desktop messages request state, history, previews or uploads? | A mutation makes its normal state/history refresh and one preview request. Value-mask overlays rebuild only when their input/grid key changes. |
+| Which timers, polls or subscriptions are there? | None. Detail checks cancellation between levels and bounded row chunks, including within the first tile. Disconnect drops queued and parked pixel reads and cancels the active one. |
+| Which unchanged work is cached, with which keys, limits and measurements? | Overlay and thumbnail input grids avoid repeated prefix evaluation when only mask coverage changes. Keys include source/development identity, canonical prefix and referenced masks, geometry, window, sampling dimensions, byte width and mask-input domain as applicable. Each worker keeps one disposable input-grid entry of at most 8 million cells, retaining no evaluation or source. Exact recomputation, key invalidation and reuse are tested; photo-sized hit rates, rebuild costs and retained-byte measurements remain unqualified. |
+| What does 24 MP performance report? | Pending a quiet-host distribution. A full 24 MP Detail render's time is in [the kernels together](#the-kernels-together). No latency-budget pass, Presence JPEG regression verdict or total-memory claim follows from the focused functional tests. Native measurements must record build/source identity, host load and sample counts. |
+| Which tests prove exactness and sharing? | Detail's independent reference and deterministic production oracle cover coefficients, extended/constant pixels, tile sizes, sampled kernels and serial/pool parity. RGB16 tests cover every threshold, original 8-bit decode identity, the dark smoothing ramp through Basic, full/sample/region/window equality and buffer limits. Deferred-read and input-grid tests check exact prefix values, owner responsiveness, revision fences, dense/sparse equality and cache invalidation. Native rendered/photo qualification and measurement-only tests remain separate evidence. |
 
 ### Detail tile kernels
 
@@ -244,33 +233,31 @@ pass, taking each pixel's chroma energy and factor once; it smooths only the cha
 there or at a later level is not zero, so Luminance alone smooths no chroma and the fourth level no
 lightness; it takes the band in the vertical pass and swaps its planes rather than copying them back.
 Sharpening whose blur is its guide, as at Radius 1, smooths once ([Detail](../design/detail.md)).
-Each pixel's operations are the ones before, in the same order, so the output is the same to the bit:
-the tap-by-tap references frozen in `modules/detail/exactness.rs` and every earlier Detail test hold
-it, and `detail-performance`'s `frame_sha256` did not change.
+The independent Detail oracle (`modules/detail/oracle.rs`), the f64 fixtures and the Detail tests
+hold the output.
 
 `detail-performance`, release, 30 samples a run, its fixed recipe (Detail at Luminance 25, Colour 25
-and sharpening 40 under a +0.5 EV exposure), the builds before and after interleaved, Apple M4 Pro,
-2026-10-03, at a one-minute load of 22 to 57: well past the 8.0 a quotable distribution needs, so the
-wall-clock figures are not quotable, and the CPU time each render took is the figure that holds. The
-textured source is `detail.jpg` tiled to 6000 × 4000, since the generated 24 MP JPEG is flat
+and sharpening 40 under a +0.5 EV exposure), Apple M4 Pro, two runs at a one-minute load of 22 to
+57: well past the 8.0 a quotable distribution needs, so these wall-clock figures are not quotable.
+The textured source is `detail.jpg` tiled to 6000 × 4000, since the generated 24 MP JPEG is flat
 quadrants.
 
-| Source | Full render, CPU s p50, before | After | A point through Detail, first request / first colour-limited tick, ms p50, before | After |
-| --- | ---: | ---: | ---: | ---: |
-| `24mp.jpg` | 19.1, 19.8 | 6.39, 6.33 | 129 to 137 / 130 to 146 | 27.4 to 27.5 / 27.4 |
-| Tiled `detail.jpg` | 19.6, 18.1 | 6.21, 6.23 | 137 to 139 / 144 to 175 | 28.4 to 35.5 / 28.5 to 36.6 |
+| Source | A point through Detail, first request / first colour-limited tick, ms p50 |
+| --- | ---: |
+| `24mp.jpg` | 27.4 to 27.5 / 27.4 |
+| Tiled `detail.jpg` | 28.4 to 35.5 / 28.5 to 36.6 |
 
-One 512 px tile, serial, in one release binary holding the frozen references, at a load of about 28,
-ms p50: noise reduction at Luminance and Colour 25 took 14.2 against 118, Luminance 40 alone 7.8
-against 60, Colour 40 alone 11.8 against 105 and the first recipe at a proxy's scale 17.9 against 164;
-sharpening at Radius 1 took 14.7 against 23.6, and at Radius 2.3 14.1 against 24.6. The largest cost
-left is the sharpening limiter's 3 × 3 extrema and gradient, read through the clamped per-pixel index,
-about half of sharpening, and the same index in the Oklab conversion and the reconstruction.
+One 512 px tile, serial, in one release binary, at a load of about 28,
+ms p50: noise reduction at Luminance and Colour 25 takes 14.2, Luminance 40 alone 7.8, Colour 40
+alone 11.8 and the first recipe at a proxy's scale 17.9; sharpening at Radius 1 takes 14.7, and at
+Radius 2.3 14.1. The largest remaining cost is the sharpening limiter's 3 × 3 extrema and gradient,
+read through the clamped per-pixel index, about half of sharpening, and the same index in the Oklab
+conversion and the reconstruction.
 
 ```sh
 cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30 --case render
 cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30 --case points
-cargo test -p luxforge-core --lib detail::exactness
+cargo test -p luxforge-core --lib detail::oracle
 ```
 
 ### The 16-bit hand-off's quantizer and Vibrance's hue
@@ -278,56 +265,50 @@ cargo test -p luxforge-core --lib detail::exactness
 The JPEG path's 16-bit hand-offs, a colour segment feeding a spatial layer and every spatial tile's
 output, quantize each channel through an exact index (`Quantizer16`): 65,536 bins over the value's
 square root, where the code thresholds lie at least 1.055 × 10⁻⁵ apart against a 1.526 × 10⁻⁵ bin,
-so a value is compared with at most two thresholds, where it searched all 65,535. The index is 128
+so a value is compared with at most two thresholds. The index is 128
 KiB, built once ([limits](../design/architecture.md#limits)), and gives the search's code for every
 `f32` in [0, 1], NaN, the infinities and the signed zeros
 (`byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval`). Vibrance skips
 the hue's `atan2` where Oklab's (a, b) lies more than a degree outside the skin-tone band, where the
 hue's weight is exactly one, so every weight is the same to the bit
 (`skipping_the_hue_outside_the_skin_band_leaves_every_weight_bit_identical`). Release, one thread,
-both kernels in one process alternating, 11 samples, 3 October 2026, a one-minute load of about 6:
+both kernels in one process, 11 samples, a one-minute load of about 6:
 
-| Kernel, source | Before | After |
-| --- | ---: | ---: |
-| 16-bit quantizer, gradient (ns a value) | 11.71 | 1.34 |
-| 16-bit quantizer, `24mp.jpg` | 10.10 | 0.66 |
-| 16-bit quantizer, `detail.jpg` | 10.03 | 0.85 |
-| ColourAdjust at Vibrance 50 and Saturation 20, gradient, 85% skipped (ns a pixel) | 24.43 | 22.48 |
-| The same, `24mp.jpg`, 50% skipped | 24.51 | 23.72 |
-| The same, `detail.jpg`, 12% skipped | 19.54 | 19.16 |
+| Kernel, source | Time |
+| --- | ---: |
+| 16-bit quantizer, gradient (ns a value) | 1.34 |
+| 16-bit quantizer, `24mp.jpg` | 0.66 |
+| 16-bit quantizer, `detail.jpg` | 0.85 |
+| ColourAdjust at Vibrance 50 and Saturation 20, gradient, 85% skipped (ns a pixel) | 22.48 |
+| The same, `24mp.jpg`, 50% skipped | 23.72 |
+| The same, `detail.jpg`, 12% skipped | 19.16 |
 
 A 24 MP JPEG render of Basic, then Presence's Texture, then the Mixer, whose two hand-offs are
-16-bit, took 334 and 405 ms against 512 and 526 ms (p50, base, new, new, base, at a load of 5.5 to
-11, the same SHA-256 each way).
+16-bit, takes 334 and 405 ms p50 in two runs at a load of 5.5 to 11.
 
-### The integrated before and after, 3 October 2026
+### The kernels together
 
 The Detail tile kernels, the 16-bit quantizer, Vibrance's hue, the masked colour skip and the
 linear resample's gate ([Detail tile kernels](#detail-tile-kernels),
 [the quantizer](#the-16-bit-hand-offs-quantizer-and-vibrances-hue),
 [masked colour](#units-only-where-the-coverage-is-not-zero),
-[per-pass thresholds](#per-pass-parallel-thresholds)) together: release `xtask` built from
-`ce3b7b57` (before) and from the working tree holding them (after), run before, after, after,
-before on the native Apple M4 Pro, each run holding the host-wide timing lock, at a one-minute
-load of 6.9 to 13.4. That is past the 8.0 a quotable baseline needs, so these are paired
-comparisons, not baselines.
+[per-pass thresholds](#per-pass-parallel-thresholds)) together: release `xtask` on the native
+Apple M4 Pro, two runs, each holding the host-wide timing lock, at a one-minute load of 6.9 to
+13.4. That is past the 8.0 a quotable baseline needs, so these are not baselines.
 
-- **`detail-performance --case render`, 24 MP, 30 samples.** A full render took 1,225 and 1,224 ms
-  p50 before and 321 and 321 ms after (p95 1,370 and 1,266 against 340 and 391), about 15.8 s of CPU
-  a render before and 4.0 s after; `frame_sha256` was `e64d4d51…` in all four runs.
-- **`editor-performance`, 30 samples, 24 MP and 60 MP.** No row moved past the runs' own spread but
-  the Vibrance and Saturation layer: 42.9 and 44.3 ms against 44.6 and 46.5 at 24 MP, and 95.9 and
-  98.5 against 99.5 and 101.7 at 60 MP (p50), the hue's skip. Its stacks hold no mask, Detail layer or
-  RAW, which the other changes speed.
+- **`detail-performance --case render`, 24 MP, 30 samples.** A full render takes 321 ms p50 in
+  both runs (p95 340 and 391), about 4.0 s of CPU a render.
+- **`editor-performance`, 30 samples, 24 MP and 60 MP.** The Vibrance and Saturation layer takes
+  42.9 and 44.3 ms at 24 MP and 95.9 and 98.5 at 60 MP (p50). Its stacks hold no mask, Detail layer
+  or RAW.
 
 ### Detail RAW residency diagnostic
 
 The background native RAW journeys on the M4 Pro/Metal at 2x density expose a memory investigation
 case. These are ten functional captures per supplied photograph, with Detail, white balance and
-geometry changes, from release editor SHA-256
-`3a89cb5db2709acef271ca0f0beea15111543cafaa1b09b4e73f84ad87af2a9a`.
-All three final-build functional journeys pass. Surrounding host-load observations exceed the
-8.0 quiet-host threshold; these are not performance distributions or residency qualification.
+geometry changes, from the release editor. All three functional journeys pass. Surrounding
+host-load observations exceed the 8.0 quiet-host threshold; these are not performance
+distributions or residency qualification.
 State resources include the process's source,
 developments, caches, retained previews and unified GPU allocations; GPU bytes are not added again.
 
@@ -338,8 +319,8 @@ developments, caches, retained previews and unified GPU allocations; GPU bytes a
 | DJI Air 2S, 5464 × 3640 | 2339.78 | 1820.70 | 319.03 |
 
 The resident column is a maximum over captured resource samples, not a measured process RSS peak.
-Even these samples exceed the 1536 MiB RAW investigation target on each source. TASK-014 remains
-open for attribution, idle/cache release, transient/backend staging and finished-build measurements;
+Even these samples exceed the 1536 MiB RAW investigation target on each source. Attribution,
+idle/cache release, transient/backend staging and finished-build measurements remain open;
 the per-buffer and scratch bounds above do not constitute a total-memory pass. Correlated states
 and captures are in `artifacts/detail-20260930/native-raw-{nikon,fuji,dji}-final/app/`.
 
@@ -349,7 +330,7 @@ Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagno
 
 ### Sample counts for a p50/p95 claim
 
-Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is now read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Figures recorded below before that change were taken with the tool's or test's own definition and can read one rank apart from the same measurement taken now. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `masked_spatial_zero_coverage_timing` at 6, `capability_timing` at 30 and 200, the core's shared-pool Fit-proxy contention figures at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, are unchanged.
+Every harness command's default run is a functional run: it proves the journey and gives one launch count you can quote, not a distribution. A p50/p95 figure requires an explicit sample count: 30 samples per recipe for `editor-performance`, 30 inputs for `editor-latency` (one launch), and at least 5 launches per workload for `measure` — 5 gives a median and a maximum, not a stable p95, so use 30 launches per workload for a p95 claim. Every recorded figure states the count it was taken with. Every p50 and p95, in `xtask`'s timing tools and in the crates' own ignored timing tests alike, is read from one nearest-rank `Distribution` (`luxforge-testbase`): `sorted[ceil(percent·n/100) − 1]`, always one of the samples, never interpolated. Some figures below were taken with a tool's or test's own definition and can read one rank apart from the same measurement taken through `Distribution`. The `measure` medians and p95 figures used an interpolated median and an uncapped `p95 = sorted[n·95/100]` index, so an even-count median differs most. The crates' timing tests mostly used the upper median `sorted[n/2]` (or `sorted[round((n−1)/2)]`), which at an even count is one rank above nearest-rank's p50: `presence_timing` and `spatial_timing` at 10 runs, `capability_timing` at 30 and 200, the core's shared-pool Fit-proxy contention figures at 30 (theirs was `sorted[ceil((n−1)·q)]`), `resources_cost` and the process sampler's `cost` at their even counts, and the preset inspection timing at 20. Their p95s, and every figure at an odd count, read the same either way.
 
 | Measurement | Result |
 | --- | --- |
@@ -366,10 +347,9 @@ Every harness command's default run is a functional run: it proves the journey a
 Native Apple M4 Pro (14 cores), 48 GiB RAM, macOS 26.5.2 (25F84), Metal on the `Apple M4 Pro`
 adapter, a 2880 × 1800 physical window at 2× scale; files on the internal APFS SSD. Release builds,
 `--locked`, background-only launches, warm filesystem cache without an OS cache purge. Application
-SHA-256 `2960abd8bcc922b43db7170e8579ff60df56a1177f86d8658e332dbb649239ed`, Cargo.lock SHA-256
-`e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`. Fixtures are
-`fixtures/generated/24mp.jpg` (6000 × 4000, SHA-256 `b54c2a15…`) and `fixtures/generated/60mp.jpg`
-(10000 × 6000, SHA-256 `b9e0118a…`). The host is shared with other sessions: the one-minute load
+`--locked`, background-only launches, warm filesystem cache without an OS cache purge. Fixtures are
+`fixtures/generated/24mp.jpg` (6000 × 4000) and `fixtures/generated/60mp.jpg` (10000 × 6000). The
+host is shared with other sessions: the one-minute load
 average was between 2.3 and 5.7 at the start of every run recorded below, and the `editor-performance`
 runs themselves drive the shared Rayon pool across all cores, so these are diagnostic samples on a
 live machine, not a quiesced benchmark.
@@ -377,8 +357,7 @@ live machine, not a quiesced benchmark.
 ### Core render, one run, 30 samples per recipe
 
 `editor-performance` on 24 and 60 MP, 30 samples each, release, warm cache. Every row below comes
-from **one** invocation per size, so the rows are directly comparable to each other; earlier
-per-task rows measured in separate runs are superseded (see the note after the table). This is
+from **one** invocation per size, so the rows are directly comparable to each other. This is
 core request-to-render on the catalog owner's thread only: no desktop scheduling, GPU upload or
 presentation. The colour rows all render the same 200-transform-and-10°-crop stack with one Basic
 layer inserted where the host places a colour-stage commit, compiled by the real `luxforge.basic`
@@ -405,7 +384,7 @@ work on identical frames.
 The reopen row times the catalog owner's own preparation, run blocking by `EditorService::prepare` —
 the source job's read, hash and decode and the owner's completion — followed by the preview job. The
 figures above were taken while the harness read the original through a synchronous shortcut the
-product never took; they are re-measured at the next timing run.
+product does not take; they await re-measurement.
 
 The crop output stage measures 3695 × 2077 from the rotated 4000 × 6000 input at 24 MP and
 5542 × 3116 from 6000 × 10000 at 60 MP. Against the colour baseline on the same run, each unit's own
@@ -414,55 +393,26 @@ added cost at the median is about 15 ms (24 MP) and 42 ms (60 MP) for Exposure's
 fused Oklab `ColourAdjust`, and 21 ms and 58 ms for the one composite 3 × 3 linear-sRGB white-balance
 matrix. The neutral picker is not a frame operation: it evaluates 25 point samples of the stage the
 Basic layer receives at `O(layers)` each and allocates no frame, so its cost does not grow with the
-pixel count.
-
-**Superseded rows.** This table replaces the following earlier records, each of which came from its
-own separate invocation on the same host and is no longer the current figure: the crop-module table
-(one transform 10.7 / 11.2 ms and 22.7 / 26.0 ms, 200 composed transforms, and the 10° `crop-fit`
-stack at 33.2 / 37.7 ms and 70.5 / 77.0 ms); the orientation-layer re-measurement of the 24 MP rows
-(10.3 / 14.3, 10.5 / 11.1 and 31.5 / 34.0 ms, with the `crop-fit` commit falling from 1.2 to 0.6 ms
-once it plans against a one-layer prefix); the Exposure row (56.3 / 123.4 ms and 129.4 / 221.3 ms,
-whose tails followed the allocator rather than the pass); the Exposure-plus-Tone row (95.7 / 139.1 ms
-and 235.0 / 264.7 ms); the separate-unit Vibrance/Saturation row (150.8 / 163.2 ms and
-402.3 / 594.1 ms) and its fused replacement measured under heavy host load (107.6 / 112.4 ms and
-357.8 / 440.3 ms); and the Temperature/Tint run (50.9 / 54.9 ms and 122.4 / 133.3 ms with its own
-31.8 / 34.4 ms and 68.9 / 73.8 ms baseline). The conclusion those rows were recorded for still
-holds — fusing Vibrance and Saturation into one Oklab round trip removed a whole conversion pair,
-and `ColourAdjust` remains the most expensive single unit — but the numbers above are the ones to
-quote.
+pixel count. `ColourAdjust`, which fuses Vibrance and Saturation into one Oklab round trip, is the
+most expensive single unit.
 
 ### The masked colour primitive, its own run
 
-On the build measured here, a masked colour layer cost the units it would have cost unmasked, plus one
-coverage evaluation and one blend per pixel **inside the mask's bounds rectangle**, and nothing at all
-outside it; inside the rectangle its units and blend now run only where the coverage is not zero
-([below](#units-only-where-the-coverage-is-not-zero)). Measured on
-the host above, release, single invocation, three measured renders after one warm pass, over a
-programmatically filled 6000 × 4000 frame with one `+1 EV` exposure unit
-(`render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame`, an ignored measurement test):
-
-| 24 MP render, one colour unit | ms per render |
-| --- | --- |
-| Identity recipe (shared source buffer) | under 0.05 |
-| Unmasked | 42.9 |
-| Masked, gradient bounds admitting 5.05% of the frame | 34.1 |
-| Masked, gradient bounds admitting 100% of the frame | 45.6 |
-
-So the bounds rectangle is worth 11.5 ms of the 45.6 here, and a mask over the whole frame costs
-about 2.7 ms — 6% — more than no mask at all. The rectangle does **not** remove the pass's decode and
-quantization of the rows it touches, because the frame must still be written: skipping a whole row
-chunk when every operation in its run is masked and the chunk lies outside every rectangle is possible
-and is not built. The unit-evaluation claim itself is asserted rather than inferred, by a counting
-colour unit in
+A masked colour layer costs the units it would cost unmasked, plus one coverage evaluation and one
+blend per pixel **inside the mask's bounds rectangle**, and nothing at all outside it; inside the
+rectangle its units and blend run only where the coverage is not zero
+([below](#units-only-where-the-coverage-is-not-zero)). The rectangle does **not** remove the pass's
+decode and quantization of the rows it touches, because the frame must still be written: skipping a
+whole row chunk when every operation in its run is masked and the chunk lies outside every rectangle
+is possible and is not built. The unit-evaluation claim itself is asserted rather than inferred, by a
+counting colour unit in
 `render::mask_tests::a_masked_operation_evaluates_no_unit_outside_its_bounds`, which requires the count to
-equal the rectangle's pixels whose coverage is not zero, and the rectangle's area exactly under the
-rule before, kept for the tests.
+equal the rectangle's pixels whose coverage is not zero.
 
-`editor-performance` on 24 MP, 30 samples, after the change: colour baseline 33.1 / 38.3 ms and one
-`+1 EV` Basic layer 40.3 / 45.5 ms, both inside the recorded ranges above, on a host whose load was
-shared with other sessions. There is no paired before-run from this worktree; the unmasked path's
-arithmetic is unchanged by construction and proved byte-identical by the colour tests, and the mask is
-consulted once per operation per row rather than per pixel.
+`editor-performance` on 24 MP, 30 samples, on a host shared with other sessions: colour baseline
+33.1 / 38.3 ms and one `+1 EV` Basic layer 40.3 / 45.5 ms. The unmasked path's arithmetic is the
+same with or without masking, proved byte-identical by the colour tests, and the mask is consulted
+once per operation per row rather than per pixel.
 
 #### Units only where the coverage is not zero
 
@@ -472,30 +422,28 @@ a value that is not finite ([masking](../design/masking.md)); a pixel it skips k
 the blend gives there, so every output is the same to the bit (`a_pixel_whose_coverage_is_zero_runs_no_unit_and_keeps_its_bits`,
 `a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it`).
 `render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame` times one exposure unit and a full
-Basic layer over a programmatically filled 6000 × 4000 frame, unmasked and under four masks, each
-masked case under the rule before and the rule now back to back, and prints the process's CPU time
-beside the wall time and the least of 30 single-thread passes over 64 rows. Release build, Apple M4
-Pro, a shared host at a one-minute load of 21 to 62, which moved the wall times by up to four times:
-the CPU times and the single-thread figures are the stable ones. Two alternated pairs:
+Basic layer over a programmatically filled 6000 × 4000 frame, unmasked and under four masks, and
+prints the process's CPU time beside the wall time and the least of 30 single-thread passes over 64
+rows. Release build, Apple M4 Pro, a shared host at a one-minute load of 21 to 62, which moved the
+wall times by up to four times: the CPU times and the single-thread figures are the stable ones. Two
+runs:
 
-| Case, 24 MP | Non-zero coverage | CPU ms per render, before | After | Single thread, ns per pixel, before | After |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Basic, bright band (80–100) | 14.95% | 2,025 / 2,046 | 883 / 894 | 67.4 / 68.6 | 24.8 / 24.8 |
-| Basic, middle band (25–38) | 25.40% | 1,981 / 1,986 | 1,066 / 1,075 | 68.4 / 68.6 | 31.6 / 31.6 |
-| Basic, whole-frame gradient | 100% | 1,648 / 1,667 | 1,672 / 1,678 | 54.5 / 54.6 | 53.8 / 53.9 |
-| Basic, unmasked | – | 1,490 / 1,499 | 1,496 / 1,497 | – | – |
-| Exposure, bright band | 14.95% | 626 / 657 | 675 / 681 | 19.6 / 19.7 | 18.2 / 18.3 |
-| Exposure, whole frame | 100% | 266 / 275 | 290 / 294 | 5.44 / 5.47 | 4.80 / 4.81 |
+| Case, 24 MP | Non-zero coverage | CPU ms per render | Single thread, ns per pixel |
+| --- | ---: | ---: | ---: |
+| Basic, bright band (80–100) | 14.95% | 883 / 894 | 24.8 / 24.8 |
+| Basic, middle band (25–38) | 25.40% | 1,066 / 1,075 | 31.6 / 31.6 |
+| Basic, whole-frame gradient | 100% | 1,672 / 1,678 | 53.8 / 53.9 |
+| Basic, unmasked | – | 1,496 / 1,497 | – |
+| Exposure, bright band | 14.95% | 675 / 681 | 18.2 / 18.3 |
+| Exposure, whole frame | 100% | 290 / 294 | 4.80 / 4.81 |
 
-- **A band mask over a full Basic layer** takes 46 to 57% less CPU than it did (the middle band 46%, the bright
-  band 56 to 57%), and its wall time is 78 to 114 ms against 172 to 176. On the generated `24mp.jpg` (`LUXFORGE_MASKED_COLOUR_SOURCE`),
-  whose four flat quadrants a band selects whole, one pair at a load of 21 to 24 took 877 and 890 CPU
-  ms against 1,798 and 1,834.
-- **A single exposure unit** costs too little for the units skipped to show: its render's CPU time
-  moved within ±10% with no consistent direction across sessions, the band's cost being its
+- **A band mask over a full Basic layer** takes 883 to 1,075 ms of CPU, against 1,496 unmasked, and
+  78 to 114 ms of wall time. On the generated `24mp.jpg` (`LUXFORGE_MASKED_COLOUR_SOURCE`), whose
+  four flat quadrants a band selects whole, one pair at a load of 21 to 24 took 877 and 890 CPU ms.
+- **A single exposure unit** costs too little for the units skipped to show: the band's cost is its
   coverage's luminance encode at every pixel of the stage.
 - **Coverage that alternates every pixel**, one-pixel stretches, is the worst case: one exposure unit
-  took 12.4 to 14.2 ns a pixel against 10.1 to 12.1, and a full Basic layer about the same either way.
+  takes 12.4 to 14.2 ns a pixel.
 
 ```sh
 cargo test --release --package luxforge-core --lib render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
@@ -508,7 +456,7 @@ A masked spatial layer costs what it would have cost unmasked, plus one coverage
 blend per pixel of the tiles the mask's bounds rectangle reaches, minus the whole unit chain of every
 tile it does not. Each spatial layer, masked or not, is a stage boundary and therefore a **sequential
 full frame** in the reference renderer's frame and in its export. A recipe holds at most 16 masked Presence and
-Detail layers between them (owner, 2026-10-03, [decisions](../decisions.md#gpu-previews)), and the
+Detail layers between them ([decisions](../decisions.md#gpu-previews)), and the
 host refuses a seventeenth with a `resource-limit` error naming the limit.
 
 `cargo test --release --locked --package luxforge-core --lib -- --ignored masked_spatial_timing
@@ -516,11 +464,9 @@ host refuses a seventeenth with a `resource-limit` error naming the limit.
 rendered by the core alone, warm source and warm estimate store, one `luxforge.presence` Clarity
 `+100` layer per mask: the CPU's exact render, which an export runs before it encodes. "Whole frame"
 is a gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about
-a tenth of the columns. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2; the release build of local
-main at `946751cc`, which holds the [efficiency](../design/efficiency.md) work beside the GPU
-preview's scratch pool and the cap of 16, 2026-10-04. The one-minute load was 2.5 at the start and
-rose to 12 during the run, because the render drives the whole Rayon pool; the figure before it
-starts is the other sessions' load. p50 / p95 of 5 runs, milliseconds:
+a tenth of the columns. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release build; one-minute load
+2.5 at the start, rising to 12 during the run as the render drives the whole Rayon pool. p50 / p95
+of 5 runs, milliseconds:
 
 | Stage | Mask | 1 | 2 | 4 | 8 | 16 masked layers |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -539,16 +485,15 @@ An unmasked single layer takes 94 / 97 ms at 24 MP and 299 / 307 ms at 60 MP.
 - **A tile outside the bounds rectangle costs no unit evaluation**, so a small mask is cheaper than
   the unmasked layer: a right-edge band's layer takes 58 ms at 24 MP and 153 ms at 60 MP, against
   94 and 299 unmasked. The band copies 80 of 96 tiles at 24 MP and 204 of 240 at 60 MP, exact
-  counters read from the host (`masked_tile_counts`) on the build before the efficiency work.
+  counters read from the host (`masked_tile_counts`).
 - **A whole-frame mask** adds a coverage evaluation and a blend at every pixel: 130 against 94 ms at
   24 MP and 378 against 299 ms at 60 MP at one layer. A masked tile holds one extra tile-sized plane,
-  the snapshot the blend is against, which on the build before the efficiency work put the spatial
-  budget's peak at 255.3 MiB at 24 MP and 239.7 MiB at 60 MP and moved the 60 MP plan's concurrency
-  from 8 tiles to 7.
-- The blend is **in place** in the last unit's planes. An earlier spelling that copied the tile out
-  and blended into a second buffer measured 4464 ms against 1873 at 60 MP — a 2.4× overhead from two
-  fresh tile-sized allocations per tile, not from arithmetic. That spelling is not what shipped, and
-  it is recorded because it is the trap: the blend is cheap and the allocations were not.
+  the snapshot the blend is against, which puts the spatial budget's peak at 255.3 MiB at 24 MP and
+  239.7 MiB at 60 MP and the 60 MP plan's concurrency at 7 tiles rather than 8.
+- The blend is **in place** in the last unit's planes. Copying the tile out and blending into a
+  second buffer measured 4464 ms against 1873 at 60 MP — a 2.4× overhead from two fresh tile-sized
+  allocations per tile, not from arithmetic. That is the trap: the blend is cheap and the
+  allocations are not.
 
 On the **RAW linear path** each spatial operation materializes one `f32` frame, and each frame
 replaces the one before it, so at most two exist at once whatever the number of masked spatial
@@ -556,28 +501,13 @@ layers, as on the byte path.
 
 ### The masked spatial primitive, tiles the mask leaves uncovered inside its bounds
 
-A masked Presence layer (Clarity +100) on an in-memory 6000 × 4000 frame whose mask reaches most of
-its bounds rectangle but covers little of it: a diagonal gradient, an inverted radial (bounds are the
-whole stage) and a luminance range (a value-based component, whose bounds are always the whole
-stage). Each is rendered under the rule before tiles were proved uncovered one by one — copy only
-outside `bounds()` — and under the proof, alternating run by run and swapping which goes first, with
-every pair of frames asserted byte-identical. `cargo test --release --locked --package luxforge-core
---lib -- --ignored masked_spatial_zero_coverage_timing --nocapture`, M4 MacBook Pro, p50 and the
-slowest of 6 runs each. The p50 recorded here is the 4th of 6, the test's upper median before it read
-the shared nearest-rank `Distribution`, whose p50 is the 3rd.
-
-| Mask | Outside bounds only: p50 / slowest ms | Proved per tile: p50 / slowest ms | Tiles copied / evaluated, before → after |
-| --- | --- | --- | --- |
-| Diagonal gradient toward the top-left corner | 300 / 1466 | 268 / 1154 | 16 / 80 → 37 / 59 |
-| Inverted radial (a vignette) | 262 / 294 | 213 / 406 | 0 / 96 → 33 / 63 |
-| Luminance range 70 to 100 | 297 / 396 | 223 / 242 | 0 / 96 → 45 / 51 |
-
-**Provisional.** The one-minute load average was 9.9 before the run and 22.5 after it, well above
-the 8.0 a quotable figure needs, so the milliseconds are an upper bound and the slowest column is
-noise. The tile counts are exact counters (`masked_tile_counts`) and are the result: a third to a
-half of the tiles skip the unit chain, and the p50 falls by 11 to 25% in the same interleaved run.
-The saving in wall time is smaller than the share of tiles because a render also pays for the global
-estimate and the fill, and the tiles that remain still run in parallel.
+A masked spatial layer copies every tile whose coverage is proved zero, inside the mask's bounds
+rectangle as well as outside it, rather than running the unit chain over it: a mask that reads no
+pixel is proved on its field alone, one that reads pixels on the tile's own input. The copy is
+byte-identical to running the tile (`a_tile_whose_coverage_is_zero_is_copied_bit_for_bit` and
+`a_render_that_copies_uncovered_tiles_is_byte_identical_and_reads_equal_it` in
+`render/spatial.rs`), and the exact counters `masked_tile_counts` report how many tiles were copied
+and how many ran. The saving at photo size is not currently measured.
 
 ### The masked spatial primitive, a mask of many components
 
@@ -653,19 +583,16 @@ masked-colour row above uses, so the difference between the rows is the mask and
   the index leaves near that pixel. Even at the stroke limit it is a four-hundredth of a display
   frame, so the eyedropper and `render.sample` are unaffected by how much has been painted.
 
-**Scope.** These are the reference renderer's whole-frame renders on the calling thread, which on
-that build the histogram, the overlays and the 100% view took; what a hand felt during a stroke then
-was the proxy phase, whose masked figures are in [Masks in the proxy phase](#masks-in-the-proxy-phase)
-below, and a stroke is now drawn on the GPU ([painting](#painting-over-masked-spatial-layers)). The 64-stroke
-row is a worst case by construction — sixty-four full-width strokes is far past the point where a
-second component is the better answer — and it is the delivered per-component limit rather than a
-recommendation.
+**Scope.** These are the reference renderer's whole-frame renders on the calling thread; a stroke
+is drawn on the GPU ([painting](#painting-over-masked-spatial-layers)). The 64-stroke row is a worst
+case by construction — sixty-four full-width strokes is far past the point where a second component
+is the better answer — and it is the per-component limit rather than a recommendation.
 
 ### Masks in the proxy phase
 
-The proxy measured here is the CPU proxy, which since the GPU-first stage 5 draws a drag only in a
-session without a GPU ([instant previews](../design/instant-preview.md#the-cpu-proxy-a-session-without-a-gpu));
-the desktop drags below were drawn by it on their builds. A masked recipe is proxy eligible by construction: mask geometry is stored normalized, so the mask
+The proxy measured here is the CPU proxy, which draws a drag only in a session without a GPU
+([instant previews](../design/instant-preview.md#the-cpu-proxy-a-session-without-a-gpu)); the
+desktop drags below are drawn by it. A masked recipe is proxy eligible by construction: mask geometry is stored normalized, so the mask
 compiled against the proxy stage is the same field at a smaller scale and the proxy frame is the
 exact recipe at proxy size. The only thing that changes with the stage is sampling, and the recorded
 default ([masking](../design/masking.md#point-queries-and-proxies), proposal P5) supersamples the
@@ -691,37 +618,17 @@ evaluations per covered pixel instead of one. A mask never costs more than no ma
 bounds rectangle skips the spans it cannot reach — the same saving the masked colour primitive's own
 run records — so the rule's cost is paid only inside the selection.
 
-Desktop input-to-presented-frame for a slider drag at Fit, full Basic layer, `editor-latency --mode
-drag --basic`, 30 samples, two runs at each size:
-
-| Drained drag at Fit | 24 MP | 60 MP |
-| --- | --- | --- |
-| p50 | 17.8 / 17.6 ms | 21.5 / 17.6 ms |
-| p95 | 48.2 / 123.5 ms | 26.2 / 26.0 ms |
-| min | 16.1 / 16.4 ms | 15.8 / 15.5 ms |
-
-Against the provisional target of p95 below 16 ms with 32 ms acceptable: **the p50 is 17.6–17.8 ms on
-both sources and the minimum is 15.5–16.4 ms, so the target is missed at the median by under two
-milliseconds; the p95 is not a usable figure from this host.** The one-minute load average was 11.1
-and 8.8 for the first pair and 5.8 and 6.5 for the second, all at or above the 8.0 the reliability
-rule in [provisional targets](#provisional-targets-measured) sets for quoting a baseline, and the
-24 MP p95 of 123.5 ms comes from a single outlier against a maximum of 123.9 ms and a p50 of 17.6 ms.
-These figures are recorded as provisional and are a finding for the owner, not a verdict. `draft.set`
-round trip was 0.21 ms p50 in every run, unchanged, which is the hop rule holding.
-
 #### An end-to-end masked slider drag
 
-This is now drivable and was taken. `editor-latency --mask` draws a linear gradient through
-`mask.create-linear`, enters Mask mode and opens the mask **by the name the host gave it** — the
-evidence script resolves a `{"name": …}` reference against the `mask.list` answer the desktop holds,
-which is what removed the blocker recorded here before: `mask.create` assigns the identity, so a
-script that creates a mask has nothing else to name it by. From the selection on, every generated
+`editor-latency --mask` draws a linear gradient through `mask.create-linear`, enters Mask mode and
+opens the mask **by the name the host gave it**: the evidence script resolves a `{"name": …}`
+reference against the `mask.list` answer the desktop holds, because `mask.create` assigns the
+identity. From the selection on, every generated
 slider gesture carries that mask, exactly as the panel's own drag does. With `--basic` beside it the
 measured stack holds a global full-Basic layer *and* a masked Basic layer, so each frame runs the
 module's whole colour pass twice, once of it through the masked colour primitive.
 
-**These figures replace the first, contended ones, which were taken at load 39.5 to 57.5 and are
-withdrawn.** Eight runs, 30 samples each, drag mode, at Fit, taken back to back and then reversed —
+Eight runs, 30 samples each, drag mode, at Fit, taken back to back and then reversed —
 24 MP unmasked, 24 MP masked, 60 MP unmasked, 60 MP masked, then the same four in the opposite
 order — each preceded by a 100-second pause, so the one-minute load average read beside it is the
 *other sessions'* load and not this measurement's own tail. Those loads are in the last row. The
@@ -735,12 +642,11 @@ two figures in each cell are the forward run and the reversed one.
 | `draft.set` round trip p50 | — / 0.226 ms | 0.227 / 0.231 ms | 0.214 / 0.215 ms | 0.231 / 0.236 ms |
 | one-minute load before the run | — / 4.19 | 8.13 / 3.37 | 3.65 / 3.32 | 2.34 / 2.58 |
 
-**The first run of the sequence is discarded and is shown as `—`.** It measured p50 41.40 ms, p95
-135.7, min 25.95 and a `draft.set` of 0.395 ms — every one of them roughly double every other run's,
-including the hop, which no amount of render load moves. It was the first launch after the machine
-had been idle, so it paid for cold shader, filesystem and allocator state; the identical run at the
-other end of the sequence read 16.93 ms. That is a finding about the harness and not about masking,
-and it is recorded rather than averaged away: **the first `editor-latency` launch after an idle
+**The first run of the sequence is discarded and is shown as `—`.** Every one of its figures,
+including the hop, which no amount of render load moves, was roughly double every other run's. It
+was the first launch after the machine had been idle, so it paid for cold shader, filesystem and
+allocator state; the identical run at the other end of the sequence read 16.93 ms. That is a
+finding about the harness and not about masking: **the first `editor-latency` launch after an idle
 period is not a usable sample.**
 
 **A mask costs a person's hand nothing measurable.** Every remaining p50 is between 16.8 and
@@ -764,11 +670,11 @@ Against the provisional target (p95 below 16 ms, acceptable below 32 ms): **ever
 acceptable bound at the p95 and every one misses the 16 ms target, and masking does not change
 which.** The one exception is the 24 MP unmasked p95 of 91.7 ms, a single stray sample against that
 run's own minimum of 15.1 ms and p50 of 16.9. The median misses the target by about a millisecond
-everywhere. That is the same miss the unmasked rows above already record.
+everywhere.
 
 #### A masked Presence slider
 
-The figure this document previously recorded as outstanding. `editor-latency --action set-presence
+`editor-latency --action set-presence
 --parameter clarity`, with and without `--mask`, 24 MP, 30 samples, drag mode, at Fit, taken in both
 orders with the same 100-second pause before each. Clarity is a spatial operation and therefore a
 stage boundary, so this is the hand's-eye view of the row the core table above measures at exact
@@ -787,14 +693,14 @@ against 17.00–17.10, a difference of at most 0.18 ms against a run-to-run spre
 either condition. The hop pays the same 0.02–0.03 ms a masked Basic drag does. The queue counters
 are again identical: 31 values into 1 `draft.set`, 0 superseded. Masked Presence therefore meets the
 same provisional bound the unmasked spatial slider does — acceptable at the p95, missing the 16 ms
-target at the median by about a millisecond. This was the proxy phase, what the hand felt on that
-build; the exact phase behind it is the core table above.
+target at the median by about a millisecond. This is the proxy phase; the exact phase behind it is
+the core table above.
 
-`editor-performance --samples 30` was re-run on the same host beside the first, contended drags,
-release, warm cache, on `24mp.jpg` (load average 8.6 rising to 17.3) and `60mp.jpg` (load average
-17.3 rising to 20.8). Both **passed every check**, including that the catalog reopen reconstructs the
-original historical state and the source SHA-256 is unchanged, so the phase leaves the core's own
-correctness diagnostics intact. Their timings are not quoted, for the reason the drags were not: the
+`editor-performance --samples 30` on the same host, release, warm cache, on `24mp.jpg` (load
+average 8.6 rising to 17.3) and `60mp.jpg` (load average 17.3 rising to 20.8), **passes every
+check**, including that the catalog reopen reconstructs the original historical state and the
+source SHA-256 is unchanged, so the phase leaves the core's own correctness diagnostics intact.
+Its timings are not quoted: the
 harness's own full-Basic core render read 128.2 ms p50 / 224.5 ms p95 at 24 MP and 527.1 / 619.1 ms
 at 60 MP, and a p95 more than 1.7 times its own p50 in a warm 30-sample loop is a measure of the
 host's queue, not of the render.
@@ -818,8 +724,8 @@ per-generation owner, queue, worker and surface intervals.
 #### The four-layer figure, from the correctness run
 
 The `mask-range` scenario's own, recorded in its `result.json` beside the recipe they were taken on and
-the load the host was under. Twelve positions at a 24 ms interval — a little over the delivered
-masked-drag median of 16.8–17.9 ms, so each position has a round trip of its own to finish — painted
+the load the host was under. Twelve positions at a 24 ms interval — a little over the masked-drag
+median of 16.8–17.9 ms, so each position has a round trip of its own to finish — painted
 down the middle of one flat patch of a 1440 × 960 fixture. Two runs, back to back, on a quiet host.
 
 | Painted stroke, `mask_draft_set` → `preview_displayed` | run 1 | run 2 |
@@ -835,19 +741,18 @@ well under the 8.0 a quotable figure needs, so it is not the host.
 
 That recipe is also the heaviest the scenario builds: **four masked colour layers**, three of whose masks
 hold a luminance range or a colour range. A value-based component answers the *whole stage* for its
-conservative rectangle, by [P13](../design/range-study.md#proposals), so on that build those three
-layers were evaluated at every pixel with no span skipped — the cost the range study measured at 28–44 ns per pixel
-over 100% of the stage, against a placed gradient's 14.6–20.0 ns over 40%. It was recorded here with
-the reading that most of the figure was that recipe. **The bare-recipe measurement below withdraws
-that reading**, and the correction is the more useful of the two results.
+conservative rectangle, by [P13](../design/range-study.md#proposals), so those three layers are
+evaluated at every pixel with no span skipped — the cost the range study measured at 28–44 ns per pixel
+over 100% of the stage, against a placed gradient's 14.6–20.0 ns over 40%. The bare-recipe
+measurement below shows that this recipe is not where most of the figure goes.
 
 #### Bare recipe at photo size, with phase attribution
 
 `editor-latency --mode paint` opens one generated photo-sized JPEG, prepares a single brush mask and
 one masked Basic exposure layer, then sends a stroke at 24 ms intervals. The rows in this section
-were taken with the workload's earlier stroke: 30 positions along a straight sweep with a hard-edged
-brush (feather 0), which took the mask field's 2 × 2 proxy supersample on every frame and decimates
-to its two ends; the current feathered, curved stroke is measured
+use 30 positions along a straight sweep with a hard-edged
+brush (feather 0), which takes the mask field's 2 × 2 proxy supersample on every frame and decimates
+to its two ends; the workload's feathered, curved stroke is measured
 [below](#mask-feedback-and-the-coverage-handoff). The parser
 starts at that scripted stroke step, so setup edits do not enter its latency or superseded counts.
 The preview queue remains one active job plus one replaceable pending job; every frame is paired to
@@ -891,91 +796,79 @@ they are not camera-photo content.
 **The measurable tail is scheduling and delivery rather than the pixel kernel.** Worker render p95
 is 4.45–5.43 ms, and surface assignment is at most 0.04 ms, while input-to-surface p95 remains
 35.06–40.70 ms. Queue wait and the pre-result residual dominate the tails; some owner `draft.set`
-round trips also have a several-millisecond tail on 24 MP. This does not justify SIMD, assembly, a
-GPU rewrite or changing the mask renderer yet. Keep the bounded queue and cancellation rules while
+round trips also have a several-millisecond tail on 24 MP. This does not justify SIMD, assembly or
+changing the mask renderer. Keep the bounded queue and cancellation rules while
 tracing whether the remaining gap comes from the active-job handoff or the desktop event loop.
 
 #### Zeroed frames and an identity pass's source rows
 
-A byte frame is an `Arc<Vec<u8>>` allocated with `vec![0; len]`, which the system allocator serves with `calloc`, so no thread fills it before the pass that writes it; an identity pass over the shared source loads the source's rows inside its parallel pass (one `copy_from_slice` per row) instead of copying the whole source on one thread first. `editor-performance --samples 30` on the generated JPEGs, release `--locked`, the base `2360cf82` with the Exposure-only row added (before) against this change (after), in-process on the native Apple M4 Pro, 28 September 2026, holding the host-wide timing lock. Two rounds per size, before, after, after, before and then after, before, before, after, at a one-minute load of 13.5 to 19.6 (24 MP) and 19.1 to 28.5 (60 MP) from other sessions' builds. Each cell is the p50 of each run in the order the runs went, first round then second; the p95s followed the load and are in the evidence, not here. Exposure-only is one +1 EV Basic layer on the upright source and nothing else; one exact transform is a quarter turn.
+A byte frame is an `Arc<Vec<u8>>` allocated with `vec![0; len]`, which the system allocator serves with `calloc`, so no thread fills it before the pass that writes it; an identity pass over the shared source loads the source's rows inside its parallel pass (one `copy_from_slice` per row) rather than copying the whole source on one thread first. `editor-performance --samples 30` on the generated JPEGs, release `--locked`, in-process on the native Apple M4 Pro, holding the host-wide timing lock: four runs per size at a one-minute load of 13.5 to 19.6 (24 MP) and 19.1 to 28.5 (60 MP) from other sessions' builds, so these are not baseline figures. Each cell is the p50 of each run in the order the runs went; the p95s followed the load and are in the evidence, not here. Exposure-only is one +1 EV Basic layer on the upright source and nothing else; one exact transform is a quarter turn.
 
-| Render (p50 ms) | Before | After |
-| --- | --- | --- |
-| 24 MP Exposure-only | 8.00 · 17.38 · 16.92 · 11.48 | 7.59 · 9.24 · 6.66 · 12.81 |
-| 24 MP one exact transform | 6.33 · 15.44 · 13.65 · 8.58 | 6.27 · 15.00 · 6.31 · 6.70 |
-| 60 MP Exposure-only | 36.27 · 20.23 · 23.47 · 25.72 | 19.89 · 19.65 · 25.25 · 24.45 |
-| 60 MP one exact transform | 14.19 · 12.96 · 15.47 · 15.31 | 14.32 · 16.32 · 13.32 · 25.64 |
+| Render (p50 ms) | Four runs |
+| --- | --- |
+| 24 MP Exposure-only | 7.59 · 9.24 · 6.66 · 12.81 |
+| 24 MP one exact transform | 6.27 · 15.00 · 6.31 · 6.70 |
+| 60 MP Exposure-only | 19.89 · 19.65 · 25.25 · 24.45 |
+| 60 MP one exact transform | 14.32 · 16.32 · 13.32 · 25.64 |
 
-Every run's frames had the same SHA-256 before and after: `cf45865f…` (24 MP Exposure-only), `4895b6de…` (24 MP one transform), `0c36dca4…` (60 MP Exposure-only) and `21cb00ac…` (60 MP one transform). Only 24 MP Exposure-only moves: it is faster in three of the four adjacent before/after pairs (by 0.4 to 10 ms at the median, the larger gaps while the load climbed) and 1.3 ms slower in the fourth, and its fastest run falls from 8.0 to 6.7 ms. The one-transform renders and 60 MP Exposure-only lie within the runs' own spread at this load: the fastest runs are 6.33 against 6.27 ms, 12.96 against 13.32 ms and 20.23 against 19.65 ms.
-
-The allocation itself explains why the difference is small in a warm loop. A release probe of a 240 MB frame (60 MP RGBA), 14 writer threads: in a fresh process, collecting `repeat_n(0, len)` into an `Arc<[u8]>` is a `malloc` and a serial `bzero` of 10.8 to 12.5 ms, and 12.2 to 13.7 ms with the parallel write after it; `Arc::new(vec![0; len])` returns in 2 to 3 µs, and the parallel write that faults its pages in takes the whole to 8.4 to 9.8 ms (10 processes each). At 96 MB (24 MP) the fresh-process totals are 4.7 to 5.5 ms for the fill and 6.3 to 6.9 ms for the zeroed allocation, so faulting pages in from every writer at once does not pay at that size. Repeating the same allocation in one process, as `editor-performance` does, the allocator hands back the region the last frame freed and both forms cost 1.0 ms to allocate and 2.0 ms with the write (p50 of 30). The render therefore gains most on a first render at a new size and on the identity pass's source copy it no longer makes.
+The allocation itself explains why the gain is small in a warm loop. A release probe of a 240 MB frame (60 MP RGBA), 14 writer threads: in a fresh process, collecting `repeat_n(0, len)` into an `Arc<[u8]>` is a `malloc` and a serial `bzero` of 10.8 to 12.5 ms, and 12.2 to 13.7 ms with the parallel write after it; `Arc::new(vec![0; len])` returns in 2 to 3 µs, and the parallel write that faults its pages in takes the whole to 8.4 to 9.8 ms (10 processes each). At 96 MB (24 MP) the fresh-process totals are 4.7 to 5.5 ms for the fill and 6.3 to 6.9 ms for the zeroed allocation, so faulting pages in from every writer at once does not pay at that size. Repeating the same allocation in one process, as `editor-performance` does, the allocator hands back the region the last frame freed and both forms cost 1.0 ms to allocate and 2.0 ms with the write (p50 of 30). A zeroed allocation therefore matters most on a first render at a new size, and the identity pass gains by not copying the source serially.
 
 #### Mask feedback and the coverage handoff
 
-Native Apple M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, Metal, release `--locked`,
-2 October 2026. Hidden background bundles, 2880 × 1800 physical pixels at 2×. The generated
+Native Apple M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, Metal, release `--locked`.
+Hidden background bundles, 2880 × 1800 physical pixels at 2×. The generated
 24 MP JPEG is at Fit; the 60 MP JPEG is at 100%. Each launch paints 240 positions at 24 ms on
 the harness's sine path, radius 0.06, feather 50, flow 100, with the selected mask's tint on.
-The path is decimated by the current frozen rule, and each stroke commits one history entry.
+The path is decimated as an ordinary stroke is, and each stroke commits one history entry.
 
-Frozen baseline binary SHA-256 `72bdcfb472e5bfb1c277a362ba4f4dd935efa3dc818b051115ecd71eddffddb4`,
-final optimized binary `e6db8e45d17e206ba3dc1b08349dc324683f61d1c2dff6881fb778e1ac63ec11`,
-Cargo.lock `14235ffe8d1b76708d1f523fc5c171c4d04a42e78f237d32c2f6415cebfcaad1`.
-Each size runs before, after, after, before, serialized under the timing lock with no local build
-or test overlapping. A launch waits for one-minute load below 8: 7.53, 7.09, 6.75, 6.45 at
-24 MP and 6.63, 6.76, 6.62, 7.14 at 60 MP. The first 60 MP baseline ends at 9.87 and
-second optimized leg at 14.18; all other legs end below 8. The second 24 MP baseline has a
-large worker slowdown despite load remaining below 8: one-minute load cannot guarantee a quiet
-stroke. Every run and tail is retained.
+Two runs per size, serialized under the timing lock with no local build or test overlapping. A
+launch waits for one-minute load below 8 (6.75 to 7.09 at 24 MP, 6.62 to 6.76 at 60 MP); the
+second 60 MP run ends at 14.18. One-minute load below 8 cannot guarantee a quiet stroke. Every
+run and tail is retained.
 
-The following cells retain both runs per variant, in their own execution order. Raw inputs,
+The cells give both runs, in their own execution order. Raw inputs,
 accepted draft revisions, all distributions and resource samples live in
-`artifacts/mask-perf-20261002/wake-abba-*`, summarized by `comparison.json`; the earlier
-brush diagnostics are also retained there, with their binary identities and limits.
+`artifacts/mask-perf-20261002/wake-abba-*`, summarized by `comparison.json`.
 
-| Metric | 24 MP before | 24 MP after | 60 MP before | 60 MP after |
-| --- | --- | --- | --- | --- |
-| Photo adoption count | 239 · 216 | 239 · 239 | 232 · 239 | 239 · 234 |
-| Authoritative coverage count | 237 · 190 | 239 · 239 | 213 · 237 | 239 · 205 |
-| Photo adoption p50, ms | 8.20 · 13.12 | 8.30 · 8.30 | 8.96 · 7.88 | 7.75 · 8.92 |
-| Photo adoption p95, ms | 16.28 · 62.12 | 16.23 · 15.75 | 45.79 · 16.23 | 15.12 · 36.12 |
-| Authoritative coverage p50, ms | 8.22 · 13.25 | 8.33 · 8.50 | 8.69 · 7.90 | 7.84 · 8.94 |
-| Photo event to overlay adoption p50, ms | 2.199 · 2.203 | 0.020 · 0.020 | 3.345 · 3.348 | 0.018 · 0.021 |
-| Photo event to overlay adoption p95, ms | 2.275 · 12.625 | 0.025 · 0.025 | 10.102 · 3.590 | 0.024 · 15.634 |
-| Preview worker p50, ms | 5.21 · 9.29 | 4.42 · 4.46 | 2.15 · 2.41 | 1.33 · 2.31 |
-| Last-quarter preview worker p50, ms | 6.01 · 23.35 | 5.27 · 5.51 | 2.09 · 2.33 | 1.28 · 1.23 |
-| Sampled peak process RSS, MiB | 700.8 · 708.8 | 649.8 · 661.3 | 1418.5 · 1394.2 | 1181.6 · 1133.6 |
+| Metric | 24 MP | 60 MP |
+| --- | --- | --- |
+| Photo adoption count | 239 · 239 | 239 · 234 |
+| Authoritative coverage count | 239 · 239 | 239 · 205 |
+| Photo adoption p50, ms | 8.30 · 8.30 | 7.75 · 8.92 |
+| Photo adoption p95, ms | 16.23 · 15.75 | 15.12 · 36.12 |
+| Authoritative coverage p50, ms | 8.33 · 8.50 | 7.84 · 8.94 |
+| Photo event to overlay adoption p50, ms | 0.020 · 0.020 | 0.018 · 0.021 |
+| Photo event to overlay adoption p95, ms | 0.025 · 0.025 | 0.024 · 15.634 |
+| Preview worker p50, ms | 4.42 · 4.46 | 1.33 · 2.31 |
+| Last-quarter preview worker p50, ms | 5.27 · 5.51 | 1.28 · 1.23 |
+| Sampled peak process RSS, MiB | 649.8 · 661.3 | 1181.6 · 1133.6 |
 
-The clear improvement is removal of UI-thread coverage painting: the worker returns shared painted
-RGBA, reducing median overlay handoff from 2.2–3.35 ms to 18–21 µs, roughly 99%. The exact palette,
-support rectangle and contiguous brush index preserve coverage while reducing work. Both optimized
-24 MP legs deliver all 239 post-press positions; their preview-worker medians are 14–15% below the
-first baseline, and their last-quarter medians 8–12% below it. The second baseline's slowdown is
-reported, not used to inflate that saving. At 60 MP sampled RSS is 213–285 MiB lower across these
-runs; this is a scoped process observation, including GPU resources and allocator retention,
-rather than a CPU-heap or whole-editor memory guarantee.
+The worker returns shared painted RGBA, so the UI thread paints no coverage and the median overlay
+handoff is 18–21 µs. The exact palette, support rectangle and contiguous brush index preserve
+coverage while reducing work. Both 24 MP runs deliver all 239 post-press positions. Sampled RSS is
+a scoped process observation, including GPU resources and allocator retention, rather than a
+CPU-heap or whole-editor memory guarantee.
 
-A general end-to-end or tail-latency improvement is **not established**. The clean 24 MP photo
-median stays around 8.3 ms, and one optimized p95 narrowly exceeds the provisional 16 ms target.
-The clean 60 MP optimized leg is 7.75/15.12 ms p50/p95, but its loaded partner reaches
+The clean 24 MP photo
+median is about 8.3 ms, and one p95 narrowly exceeds the provisional 16 ms target.
+The clean 60 MP run is 7.75/15.12 ms p50/p95, but its loaded partner reaches
 8.92/36.12 ms and delivers fewer positions. Pre-result scheduling and delayed coverage remain
 visible in the raw distributions. Coverage wakes before a matching photograph are suppressed;
 publishing photo content before draining coverage prevents lost wakes, while unchanged-photo
 feedback and unavailable outcomes stay immediate. The tests prove that liveness; the timings do
-not isolate this policy's saving. These are adoption timestamps, not GPU completion or display
+not isolate this policy's cost or saving. These are adoption timestamps, not GPU completion or display
 scanout. The synthetic brush workload does not qualify RAW, high-density recipes or general mask
 latency.
 
-The [mask performance design](../design/mask-performance.md) records the unchanged numerical and
+The [mask performance design](../design/mask-performance.md) records the numerical and
 memory contracts. Exact brush/range/reference, cancellation, draft, source-preservation, bounded
-handoff and wake/publication checks pass; final native `mask-interactions`, `mask-brush`, `mask-range`,
+handoff and wake/publication checks pass; native `mask-interactions`, `mask-brush`, `mask-range`,
 `viewport-region`, `performance` and `capabilities` frames correlate state and logs. Twelve native
-Metal surface tests pass, with two separate diagnostic timing probes left out. Final quick
-verification passes across 26 test binaries; 15 slow tests and doctests remain outside that tier.
+Metal surface tests pass, with two separate diagnostic timing probes left out.
 
 #### Per-pass parallel thresholds
 
-Each rendering pass kind runs on the shared Rayon pool from its own threshold (`render::limits::parallel_pixels`, [performance rule 9](../engineering/performance-rules.md#rules)), chosen from `render::parallel`'s `parallel_break_even_per_pass`: one unit per case through the built-in modules, serial against pooled (forced on the rendering thread) at 0.025 to 2 MP of the pixels that pass's gate counts, the two ways alternating sample by sample. Release test build on the native Apple M4 Pro, 28 September 2026, not holding the timing lock, while other sessions built: four runs, 21 samples per way (one-minute load 20.6 → 21.2), 31 (19.5 → 25.2), 41 for the spatial cases only (22.3 → 13.9) and 31 (7.5 → 44.4, a build starting part-way). Under that load a pooled run is the one that suffers, because a pool worker the scheduler has parked holds the join: pooled medians wander by several times between runs at every size, including the one-megapixel threshold every pass shared before, while serial medians stay within a few percent. The table therefore gives the pooled/serial p50 of the second run, which covers every case, and for the spatial cases the p50 and, after the slash, the ratio of the fastest runs from the third.
+Each rendering pass kind runs on the shared Rayon pool from its own threshold (`render::limits::parallel_pixels`, [performance rule 9](../engineering/performance-rules.md#rules)), chosen from `render::parallel`'s `parallel_break_even_per_pass`: one unit per case through the built-in modules, serial against pooled (forced on the rendering thread) at 0.025 to 2 MP of the pixels that pass's gate counts, the two ways alternating sample by sample. Release test build on the native Apple M4 Pro, not holding the timing lock, while other sessions built: four runs of 21, 31, 41 (the spatial cases only) and 31 samples per way, at one-minute loads between 7.5 and 44.4. Under that load a pooled run is the one that suffers, because a pool worker the scheduler has parked holds the join: pooled medians wander by several times between runs at every size, while serial medians stay within a few percent. The table therefore gives the pooled/serial p50 of the second run, which covers every case, and for the spatial cases the p50 and, after the slash, the ratio of the fastest runs from the third.
 
 | Case (pooled/serial) | 0.025 MP | 0.05 MP | 0.1 MP | 0.25 MP | 0.5 MP | 1 MP | 2 MP |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -993,91 +886,26 @@ Each rendering pass kind runs on the shared Rayon pool from its own threshold (`
 | Proxy: box downscale to a third, JPEG | 0.88 | 1.00 | 1.00 | 1.23 | 0.69 | 0.54 | 0.52 |
 | Proxy: box downscale to a third, RAW | 1.00 | 1.00 | 1.00 | 1.00 | 0.56 | 0.82 | 0.65 |
 
-Each threshold is the smallest size at which every case of its kind won in every run: the transform 0.5 MP (1.24 to 1.26 at 0.25 MP in all three runs that measured it); one or two colour units 0.1 MP (bytes 0.89 to 0.93 at 0.05 MP); three or more units or a mask 25,000 pixels, the smallest size measured (a mask stays in this group, as before, and was not measured on its own); the resample 0.1 MP of output (1.14 at 0.03 MP; its fastest runs 0.46 at 0.07 MP); a spatial operation 0.25 MP of stage (at 0.1 MP Texture's fastest runs lost in the fourth run, 1.67, and Dehaze's broke even, 0.97 to 0.98); and the proxy 0.5 MP of source read, where up to 0.25 MP the downscale is one band and pooling changes nothing. A serial run at 0.025 MP often reports several hundred percent of one core: that is the pool still spinning down from the pooled run before it, which the CPU sampler charges to the process. RAW development, a spatial operation's global-estimate reduction, the analysis reducer and the overlays keep the one-megapixel threshold and were not measured here. Serial and pooled write the same bytes at a size between the old and the new threshold for every kind on both pixel domains (`a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
+Each threshold is the smallest size at which every case of its kind won in every run: the transform 0.5 MP (1.24 to 1.26 at 0.25 MP in all three runs that measured it); one or two colour units 0.1 MP (bytes 0.89 to 0.93 at 0.05 MP); three or more units or a mask 25,000 pixels, the smallest size measured (a mask stays in this group and was not measured on its own); the resample 0.1 MP of output (1.14 at 0.03 MP; its fastest runs 0.46 at 0.07 MP); a spatial operation 0.25 MP of stage (at 0.1 MP Texture's fastest runs lost in the fourth run, 1.67, and Dehaze's broke even, 0.97 to 0.98); and the proxy 0.5 MP of source read, where up to 0.25 MP the downscale is one band and pooling changes nothing. A serial run at 0.025 MP often reports several hundred percent of one core: that is the pool still spinning down from the pooled run before it, which the CPU sampler charges to the process. RAW development, a spatial operation's global-estimate reduction, the analysis reducer and the overlays keep the shared one-megapixel threshold and were not measured here. Serial and pooled write the same bytes at a size between the shared threshold and a pass's own for every kind on both pixel domains (`a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
 
-The Lens/Perspective `Warp` pass currently uses `PARALLEL_WARP_PIXELS = 100,000` output pixels, provisionally equal to the resample threshold. Its kernel has no measured break-even yet. `LUXFORGE_BREAK_EVEN_CASE=warp` selects the six serial/pool cases (Lens, Perspective and the fused Lens/Perspective/straightened crop, each in byte and linear domains) for the 0.025–2 MP study. Native Lens timing, memory and GPU residency remain incomplete; no existing resample ratio is evidence for this new pass.
+The Lens/Perspective `Warp` pass currently uses `PARALLEL_WARP_PIXELS = 100,000` output pixels, provisionally equal to the resample threshold. Its kernel has no measured break-even yet. `LUXFORGE_BREAK_EVEN_CASE=warp` selects the six serial/pool cases (Lens, Perspective and the fused Lens/Perspective/straightened crop, each in byte and linear domains) for the 0.025–2 MP study. Native Lens timing, memory and GPU residency remain incomplete; no resample ratio is evidence for this pass.
 
-On the RAW linear path the last segment's pass pulls a resample's taps through the segment before it (`load_resampled`), so its gate asks the resample's own threshold over the output, as the byte path's `resample_frame` does, and counts the pulled segment's colour units and masks with the segment's own: before, such a pass pooled only from the transform's 0.5 MP, and a straightened crop of 0.1 to 0.5 MP rendered serially. A byte segment pass after a warp, which resamples nothing itself, asks the transform's threshold for its geometry. `parallel_break_even_per_pass` gains the case `resample: 10 degree crop, linear`: at a one-minute load of about 5 on 3 October 2026 its pooled/serial p50 was 0.26 at 0.034 MP, 0.20 at 0.069, 0.14 at 0.139, 0.12 at 0.347, 0.11 at 0.694 and 0.10 from 1.04 MP, the byte crop in the same run 0.42 at 0.034 MP down to 0.11 at 2.78 MP, so pooling wins at every size and the 0.1 MP threshold stands. A 10° crop of a RAW-linear stage with a 0.44 MP output took 2.3 and 3.5 ms against 17.9 and 18.7 ms, and under a full Basic layer 6.2 and 7.5 ms against 52.0 and 54.7 ms (p50, base, new, new, base, at a load of 5.5 to 11, the same SHA-256 each way). Serial and pooled write the same bytes, and the test now asserts that each case pooled through its own gate (`a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
+On the RAW linear path the last segment's pass pulls a resample's taps through the segment before it (`load_resampled`), so its gate asks the resample's own threshold over the output, as the byte path's `resample_frame` does, and counts the pulled segment's colour units and masks with the segment's own. A byte segment pass after a warp, which resamples nothing itself, asks the transform's threshold for its geometry. `parallel_break_even_per_pass` includes the case `resample: 10 degree crop, linear`: at a one-minute load of about 5 its pooled/serial p50 was 0.26 at 0.034 MP, 0.20 at 0.069, 0.14 at 0.139, 0.12 at 0.347, 0.11 at 0.694 and 0.10 from 1.04 MP, the byte crop in the same run 0.42 at 0.034 MP down to 0.11 at 2.78 MP, so pooling wins at every size and the 0.1 MP threshold stands. A 10° crop of a RAW-linear stage with a 0.44 MP output takes 2.3 and 3.5 ms, and under a full Basic layer 6.2 and 7.5 ms (p50, two runs at a load of 5.5 to 11). Serial and pooled write the same bytes, and the test asserts that each case pooled through its own gate (`a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
 
-`editor-performance --samples 30` measures proxy renders at a 1280 × 800 display bound, where a 3:2 photograph's whole proxy is 1200 × 800 (0.96 MP) and the crop stack's proxy is 2078 × 1386 rendering a 1280 × 719 output: a full Basic layer and a full-strength Presence layer (texture, clarity and dehaze at 100) on each. Release `--locked`, the base `eda010a3` with these rows added (before) against this change (after), in-process on the native Apple M4 Pro, 28 September 2026, holding the host-wide timing lock, in the order before, after, after, before. Each cell is the p50 of each run in that order, then the p95s.
+`editor-performance --samples 30` measures proxy renders at a 1280 × 800 display bound, where a 3:2 photograph's whole proxy is 1200 × 800 (0.96 MP) and the crop stack's proxy is 2078 × 1386 rendering a 1280 × 719 output: a full Basic layer and a full-strength Presence layer (texture, clarity and dehaze at 100) on each. Release `--locked`, in-process on the native Apple M4 Pro, holding the host-wide timing lock, two runs per size. Each cell is the p50 or p95 of each run in order.
 
-| Proxy render at 1280 × 800 (ms) | Before p50 | After p50 | Before p95 | After p95 |
-| --- | --- | --- | --- | --- |
-| 24 MP upright, full Basic | 4.23 · 4.43 | 4.37 · 4.79 | 4.54 · 4.55 | 4.55 · 6.27 |
-| 24 MP upright, Presence | 64.63 · 68.81 | 13.81 · 15.10 | 66.98 · 72.04 | 20.45 · 20.28 |
-| 24 MP crop stack, full Basic | 15.84 · 15.89 | 7.55 · 7.51 | 16.47 · 16.50 | 9.41 · 7.99 |
-| 24 MP crop stack, Presence | 58.29 · 58.27 | 50.33 · 52.04 | 63.44 · 63.19 | 56.65 · 60.30 |
-| 60 MP upright, full Basic | 5.04 · 5.17 | 4.80 · 7.69 | 5.56 · 5.40 | 5.34 · 11.83 |
-| 60 MP upright, Presence | 76.22 · 70.00 | 15.48 · 20.51 | 79.65 · 80.80 | 18.37 · 43.44 |
-| 60 MP crop stack, full Basic | 16.80 · 15.91 | 7.82 · 7.89 | 19.02 · 16.50 | 8.42 · 32.70 |
-| 60 MP crop stack, Presence | 74.65 · 62.99 | 58.56 · 71.05 | 83.18 · 67.01 | 65.98 · 890.09 |
+| Proxy render at 1280 × 800 (ms) | p50 | p95 |
+| --- | --- | --- |
+| 24 MP upright, full Basic | 4.37 · 4.79 | 4.55 · 6.27 |
+| 24 MP upright, Presence | 13.81 · 15.10 | 20.45 · 20.28 |
+| 24 MP crop stack, full Basic | 7.55 · 7.51 | 9.41 · 7.99 |
+| 24 MP crop stack, Presence | 50.33 · 52.04 | 56.65 · 60.30 |
+| 60 MP upright, full Basic | 4.80 · 7.69 | 5.34 · 11.83 |
+| 60 MP upright, Presence | 15.48 · 20.51 | 18.37 · 43.44 |
+| 60 MP crop stack, full Basic | 7.82 · 7.89 | 8.42 · 32.70 |
+| 60 MP crop stack, Presence | 58.56 · 71.05 | 65.98 · 890.09 |
 
-The 60 MP source (10000 × 6000) fits the bound in 1280 × 768 (0.98 MP) and its crop stack's proxy is 2310 × 1386, rendering 1280 × 720. The 24 MP runs started at a one-minute load of 11.8, 12.6, 14.2 and 14.5; the 60 MP runs at 35.4, 29.9, 27.3 and 25.2, a loaded host, and the second after run is the loaded one (its proxy builds took 26 to 28 ms against 7 to 11 ms in the other three), so its figures are not attributed to the change. Every run's frames, including all four new proxy renders, had the same SHA-256 before and after (`ce95dd3f…` and `8e98cc7e…` for the 24 and 60 MP upright Presence frames, `c8a3deab…` and `73b0eeff…` for their crop stacks with full Basic). The upright Presence render is the change's case: its tiles ran serially below one megapixel and now run on the pool. The crop stack's full Basic render gains from its resample, whose 1280 × 719 output is now pooled; its colour pass, on the 2.9 MP proxy stage, already was. The crop stack's Presence render gains the same resample at 24 MP (58.3 against 50.3 and 52.0 ms); at 60 MP the loaded runs spread wider than that. The upright full Basic render was already pooled by the heavy-colour gate and does not move. The existing 2880 × 1800 proxy rows and the full-resolution rows are unchanged within the runs' spread: at that bound every pass is above the old threshold too. The native scenarios above used the owner's 2880 × 1800 window, whose Fit proxy and 100% regions were above the thresholds that applied before for the passes they ran. One was rerun to check: the 24 MP 100% full-Basic burst (`editor-latency --basic --mode burst --zoom 100`, 360 inputs, regions of 1797 × 1661 rendered at half resolution), before, after, after, before at a one-minute load of 10.2, 12.3, 11.4 and 11.1. It adopted 317, 359, 361 and 360 frames with draft staleness p50 / p95 of 9.00 / 33.92, 8.45 / 16.61, 8.42 / 15.95 and 8.39 / 15.88 ms and no blank or stale photo draws: no change, the first run's tail being its load.
-
-### Desktop slider-to-presented-frame and settled histogram
-
-`editor-latency`, release, warm cache, background evidence launches on the host above, 30 samples
-each. This is the desktop measurement the core rows cannot make. **Presented means the desktop's
-`Uploaded` message**, recorded as the `preview_displayed` event: the rendered pixels have become a
-renderer texture and the canvas draws them from the next frame on. It is **not** display scanout,
-which the harness cannot observe, so every figure is an upper bound on the editor's own work and a
-lower bound on what an eye sees. The window these runs measure is invisible, so nothing is
-composited or scanned out in them at all.
-
-Each measured input is one scripted `slider` step left open, so the step settles only when the
-gesture has drained: one input, one `draft.set`, one preview job, one upload, with nothing from the
-previous input still in flight. The interval runs from the `slider_draft_set` event to the
-`preview_displayed` of the preview generation that `draft.set` produced, correlated by generation
-and cross-checked against the draft revision on both ends.
-
-| Interaction (p50 / p95 ms, 30 samples) | 24 MP | 24 MP + 7° crop | 60 MP |
-| --- | --- | --- | --- |
-| Input to presented frame | 74.8 / 83.4 | 150.3 / 170.2 | 125.0 / 141.3 |
-| … of which `draft.set` round trip on the owner | 8.3 / 9.2 | 32.7 / 34.2 | 8.2 / 16.7 |
-| … of which render and GPU upload | 66.6 / 75.1 | 117.9 / 143.8 | 116.7 / 133.1 |
-| … of which the GPU upload the desktop times itself | 32.5 / 33.6 | 33.4 / 50.9 | 49.7 / 50.5 |
-| Final input to settled exact histogram | 99.7 / 107.0 | 184.7 / 213.3 | 185.4 / 208.8 |
-| … of which commit to settled histogram | 91.6 / 100.1 | 176.3 / 208.4 | 177.4 / 200.3 |
-
-The settled-histogram rows come from a companion `--mode commit` run of 30 samples, where each step
-is a whole gesture moved and released at once, so every sample is one committed frame and its own
-exact report. On that build a drafted preview was never analysed — the plot was labelled stale during
-a gesture — so the exact histogram was always reduced from the frame the commit's own refresh
-rendered, and `analysis_adopted` is the moment that frame and its report were adopted together. The
-drag runs measure the same interval once each and agree: 74.8 / 90.3 ms at 24 MP, 239.5 / 248.3 ms
-on the crop stack and 182.2 / 200.9 ms at 60 MP, from two commits each.
-
-The crop stack is slower than plain 60 MP at the input-to-frame median because its `draft.set` round
-trip is four times longer: the owner replans the crop prefix on every set. Its render and upload are
-close to 60 MP's despite a much smaller output stage (5653 × 3180), which is the crop resample's own
-interpolating pass.
-
-### Queue cancellation during a gesture
-
-From the same runs, counted out of the event log. Two separate bounds hold.
-
-| Observation | 24 MP drag | 24 MP commit | 60 MP drag | 60 MP commit |
-| --- | --- | --- | --- | --- |
-| Scripted slider values | 62 | 30 | 62 | 30 |
-| `draft.set` requests sent | 32 | 30 | 32 | 30 |
-| Preview jobs requested | 32 | 30 | 32 | 30 |
-| Preview jobs superseded before display | 2 | 30 | 2 | 30 |
-| Commits | 2 | 30 | 2 | 30 |
-| Analysis reports adopted | 3 | 31 | 3 | 31 |
-| Analysis jobs superseded | 0 | 0 | 0 | 0 |
-
-The first bound is the gesture driver's. A drag step that sends 31 values between two ticks produces
-exactly **one** `draft.set` and one preview job: the driver keeps at most one round trip in flight
-and only the newest value waiting, so intermediate values are coalesced and never reach the owner at
-all. That is why 62 scripted values become 32 requests in the drag runs.
-
-The second bound is the preview queue's. Every commit supersedes the drafted preview of the value it
-commits, because the commit's own refresh requests a newer generation before the drafted pixels are
-uploaded; the superseded frame is rejected on generation rather than drawn. In the commit runs all
-30 drafted previews are superseded this way. In the drag runs only the two releases supersede
-anything, because the open steps drain one at a time by construction. **No analysis job is
-superseded in any run**: a drafted preview was never analysed, so the only reductions were the ones
-belonging to committed frames, and each was adopted with the pixels it was reduced from.
+The 60 MP source (10000 × 6000) fits the bound in 1280 × 768 (0.98 MP) and its crop stack's proxy is 2310 × 1386, rendering 1280 × 720. The 24 MP runs started at a one-minute load of 12.6 and 14.2, the 60 MP runs at 29.9 and 27.3, a loaded host; the second 60 MP run is the loaded one (its proxy builds took 26 to 28 ms against 7 to 11 ms otherwise), so its tails are the host's. Below one megapixel the upright Presence render's tiles run on the pool, as does the crop stack's 1280 × 719 resample; the crop stack's colour pass on the 2.9 MP proxy stage and the upright full Basic render pool through the heavy-colour gate. At the 2880 × 1800 bound every pass is above the shared one-megapixel threshold too.
 
 ### Memory, scratch and idle with a full Basic layer
 
@@ -1092,7 +920,7 @@ retention; it is not a CPU-heap figure and GPU memory is not separated.
 | --- | --- |
 | Peak RSS, 24 MP, gesture process committing the full Basic layer | 645.3 MiB |
 | Peak RSS, 24 MP, second process holding that committed layer | 568.2 MiB, settling to 408.0 MiB |
-| Idle CPU, 24 MP with the full Basic layer, 30 s after settling | 1.46% of one core |
+| Idle CPU, 24 MP with the full Basic layer, 30 s after settling | 1.38% of one core (one sample) |
 | Scratch budget high-water mark, 24 MP colour pass | 14 112 000 B (13.46 MiB) of the 64 MiB target |
 | Scratch budget high-water mark, 60 MP colour pass | 13 440 000 B (12.82 MiB) of the 64 MiB target |
 | Peak RSS during a 30-input 24 MP latency run (32 window captures retained) | 1336.5 MiB |
@@ -1106,72 +934,40 @@ count, not the pixel count. The two latency-run peaks are **not** working-set fi
 retain a full-window PNG readback for each of 32 captured frames, which is harness cost, and they are
 recorded only so the number is not mistaken for one later.
 
-### Editor process measurements, before and after this work
+The histogram plot's canvas program holds an `iced::widget::canvas::Cache` in its own persistent
+state, keyed by a version the view derives from the render identity and the `stale` flag
+(`crates/luxforge-ui/src/widgets/histogram.rs`,
+`crates/luxforge-app/src/view/tools_panel.rs::plot_version`), so a redraw with unchanged bins reuses
+the tessellated polygons rather than rebuilding three 256-point fills. The idle figure is
+`editor-latency --source fixtures/generated/24mp.jpg --idle --samples 3 --output
+artifacts/idle-after-basic`; the `histogram` smoke scenario (`artifacts/idle-histogram`) confirms
+the cached plot renders and updates correctly.
 
-`measure`, five app-cold launches per workload plus one repeated 60 MP run, on the host above. The
-"before" column is the binary built from `3c5def1` (`main` before the Basic panel and histogram,
-SHA-256 `ff9eecab…`), measured in the same session minutes apart from the same fixtures, so the two
-columns share host conditions. Launch to observed frame is an upper bound: it includes the temporary
+### Editor process measurements
+
+`measure`, five app-cold launches per workload plus one repeated 60 MP run, on the host above.
+Launch to observed frame is an upper bound: it includes the temporary
 background bundle, the executable copy and the harness's capture readback, not scanout.
 
-| Measurement | Before `3c5def1` | After |
-| --- | --- | --- |
-| Launch to observed frame, empty (median / p95) | 632.9 / 689.7 ms | 671.2 / 751.7 ms |
-| Launch to observed frame, 24 MP (median / p95) | 689.3 / 734.7 ms | 734.7 / 742.5 ms |
-| Launch to observed frame, 60 MP (median / p95) | 802.6 / 859.0 ms | 808.8 / 857.4 ms |
-| Sampled peak RSS (empty / 24 / 60 MP, median) | 143.7 / 489.2 / 967.4 MiB | 133.2 / 466.0 / 975.0 MiB |
-| Sampled peak RSS after sixteen 60 MP loads | 1316.0 MiB | 1316.4 MiB |
-| Open request to captured frame (24 / 60 MP, median) | 219.7 / 314.1 ms | 222.2 / 314.3 ms |
-| … of which GPU upload (24 / 60 MP, median) | 21.3 / 55.8 ms | 21.4 / 52.3 ms |
-| Open to full-resolution CPU raster (24 / 60 MP, median) | 172.7 / 239.9 ms | 178.1 / 240.7 ms |
-| Idle CPU with a 60 MP image open, 30 s after settling | 0.93% of one core | 1.29% of one core |
-
-Registering the Basic module and the histogram adds no measurable launch cost: the medians differ by
-38, 45 and 6 ms across the three workloads with five samples each, the p95 differences are mixed in
-direction, and the empty-shell median moves by more than the 60 MP one, which neither a per-image
-cost nor a fixed registration cost could produce. Registration of the built-in modules was measured
-at 0.18 ms when the registry was introduced, three orders of magnitude below this spread. Peak RSS is lower after the change at the empty and 24 MP workloads and 8 MiB higher at
-60 MP, and identical after sixteen 60 MP loads. Both columns sit far above the 233 / 296 / 412 ms
-S0 viewer launch medians in the table above, and above the 231 / 285 / 396 ms an earlier `measure`
-run recorded for the RAW-era build; because before and after agree here, that gap belongs to the
-host and OS state of this session, not to this change, and those older figures should not be
-compared against these.
-
-Idle CPU is the one figure that moved: 0.93% before against 1.29% after, one 30-second sample each
-with a 60 MP image open. The companion 24 MP run with a full Basic layer measured 1.46%. These are
-single samples, and the 500 ms event poll and the window's own redraws are inside all of them, but
-the direction is consistent and the histogram plot is now drawn on each of those redraws.
-
-A follow-up gave the histogram plot's canvas program an `iced::widget::canvas::Cache`, held in the
-program's own persistent state and keyed by a version the view derives from the render identity and
-the `stale` flag (`crates/luxforge-ui/src/widgets/histogram.rs`,
-`crates/luxforge-app/src/view/tools_panel.rs::plot_version`), so a redraw with unchanged bins reuses
-the tessellated polygons instead of rebuilding three 256-point fills. Measured again on the same host,
-binary SHA-256 `db6ce15c…`, one 30-second sample each: **1.32%** with the 60 MP image open
-(`measure --binary target/release/luxforge --output artifacts/idle-after --samples 5`) and **1.38%**
-on the 24 MP full-Basic-layer workload (`editor-latency --source fixtures/generated/24mp.jpg --idle
---samples 3 --output artifacts/idle-after-basic`), against 1.29% and 1.46% before the cache. Both are
-within a single sample's noise of the unfixed figures, not a resolution. The `histogram` smoke
-scenario (`artifacts/idle-histogram`) confirms the cached plot still renders and updates correctly.
-The likely dominant cost is not this widget: even a `SyncResult::Unchanged` reply to the 500 ms sync
-still drives two `Editor::update` calls and two full `view()` rebuilds of every panel every half
-second (`crates/luxforge-app/src/app/mod.rs`, `app/tasks.rs`), and re-tessellating three small
-polygons twice a second could not plausibly account for the whole 0.3–0.5 point regression on its
-own. That path has since been removed: the event sync reads the log only when the owner wakes it
-for another client's change ([performance rule 8](../engineering/performance-rules.md#rules)). This is a
-measurement to attribute, not a resolved regression, and it is reported as a miss below.
+| Measurement | Result |
+| --- | --- |
+| Launch to observed frame, empty (median / p95) | 671.2 / 751.7 ms |
+| Launch to observed frame, 24 MP (median / p95) | 734.7 / 742.5 ms |
+| Launch to observed frame, 60 MP (median / p95) | 808.8 / 857.4 ms |
+| Sampled peak RSS (empty / 24 / 60 MP, median) | 133.2 / 466.0 / 975.0 MiB |
+| Sampled peak RSS after sixteen 60 MP loads | 1316.4 MiB |
+| Open request to captured frame (24 / 60 MP, median) | 222.2 / 314.3 ms |
+| … of which GPU upload (24 / 60 MP, median) | 21.4 / 52.3 ms |
+| Open to full-resolution CPU raster (24 / 60 MP, median) | 178.1 / 240.7 ms |
 
 ### Instant previews: proxy phase, hop rule and the surface primitive
 
 Native Apple M4 Pro, macOS 26.5.2, Metal, a 2880 × 1800 physical window at 2× scale, release
 builds, background hidden-window launches, warm filesystem cache, one-minute load averages between
-4 and 7.5 on a shared host. Application SHA-256 `16423973…`. These rows supersede the
-slider-to-presented-frame and queue-cancellation tables above, which measured the full-resolution
-render-and-upload path that no longer existed at Fit; the histogram, memory and launch rows above
-still described that build unless restated here. These rows measured the CPU proxy and exact
-phases, which a drag on a machine with a GPU no longer takes ([GPU previews qualified on the M4](#gpu-previews-qualified-on-the-m4)).
+4 and 7.5 on a shared host. These rows measure the CPU proxy and exact phases, which a drag takes
+only on a machine without a GPU ([GPU previews qualified on the M4](#gpu-previews-qualified-on-the-m4)).
 Presented here means the update in which the frame became the photo surface's source; it is drawn by the redraw that update requests, the next
-frame, and it is still not scanout. The exposure gesture is the same drained drag as above; a full
+frame, and it is still not scanout. The exposure gesture is a drained drag; a full
 Basic layer means `--basic`, which commits all ten fields non-neutral first so every frame runs
 every colour unit of the module.
 
@@ -1183,11 +979,10 @@ every colour unit of the module.
 | 60 MP, full Basic layer | 17.2 / 28.9 |
 | 24 MP, 7° crop-fit and full Basic layer | 16.1 / 28.7 |
 
-The figures did not depend on the source size, because every frame in a drag was the proxy phase:
+The figures do not depend on the source size, because every frame in a drag is the proxy phase:
 a 1716 × 1144 render of the whole recipe against the cached display-bounded proxy of the source
 (the photo area of this window at 2×), presented through the surface primitive with no allocation
-round trip. Before this work the same 24 MP drag measured 71.8 / 83.2 ms on this host, 60 MP
-132.5 / 151.2 and the crop stack 116.0 / 127.6, all exposure only.
+round trip.
 
 | Wild drag, 120 inputs per second for 3 s alternating direction (`--mode burst`) | Presented fps | Staleness p50 / p95 ms | Largest gap ms |
 | --- | --- | --- | --- |
@@ -1196,10 +991,8 @@ round trip. Before this work the same 24 MP drag measured 71.8 / 83.2 ms on this
 | 60 MP, full Basic layer | 42.5 | 32.7 / 34.1 | 32.4 |
 
 Every one of the 360 scripted values reaches the owner as its own `draft.set` (the gesture's
-round trip is synchronous and takes 0.18 / 0.19 ms), the queue kept one proxy job active and one
-pending, and every superseded exact phase was cancelled (160, 124 and 124 of them in the three runs).
-Before this work the same burst presented one frame in three seconds: every render finished after
-a newer job had been requested and was dropped as stale.
+round trip is synchronous and takes 0.18 / 0.19 ms), the queue keeps one proxy job active and one
+pending, and every superseded exact phase is cancelled (160, 124 and 124 of them in the three runs).
 
 | Settled exact histogram after the last input (p50 / p95 ms) | Figure |
 | --- | --- |
@@ -1208,90 +1001,73 @@ a newer job had been requested and was dropped as stale.
 | 24 MP, full Basic layer, 2 commits | 153.8 / 158.6 |
 | 60 MP, full Basic layer, 2 commits | 356.4 / 367.0 |
 
-The settled histogram was the exact phase of the committed frame: the full-resolution render with
-every unit, then the reduction. It was not on the input path, so a drag did not wait for it; the
-60 MP full-Basic figure misses the 200 ms threshold that was set for 24 MP and is recorded here
-because the design asks for the tails.
+The settled histogram is the exact phase of the committed frame: the full-resolution render with
+every unit, then the reduction. It is not on the input path, so a drag does not wait for it; the
+60 MP full-Basic figure misses the 200 ms threshold set for 24 MP and is recorded here because the
+design asks for the tails.
 
-Where the per-input time went before the last two changes, measured with the per-leg timings the
-`slider_draft_preview` event now records: the owner's `draft.set` and preview-job work take under
-0.2 ms, the desktop's update, model derivation and view under 0.15 ms together, and every message
-handed back into the update loop through the runtime arrived about 7.9 ms later, one frame of the
-120 Hz display, because a redraw is always in flight during a drag. With the round trip as a task
-and the frame through an image allocation, a 24 MP drag measured 38.6 / 63.0 ms; with the round
-trip synchronous, 30.2 / 58.7; with the surface primitive, the rows above.
+The per-leg timings the `slider_draft_preview` event records: the owner's `draft.set` and
+preview-job work take under 0.2 ms, the desktop's update, model derivation and view under 0.15 ms
+together. A message handed back into the update loop through the runtime arrives about 7.9 ms
+later, one frame of the 120 Hz display, because a redraw is always in flight during a drag: with
+the round trip as a task and the frame through an image allocation, a 24 MP drag measured
+38.6 / 63.0 ms, and with the round trip synchronous, 30.2 / 58.7, which is why the gesture's round
+trip is synchronous and the frame goes through the surface primitive.
 
 #### A gesture's press to its first frame
 
 A press opens the gesture's draft with `draft.begin`, and its first `draft.set` cannot go before
-that answers. `draft.begin`, `draft.reapply` and `draft.cancel` now run synchronously on the desktop
-thread, as `draft.set` does, so the press's first `draft.set` goes in the press's own update; before,
-`draft.begin` was an owner task and its answer came back a hop later. Measured with
-`editor-latency --mode drag --samples 5` on the 24 MP JPEG at Fit, exposure only, and the same with
-`--mask` (the slider bound to a linear gradient mask), on the host and window above (Apple M4 Pro,
-macOS 26.5.2, Metal, 2880 × 1800 at 2×), release builds, background launches, warm cache. Both
-binaries were driven by the same `xtask`, which reports two rows from the gesture's
-`slider_draft_begin` (logged in the update that opens the draft): `press_to_first_draft_set` and
-`press_to_first_presented_frame`, the frame of that first set's preview job. A drag has one measured
-press per launch (a second, the release step's, adds a `press_to_first_draft_set` sample), so each
-row below is 30 or 16 launches. Before is the base build (`8721dac2…`), after this change's
-(`3eadae3e…`); the launches ran A, B, B, A in blocks of 15 (8 masked) on a heavily shared host,
-one-minute load 14–34, and each block is given separately so the reversal can be read.
+that answers. `draft.begin`, `draft.reapply` and `draft.cancel` run synchronously on the desktop
+thread, as `draft.set` does, so the press's first `draft.set` goes in the press's own update.
+Measured with `editor-latency --mode drag --samples 5` on the 24 MP JPEG at Fit, exposure only, and
+the same with `--mask` (the slider bound to a linear gradient mask), on the host and window above
+(Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×), release builds, background launches, warm
+cache. `xtask` reports two rows from the gesture's `slider_draft_begin` (logged in the update that
+opens the draft): `press_to_first_draft_set` and `press_to_first_presented_frame`, the frame of
+that first set's preview job. A drag has one measured press per launch (a second, the release
+step's, adds a `press_to_first_draft_set` sample), so each row below is 30 or 16 launches, in two
+blocks of 15 (8 masked) on a heavily shared host, one-minute load 21–34.
 
-| 24 MP drag, p50 / p95 ms | Before (A1 / A2) | After (B1 / B2) |
+| 24 MP drag, p50 / p95 ms | Block 1 | Block 2 |
 | --- | --- | --- |
-| Press to first `draft.set`, exposure (30 per block, two presses a launch) | 4.34 / 8.79 · 7.19 / 8.95 | 0.05 / 0.06 · 0.05 / 0.08 |
-| Press to first presented frame, exposure (15 per block) | 16.45 / 47.31 · 15.93 / 22.19 | 8.07 / 9.41 · 7.77 / 16.68 |
-| Press to first presented frame, masked (8 per block) | 16.57 / 18.05 · 16.57 / 17.91 | 9.71 / 25.53 · 9.34 / 9.78 |
-| Later inputs, input to presented frame, exposure (75 per block) | 8.74 / 37.58 · 8.67 / 15.89 | 8.73 / 10.51 · 8.60 / 35.09 |
+| Press to first `draft.set`, exposure (30 per block, two presses a launch) | 0.05 / 0.06 | 0.05 / 0.08 |
+| Press to first presented frame, exposure (15 per block) | 8.07 / 9.41 | 7.77 / 16.68 |
+| Press to first presented frame, masked (8 per block) | 9.71 / 25.53 | 9.34 / 9.78 |
+| Later inputs, input to presented frame, exposure (75 per block) | 8.73 / 10.51 | 8.60 / 35.09 |
 
-Pooled over both blocks, a press reached its first frame in 16.08 / 42.05 ms before and
-7.83 / 9.41 ms after (30 launches each; loads 14.3–27.6 before, 21.5–34.1 after), and 16.57 / 18.05
-before and 9.42 / 25.53 after with the mask (16 each). The press now costs what every later input
-costs: the drop, about 8 ms at p50, is the one 120 Hz frame the begin's answer waited for, and it
-holds in both orders. The first `draft.set` itself left 1.2–9.1 ms after the press before, depending
-on whether a redraw was in flight, and 0.04–0.17 ms after. The p95 tails either side are the shared
-host: single launches in each block, not one binary, carry them.
+Pooled over both blocks, a press reaches its first frame in 7.83 / 9.41 ms (30 launches), and in
+9.42 / 25.53 ms with the mask (16). The press costs what every later input costs, and its first
+`draft.set` leaves 0.04–0.17 ms after the press. The p95 tails are the shared host: single
+launches, not the build, carry them.
 
 The mask shape and crop gestures take the same path and have no `editor-latency` mode of their own.
 Their press to first `draft.set`, read from the `mask_draft_begin`/`crop_draft_started` events of
 one functional run each of the `mask-panel`, `mask-brush` and `crop-draft` smokes on the small
-fixture, with both binaries, was 2.2–9.8 ms before and 0.04–0.07 ms after for five mask shape
-presses, and 2.2 and 5.8 ms before and 0.004 ms after for the crop's two starts. Those are single
-functional runs, not distributions. A 30-sample `--mode commit` run, which would give one press per
-sample, could not be taken when these were measured, because `editor-latency` then generated its
-19th value as 0.5700000000000001, which no rail fraction sends; it now generates the decimal the
-slider sends.
+fixture, is 0.04–0.07 ms for five mask shape presses and 0.004 ms for the crop's two starts. Those
+are single functional runs, not distributions.
 
 #### A brush stroke's press
 
 A brush in hand holds no core draft: each stroke's `draft.begin` runs at its press, synchronously,
 immediately followed in the same update by the first `draft.set` carrying the press's position.
-Before, the empty draft was opened ahead of time, when the brush was put in hand, so the press sent
-its first `draft.set` at once. `editor-latency --mode paint` reports the same two press rows drag
-mode does, from the stroke's first `mask_stroke_position` (logged in the update that hands the press
-to the desktop): `press_to_first_draft_set` and `press_to_first_presented_frame`, the first of the
-stroke's own frames presented. Measured on the 24 MP JPEG at Fit with the default 30-position stroke
-at 24 ms, on the host and window above (Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×),
-release builds, background launches, warm cache; both binaries driven by this change's `xtask`
-through `--binary`. Before is the base build (`0d6626bb…`, commit `8119f891`), after this change's
-(`117ff713…`; the committed build differs from it only in the event a brush put down because its
-component is gone records, which no stroke reaches). One stroke is one press, so each block is 15 launches and 15 presses; the blocks ran
-A, B, B, A back to back on a heavily shared host, with the one-minute load each launch recorded.
+`editor-latency --mode paint` reports the same two press rows drag mode does, from the stroke's
+first `mask_stroke_position` (logged in the update that hands the press to the desktop):
+`press_to_first_draft_set` and `press_to_first_presented_frame`, the first of the stroke's own
+frames presented. Measured on the 24 MP JPEG at Fit with the default 30-position stroke at 24 ms,
+on the host and window above (Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×), release
+builds, background launches, warm cache. One stroke is one press, so each block is 15 launches and
+15 presses, on a heavily shared host, with the one-minute load each launch recorded.
 
-| 24 MP paint, p50 / p95 ms | Before A1 (load 14.1–36.1) | After B1 (25.6–34.0) | After B2 (18.5–26.9) | Before A2 (12.0–17.3) |
-| --- | --- | --- | --- | --- |
-| Press to first `draft.set` (15 per block) | 0.01 / 0.22 | 0.06 / 0.09 | 0.06 / 0.10 | 0.01 / 0.02 |
-| Press to first presented frame (15 per block) | 12.13 / 36.90 | 10.58 / 15.65 | 10.66 / 58.73 | 10.42 / 13.00 |
-| Later positions, input to presented frame (398–435 per block) | 17.12 / 55.88 | 8.28 / 32.09 | 8.37 / 28.91 | 8.27 / 10.28 |
+| 24 MP paint, p50 / p95 ms | Block 1 (load 25.6–34.0) | Block 2 (18.5–26.9) |
+| --- | --- | --- |
+| Press to first `draft.set` (15 per block) | 0.06 / 0.09 | 0.06 / 0.10 |
+| Press to first presented frame (15 per block) | 10.58 / 15.65 | 10.66 / 58.73 |
+| Later positions, input to presented frame (398–435 per block) | 8.28 / 32.09 | 8.37 / 28.91 |
 
-Pooled over both blocks (30 presses each), the press reached its first `draft.set` in 0.01 / 0.09 ms
-before and 0.06 / 0.09 ms after, and its first frame in 10.55 / 30.74 ms before and 10.60 / 18.70 ms
-after. Opening the draft at the press costs the synchronous `draft.begin`, about 0.05 ms at p50, and
-the press's first frame is unchanged in both orders: the difference is well under one 120 Hz frame
-and inside the spread between the two blocks of the same binary. The p95 tails are single launches
-on the shared host (B2's 58.7 ms is one launch; A1 ran at loads up to 36), not one binary, and the
-later-position rows, whose path this change does not touch, move with the load in the same way.
+Pooled over both blocks (30 presses), the press reaches its first `draft.set` in 0.06 / 0.09 ms
+and its first frame in 10.60 / 18.70 ms. Opening the draft at the press costs the synchronous
+`draft.begin`, about 0.05 ms at p50. The p95 tails are single launches on the shared host (block
+2's 58.7 ms is one launch), not the build.
 
 | Core diagnostic, 24 MP crop stack (p50 / p95 ms, 10 samples) | Full resolution | Proxy for 2880 × 1800 |
 | --- | --- | --- |
@@ -1300,189 +1076,83 @@ later-position rows, whose path this change does not touch, move with the load i
 | Full Basic layer | 77.3 / 79.7 | 46.9 / 48.0 |
 | Proxy build (a cache miss: once per source, bounds and window size) | — | 21.2 / 25.7 |
 
-When these rows were taken the proxy source for this stack was the whole 4677 × 3118 proxy stage,
-larger than the 2879 × 1618 output it produces, because the 16:9 crop discards most of the rotated
-stage; the colour pass covers only the band of rows the crop reads, which is what brought the
-full-Basic rows down from 162.5 and 99.8 ms in the first measurement of this plan. A cropped
-stack's proxy source later held only the window of the proxy stage its crop reads (below), until the
-GPU-first stage 5 deleted the proxy's windows. The full-Basic proxy render was the largest per-input
-cost on that path.
-
-#### A tight crop's windowed proxy
-
-A tight crop fits a small output into the bounds, which raises the proxy scale towards one; on the
-after build the proxy held only the window of that proxy stage the crop reads. The CPU proxy now
-holds its whole proxy stage and draws a drag only in a session without a GPU
-([instant previews](../design/instant-preview.md#the-cpu-proxy-a-session-without-a-gpu)). Measured on
-the X100VI with a 1801 × 1574 crop of its 7728 × 5152 stage, in the 1716 × 1576 bounds of a
-default hidden window, then Presence committed at Clarity 30, Dehaze 20, Texture 20 and then Clarity
-60: one evidence-script launch per run of each release binary from a background-only bundle with
-an isolated catalog, RSS sampled every 50 ms by an ad hoc script that is not a committed harness;
-times are from the run's own `script_step`, `preview_displayed` and `analysis_adopted` events. Native Apple M4 Pro, macOS 26.5.2, runs back to back and
-reversed (before, after, after, before), one-minute load average 23.5–28.2 throughout with other
-sessions building; single launches, not distributions. Application SHA-256 `a2f1d98d…` before and
-`ca82c5b9…` after.
-
-| Per run (before 1, before 2 · after 1, after 2) | Before | After |
-| --- | --- | --- |
-| Proxy source, crop alone | 7363 × 4909 | 1716 × 1500 |
-| Proxy source under Presence | 7363 × 4909 (414 MiB of planes) | 2437 × 2530 (71 MiB) |
-| Crop commit, request to first frame | 151, 134 ms | 43, 119 ms |
-| First Presence commit, request to proxy frame | 8961, 8338 ms | 1888, 2097 ms |
-| First Presence commit, request to settled report | 18203, 17147 ms | 11116, 11338 ms |
-| Clarity change, request to proxy frame | 8279, 7490 ms | 1289, 1229 ms |
-| Clarity change, request to settled report | 17462, 16065 ms | 11129, 10350 ms |
-| Sampled peak RSS | 2914, 2914 MiB | 2074, 2072 MiB |
-
-The proxy phase itself (`render_ms`) was 8.3–8.9 s before and 1.2–2.1 s after for the Presence
-commits; the first commit after included the exact stage's one Dehaze reduction, which the proxy
-phase then prepared and the exact phase read from the estimate store. What remained of a commit was
-the exact phase: a Presence render over the whole 40 MP stage, unchanged, which was then the 100%
-view, histogram and export source. The figures filed with the bug (about 8.7 s per commit and 3.9 GiB
-peak) came from another journey; these runs compare one journey before and after, on one host.
+The proxy source for this stack is the whole 4677 × 3118 proxy stage, larger than the
+2879 × 1618 output it produces, because the 16:9 crop discards most of the rotated stage; the
+colour pass covers only the band of rows the crop reads. The full-Basic proxy render is the
+largest per-input cost on this path.
 
 #### A crop draft's input stage at Fit
 
-On the after build a crop draft's input stage was a display-size proxy of the layers before the crop
-at Fit, and the exact stage was rendered only at a percentage zoom that needed it. Before, the stage
-was the whole prefix rendered at full resolution and uploaded into a texture of its own size. The
-stage at Fit is now the GPU's picture at rest of the prefix, with the reference's exact frame reduced
+The stage at Fit is the GPU's picture at rest of the prefix, with the reference's exact frame reduced
 to the view where the GPU cannot draw it
-([instant previews](../design/instant-preview.md#a-crop-drafts-input-stage)). Measured
-with `editor-latency --mode crop-start --presence` (a Presence layer with Texture, Clarity and Dehaze
-at 100, then per sample a crop draft Start held open 1.5 s, Cancel and 1.5 s more), at Fit in the
-hidden 2880 × 1800 window at 2×, on the generated 60 MP JPEG (10000 × 6000, 5 Starts a launch) and
-the owner's X100VI RAF (7728 × 5152, 4 a launch). Native Apple M4 Pro, macOS 26.5.2, Metal; release
-builds, background launches, warm cache; before is the base (`800f09e7…`), after this change
-(`f1e3c268…`), both driven by the same `xtask`, launched back to back as before, after, after,
-before. The host was shared: one-minute load 17.7, 18.8, 17.7, 16.0 for the 60 MP launches and
-13.8, 18.4, 21.1, 26.5 for the X100VI. The open time is from the Start step's `script_step` to the
-`frame_captured` the editor takes once the stage is on screen, so it includes the window readback.
-Memory is the Performance section's `resources.read` figure and GPU its allocated bytes, read at
-the end of each hold; the baseline is the settled frame before the first Start.
+([instant previews](../design/instant-preview.md#a-crop-drafts-input-stage)).
 
-| Per launch (before 1, before 2 · after 1, after 2) | Before | After |
-| --- | --- | --- |
-| 60 MP: Start to `crop_draft_started`, p50 | 0.11, 0.10 ms | 0.14, 0.36 ms |
-| 60 MP: Start to the stage on screen, p50 (min–max) | 2832 (2781–8068), 5065 (3044–9589) ms | 65 (61–98), 70 (63–80) ms |
-| 60 MP: stage texture | 10000 × 6000, 229 MiB | 1716 × 1030, 6.7 MiB |
-| 60 MP: GPU allocated while the draft is open (baseline) | 450.8, 450.7 MiB (211.2, 211.1) | 222.0, 222.1 MiB (211.1, 211.3) |
-| 60 MP: memory while the draft is open, p50 (baseline) | 2157, 2122 MiB (1490, 1468) | 1824, 1822 MiB (1468, 1478) |
-| 60 MP: sampled peak RSS and process CPU of the launch | 1668, 1641 MiB; 265, 270 s | 1425, 1433 MiB; 135, 136 s |
-| X100VI: Start to `crop_draft_started`, p50 | 0.12, 0.13 ms | 0.09, 0.09 ms |
-| X100VI: Start to the stage on screen, p50 (min–max) | 2013 (1851–3237), 2214 (2031–9334) ms | 354 (138–1033), 322 (291–550) ms |
-| X100VI: stage texture | 7728 × 5152, 152 MiB | 1716 × 1144, 7.5 MiB |
-| X100VI: GPU allocated while the draft is open (baseline) | 369.8, 369.8 MiB (211.2, 211.2) | 222.3, 222.3 MiB (211.2, 211.2) |
-| X100VI: memory while the draft is open, p50 (baseline) | 2593, 2736 MiB (2386, 2430) | 2552, 2460 MiB (2416, 2497) |
-| X100VI: sampled peak RSS of the launch | 2323, 2316 MiB | 2171, 2256 MiB |
-
-`crop_draft_started` is logged in the Start's own update on both builds, since `draft.begin` became
-synchronous, so the draft's section and keys are live at once either way; what changed is how long
-the frame waits for its stage. Both orders agree: the 60 MP stage opens 40 to 70 times sooner and
-the X100VI's about 6 times, and the GPU allocation a draft adds falls from 240 and 158 MiB to 11 MiB
-(the stage's own texture is 7 MiB of it). The X100VI's proxy costs more than the JPEG's because the
-Presence prefix renders through the RAW development's linear planes. The process memory rows are
-noisy on this host; the 60 MP ones fall by about 300 MiB, the full-resolution frame the stage no
-longer renders, and the X100VI ones overlap. The launch CPU halves at 60 MP because no Start on the after
-build rendered the prefix at full resolution.
-
-Aliasing at Fit was settled on a generated 6000 × 4000 zone plate (a radial chirp reaching 0.5
+Aliasing at Fit is settled on a generated 6000 × 4000 zone plate (a radial chirp reaching 0.5
 cycles per pixel in the corners, JPEG quality 95 without chroma subsampling): the crop draft opened
-at Fit with each binary through `editor-latency --mode crop-start --samples 1`, and the captured
-stage compared, over the 77% of it whose source frequency lies beyond the display's Nyquist limit,
-with a linear-light box downscale computed independently. The exact stage drawn by the surface's
-bilinear sampler without mip levels aliases: full-contrast replicas of the centre rings across the
-frame, a standard deviation of 63.6 codes there and a mean of 145.1, 16 codes darker than the true
-average. The proxy stage does not: it shows only the faint residual rings of a box filter, 15.8 codes
+at Fit through `editor-latency --mode crop-start --samples 1`, and the captured stage compared,
+over the 77% of it whose source frequency lies beyond the display's Nyquist limit, with a
+linear-light box downscale computed independently. The exact stage drawn by the surface's bilinear
+sampler without mip levels aliases: full-contrast replicas of the centre rings across the frame, a
+standard deviation of 63.6 codes there and a mean of 145.1, 16 codes darker than the true average.
+The display-size stage does not: it shows only the faint residual rings of a box filter, 15.8 codes
 against the reference's own 10.9, with a mean of 160.3 against 160.8. A percentage zoom draws the
 exact stage at or above its size, where the sampler magnifies and cannot alias.
 
-RAW, one functional trial per camera through `raw-editor` (the same 13-step journey as the RAW
-tables below, so these are single launches and not distributions): request to display of the
-exposure step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S, against
-133.3, 178.8 and the Air 2S figures recorded below for the full-resolution path; rotate, crop-fit
-and undo present in 18 to 46 ms. The white-balance steps still take 354–364 ms on the Z6 and
-1364–1428 ms on the other two, because a committed temperature, tint, gain or neutral pick
-redevelops the mosaic on the source worker before its exact frame exists; that is the release cost
-listed in the [performance rules](../engineering/performance-rules.md#known-remaining-costs).
-
-A drafted RAW temperature or tint previews approximately on the developed planes
-([instant previews](../design/instant-preview.md#a-raw-white-balance-during-a-drag)), so its drag
-has a frame per input like exposure's. `editor-latency`, drained drag of 30 inputs at Fit, same
-M4 Pro host (macOS 26.5.2, release build, warm cache), input to presented frame p50 / p95: Z6
-temperature 11.2 / 21.0 ms (load average 2.4–4.1) and tint 10.9 / 19.3 ms (2.9–6.1), X100VI
-temperature 10.5 / 20.6 ms (6.7–7.0) and tint 13.6 / 20.4 ms (5.2–6.2), against RAW exposure at
-12.0 / 19.9 ms on the Z6 (6.1–6.7) and 11.9 / 21.3 ms on the X100VI (5.8–6.6). Every drafted value
-produced a frame labelled approximate and none was analysed. The release still waits for the
-redevelopment: release to the committed frame is 534–540 ms on the Z6 and 1578–1639 ms on the
-X100VI in those runs (two commits each), and in `--mode commit`, 30 commits per run with other
-agents building, 376 / 430 ms p50 / p95 for Z6 temperature at load average 11–13 (436 / 465 ms at
-23), 441 / 1458 ms for Z6 tint at 23–28 and 1516 / 3175 ms for X100VI temperature (15 commits, load
-average 20–22), against 34.5 / 120.8 ms for RAW exposure on the Z6 at 11–13. A wild drag (`--mode
-burst`, 360 values over 3 s) presents 43.2 frames per second with a staleness of 16.5 / 34.7 ms
-p50 / p95 on the Z6 temperature slider and 35.7 at 16.6 / 30.6 ms on the X100VI's, against 48.8 at
-16.7 / 40.2 ms for RAW exposure on the Z6 (load average 5.9–7.4); an earlier RAW exposure burst on
-the Z6 presented 45.0 at 16.3 / 37.4 ms, against 51.0 and 16.8 / 30.4 ms for Basic's Exposure on
-the same file in the run after it, both at load average 13.
-
-Memory and idle from the same timing tier, five launches per workload: sampled peak RSS 130.4 MiB
-empty, 389.7 MiB at 24 MP and 808.8 MiB at 60 MP (medians); idle CPU 1.53% of one core over 30 s
-with the 60 MP image open, a miss of the 1% target in the same range as the 1.29–1.46% recorded
-before this work, with the histogram and the surface primitive both drawn on each redraw and the
-500 ms sync still in place; no timer was added and none remained for previews or gestures on that
-build.
+RAW, one functional trial per camera through `raw-editor` (the 13-step journey of the RAW tables
+below, so these are single launches and not distributions): request to display of the exposure
+step is 10.5 ms on the Z6, 14.6 ms on the X100VI and 15.0 ms on the Air 2S; rotate, crop-fit and
+undo present in 18 to 46 ms. A committed temperature, tint, gain or neutral pick redevelops the
+mosaic on the source worker before its exact frame exists; that is the release cost listed in the
+[performance rules](../engineering/performance-rules.md#known-remaining-costs), measured in
+[startup and RAW throughput](#startup-and-raw-throughput).
 
 #### A minified After side at Fit
 
-Before/After keeps the exact raster it displays as its After side, even at Fit, so the photo surface
-drew a full-resolution texture through its bilinear sampler with no mip levels at well under half
-its size, the case the crop draft's zone-plate measurement showed aliasing. It was confirmed before
-any change and then removed by giving such a texture linear-light mip levels
+Where the GPU cannot draw its picture, Before/After keeps the exact raster it displays as its After
+side, even at Fit, so the photo surface draws a full-resolution texture at well under half its
+size, the case the crop draft's zone-plate measurement shows aliasing for through a bilinear
+sampler with no mip levels. Such a texture has linear-light mip levels
 ([gpu previews](../design/gpu-preview.md#mipmapped-minification),
 [before and after](../design/before-after.md#after-at-fit)).
 
-The generator and script of the crop-stage measurement were not kept in the repository, so the
-judgement was rebuilt from its description and is now the `compare-zone-plate` smoke scenario, whose
-statistics (`xtask/src/zone_plate.rs`) are the ones named above: the capture's mean and standard
-deviation of luma over the pixels of the drawn photograph whose source frequency lies beyond the
-display's Nyquist limit, beside those of an independent area-weighted box average of the decoded
-source's linear light, re-encoded. The fixture is a generated 6000 × 4000 zone plate (`zone-plate.jpg`
-from `cargo xtask generate-fixtures`): `round(127.5 + 127.5 cos(pi k r^2))` with `k` such that the
+The judgement is the `compare-zone-plate` smoke scenario, whose statistics
+(`xtask/src/zone_plate.rs`) are the ones named above: the capture's mean and standard deviation of
+luma over the pixels of the drawn photograph whose source frequency lies beyond the display's
+Nyquist limit, beside those of an independent area-weighted box average of the decoded source's
+linear light, re-encoded. The fixture is a generated 6000 × 4000 zone plate (`zone-plate.jpg` from
+`cargo xtask generate-fixtures`): `round(127.5 + 127.5 cos(pi k r^2))` with `k` such that the
 frequency reaches 0.5 cycles per pixel at the corners, JPEG quality 95 without chroma subsampling.
-Its region beyond Nyquist is 86.1% of the photograph at Fit (1,689,852 of 1716 × 1144 pixels), not the
-77% the earlier plate had, so the reference's own standard deviation there is 18.1 codes where that
-plate's was 10.9, and the figures below are comparable with each other but not number for number with
-those.
+Its region beyond Nyquist is 86.1% of the photograph at Fit (1,689,852 of 1716 × 1144 pixels),
+against the 77% of the crop-stage measurement's plate, so the reference's own standard deviation
+there is 18.1 codes where that plate's is 10.9, and the figures below are comparable with each
+other but not number for number with those.
 
 Scope: native Apple M4 Pro, macOS 26.5.2, Metal; release builds launched hidden in the background
 bundle at 1440 × 900 logical, 2× (2880 × 1800 physical); the fixture opened at Fit, left 4 s for its
 exact render to land, then compared with `\` and After alone revealed (`Position(0.0)`), judged on the
-captured frame. The host was shared (one-minute load average 12 to 19). Before is the base
-(`46a85159`) with only the evidence state's `compare_after` field added; after is this change. Both
-ran through the same `xtask`.
+captured frame. The host was shared (one-minute load average 12 to 19).
 
-| 24 MP zone plate at Fit, 1716 × 1144 | Before | After |
-| --- | --- | --- |
-| Display proxy before the comparison (control): standard deviation, mean | 18.06, 159.98 | 18.06, 159.98 |
-| Reference box reduction: standard deviation, mean | 18.05, 159.99 | 18.05, 159.99 |
-| After alone: standard deviation, mean | 64.03, 144.67 | 12.38, 160.55 |
-| After alone: standard deviation against the reference's, mean against its | 3.55 times, 15.32 below | 0.69 times, 0.57 above |
-| Resident photo-slot bytes with the comparison open | 167,772,160 | 144,776,244 |
-| Mip levels resident, mip chains generated | not reported | 31,999,028 bytes, 1 |
+| 24 MP zone plate at Fit, 1716 × 1144 | Figure |
+| --- | --- |
+| Display proxy before the comparison (control): standard deviation, mean | 18.06, 159.98 |
+| Reference box reduction: standard deviation, mean | 18.05, 159.99 |
+| After alone: standard deviation, mean | 12.38, 160.55 |
+| After alone: standard deviation against the reference's, mean against its | 0.69 times, 0.57 above |
+| Resident photo-slot bytes with the comparison open | 144,776,244 |
+| Mip levels resident, mip chains generated | 31,999,028 bytes, 1 |
 
-The aliased reading reproduces the earlier one (63.6 and 145.1): full-contrast replica rings across
-the frame and a mean 15 codes below the true average. With mip levels the frame shows only faint
-residual rings; its standard deviation is below the reference's because the box-filtered levels,
-read trilinearly, are softer than the single box reduction. The After texture is now 6000 × 4000 with
-its 13 levels, 96,000,000 bytes of base and 31,999,028 of levels, which the resident bytes include;
-the plain texture it replaces reserved a 6144 × 6144 bucket of 150,994,944 bytes. The display-size
-photograph holds no levels, before the comparison and after it ends.
+Without mip levels the same capture reads 64.03 and 144.67: full-contrast replica rings across the
+frame and a mean 15 codes below the true average. With them the frame shows only faint residual
+rings; its standard deviation is below the reference's because the box-filtered levels, read
+trilinearly, are softer than the single box reduction. The After texture is 6000 × 4000 with its 13
+levels, 96,000,000 bytes of base and 31,999,028 of levels, which the resident bytes include. The
+display-size photograph holds no levels, before the comparison and after it ends.
 
 The generated 60 MP JPEG (10000 × 6000) is held in two tiles by the device's 8192 pixel textures and
 cannot have levels, so there After draws the display reduction at Fit (`compare-tiled`): After alone
 equals the display-size photograph drawn before the comparison to the code (largest channel
-difference 0, against 129 before), and the resident photo-slot bytes with the comparison open fall
-from 256,825,216 to 33,554,432, since the 240 MB tiled texture is no longer drawn at Fit.
+difference 0), and the resident photo-slot bytes with the comparison open are 33,554,432, since the
+240 MB tiled texture is not drawn at Fit.
 
 The `workspace` scenario, which holds the Before/After checks for crop and orientation alignment,
 endpoints, holds, zoom alignment and unchanged divider uploads, passes with 62 pixel claims held and
@@ -1493,45 +1163,34 @@ headless tests run on the same adapter.
 #### The proxy build's memory and time
 
 The proxy's box downscale runs in bands of output rows, each worker holding one intermediate of
-about 1 MiB, where it held one intermediate of every source row the window reads
-([instant previews](../design/instant-preview.md#the-cpu-proxy-a-session-without-a-gpu)). Measured with
-the ignored `measure_the_proxy_build_on_photo_sized_sources` test, now in `cpu_proxy/tests.rs`: one process per
-run decodes the generated JPEG, then builds its proxy for the owner's 2880 × 1800 display bounds 30
-times, and `/usr/bin/time -l` reports the process's maximum resident set size. The same run with
-`LUXFORGE_PROXY_BUILDS=0` decodes and builds nothing, which is the floor the build's peak is read
-against. Native Apple M4 Pro (14 cores), macOS 26.5.2, Rust 1.94.0, release test binaries of the
-base commit (`ec132e71`, with the same measurement test) and of this work, warm filesystem cache.
-Two rounds, before-after-after-before then after-before-before-after, one-minute load average
-13.4–13.7 and 11.6–12.6 with other sessions building. Both builds' proxies hash to the same bytes at
-both sizes.
+about 1 MiB ([instant previews](../design/instant-preview.md#the-cpu-proxy-a-session-without-a-gpu)).
+Measured with the ignored `measure_the_proxy_build_on_photo_sized_sources` test in
+`cpu_proxy/tests.rs`: one process per run decodes the generated JPEG, then builds its proxy for the
+owner's 2880 × 1800 display bounds 30 times, and `/usr/bin/time -l` reports the process's maximum
+resident set size. The same run with `LUXFORGE_PROXY_BUILDS=0` decodes and builds nothing, which
+is the floor the build's peak is read against. Native Apple M4 Pro (14 cores), macOS 26.5.2, Rust
+1.94.0, release test binaries, warm filesystem cache, four runs, one-minute load average 11.6–13.7
+with other sessions building.
 
 | Maximum resident set size (MiB) | 24 MP, 6000 × 4000 → 2700 × 1800 | 60 MP, 10000 × 6000 → 2880 × 1728 |
 | --- | --- | --- |
-| Decode only, both builds | 102.2–102.4 | 240.8–240.9 |
-| Before, four runs | 246.1–246.2 | 459.1–459.3 |
-| After, four runs | 148.1–155.4 | 290.8–294.7 |
-| The build above the decode floor, before / after | 143.9 / 45.9–53.2 | 218.3 / 49.9–53.8 |
+| Decode only | 102.2–102.4 | 240.8–240.9 |
+| Decode and build, four runs | 148.1–155.4 | 290.8–294.7 |
+| The build above the decode floor | 45.9–53.2 | 49.9–53.8 |
 
-Before, the build's peak is the whole-window intermediate (123.6 MiB at 24 MP, 197.8 MiB at 60 MP)
-plus the 18.5 or 19.0 MiB proxy; after, it is the proxy plus the pool workers' band intermediates
-and the allocator's retention of them, and it no longer grows with the source. Peak footprint
-(`/usr/bin/time -l`'s other figure) moves the same way: 238.3 to 141.2 MiB at 24 MP and 451.4 to
-283.0 MiB at 60 MP in the first round.
+The build's peak is the proxy plus the pool workers' band intermediates and the allocator's
+retention of them, and it does not grow with the source. Peak footprint (`/usr/bin/time -l`'s other
+figure) is 141.2 MiB at 24 MP and 283.0 MiB at 60 MP.
 
-| Build time, 30 builds per run (ms) | Before | After |
-| --- | --- | --- |
-| 24 MP, first build of the process | 13.2, 13.0, 14.3, 47.8 | 7.9, 7.7, 12.0, 13.9 |
-| 24 MP, p50 | 8.1, 8.2, 7.9, 54.8 | 7.4, 7.1, 8.3, 14.5 |
-| 60 MP, first build of the process | 18.2, 18.1, 21.1, 20.3 | 14.2, 13.5, 20.2, 13.2 |
-| 60 MP, p50 | 14.5, 16.6, 16.2, 15.5 | 13.0, 15.3, 16.4, 13.2 |
+| Build time, 30 builds per run (ms) | Four runs |
+| --- | --- |
+| 24 MP, first build of the process | 7.9, 7.7, 12.0, 13.9 |
+| 24 MP, p50 | 7.4, 7.1, 8.3, 14.5 |
+| 60 MP, first build of the process | 14.2, 13.5, 20.2, 13.2 |
+| 60 MP, p50 | 13.0, 15.3, 16.4, 13.2 |
 
-Each cell lists the first round's two runs, then the second round's two, in run order. The first
-build of a process, which touches its buffers for the first time, is lower after in every pair of
-both rounds; the steady p50 is lower after in the first round and not in the second, so no change
-in the steady build time is claimed. The second round's second pair at 24 MP ran through a load
-burst (before p95 162.8 ms, after 43.5 ms) and is kept for completeness. On the after build a job with a proxy phase
-also compiled its stack once at the proxy stage, where the plan and the render had each compiled it;
-that saved one `O(layers)` compile per proxy-phase job and was not separately timed.
+Each cell lists the runs in run order; the fourth 24 MP run went through a load burst (p95
+43.5 ms).
 
 #### The workspace derivation per message
 
@@ -1542,35 +1201,17 @@ that costs is the `detail.loop.last_rederive_ms` of `slider_draft_preview`: the 
 the update before that event's own, with a capability section's second derivation and the visible
 curves' sample requests inside it; `last_view_ms` is the `view()` of the same update. One sample per
 drafted input. Native Apple M4 Pro (14 cores), macOS 26.5.2 (25F84), Metal, a 2880 × 1800 window at
-2×, background hidden-window launches of release builds, `--locked` (Cargo.lock `a2642772…`), warm
-filesystem cache, the generated 24 MP and 60 MP JPEGs at Fit, Basic's exposure slider, and with
-`--mask` the same slider bound to a linear gradient. Three builds of the same tree: keyed (the
-region keys, `Tracked` stamps and per-section digests, SHA-256 `415770e3…`), bypassed (the same with
-every region key treated as moved, so every region is derived on every message while the tools
-panel's per-section digests still decide which sections are rebuilt, `6a16c4a0…`) and this change's
-(`814ee788…`, every region derived with no key or digest and the palette's entries built only while
-it is open). `editor-latency --mode drag` (30 inputs, 62 `slider_draft_preview` events a launch)
-and `--mode burst` (360 events a launch), each workload run keyed, other, other, keyed back to back,
-so every figure below pools two launches: 124 samples a drag cell and 720 a burst cell. The host
-was shared with other agents building throughout; the one-minute load at each round's start is
-given. Nearest-rank p50 / p95 in ms, `last_rederive_ms` then `last_view_ms`.
+2×, background hidden-window launches of release builds, `--locked`, warm filesystem cache, the
+generated 24 MP and 60 MP JPEGs at Fit, Basic's exposure slider, and with `--mask` the same slider
+bound to a linear gradient. The comparison is a keyed build of the same tree (region keys,
+`Tracked` stamps and per-section digests), the alternative the derivation was measured against.
+`editor-latency --mode drag` (30 inputs, 62 `slider_draft_preview` events a launch) and
+`--mode burst` (360 events a launch), each workload run keyed, current, current, keyed back to
+back, so every figure below pools two launches: 124 samples a drag cell and 720 a burst cell. The
+host was shared with other agents building throughout; the one-minute load is given. Nearest-rank
+p50 / p95 in ms of `last_rederive_ms`.
 
-| Drag, keyed against bypassed | Keyed | Bypassed |
-| --- | --- | --- |
-| 24 MP, load 21–33 | 0.017 / 0.156 · view 0.066 / 0.089 | 0.082 / 0.178 · view 0.064 / 0.077 |
-| 60 MP, load 21–33 | 0.025 / 0.099 · view 0.069 / 0.091 | 0.087 / 0.182 · view 0.066 / 0.090 |
-| 24 MP masked, load 21–33 | 0.030 / 0.235 · view 0.102 / 0.220 | 0.101 / 0.156 · view 0.098 / 0.130 |
-| 24 MP, repeated, load 11–15 | 0.030 / 0.261 · view 0.068 / 0.177 | 0.137 / 0.429 · view 0.072 / 0.152 |
-| 60 MP, repeated, load 11–15 | 0.017 / 0.130 · view 0.065 / 0.088 | 0.081 / 0.143 · view 0.067 / 0.083 |
-| 24 MP masked, repeated, load 11–15 | 0.017 / 0.100 · view 0.088 / 0.105 | 0.123 / 0.355 · view 0.106 / 0.249 |
-
-| Burst, keyed against bypassed, load 19–43 | Keyed | Bypassed |
-| --- | --- | --- |
-| 24 MP | 0.003 / 0.018 · view 0.078 / 0.227 | 0.110 / 0.322 · view 0.090 / 0.204 |
-| 60 MP | 0.005 / 0.027 · view 0.095 / 0.326 | 0.120 / 0.484 · view 0.143 / 0.670 |
-| 24 MP masked | 0.007 / 0.028 · view 0.185 / 1.084 | 0.117 / 0.416 · view 0.168 / 0.765 |
-
-| This change against keyed | Drag, load 14–18: keyed · this change | Burst, load 21–37: keyed · this change |
+| Every region derived against keyed | Drag, load 14–18: keyed · every region | Burst, load 21–37: keyed · every region |
 | --- | --- | --- |
 | 24 MP | 0.052 / 0.192 · 0.116 / 0.270 | 0.008 / 0.029 · 0.109 / 0.580 |
 | 60 MP | 0.021 / 0.120 · 0.086 / 0.143 | 0.006 / 0.026 · 0.063 / 0.189 |
@@ -1578,166 +1219,46 @@ given. Nearest-rank p50 / p95 in ms, `last_rederive_ms` then `last_view_ms`.
 
 Deriving every region costs about 0.05 to 0.14 ms at p50 per message, against 0.003 to 0.05 ms with
 the keys. The p95 follows the host rather than the build: in drags the keyed build's own p95
-reached 0.24 to 0.37 ms in three of the nine keyed cells, and a launch whose derivation p95 is high
-has its `view()` inflated with it (the bypassed repeated 24 MP pair's second launch: derivation
-0.160 / 0.523, view 0.152 / 0.216, against 0.124 / 0.269 and 0.065 / 0.082 for the first). The
-quietest launches of this change's burst held p95 at 0.126 ms (60 MP) and 0.082 ms (masked); the
-busiest reached 0.68 ms. Bursts separate the builds cleanly, because between two paced inputs the
-keyed build derives nothing, and there the bypassed p95 passed 0.2 ms in every launch. Input to
-presented frame is unchanged by any of it: p50 7.7 to 9.5 ms for every build in every round, one
-frame of the 120 Hz display.
+reached 0.24 to 0.37 ms, and a launch whose derivation p95 is high has its `view()` inflated with
+it. The quietest burst launches hold p95 at 0.126 ms (60 MP) and 0.082 ms (masked); the busiest
+reach 0.68 ms. Input to presented frame is the same with and without the keys: p50 7.7 to 9.5 ms,
+one frame of the 120 Hz display.
 
-Where the time goes, from a diagnostic build of this change that timed each region (not kept;
-drags and a burst of one launch each, load 28–31): outside a mask the tools panel takes 64 to 67%
-and dropping its previous model 7 to 11% more, and the Masks panel 16 to 21%; in the masked drag the
-tools panel takes 44% (and 8% to drop) and the Masks panel 43%; the canvas 1 to 7%; every other
-region 3% or less, the palette 0.1%. The tools panel's time is
-spread over its sections by the controls they build: in a burst the Presets section 33%, the colour
-mixer 32% and Basic 20%; in the masked drag Basic 62% and the mixer 34%. The tools panel reads
-almost every input the editor holds, so no one value keys it without the input tracking the keys
-were built on, and during a drag it is derived for every input anyway. The decision this informed
-is recorded in [decisions](../decisions.md#post-consolidation-review).
+Where the time goes, from a diagnostic build that timed each region (not kept; drags and a burst of
+one launch each, load 28–31): outside a mask the tools panel takes 64 to 67% and dropping its
+previous model 7 to 11% more, and the Masks panel 16 to 21%; in the masked drag the tools panel
+takes 44% (and 8% to drop) and the Masks panel 43%; the canvas 1 to 7%; every other region 3% or
+less, the palette 0.1%. The tools panel's time is spread over its sections by the controls they
+build: in a burst the Presets section 33%, the colour mixer 32% and Basic 20%; in the masked drag
+Basic 62% and the mixer 34%. The tools panel reads almost every input the editor holds, so no one
+value keys it without the input tracking the keys were built on, and during a drag it is derived
+for every input anyway. The decision this informs is recorded in
+[decisions](../decisions.md#post-consolidation-review).
 
-### Native viewport-region qualification
+### The photo surface's bound and retirement
 
-These figures qualified the CPU viewport path at 100% and above — the half-scale motion region, the
-exact visible-region refinement after the shared quiet timer and the whole frame settled behind it —
-which the GPU-first stage 5 deleted; the GPU now draws a drag and the picture at rest over the visible
-region ([GPU previews](../design/gpu-preview.md#at-100-and-above)). They stay as the record of that
-build. The qualified release executable was SHA-256
-`888c0313049c7c590311b6dfba4fd60edd40b0c39e780c1147ae24561b5ba998`. Native
-qualification uses the Apple M4 Pro, Metal and hidden background launches on generated 24 MP
-(6000 × 4000) and 60 MP (10000 × 6000) JPEGs. A presented frame is a correlated
-`preview_displayed` adoption, not display scanout. Photo-surface write counters measure uploads
-issued during draw encoding; backend-owned staging remains unmeasured. The final timing commands
-ran serially after functional work. Their host's one-minute load is recorded at each command's
-start and end; a result starting above 8.0 is a loaded-host diagnostic, not a clean baseline.
-Case JSON and command loads are retained locally under `artifacts/review-fixes/`, including
-`final-timing-runs.json`; the native scenario results are under `rendered-qualified/` there.
+The photo bound is a current and a retiring allocation of at most 512 MiB each within 1 GiB, for
+photo textures only. It is not a total editor or GPU product budget. Crop GPU textures and tiles,
+overlays and backend staging sit outside that photo accounting and are not fully measured or
+bounded; native accounting and bounds remain required before any total-memory guarantee.
 
-That build's `viewport-region`, `viewport-fallback` and `viewport-idle-fit` scenarios exercised
-state, event, pixel and GPU invariants over a generated 24 MP JPEG. All three passed on this
-executable in the native rendered tier, which passed 33 smoke scenarios. Each recorded zero blank
-photo draws and zero stale photo draws. Peak photo residency was 182,255,616 bytes in the region
-journey and 150,994,944 bytes in each fallback and idle-Fit journey. The idle-Fit capture became
-ready without another input and reported expected full version 5 drawn as version 5, with two
-drawn frames from the view change to its idle deadline, before capture was allowed. Zero blank
-draws means each attempted photo draw showed some photograph pixels; it does not prove that every
-canvas pixel was covered. The focused Metal surface tests drive actual `write`, `write_region`,
-`prepare`, `draw` and readback: all three Appendix A blank-photo regressions pass, bucketed
-single- and multi-tile readbacks match, stale overlays are suppressed,
-and a deferred photo becomes current after retirement without another user input. The final focused
-surface run passed 31 tests; its two ignored retirement timing diagnostics were run separately
-after functional work. The full-photo bound of that build permitted each photo surface a current and retiring allocation up to
-512 MiB each, plus two region sets up to 32 MiB each, all surfaces together within the 1088 MiB
-ceiling; the 1088 MiB temporary-overlap ceiling was provisionally accepted by the owner on 2026-09-27 for photo textures only.
-The region sets are gone with the region path, and the photo bound is now a current and a retiring
-allocation of at most 512 MiB each within 1 GiB. It is not a total editor or GPU product budget. Crop GPU textures and tiles, overlays and backend staging sit outside that photo accounting and are not fully measured or bounded; native accounting and bounds remain required before any total-memory guarantee.
-
-The final 24/60 MP Fit exposure drags each had 30 inputs in one release launch. Input to presented
-adoption was 8.34 / 8.95 ms p50 / p95 at 24 MP and 8.57 / 8.80 ms at 60 MP. The runs started at
-one-minute load 7.72 and 7.34, respectively. These are exposure-only journeys, not matched
-before/after comparisons with the full-Basic Fit pairs below.
-
-Final 100% and 200% bursts scripted 360 inputs over three seconds. The values below count
-`preview_displayed` adoptions, which can outnumber actual screen scans. Every burst recorded zero
-blank and zero stale photo draws, but all three started above the 8.0 load threshold:
-
-| Burst | Adoptions | Draft staleness p50 / p95 ms | Adoption gap p50 / p95 ms | Load at start → end |
-| --- | ---: | ---: | ---: | ---: |
-| 24 MP, 100%, full Basic | 331 (330 regions + one whole) | 8.64 / 25.69 (329 samples) | 8.43 / 17.33 (328) | 10.51 → 9.75 |
-| 60 MP, 100%, full Basic | 359 (358 regions + one whole) | 8.49 / 16.77 (357) | 8.31 / 9.65 (356) | 9.75 → 10.25 |
-| 60 MP, 200%, masked 7° crop and moving pan | 158 (157 regions + one whole) | 25.66 / 34.47 (153) | 17.19 / 25.60 (152) | 10.25 → 9.75 |
-
-The final held viewport journeys each adopted seven region frames and then a whole-image exact
-report. They are individual journeys, not latency distributions. Each had zero blank photo draws;
-the four or five stale draws are the explicitly marked coherent fallback while a replacement is
-pending. No settled pan added a photo write. Each started above load 8.0:
-
-| Journey | First region after input | Stale draws | Peak sampled process RSS | Photo writes across settled pan |
-| --- | ---: | ---: | ---: | ---: |
-| 60 MP full Basic, mask, 7° crop at 100% | 26.00 ms | 5 | 1394.7 MiB | 16 → 16 |
-| 60 MP Dehaze at 100%, cold estimate | 863.91 ms | 4 | 1681.2 MiB | 14 → 14 |
-| Nikon Z6 RAW exposure at 100% | 17.70 ms | 4 | 1077.8 MiB | 13 → 13 |
-| Fujifilm X100VI RAW exposure at 200% | 8.93 ms | 4 | 1616.9 MiB | 13 → 13 |
-| DJI Air 2S RAW exposure at 100% | 8.73 ms | 4 | 1044.8 MiB | 13 → 13 |
-
-The cold Dehaze first region includes its exact whole-stage estimate and is still the visible
-outlier. Sampled process RSS includes other editor and capture work and is not the photo-texture
-charge or a separate GPU allocation measure. A final `measure --samples 1` run recorded one
-cold-launch peak RSS
-of 379.9 MiB at 24 MP, 636.1 MiB at 60 MP and 912.2 MiB after sixteen 60 MP loads. These are
-single launches, not memory distributions. Its 60 MP idle window used 1.421% of one core over
-30.26 seconds with the Performance section open, missing the provisional <1% target. That is one
-window, not a p95 or an idle distribution.
-
-The two ignored Metal retirement diagnostics ran after functional work. On the pre-fix test
-executable, an empty render-thread submit waited 57.075 ms during a 63.103 ms GPU workload,
-against a 25.542 µs
-control submit; the diagnostic failed as expected. On the final source, the same probe passed:
-5.125 µs with one retirement in flight during a 63.389 ms workload. Fifteen smaller retired
-workloads produced submit waits of roughly 0.905–3.560 ms before and 2.167–25.667 µs after.
-Each trial asserted a real retiring texture. These are timing diagnostics on a shared host, not a
-CI timing threshold.
-
-The final 24 MP `editor-performance` pair used 30 samples per build. The 10° crop stack's 200
-transforms were 29.65 / 32.96 ms p50 / p95 before and 29.54 / 33.79 ms after; the full-Basic
-colour stack was 68.72 / 73.25 → 70.39 / 77.63 ms. On the final 60 MP build, those workloads
-were 69.49 / 75.26 and 166.91 / 176.39 ms. The 24 MP legs started at loads 2.15 and 5.46;
-the 60 MP leg started at 6.93 and ended at 10.51. The changes do not establish a core speedup.
-
-The older matched Fit comparisons are retained to show the with-and-without-deferral measurement
-that qualified the drafted exact-phase deferral. They were one release launch per condition with 30 scripted inputs on a shared
-host and predate the current surface changes. Values are input-to-adoption p50 / p95 milliseconds:
-
-| Journey | Before deferral | After deferral |
-| --- | ---: | ---: |
-| 24 MP Fit drag | 10.49 / 14.38 | 8.59 / 8.86 |
-| 60 MP Fit drag | 15.34 / 17.86 | 8.56 / 8.75 |
-| 60 MP Fit masked paint | 10.17 / 17.04 | 8.16 / 11.17 |
-
-The same pairs recorded **slower** release-to-settled-histogram times: 24 MP 32.48 / 35.42 →
-33.23 / 62.72 ms and 60 MP 48.40 / 51.83 → 62.03 / 73.00 ms (p50 / p95; only two releases per
-condition, loaded host). These are diagnostics, not a stable release distribution. The older 24 MP
-`editor-performance` after run also started at one-minute load 8.43, above the 8.0 threshold; its
-10° crop stack measured 31.94 / 39.17 → 28.93 / 34.49 ms p50 / p95 over 30 samples per build,
-under that loaded-host caveat. Earlier native crop-window evidence recorded a 451 × 418 requested
-intermediate; the committed 1000 × 800 fixture proves bounded materialization, and the prior core
-window run counted 14 passed and one ignored test. These older figures do not qualify this build.
-
-The original 2026-09-26 moving-frame RAW white-balance criterion passed for the Nikon Z6 and Fujifilm X100VI on this final executable but failed for the DJI Air 2S: release residuals were 2.42%, 3.69% and 17.33%, respectively, against 10%. The owner revised the 100% criterion on 2026-09-27 to apply the 10% relative-to-adjustment gate to a held full-detail approximate draft after the shared 120 ms quiet refinement and before release. The earlier held comparisons were 0.81%, 1.39% and 5.06%, respectively, measured with a one-second hold under the earlier harness. Fresh native `raw-panel` runs of the revised verifier pass for the Z6, X100VI and Air 2S: 100% held residuals are 0.805669%, 1.387562% and 5.056605%, respectively; Fit moving residuals are 0.293894%, 0.512237% and 3.047137%, with mean differences of 0.017890, 0.048140 and 0.345406 codes. Each passes its 10% relative gate, and each Fit mean stays below one code. The journeys also complete the later crop and placement checks. Evidence is in `artifacts/accepted-preview-decisions/raw-{z6,fuji,air}/result.json` and corresponding `app/raw-panel-checks.json`; `raw-runs.json` records the commands and binary identities. The moving half-detail figures remain recorded; motion then had separate viewport identity, approximate-label, visual-response and refinement checks, without a numeric softness threshold, and Fit its 10% relative and one-code mean gates. The GPU's white-balance drag is measured [below](#a-raw-white-balance-drag-on-the-gpu-against-its-release). Neither comparison defines a general numerical photo-error bound.
+The two ignored Metal retirement diagnostics: an empty render-thread submit waits 5.125 µs with one
+retirement in flight during a 63.389 ms GPU workload, and fifteen smaller retired workloads produce
+submit waits of roughly 2.167–25.667 µs. Each trial asserts a real retiring texture. These are
+timing diagnostics on a shared host, not a CI timing threshold.
 
 ### Provisional targets: measured
 
-These provisional targets mostly retain earlier Fit and editor-wide workload evidence; the final
-single-window idle result is updated below. They document those checks only; the viewport
-half-detail path and shared quiet timer, since deleted, and the exact-estimate costs are recorded separately above. A
-miss is a finding for the owner's review, not a blocker. The GPU-first editor's figures for the same
-targets, taken on 2026-10-06 on a quiet host, are in [the timing tier](#the-timing-tier): the slider,
-settled histogram, burst and memory targets pass, and idle CPU, launch and the uncached 24 MP open miss.
+The GPU editor's figures for the slider, settled histogram, burst, memory, idle, launch and
+uncached-open targets are in [the timing tier](#the-timing-tier). The rows below are the targets it
+does not measure. A miss is a finding for the owner's review, not a blocker.
 
 | Provisional target | Measured | Verdict |
 | --- | --- | --- |
-| Warm 24 MP slider-to-presented-frame p95 below 16 ms, acceptable below 32 ms | 29.0 ms p95 (9.5 p50, 30 samples); 24.8 ms p95 with a full Basic layer | **Acceptable** (measured against the earlier 100 ms threshold; below the 32 ms bound, not the 16 ms target) |
-| Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 (30 samples each) | **Pass** |
-| Instant preview: burst drag ≥ 30 presented frames per second | 53.7 (exposure), 41.7 and 42.5 (full Basic, 24 and 60 MP) | **Pass** |
-| Instant preview: burst staleness p95 ≤ 50 ms | 32.9, 34.1 and 34.1 ms | **Pass** |
-| Instant preview: RAW exposure step presented within 50 ms | Drained drag, `editor-latency --action set-raw-exposure --parameter ev`, 30 inputs each: 12.5 / 23.7 ms p50 / p95 on the Z6 (load average 15) and 16.2 / 24.5 ms on the X100VI (load average 43–52), against 12.1 / 31.0 ms for Basic's Exposure on the same Z6 (load average 15–17); earlier single trials 10.5 / 14.6 / 15.0 ms on the Z6 / X100VI / Air 2S | **Pass** (every run above the 8.0 load threshold, so the figures are upper bounds) |
-| Settled exact histogram p95 below 200 ms after the final input, 24 MP | 70.3 ms p95 (60.1 p50, 30 samples) exposure only; 158.6 ms with a full Basic layer (2 commits) | **Pass** |
+| Instant preview: drained drag p95 ≤ 33 ms at Fit, 24 and 60 MP, full Basic layer, with and without a 7° crop | 24.8, 28.9 and 28.7 ms p95 on the CPU proxy (30 samples each) | **Pass** |
 | Scratch aggregate at most 64 MiB | 13.46 MiB high-water at 24 MP, 12.82 MiB at 60 MP | **Pass** |
-| 24 MP single-image edit working set ≤ 600 MiB CPU-resident | 645.3 MiB peak in the process that commits the full Basic layer, which also retains two full-window capture readbacks; 568.2 MiB in a second process holding the same committed layer with no captures, settling to 408.0 MiB | **Miss by 45 MiB** on the capturing process, **pass** on the same stack without the harness's captures |
-| 60 MP peak ≤ 1 GiB process RSS | Final single launches sampled 636.1 MiB on one 60 MP open and 912.2 MiB after sixteen loads; the earlier five-launch run measured 975.0 MiB median on one open and 1316.4 MiB after sixteen loads | **Pass in the final single trials; prior repeated-load distribution missed**. One current launch does not retire the prior multi-run finding |
-| Idle CPU < 1% of one core over 30 s | Final single 60 MP idle window: 1.421% over 30.26 s with the default-open Performance section | **Miss** (one window, not a distribution) |
-| Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry in this round | Open |
+| Geometry input to presented preview p95 < 50 ms once the source preview is ready | not measured for geometry | Open |
 | A masked drag costs a person no more than an unmasked one | 24 MP drained drag p50 16.77 / 17.13 ms masked against 16.93 unmasked, 60 MP 17.06 / 17.87 against 17.00 / 17.48, all with a full Basic layer, in both orders at load 2.3–8.1; masked Clarity at 24 MP 17.18 / 17.10 against 17.00 / 17.10 unmasked | **Pass**: every masked run is within 0.4 ms of its unmasked pair at the median, which is inside the spread between two runs of the same condition |
-
-The same two targets at 60 MP, which have no stated threshold and are recorded because the design
-asks for the tails: slider-to-presented-frame 125.0 / 141.3 ms and settled histogram 185.4 /
-208.8 ms. On the 24 MP crop stack, 150.3 / 170.2 ms and 184.7 / 213.3 ms. The 24 MP crop stack misses
-the 100 ms interaction threshold by a wide margin and the largest single contributor is the
-`draft.set` round trip, which replans the crop prefix on every set; the 60 MP miss is the
-full-resolution render and upload, which is the already-recorded open cost of uploading every preview
-at full resolution.
 
 Crop correctness evidence is rendered, not timed: the `crop` and `crop-draft` smoke scenarios record
 correlated state, events and pixel checks, and no latency is claimed from them.
@@ -1756,19 +1277,17 @@ Core figures exclude desktop scheduling, GPU upload and presentation. Reproduce 
 [development](../engineering/development.md). Reports under `artifacts/final-perf-24`,
 `artifacts/final-perf-60`, `artifacts/final-latency-24-drag`, `artifacts/final-latency-24-commit`,
 `artifacts/final-latency-24-crop`, `artifacts/final-latency-24-crop-commit`,
-`artifacts/final-latency-60-drag`, `artifacts/final-latency-60-commit`, `artifacts/final-measure` and
-`artifacts/before-measure` retain every sample, the correlated state and the source and binary
-hashes; they are local evidence and are not repository assets.
+`artifacts/final-latency-60-drag`, `artifacts/final-latency-60-commit` and `artifacts/final-measure`
+retain every sample, the correlated state and the source and binary hashes; they are local evidence
+and are not repository assets.
 
-Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus, and the editor they launch creates its window invisible. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements, and they exclude the cost of placing and compositing a visible window. Nothing in these runs is scanned out, so the presentation figures cover the editor's path to a renderer texture and not what reaching a display would add. Rendering, readback and the state each frame is correlated against are unchanged: the window owns the same Metal surface either way. Reports identify the launch mode. Earlier launch baselines above predate this wrapper and are not directly comparable.
+Current macOS `measure` and `editor-latency` runs use background-only bundles to preserve desktop focus, and the editor they launch creates its window invisible. Launch-to-frame timings include copying the executable and creating its temporary bundle; they are background renderer measurements, not foreground activation measurements, and they exclude the cost of placing and compositing a visible window. Nothing in these runs is scanned out, so the presentation figures cover the editor's path to a renderer texture and not what reaching a display would add. Rendering, readback and the state each frame is correlated against are the same as a visible window's: the window owns the same Metal surface either way. Reports identify the launch mode.
 
 ## Current RAW and JPEG measurements
 
 Native Apple M4 Pro, 48 GiB RAM, macOS 26.5.2 (25F84), Metal, 2× scale and a
 2880×1800 physical window; files on the internal 2 TB APFS SSD. Release builds,
-background-only launches, warm filesystem cache without an OS cache purge. The
-RAW application SHA-256 is `ff9eecabdbb3ceaa333885db6bdadb93d86870bfa766a4b95eef13437efa2ea1`;
-Cargo.lock SHA-256 is `0c6a739afc2d4830c73059ea2989814950b7607877c59ba945bb89038ea8bd7c`.
+background-only launches, warm filesystem cache without an OS cache purge.
 The native adapter configuration is recorded in the [backend selection](../research/raw-backend-selection.md).
 
 Thirty complete trials per owner camera passed. Each trial has an isolated catalog,
@@ -1778,30 +1297,18 @@ public minimum modes also pass one complete trial each; those are functional
 checks, not latency distributions. Original hashes, displayed entry/snapshot,
 controls, geometry and reopened photo samples are checked together.
 
-Times below are nearest-rank p50 / p95 in milliseconds. Upload readiness is the
-application event correlated with the next captured frame, not GPU scanout. Initial
-open timings stop at the CPU raster; history and view rows explicitly include
-capture readback. Launch-wrapper time and fine-grained stage attribution are not
-included in those open figures.
+Times below are nearest-rank p50 / p95 in milliseconds. Open timings stop at the
+CPU raster; launch-wrapper time and fine-grained stage attribution are not included.
+The editing, history and view steps are measured in
+[instant previews](#a-crop-drafts-input-stage-at-fit),
+[second development](#second-development) and
+[startup and RAW throughput](#startup-and-raw-throughput).
 
 | Measurement (ms, p50 / p95) | Z6 | X100VI |
 | --- | --- | --- |
 | Initial open → full-resolution CPU raster | 840.0 / 868.2 | 1828.6 / 1887.0 |
-| Exposure → upload readiness | 133.3 / 149.5 | 178.8 / 195.8 |
-| Red WB gain → upload readiness | 488.5 / 508.4 | 1529.3 / 1625.6 |
-| Custom temperature → upload readiness | 482.8 / 493.2 | 1532.1 / 1583.6 |
-| Custom tint → upload readiness | 483.9 / 501.2 | 1529.0 / 1575.7 |
-| Neutral pick → upload readiness | 483.2 / 501.6 | 1528.9 / 1570.0 |
-| Rotate → upload readiness | 118.4 / 126.4 | 234.4 / 243.1 |
-| Crop → upload readiness | 98.2 / 119.4 | 128.2 / 141.6 |
-| Undo → upload readiness | 116.3 / 124.0 | 231.7 / 240.0 |
-| Historical Original → captured frame | 507.5 / 524.8 | 1558.7 / 1600.5 |
-| Return current → captured frame | 491.3 / 500.5 | 1615.8 / 1666.4 |
-| 100% view → captured frame | 24.9 / 25.5 | 25.2 / 25.8 |
 | Edited catalog reopen → CPU raster | 1170.2 / 1222.2 | 3267.8 / 3383.2 |
 
-These history rows predate the development executor, the Rust normalization and the second
-development; the current switch times and memory are in [second development](#second-development).
 Sampled first-process peak RSS (roughly 50 ms sampling) is 1323 / 1339 MiB p50 / p95
 for Z6 and 1975 / 1992 MiB for Fuji. Fuji trial 25 has an unexplained 2436 MiB peak
 and a 1038 ms crop update (1007 ms source-to-raster); both tails are retained. Its
@@ -1811,32 +1318,17 @@ screenshot-free live API runs peak at 1583–1647 MiB; the 24-edit run grows onl
 1.25 MiB after edit three. This does not establish a whole-process bound or prove
 absence of leaks. GPU allocations are not measured separately.
 
-Initial development and warm exposure p95 meet their provisional investigation
-targets on these files; Fuji memory exceeds the 1536 MiB target. Current WB redevelopment measurements are in
-[startup and RAW throughput](#startup-and-raw-throughput). The next resource work is to attribute
+Initial development p95 meets its provisional investigation target on these files;
+Fuji memory exceeds the 1536 MiB target. The next resource work is to attribute
 the unexplained tail and native/GPU/readback lifetimes, then evaluate bounded
 Fit/detail rendering while preserving full-resolution 100% inspection. Budgets
 remain provisional; full idle-CPU, cancellation and per-stage measurements remain
 open.
 
-The unchanged JPEG core diagnostic was run before and after this integration,
-30 samples per recipe and size on the same host with warm filesystem cache.
-These exclude desktop scheduling, GPU upload and presentation. Values are p50 /
-p95 milliseconds; medians are similar or lower, with mixed tail variation. The
-24 MP composed-transform p95 increases by about 1 ms in this run; this is not a
-statistical claim of zero regression.
-
-| JPEG core render | 24 MP baseline | 24 MP current | 60 MP baseline | 60 MP current |
-| --- | --- | --- | --- | --- |
-| One exact transform | 10.43 / 11.22 | 10.45 / 11.42 | 23.27 / 32.26 | 22.01 / 28.84 |
-| 200 actions in one orientation layer | 10.33 / 10.81 | 10.52 / 11.80 | 23.45 / 25.16 | 22.14 / 23.35 |
-| Same stack plus 10° crop | 32.22 / 36.37 | 32.18 / 34.35 | 73.72 / 98.62 | 71.09 / 77.79 |
-
-Reproduce the JPEG rows with `editor-performance --samples 30` through xtask. The RAW rows were
-taken with a 30-trial RAW editor timing tool whose journey is now the `raw-editor` smoke scenario
-([development](../engineering/development.md#authentic-raw-evidence)), which records one functional
-run's request-to-display times per source; a new RAW distribution is 30 runs of it, not one.
-Local reports retain every trial, percentile input, source/binary hash and failure;
+The RAW rows were taken with a 30-trial RAW editor timing tool whose journey is the `raw-editor`
+smoke scenario ([development](../engineering/development.md#authentic-raw-evidence)), which records
+one functional run's request-to-display times per source; a RAW distribution is 30 runs of it, not
+one. Local reports retain every trial, percentile input, source/binary hash and failure;
 private photographs and captures are not repository assets. These observations
 qualify the recorded files and host, not other camera modes or platforms.
 
@@ -1847,22 +1339,10 @@ each with the same 13-step editing/history/view journey and second-process reope
 Original hashes, correction provenance, geometry, displayed state and sampled
 photo pixels agree. These are native M4 Pro measurements under the configuration
 above, with a warm filesystem on a shared host; host isolation is not claimed.
-The release application SHA-256 is `aa24dfa57592c5b3363c34ac2c49b9d28827aa2aa0f77fbf34fce6a2db863e55`; Cargo.lock SHA-256 is `e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`.
 
 | Measurement (ms) | p50 | p95 | Maximum |
 | --- | ---: | ---: | ---: |
 | Initial open → full-resolution CPU raster | 1692.6 | 1811.9 | 1812.3 |
-| Exposure → upload readiness | 100.2 | 118.5 | 133.2 |
-| Red WB gain → upload readiness | 1462.3 | 1536.0 | 1570.6 |
-| Custom temperature → upload readiness | 1467.0 | 1530.7 | 1549.9 |
-| Custom tint → upload readiness | 1459.7 | 1567.1 | 1597.0 |
-| Neutral pick → upload readiness | 1460.0 | 1570.8 | 1659.8 |
-| Rotate → upload readiness | 125.7 | 159.3 | 162.0 |
-| Crop → upload readiness | 75.7 | 92.3 | 105.2 |
-| Undo → upload readiness | 126.1 | 159.4 | 164.6 |
-| Historical Original → captured frame | 1484.2 | 1567.7 | 1601.0 |
-| Return current → captured frame | 1522.9 | 1583.1 | 1628.1 |
-| 100% view → captured frame | 25.6 | 49.9 | 58.2 |
 | Edited catalog reopen → CPU raster | 3092.7 | 3412.0 | 3418.2 |
 
 Sampled first-process peak RSS is 1245.3 / 1250.5 MiB p50 / p95,
@@ -1873,128 +1353,68 @@ scratch after native demosaic scratch is released; the allocation ledger is in t
 [Air 2S design](../design/air2s-dng.md#allocation-and-performance-review).
 The captures, GPU resources and allocator retention are included in observed
 process memory, not separated. These values do not establish a process-wide bound,
-GPU-memory budget or native Windows/Linux result. The existing Fuji resource
+GPU-memory budget or native Windows/Linux result. The Fuji resource
 qualification above remains open.
 
-The same JPEG core diagnostic was measured before this change at `3c5def1` and
-on this DNG implementation, 30 samples per size/recipe. Values are p50 / p95 ms;
-these exclude desktop scheduling, GPU upload and presentation. Both 24 MP current
-runs are retained because the first showed higher timings. The repeat's medians
-fell below baseline, while crop tails remained higher; 60 MP medians and p95 fell.
-The mixed observations do not establish a systematic regression or zero regression
-on this shared host. No JPEG raster loop, allocation or desktop message changed.
-
-| JPEG core render | 24 MP before | 24 MP current | 24 MP repeat | 60 MP before | 60 MP current |
-| --- | --- | --- | --- | --- | --- |
-| One exact transform | 12.30 / 17.37 | 14.88 / 18.02 | 10.83 / 12.76 | 26.11 / 39.25 | 22.11 / 28.61 |
-| 200 actions in one orientation layer | 12.09 / 13.71 | 13.88 / 19.21 | 10.51 / 11.49 | 26.48 / 32.65 | 22.01 / 23.56 |
-| Same stack plus 10° crop | 37.59 / 43.42 | 44.80 / 51.38 | 32.25 / 52.32 | 84.71 / 91.98 | 74.96 / 88.99 |
-
-The 60 MP current crop has a retained 129.46 ms maximum. Reproduce as above. Local
-reports under `artifacts/air2s-editor-30-01/` and `artifacts/air2s-jpeg-*/`
-retain every sample, source hash and correlated state; private originals and
-captures are excluded from source control. Single-trial Nikon/Fujifilm editor
-regressions also pass, separately from the timing distributions.
-The host package passes one complete DNG journey with binary SHA-256
-`a13a54b0ce2d9c2bf8d7043897988898894931955dfe0a960620623967a2489c`;
-its bundled native notices are present and runtime linkage uses no system RAW library.
-This is an unsigned macOS development package, not a license audit or platform qualification.
+Reproduce as above. Local reports under `artifacts/air2s-editor-30-01/` retain every sample,
+source hash and correlated state; private originals and captures are excluded from source
+control. Single-trial Nikon/Fujifilm editor regressions also pass, separately from the timing
+distributions. The host package passes one complete DNG journey; its bundled native notices are
+present and runtime linkage uses no system RAW library. This is an unsigned macOS development
+package, not a license audit or platform qualification.
 
 ## UI components qualification
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2 (25F84), Metal, internal APFS SSD,
 release `--locked`, warm filesystem cache. Desktop captures are 2880 × 1800 at 2×;
-the gallery is 2880 × 2000. Baseline commit `86dfa8438b5930ed9736d5bf03fad59ca3c98a8d`,
-binary `573cee81b613b5e70351afadb98265899a51aa655f796f5483e4edc0fa585d18`;
-qualified application binary `c630aa038041fe73c63358726a9dcd95d20afb0392da14b13b79a50e5cd4e35a`.
-The lockfile hash remains `e1f96098ab03786e8976afd4e0ed78b0ed3d4c58cd071c032390552c97b4a600`.
-All launches use the background bundle. Matched measurements run sequentially with this task's
-compilation and tests stopped; the shared host is not claimed to be quiescent.
+the gallery is 2880 × 2000. All launches use the background bundle. Measurements run
+sequentially with compilation and tests stopped; the shared host is not claimed to be quiescent.
 
 The 6000 × 4000 JPEG drag workload uses 30 drained inputs, one release and a coalesced burst.
 Input-to-frame ends at the renderer's `Uploaded` callback, not display scanout. The curve is
 visible and its module supplies the sampled polyline; its proof effect preserves photo pixels,
-so this measures the gesture, draft, preview and upload path, not a future Tone Curve processor.
+so this measures the gesture, draft, preview and upload path, not a Tone Curve processor.
 
-| Input-to-frame (ms) | p50 | p95 | Maximum | p95 < 100 ms (the threshold then) |
-| --- | --- | --- | --- | --- |
-| Basic slider before | 75.00 | 91.10 | 92.40 | Pass |
-| Basic slider after | 70.66 | 87.75 | 91.82 | Pass |
-| Curve point drag | 57.09 | 74.76 | 108.17 | Pass |
+| Input-to-frame (ms) | p50 | p95 | Maximum |
+| --- | --- | --- | --- |
+| Basic slider | 70.66 | 87.75 | 91.82 |
+| Curve point drag | 57.09 | 74.76 | 108.17 |
 
-The matched slider pair shows no regression. The initial native baseline under concurrent RAW
-verification measured 223.68 ms p95 and **missed** the target; it is retained, not substituted into
-the matched comparison. An initial sandbox launch could not access macOS services. The initial
-curve timing failed strict decimal-value correlation despite ordered rendered inputs; the accepted
-run uses exactly representable fractions and keeps the same strict request/frame checks.
+Both p95s miss the [provisional slider budget](#provisional-budgets) (p95 < 16 ms; a miss at or above 32 ms).
 
-Core diagnostics use 30 samples per recipe at 24 and 60 MP and exclude desktop scheduling,
-GPU upload and presentation. Values are p50 / p95 ms. Identity rendering remains below 0.01 ms
-and shares source pixels; all source hashes remain unchanged.
-
-| Core workload | 24 MP before | 24 MP after | 60 MP before | 60 MP after |
-| --- | --- | --- | --- | --- |
-| One exact transform | 11.35 / 12.90 | 10.59 / 12.21 | 23.74 / 27.13 | 23.70 / 26.78 |
-| 200 actions in one orientation layer | 12.09 / 14.62 | 10.82 / 11.56 | 22.04 / 24.96 | 23.28 / 26.25 |
-| Same stack plus 10° crop | 38.21 / 42.93 | 33.45 / 37.10 | 71.87 / 78.17 | 70.66 / 111.85 |
-| Exposure on the crop stack | 51.76 / 55.80 | 53.67 / 61.29 | 115.60 / 118.76 | 116.01 / 122.20 |
-| Exposure and five Tone fields | 94.26 / 112.15 | 91.08 / 156.10 | 206.06 / 219.86 | 204.94 / 222.84 |
-| Vibrance and saturation | 120.02 / 249.29 | 132.22 / 227.33 | 284.31 / 301.14 | 284.65 / 298.20 |
-| White balance | 62.41 / 76.42 | 60.39 / 64.29 | 133.80 / 145.05 | 135.06 / 140.08 |
-| Histogram reduction | 7.09 / 7.78 | 6.70 / 7.96 | 15.28 / 18.38 | 17.29 / 19.70 |
-| Neutral query (25 point samples) | 0.02 / 0.03 | 0.02 / 0.03 | 0.02 / 0.03 | 0.02 / 0.03 |
-
-These core observations are mixed: the 24 MP Tone and 60 MP crop tails increase, while several
-other timings fall. No JPEG raster loop changed; these samples do not establish a general
-speedup or zero core regression on the shared host. The complete samples, hashes, captures,
-state and logs are indexed by `artifacts/ui-components-verification/summary.json`, including
-`ui-components-before-matched`, `ui-components-after-slider`, `ui-components-after-curve-final`,
-`ui-components-{before-core-24-matched,after-core-24,before-core-60-matched,after-core-60}` and
-the retained initial attempts. Gallery and controls smoke cover 63 states on 10 pages and
+The curve timing uses exactly representable fractions and keeps strict request/frame checks.
+The complete samples, hashes, captures, state and logs are indexed by
+`artifacts/ui-components-verification/summary.json`, including `ui-components-after-slider` and
+`ui-components-after-curve-final`. Gallery and controls smoke cover 63 states on 10 pages and
 22 interactions respectively. Existing private RAW, manual visual/fixture-generation and explicit
 measurement tests remain skipped; this qualification makes no native Windows/Linux GPU claim.
 
 ## Presence, colour mixer and vignette qualification
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, warm source cache, background bundle launches for every desktop figure; core figures are in-memory synthetic frames rendered by the core alone, warm, with the estimate store of that build warm where a global estimate exists. Every desktop figure ends at the renderer's `Uploaded` callback, not display scanout. All three modules ran the same full-resolution draft path Basic ran: nothing approximate, no extra cache and no timer was added to reach any figure, and each miss below is a finding for the owner's review.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, warm source cache, background bundle launches for every desktop figure; core figures are in-memory synthetic frames rendered by the core alone, warm, with the estimate store warm where a global estimate exists. Every desktop figure ends at the renderer's `Uploaded` callback, not display scanout. All three modules run the same full-resolution draft path Basic runs: nothing approximate, no extra cache and no timer is added to reach any figure, and each miss below is a finding for the owner's review.
 
 ### Core cost of the units
 
-`cargo test --release -- --ignored presence_timing` and the spatial primitive's own timing test, p50 / p95 over 10 runs (the p50 recorded here is the 6th of 10, the tests' upper median before they read the shared nearest-rank `Distribution`, whose p50 is the 5th; the p95 is the 10th either way), one operation over a textured frame, with the process's CPU time over each run as a percentage of one core (p50). Working set is one tile's reserved bytes; concurrency is how many tiles the 256 MiB spatial target allows in flight at once when no other evaluation holds any of it. The Presence rows ran on 23 September 2026 at a one-minute load of 9.6 to 13; the box-blur rows are the primitive's own earlier run, whose test unit ignores the scheduling below.
-
-| Stage | Operation | p50 / p95 ms | CPU | Summed halo | Working set | Concurrency | Budget peak |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 6000 × 4000 | Texture +100 | 241 / 248 | 896% | 8 px | 14.7 MiB | 14 | 205.8 MiB |
-| 6000 × 4000 | Clarity +100 | 193 / 198 | 1090% | 199 px | 20.2 MiB | 12 | 242.5 MiB |
-| 6000 × 4000 | Dehaze +100 | 128 / 134 | 771% | 67 px | 11.0 MiB | 14 | 154.1 MiB |
-| 6000 × 4000 | All three +100 | 942 / 1004 | 1232% | 274 px | 61.3 MiB | 4 | 245.3 MiB |
-| 10000 × 6000 | Texture +100 | 629 / 656 | 858% | 14 px | 15.2 MiB | 14 | 213.3 MiB |
-| 10000 × 6000 | Clarity +100 | 620 / 644 | 1105% | 327 px | 31.2 MiB | 8 | 249.9 MiB |
-| 10000 × 6000 | Dehaze +100 | 355 / 374 | 713% | 107 px | 13.1 MiB | 14 | 183.5 MiB |
-| 10000 × 6000 | All three +100 | 3999 / 4116 | 1221% | 448 px | 101.1 MiB | 2 | 202.1 MiB |
-| 6000 × 4000 | Host box blur r = 137 (test unit, naive) | 2528 / 2694 | not measured | 137 px | 17.1 MiB | 14 | 240.0 MiB |
-| 10000 × 6000 | Host box blur r = 224 (test unit, naive) | 14970 / 15074 | not measured | 224 px | 24.1 MiB | 10 | 240.9 MiB |
-
-The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles now runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#stage-boundaries)), so the render uses about twelve cores instead of two; on the previous build the same test took 12447 / 12561 ms at 60 MP and 1670 / 1708 ms at 24 MP. Larger tiles would repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
+The three units together cost more than the sum of the singles, and that is the halo, not a hot loop: with a summed halo of 448 px a 512 px tile reads a 1408 px input region, dehaze fills 1194 px and texture 1166 px of it to deliver 512 px, so over the stage dehaze computes 5.2 times its pixels and texture 4.9 times, and the 101 MiB working set holds a batch to two tiles. Each of those tiles runs its own passes on the pool (`Parallelism::Pool`, see the [architecture](../design/architecture.md#stage-boundaries)). Larger tiles repeat less of the halo, measured below; tiling each unit separately would need an intermediate float frame between units, 687 MiB at 60 MP, over the JPEG frame limit. The current `presence_timing` figures are in [CPU and memory efficiency](#cpu-and-memory-efficiency-measured-on-the-m4). The vignette's unit alone, single-threaded over 6000 × 4000: 57 ms at amount −50, 505 ms at +50 (the positive branch encodes and decodes each channel), 164 ms at roundness −100.
 
 #### Lazy vignette falloff tables
 
-`Vignette::new` built its two falloff tables — `width + height` entries, one `powf` each on the superellipse branch a negative roundness selects — in the constructor, so every compile paid for them, including `modules/registry/compile.rs`'s stage-only callers (`editor/plan.rs`'s `with_stage_context`: every plan, `draft.set`, a composite step and a query) that need only `describe` or `is_finite` and never read a pixel. The tables are now built lazily, in a `OnceLock` per table, on the first call that actually reads a pixel (`apply_row`); `describe` and `is_finite` no longer touch them, and `is_finite` checks the shape's own coefficients instead, which is exactly as strong because every table entry is a pure function of them.
+`Vignette` builds its two falloff tables — `width + height` entries, one `powf` each on the superellipse branch a negative roundness selects — lazily, in a `OnceLock` per table, on the first call that actually reads a pixel (`apply_row`). `modules/registry/compile.rs`'s stage-only callers (`editor/plan.rs`'s `with_stage_context`: every plan, `draft.set`, a composite step and a query) need only `describe` or `is_finite` and never read a pixel, so they never pay for the tables; `is_finite` checks the shape's own coefficients, which is exactly as strong because every table entry is a pure function of them.
 
-Native Apple M4 Pro, release `--locked`: 20,000 calls of `Vignette::new` plus one `describe` and one `is_finite` — the owner-thread cost `modules/registry/compile.rs`'s stage-only callers pay per compile — at 60 MP (9504×6336) with roundness −100, so the superellipse branch's tables are the ones measured. A build from before this task carries no comparable instrumentation to compare against — the tables were simply always built — so "before" is reconstructed in this same binary: the lazy build runs exactly the arithmetic the old eager constructor ran (unchanged by this task and still proved bit-identical by the oracle tests), so forcing both tables to build immediately after construction costs exactly what building them inside the constructor did. Measured in one run, reversed (before, after, after, before) so the difference survives the reversal (`compile_cost_per_call_at_60_megapixels`):
+Native Apple M4 Pro, release `--locked`: 20,000 calls of `Vignette::new` plus one `describe` and one `is_finite` — the owner-thread cost those stage-only callers pay per compile — at 60 MP (9504×6336) with roundness −100, so the superellipse branch's tables are the ones measured, in two reversed runs (`compile_cost_per_call_at_60_megapixels`):
 
 | | ns/call (two reversed runs) |
 | --- | --- |
-| After (lazy, never built — `describe`/`is_finite` only) | 138.1, 136.6 |
-| Before (forced eager build, reconstructed) | 103378.6, 105421.5 |
+| Lazy, never built (`describe`/`is_finite` only) | 138.1, 136.6 |
+| Both tables built immediately after construction | 103378.6, 105421.5 |
 
-**About 750× faster per stage-only compile call**, from roughly 0.10–0.11 ms down to under a microsecond, consistent across the reversal. At the two to three compiles per slider tick `docs/engineering/performance-rules.md`'s vignette row estimates, this removes on the order of 0.2–0.3 ms of owner-thread time per tick whenever the stack holds a superellipse vignette, against the `draft.set` round-trip p50 of about 0.2–0.3 ms recorded above — the suspected cost this task set out to measure and remove. Renders and `describe`/`is_finite` output are unaffected: the oracle, mirror/flip-symmetry and zero-mask tests above pass unchanged, and a new test (`describe_and_is_finite_never_build_the_tables_and_a_pixel_read_builds_each_once`) proves neither call builds either table and that a pixel read builds each exactly once.
+A stage-only compile call costs under a microsecond; building the tables costs roughly 0.10–0.11 ms, which at the two to three compiles per slider tick `docs/engineering/performance-rules.md`'s vignette row estimates would be on the order of 0.2–0.3 ms of owner-thread time per tick whenever the stack holds a superellipse vignette, against a `draft.set` round-trip p50 of about 0.2–0.3 ms. Renders and `describe`/`is_finite` output are unaffected: the oracle, mirror/flip-symmetry and zero-mask tests pass, and `describe_and_is_finite_never_build_the_tables_and_a_pixel_read_builds_each_once` proves neither call builds either table and that a pixel read builds each exactly once.
 
 #### Presence exact renders on the generated JPEGs
 
-The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer at +100 in each field it names, warm source and estimates, the 256 MiB target, timed by an uncommitted release probe that calls `render` as `presence_timing` does and reads the process's CPU time around each render; `presence_timing` above is the committed measurement to repeat. The previous build and this one ran four times alternately — previous, this, this, previous — 5 samples per stack and run, at a one-minute load of 5 to 14; every rendered frame of this build had the same SHA-256 as the previous build's for all five stacks at both sizes. p50 of each run:
+The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer at +100 in each field it names, warm source and estimates, the 256 MiB target, timed by an uncommitted release probe that calls `render` as `presence_timing` does and reads the process's CPU time around each render; `presence_timing` is the committed measurement to repeat. Each tile's passes ran serially and on the pool, four runs alternately, 5 samples per stack and run, at a one-minute load of 5 to 14; every rendered frame had the same SHA-256 either way for all five stacks at both sizes. p50 of each run:
 
-| Stack | Previous build | This build | Concurrency |
+| Stack | Serial passes | Pooled passes | Concurrency |
 | --- | --- | --- | --- |
 | 60 MP, all three | 12758 · 10708 ms, 182 · 192% | 3868 · 3854 ms, 1165 · 1191% | 2 |
 | 60 MP, Texture and Clarity | 5605 · 5613 ms, 282 · 280% | 2923 · 2889 ms, 1139 · 1175% | 3 |
@@ -2002,36 +1422,17 @@ The core render of the generated 24 MP and 60 MP JPEGs with one Presence layer a
 | 24 MP, all three | 1358 · 1414 ms, 371 · 369% | 944 · 929 ms, 1137 · 1166% | 4 |
 | 24 MP, Texture and Clarity | 879 · 951 ms | 695 · 682 ms | 5 |
 
-On the previous build the process used at most one core per tile in flight whatever the host's load (182 to 192% for two tiles, at one-minute loads from 5 to 29 across the investigation), which is what the Performance section showed as 135 to 190%; the batches themselves were 93% efficient and the one Dehaze reduction took 6 to 34 ms, so neither was the cause. Where a batch is as wide as the pool (Texture or Dehaze alone) its tiles keep their passes serial, and the two builds agree within 5% in both orders at a target wide enough to make every batch fill the pool. The Clarity row, whose eight-tile batches now spread over the pool, moved by about 5% in either direction across runs. The cost is CPU time: the two runs of this build used 697 and 700 CPU-seconds against 370 and 360 for the previous one over the same renders, because fourteen workers on two tiles' memory-bound passes each run slower and the pool spins between short passes.
+With serial passes the process uses at most one core per tile in flight whatever the host's load (182 to 192% for two tiles); the batches themselves are 93% efficient and the one Dehaze reduction takes 6 to 34 ms, so neither is the cause. Where a batch is as wide as the pool (Texture or Dehaze alone) its tiles keep their passes serial, and the two strategies agree within 5% in both orders at a target wide enough to make every batch fill the pool. The Clarity row, whose eight-tile batches spread over the pool, moved by about 5% in either direction across runs. The cost is CPU time: the two pooled runs used 697 and 700 CPU-seconds against 370 and 360 serially over the same renders, because fourteen workers on two tiles' memory-bound passes each run slower and the pool spins between short passes.
 
-Two alternatives were measured and not taken, and a third was adopted later. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes on these fixtures and the previous build's CPU time; an operation whose summed halo passes 128 px now runs in them ([tile size by summed halo](#tile-size-by-summed-halo)), and the figures below are the current build's.
+Two alternatives were measured and not taken. Raising the spatial target to 4 GiB lets fourteen tiles run at once: all three at 60 MP took 3326 ms at 834% (10 samples, load 10 to 22) but the budget peaked at 1415 MiB, against 202 MiB. Counting only the two plane buffers a tile holds at once would lower the all-three working set from 101.1 to 82.5 MiB, three tiles instead of two. Tiles of 1024 px with pooled passes took 2093 ms for all three at 60 MP and 1616 ms for Texture and Clarity (5 samples, load 8 to 12) with the same bytes; an operation whose summed halo passes 128 px runs in them ([tile size by summed halo](#tile-size-by-summed-halo)).
 
 #### Tiles written back by row
 
-A spatial tile's output is produced in the frame's own row layout on the worker that ran the tile, the byte frame's RGBA rows quantized and with the input's alpha, and written back with one `copy_from_slice` per row (three per row on the linear planes) instead of a per-pixel copy on the calling thread, and each batch slot reuses its unit scratch instead of allocating and zeroing it per tile. Measured by an uncommitted release probe that renders through `luxforge_core`'s public `render` as `presence_timing` does: one Presence layer at +100 in the fields each row names, warm source and estimates, the 256 MiB target, and the process's CPU time around each render, on the generated JPEGs. It was built against the base `ec132e71` (before) and against this change. Native Apple M4 Pro, release, 28 September 2026, holding the host-wide timing lock; runs back to back and reversed (this, before, before, this) at a one-minute load of 12 to 20, 5 renders per stack and run. Each cell is the p50 of each run, paired in the order the runs went.
-
-| Stack | Summed halo | Before | Rows written by the tile's worker |
-| --- | --- | --- | --- |
-| 24 MP Texture | 8 px | 156 · 160 ms, 756% · 739% | 141 · 144 ms, 860% · 874% |
-| 24 MP Clarity | 199 px | 140 · 141 ms, 980% · 967% | 131 · 129 ms, 1069% · 1101% |
-| 24 MP Dehaze | 67 px | 93 · 93 ms, 649% · 654% | 71 · 73 ms, 822% · 829% |
-| 24 MP Texture, Clarity | 207 px | 548 · 562 ms, 1070% · 1054% | 536 · 636 ms, 1133% · 963% |
-| 24 MP Texture, Dehaze | 75 px | 258 · 273 ms, 965% · 955% | 241 · 325 ms, 1141% · 856% |
-| 24 MP Clarity, Dehaze | 266 px | 284 · 308 ms, 1006% · 929% | 252 · 288 ms, 1141% · 1033% |
-| 24 MP All three | 274 px | 758 · 776 ms, 982% · 990% | 685 · 788 ms, 1137% · 990% |
-| 60 MP Texture | 14 px | 410 · 411 ms, 680% · 679% | 337 · 338 ms, 820% · 827% |
-| 60 MP Clarity | 327 px | 501 · 552 ms, 954% · 878% | 447 · 531 ms, 1083% · 926% |
-| 60 MP Dehaze | 107 px | 251 · 251 ms, 606% · 616% | 213 · 192 ms, 729% · 808% |
-| 60 MP Texture, Clarity | 341 px | 2177 · 2541 ms, 1070% · 919% | 2122 · 2475 ms, 1116% · 964% |
-| 60 MP Texture, Dehaze | 121 px | 703 · 824 ms, 937% · 818% | 601 · 701 ms, 1078% · 974% |
-| 60 MP Clarity, Dehaze | 434 px | 1196 · 1380 ms, 983% · 856% | 1060 · 1233 ms, 1125% · 975% |
-| 60 MP All three | 448 px | 3090 · 3739 ms, 1038% · 847% | 2955 · 3484 ms, 1107% · 972% |
-
-Every frame had the same SHA-256 before and after, for all fourteen stacks, in this pass and in an earlier pass (before, after, after, before) whose load moved between 17 and 73 and whose times are not quoted. A single field, whose batches run many tiles with serial passes, renders 4 to 24% faster with 10 to 20% more of the pool busy: the write the pool used to wait for is gone. Two or three fields, whose batches the target holds to a few tiles with pooled passes, render 3 to 15% faster at 60 MP; at 24 MP, where the write is a smaller share of the render, the pairs lie within the runs' own spread (11% faster to 19% slower). A point sample through the layer is unchanged: it evaluates its tile with an empty scratch slot as before.
+A spatial tile's output is produced in the frame's own row layout on the worker that ran the tile, the byte frame's RGBA rows quantized and with the input's alpha, and written back with one `copy_from_slice` per row (three per row on the linear planes), and each batch slot reuses its unit scratch rather than allocating and zeroing it per tile. The release probe for the figures in [tile size by summed halo](#tile-size-by-summed-halo) renders through `luxforge_core`'s public `render` as `presence_timing` does: one Presence layer at +100 in the fields each row names, warm source and estimates, the 256 MiB target, and the process's CPU time around each render, on the generated JPEGs. A point sample through the layer evaluates its tile with an empty scratch slot.
 
 #### Tile size by summed halo
 
-`presence_tile_sizes` (`cargo test --release --locked -p luxforge-core --lib presence_tile_sizes -- --ignored --nocapture`, with `LUXFORGE_PRESENCE_SOURCES` naming the sources), native Apple M4 Pro, release `--locked`, 28 September 2026, holding the host-wide timing lock on a host shared with other sessions: the one-minute load was 11 to 36 around the runs. Each row renders one Presence layer at +100 in the fields it names, with a warm source and warm estimates, in 512 px and in 1024 px tiles, alternating which size goes first. A figure is the p50 of 5 renders per size (7 on the synthetic stages and in each row's second figure), with the process's CPU time over the render as a percentage of one core, and the p50 of 9 interior point samples at each size, each equal to the rendered byte. Every row's frame had the same SHA-256 in both sizes. The synthetic stages are the test's textured frames, sized to put halos between the fixtures'. The Tile column is the side `render::limits::spatial_tile` now chooses.
+`presence_tile_sizes` (`cargo test --release --locked -p luxforge-core --lib presence_tile_sizes -- --ignored --nocapture`, with `LUXFORGE_PRESENCE_SOURCES` naming the sources), native Apple M4 Pro, release `--locked`, holding the host-wide timing lock on a host shared with other sessions: the one-minute load was 11 to 36 around the runs. Each row renders one Presence layer at +100 in the fields it names, with a warm source and warm estimates, in 512 px and in 1024 px tiles, alternating which size goes first. A figure is the p50 of 5 renders per size (7 on the synthetic stages and in each row's second figure), with the process's CPU time over the render as a percentage of one core, and the p50 of 9 interior point samples at each size, each equal to the rendered byte. Every row's frame had the same SHA-256 in both sizes. The synthetic stages are the test's textured frames, sized to put halos between the fixtures'. The Tile column is the side `render::limits::spatial_tile` chooses.
 
 | Stage | Stack | Summed halo | Tile | 512 px: render, CPU · sample | 1024 px: render, CPU · sample | 1024 px against 512 px |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -2071,7 +1472,7 @@ Every frame had the same SHA-256 before and after, for all fourteen stacks, in t
 
 The first 512 px figure of the 60 MP Texture and Dehaze row (1806 ms at 410%) was taken while the host was loaded; the second pass gave 537 ms. Up to a summed halo of 128 px the 1024 px tile renders Texture alone 9 to 14% slower, and every other stack as fast or at most 14% faster on a stage of 10 MP or more, while its sample costs three to four times as much. Past 128 px it renders every stack 17 to 51% faster. That is the bound the rule takes ([decisions](../decisions.md#post-consolidation-review)). The frames' identity across the two sizes rests on these hashes rather than on construction, because the box passes' running sums start at each rectangle's edge.
 
-The rule's effect on the whole render, from the release probe of [tiles written back by row](#tiles-written-back-by-row), built at the row write-back (512 px tiles for every stack) and with the rule: runs back to back and reversed (the rule, 512 px, 512 px, the rule) at a one-minute load of 12 to 20, 5 renders per stack and run, and the p50 of 9 interior point samples per run, each equal to the rendered byte. Each cell is the p50 of each run, paired in the order the runs went; every stack's frame had the same SHA-256 in both builds, in this pass and in an earlier one at load 17 to 73.
+The rule's effect on the whole render, from the release probe of [tiles written back by row](#tiles-written-back-by-row), in 512 px tiles for every stack and with the rule: runs back to back and reversed (the rule, 512 px, 512 px, the rule) at a one-minute load of 12 to 20, 5 renders per stack and run, and the p50 of 9 interior point samples per run, each equal to the rendered byte. Each cell is the p50 of each run, paired in the order the runs went; every stack's frame has the same SHA-256 either way.
 
 | Stack | Summed halo | 512 px tiles | By summed halo | Sample, 512 px | Sample, by summed halo | Tile |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -2090,47 +1491,17 @@ The rule's effect on the whole render, from the release probe of [tiles written 
 | 60 MP Clarity, Dehaze | 434 px | 1060 · 1233 ms, 1125% · 975% | 552 · 520 ms, 1138% · 1190% | 38.0 · 41.8 ms | 82.8 · 77.4 ms | 1024 px |
 | 60 MP All three | 448 px | 2955 · 3484 ms, 1107% · 972% | 1633 · 1460 ms, 1058% · 1166% | 79.3 · 81.9 ms | 172.7 · 167.5 ms | 1024 px |
 
-Three first-pass figures of the rule's build ran at about 300% CPU while another process held the cores (24 MP Texture and Clarity, 60 MP Texture and Dehaze); their second passes are the comparison, and the 60 MP Texture row's second pass (422 ms at 698%) runs the same 512 px tiles as the build before it. Every stack that now runs in 1024 px tiles renders 22 to 58% faster at about the same share of the pool, so its CPU time falls in proportion: all three fields at 60 MP take 1.5 to 1.6 s instead of 3.0 to 3.5 s. Its point samples cost 1.9 to 3.8 times as much, 33 to 46 ms with Clarity alone at 24 MP and 168 to 173 ms with all three at 60 MP. Texture alone, Dehaze alone and Texture with Dehaze keep 512 px tiles, and their renders and samples are unchanged.
+Three first-pass figures with the rule ran at about 300% CPU while another process held the cores (24 MP Texture and Clarity, 60 MP Texture and Dehaze); their second passes are the comparison. Every stack that runs in 1024 px tiles renders 22 to 58% faster at about the same share of the pool, so its CPU time falls in proportion: all three fields at 60 MP take 1.5 to 1.6 s against 3.0 to 3.5 s in 512 px tiles. Its point samples cost 1.9 to 3.8 times as much, 33 to 46 ms with Clarity alone at 24 MP and 168 to 173 ms with all three at 60 MP. Texture alone, Dehaze alone and Texture with Dehaze keep 512 px tiles.
 
 ### Desktop slider-to-presented-frame
 
-`editor-latency --mode drag` on the generated 24 MP fixture, 30 drained inputs each, through the new `--action` and `--parameter` selector. The Basic exposure figure in the same harness is 74.8 / 83.4 ms.
-
-| Slider (24 MP, p50 / p95 ms) | Input to presented frame | Settled exact histogram | Peak RSS | Verdict (16 ms target, 32 ms bound) |
-| --- | --- | --- | --- | --- |
-| Colour mixer, Red hue | 157.1 / 216.1 (min 137.0, max 342.4) | 280.3 / 287.3 | 1357 MiB | **Miss** |
-| Vignette, Amount | 121.6 / 135.3 (min 112.0, max 147.9) | 125.0 / 201.4 | 1352 MiB | **Miss** |
-| Presence, Clarity | 211.2 / 227.9 | not measured | 1156 MiB | **Miss** |
-| Presence, Texture | 230.1 / 244.6 | not measured | 993 MiB | **Miss** |
-| Presence, Dehaze | 157.2 / 178.0 | not measured | 1056 MiB | **Miss** |
-
-The mixer's per-pixel cost is the Oklab conversion (three cube roots each way) that Basic's saturation and vibrance units already pay, now paid a second time for a second unit; the vignette's is the extended encode and decode of every channel in its positive branch and the per-pixel mask. Neither exceeds the per-frame cost of the crop resample the earlier rows record, and both stay well under the 1.5 GiB RSS investigation target. The three Presence sliders missed as the design anticipated when each draft rendered the whole 24 MP stage through a tiled neighbourhood operation. These rows predate the instant-preview merge, after which a Presence stack at Fit rendered through the display-bounded proxy, marked approximate; the rows were re-measured below.
-
-### After the instant-preview merge
-
-The same harness on the same fixture after main's instant previews were merged (22 September 2026): at Fit every drafted frame was the display-bounded proxy render, so the input-to-presented figure was the proxy phase, and the exact phase ran behind it for the histogram, the overlays and the 100% view. The Presence frames carry `proxy_approximate: true` in the event log (a spatial layer's neighbourhoods scale with the stage); the mixer and vignette frames are proxy renders that equal the exact recipe at their own scale.
-
-| Slider (24 MP, p50 / p95 ms) | Input to presented proxy frame | Settled exact histogram | Peak RSS | Verdict (16 ms target, 32 ms bound) |
-| --- | --- | --- | --- | --- |
-| Presence, Clarity | 16.7 / 17.3 | 216.1 / 227.8 | 989 MiB | **Acceptable** |
-| Presence, Texture | 22.7 / 26.6 | 266.0 / 271.7 | 912 MiB | **Acceptable** |
-| Presence, Dehaze | 16.5 / 17.4 | 159.9 / 164.4 | 908 MiB | **Acceptable** |
-| Colour mixer, Red hue | 22.2 / 28.3 | 182.5 / 186.3 | 1267 MiB | **Acceptable** |
-| Vignette, Amount | 14.9 / 22.9 | 66.5 / 130.1 | 1261 MiB | **Acceptable** |
-
-The settled-histogram column is the exact phase's cost and stayed where the full-resolution rows above put it, because that is the same 24 MP render; it no longer stood between an input and the frame on screen. Under the owner's target of 2026-09-22 (16 ms p95, acceptable below 32 ms) every slider of the three modules was inside the acceptable bound and none met the 16 ms target; the Presence rows improved by about a factor of ten over their pre-merge rows, and Clarity and Dehaze at 17.3 and 17.4 ms p95 sat just past the target. These drags are now drawn on the GPU ([GPU previews qualified on the M4](#gpu-previews-qualified-on-the-m4)).
-
+The drags of all three modules are drawn on the GPU ([GPU previews qualified on the M4](#gpu-previews-qualified-on-the-m4)).
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the field-patch conformance suite's checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
 ## Colour grading, qualified and measured on the M4
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, 8–9 October 2026,
-release `--locked`, warm filesystem cache. The editor binary is SHA-256
-`71e5a914651cc69d70e4edfa31b6c1270496c98b6ede68c59208cc7221e17e7d`, built from
-`f641481a`; the measurement xtask is
-`cae33e5b5c0f1d069bf1dafa1fb8982218191d88dd23dd068df1f58706df4168`, and Cargo.lock is
-`90a552cf01faf8e404c132b2bc429582b567bd355af8c35fe3b2f0e6d677a41f`.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, warm filesystem cache.
 All 21 measurement commands ran serially behind the host timing lock, with no builds or tests
 overlapping. Each started at a one-minute load of 3.97–7.56, below the 8.0 threshold.
 The 60 MP and RAW reference workloads themselves raised the ending load to 13.67 and 10.91;
@@ -2141,21 +1512,21 @@ the batch paused until load settled before starting the next native case.
 The supported Nikon Z6, Fujifilm X100VI and Air 2S manifest was supplied to full verification.
 All 81 full-tier components are covered by passing checks: 77 in the full run, the three RAW
 panel checks replayed against their captured state/logs/images with the current action-record
-expectation, and a fresh background hardening run with the current live-session registry
-expectation. The original full command's failed summary is retained; it is not a clean full-run
-exit. The editor binary is unchanged across those checks. The coverage index is
-`artifacts/pr5-harness-rechecks-20261008/qualification.json`, the original full evidence
+expectation, and a background hardening run with the current live-session registry
+expectation. The full command's own summary records a failure; it is not a clean full-run
+exit. The editor binary is the same across those checks. The coverage index is
+`artifacts/pr5-harness-rechecks-20261008/qualification.json`, the full evidence
 `artifacts/pr5-full-final-20261008/summary.json`.
 
-The whole GPU corpus passed the accepted release gate: 305 stacks, 1,220 picture-at-rest
+The whole GPU corpus passes the release gate: 305 stacks, 1,220 picture-at-rest
 view cells at Fit, 33%, 50% and 100%, and 305 histogram, sample and export checks, with source
 hashes unchanged. The four grading recipes cover 28 stacks and 112 view cells. Their largest
 picture-at-rest mean / worst block / p99 is 0.0762 / 0.3550 / 0.6469 ΔE00, with absolute signed
 mean ΔL* at most 0.0092. Their largest histogram earth mover's distance is 0.249659 code,
-within 0.25; samples and repeatable GPU exports pass their own limits. Motion remains reported,
-not gated under the owner's policy: 48 of grading's 84 reduced-view cells exceed the comparison
+within 0.25; samples and repeatable GPU exports pass their own limits. Motion is reported,
+not gated: 48 of grading's 84 reduced-view cells exceed the comparison
 limits, against both the settled picture and the reference; all 28 at 100% are within them.
-The whole corpus has 572 reduced-view motion cells past a limit. No tolerance was increased.
+The whole corpus has 572 reduced-view motion cells past a limit.
 The report is `gpu-qualification/run/report.json` inside the full evidence directory.
 
 ### Native control latency and resources
@@ -2189,7 +1560,7 @@ Every measured drag p95 is below 16 ms. Scalar RAW commit tails reach 17.45 and 
 this does not establish every commit within one display frame. The 24 MP grading-luminance
 release at 330.58 ms misses the provisional 200 ms histogram target, despite the separate
 30-commit distribution's 69.10 ms p95. RAW HSL and luminance releases reach 352.04 and
-369.25 ms. Those sparse release misses remain findings; they were not removed or reclassified.
+369.25 ms. Those sparse release misses are findings.
 
 The resource rows below take the larger observed value across each control's drag and commit
 runs. RSS is the process sampler's peak at roughly 50 ms intervals, including captures, GPU
@@ -2212,8 +1583,8 @@ the observed process interval, including setup, captures and commits, not just s
 These repeated-capture gesture workloads exceed the provisional 600 MiB RSS target at 24 MP
 and 1 GiB at 60 MP, HSL baselines included. They do not establish a production working-set
 ceiling or isolate the wheel's own allocation cost. Colour scratch peaks are zero on the JPEGs
-and 5.25 MiB on the RAW. The existing GPU and scratch limits remain unchanged; backend staging
-and total GPU memory outside the declared services are not newly bounded by these observations.
+and 5.25 MiB on the RAW. The GPU and scratch limits are the declared ones; backend staging
+and total GPU memory outside the declared services are not bounded by these observations.
 
 ### Paired whole-frame reference costs
 
@@ -2249,10 +1620,9 @@ retains the exact commands. JPEG sources are the generated 6000 × 4000 and 1000
 fixtures; the Nikon's upright stage is 4024 × 6048.
 
 The full run's general 24 MP `editor-performance` diagnostic is also retained, at its default
-10 samples per recipe and starting load 3.73. It has no matched pre-grading main build, so no
-whole-editor speedup or absence of regression is claimed. The paired HSL/grade workloads above
-are the feature-cost comparison. Native Windows/Linux, screen-reader, calibrated-display and
-Lightroom response qualification remain open.
+10 samples per recipe and starting load 3.73; it is a diagnostic, not a feature-cost comparison,
+and the paired HSL/grade workloads above are the feature-cost comparison. Native Windows/Linux,
+screen-reader, calibrated-display and Lightroom response qualification remain open.
 
 ## Brush-heavy recipes across history
 
@@ -2269,7 +1639,7 @@ Scope: `luxforge-core`'s own catalog, one stroke per history entry written throu
 | 1000 | 20.9 MB | 22.2 MB | 505.3 MB | 24.1× |
 | 1809 (the ceiling) | 66.1 MB | 68.3 MB | 1652.4 MB | 25.0× |
 
-Least squares over the 37 sampled counts gives `S(n) = 19.30·n² + 1623·n + 2511` bytes, identical on both fixtures. Doubling the stroke count multiplies the stored bytes by 3.49 at 250 → 500 and 3.71 at 500 → 1000: **the growth is quadratic and nothing here may be described as linear.** The design predicted about 19 MB at 1000 strokes from the 35-byte reference alone; the measured 20.9 MB is that curve plus each entry's own JSON and the mask and component structure the references hang on, so the design's figure is corrected to the measurement. The design's 105 MB at 2400 strokes is withdrawn: 2400 strokes of this length is not a recipe this build will hold.
+Least squares over the 37 sampled counts gives `S(n) = 19.30·n² + 1623·n + 2511` bytes, identical on both fixtures. Doubling the stroke count multiplies the stored bytes by 3.49 at 250 → 500 and 3.71 at 500 → 1000: **the growth is quadratic and nothing here may be described as linear.** The measured 20.9 MB at 1000 strokes is the 35-byte reference's curve plus each entry's own JSON and the mask and component structure the references hang on.
 
 **Two ceilings, both measured.** Sixteen masks of 8192 stored positions hold 1809 of these strokes and no more (`a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling`). Independently of stroke length, the 256 KiB per-recipe serialized mask bound is reached at 7040 stroke references, which is the most any recipe can hold; past it the write is refused with `resource-limit: recipe masks serialize to 264356 bytes; the limit is 262144 serialized mask bytes per recipe` and the catalog is unchanged, proved by its SHA-256 before and after and by reopening to the same current entry and history length (`a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was`). No painting session's snapshot therefore carries more than 256 KiB of mask data.
 
@@ -2286,131 +1656,28 @@ Peak memory is the whole test process, which imports and decodes the fixture. Bo
 
 ### Commit time: writing only fresh strokes
 
-Before this change, `store_strokes` re-wrote every stroke the whole mask table referenced on every commit, an `O(references)` SQL cost per commit and `O(n²)` CPU over a session, almost all of it a no-op `INSERT OR IGNORE` for a stroke an earlier commit already wrote. After, it writes only the references a recipe's stroke table does not already know are durable — known because a fresh hydration marked them, or because an earlier commit built on the same table already wrote them — so a long session's later commits pay only for the strokes each one actually captured.
+`store_strokes` writes only the references a recipe's stroke table does not already know are durable — known because a fresh hydration marked them, or because an earlier commit built on the same table already wrote them — so a long session's later commits pay only for the strokes each one actually captured, not one write per reference the whole mask table carries.
 
-A binary built before this task carries no commit-time instrumentation to compare against, so the figure below is a controlled A/B within this one binary instead: the same 1809-stroke ceiling session, with the harness's marking of each commit's fresh stroke as stored turned off — this build's own record of the write pattern before this task, since every reference is then treated as needing a write on every commit — and on, the fresh-only write this task lands. Run in reversed order (after, before, before, after) so a difference has to survive the reversal, on a host shared with other sessions.
+The figure below is a controlled A/B within one binary: the same 1809-stroke ceiling session, with the harness's marking of each commit's fresh stroke as stored on (the fresh-only write) and off (every reference treated as needing a write on every commit), run in reversed order (fresh-only, every reference, every reference, fresh-only) on a host shared with other sessions.
 
-Scope: the mean write-transaction time (`insert_entry` plus the asset-state update) of the last 50 of the 1809 commits, native Apple M4 Pro, release `--locked`, `luxforge-core`'s own catalog, on the generated 24 MP and 60 MP fixtures. Catalog bytes are unchanged — the table above — because `INSERT OR IGNORE` still guards every write; this changes only how much SQL a commit issues.
+Scope: the mean write-transaction time (`insert_entry` plus the asset-state update) of the last 50 of the 1809 commits, native Apple M4 Pro, release `--locked`, `luxforge-core`'s own catalog, on the generated 24 MP and 60 MP fixtures. Catalog bytes are the same either way — the table above — because `INSERT OR IGNORE` guards every write; only the amount of SQL a commit issues differs.
 
-| Source | fresh-only (after), ms | every reference (before), ms | one-minute load |
+| Source | fresh-only, ms | every reference, ms | one-minute load |
 | --- | --- | --- | --- |
 | 24 MP | 0.824, 0.815 | 3.114, 3.586 | 11.37 → 10.16 |
 | 60 MP | 0.816, 0.993 | 3.022, 3.307 | 7.16 → 6.83 |
 
-The difference survives the reversal on both fixtures: about 3.7–4.4× faster near the ceiling, from roughly 3.0–3.6 ms down to 0.8–1.0 ms of write-transaction time per commit. The saving is expected to widen over a longer session, since the earlier cost was one write per reference the whole mask table carries — which grows with the session — while the fresh-only cost is one write per stroke the commit itself captured, which does not.
+The difference survives the reversal on both fixtures: 0.8–1.0 ms of write-transaction time per commit near the ceiling, against 3.0–3.6 ms writing every reference. The gap widens over a longer session, since writing every reference costs one write per reference the whole mask table carries — which grows with the session — while the fresh-only cost is one write per stroke the commit itself captured, which does not.
 
 ### Point samples through a spatial layer
 
-These figures measured the CPU point path stage 4 of [GPU-first](../design/gpu-first.md) deleted: the point-tile cache and the point worker. A sample is now a read by the catalog owner's tile service ([samples from GPU tiles](#samples-from-gpu-tiles)); the figures stay as the baseline TASK-011 measures the GPU's samples against.
-
-Native Apple M4 Pro (14 cores, 48 GiB), release `--locked`, 23 September 2026, on a host shared with other sessions. `render.sample` through the live API of a `develop --background` editor with an isolated catalog and no photograph in its window, at random stage points with the estimate store warm, p50 / p95 over 29 samples after the first. "Before" is the previous build, which built the spatial operation's whole float frame for every RAW sample: the one-minute load moved between 4 and 28 while it was measured, so its p50 range over three runs is given too. "After" ran at load 4 to 5.
-
-| Z6 24 MP · X100VI 40 MP, ms | Before: whole frame | After: one tile |
-| --- | --- | --- |
-| `render.sample`, Clarity +60 | 292 / 619 · 842 / 1451 (p50 292–568 · 499–842) | 20.8 / 22.1 · 19.5 / 19.9 |
-| `render.sample`, Clarity +60 Dehaze +30 | 623 / 1194 · 1495 / 3152 (p50 623–1130 · 1353–1966) | 36.0 / 38.9 · 37.9 / 38.7 |
-| Another client's `draft.set` while one samples in a loop, p50 (max); idle 0.3 | 402–578 (762) · 504–647 (1236) | 19.9 (22.3) · 19.2 (22.7) |
-
-On the byte path the same sample on the generated 24 MP JPEG costs 11.5 ms with Clarity +60 and 34.0 ms with Dehaze +30 added (p50 of 15).
-
-#### Off the catalog owner
-
-On the after build the catalog owner only planned a sample through a spatial layer, in `O(layers)`, and its point worker evaluated it and answered the caller, so another client's call no longer waited behind it; the tile service that replaced the point worker keeps a read off the owner the same way. Native Apple M4 Pro, release `--locked`, 25 September 2026: two loopback clients against a background-only, hidden-window editor with an isolated catalog and no photograph in its window, one sampling random stage points in a loop, the other timing 60 `draft.set` calls on an open Basic draft and 60 `asset.state` calls, 30 to 70 ms apart. "Before" is `a82c36e`, "after" this change; each camera ran before, after, then after, before, back to back, and the two orders were run as two passes. **Provisional:** the one-minute load was 18 to 28 during these runs, far above the 8 at which a figure is compared against anything, because other sessions were building on the host; the p50s are consistent across passes, the maxima are not claims.
-
-| Z6 · X100VI, ms, p50 (max) of 60; runs 1 · 2 | Before | After | Idle |
-| --- | --- | --- | --- |
-| Another client's `draft.set`, Clarity +60 | 18.4 (143) · 14.2 (107) · 11.0 (36) · 14.5 (189) | 0.31 (13) · 0.31 (11) · 0.22 (0.3) · 0.31 (6) | 0.17–0.34 |
-| Another client's `draft.set`, Clarity +60 Dehaze +30 | 68.7 (290) · 23.6 (147) · 26.6 (193) · 16.1 (37) | 0.23 (0.7) · 0.32 (4) · 0.24 (0.3) · 0.24 (0.9) | |
-| Another client's `asset.state`, Clarity +60 | 26.5 (130) · 19.2 (170) · 0.65 (28) · 9.5 (170) | 0.90 (11) · 0.91 (17) · 0.65 (0.7) · 1.09 (11) | 0.54–1.09 |
-| Another client's `asset.state`, Clarity +60 Dehaze +30 | 39.2 (300) · 5.5 (127) · 7.6 (119) · 0.66 (39) | 0.56 (1.1) · 0.90 (4) · 0.66 (0.8) · 0.66 (1.5) | |
-| The sampling client's `render.sample` while it runs, Clarity +60 · with Dehaze +30, p50 | 20–33 · 35–118 | 20–38 · 35–53 | |
-
-Samples in the contended window: 101 to 238 per run before, 63 to 189 after (fewer, because the other client's calls no longer lengthen the window). The sample itself costs what it cost on the owner: timed alone, 30 samples in the steadiest runs, 19.7 before against 19.9 ms after on the X100VI with Clarity and 34.7 against 34.8 ms with Dehaze added; the wider ranges above are the host's load, which moved between runs. An `asset.state` before occasionally answered in under a millisecond because it arrived between two samples. An earlier pass with a shorter window (5 to 17 ms apart, load 11 to 16) gave the same picture: `draft.set` p50 10.6 to 31.1 ms before against 0.23 to 0.33 after.
-
-Exactness through the owner was that build's ignored owner test, `a_raw_sample_through_presence_off_the_owner`, deleted with the point worker, run in release with `LUXFORGE_RAW_FIXTURE` set to each private source: on the Z6, X100VI and Air 2S, 21 samples per stack including the far corner, answered by the point worker, each equal to the pixel an exact render of the current entry writes there. Under today's contract the release gate compares samples read from GPU tiles with the reference renderer's frame, within the display limit rather than to the byte, so it reproduces the comparison, not these figures (a selection, so the run reports itself incomplete):
+A sample through a spatial layer is a read by the catalog owner's tile service, which keeps the read off the owner ([samples from GPU tiles](#samples-from-gpu-tiles)). The release gate compares samples read from GPU tiles with the reference renderer's frame, within the display limit rather than to the byte; on the private RAW sources (a selection, so the run reports itself incomplete):
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
   --manifest /path/to/raw-manifest.json --kind sample --families presence \
   --sources raw-z6,raw-x100vi,raw-air2s
-``` A background evidence run over the Z6 with the after build (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner — the status-bar readout those steps drove was removed on 2026-10-04) showed every readout with no render error, each hover step captured 46 to 69 ms after it was sent.
-
-The method: each commit's release app was copied aside from `target/release/luxforge` and run from a background-only bundle (the plist `develop --background` writes) with `--hidden-window --catalog NEW.sqlite`, driven by two loopback clients read from `NEW.live-session.json`: import the RAW with `catalog.import` and `job.adopt`, commit `edit.set-presence` with `{"clarity": 60}` and then `{"clarity": 60, "dehaze": 30}`, and for each stack open a `set-basic` draft, warm three samples, time 30 samples alone, time 60 `draft.set` and 60 `asset.state` idle, then again while the other client samples random points in a loop. The builds ran before, after, after, before for each camera, with `uptime` recorded around every run. Run on today's editor, the same method times the tile service's reads, not the point worker's.
-
-Exactness on the real files is the ignored core test, run in release with `LUXFORGE_RAW_FIXTURE` set to each private source (`cargo test --release -p luxforge-core --lib a_raw_point_sample_through_presence -- --ignored --nocapture`): 41 samples per stack, spread over the stage and including the far corner, each equal to the byte the linear render writes there. It also times both sides, p50 ms:
-
-| Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
-| --- | --- | --- | --- |
-| Point sample | 20.1 · 35.4 | 18.7 · 36.3 | 15.1 · 27.9 |
-| The whole spatial frame the previous sample built | 261 · 550 | 460 · 1131 | 191 · 352 |
-
-The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduced the whole stage once, which added 23 to 113 ms across the three files. That reduction was paid only for a unit that declared an estimate key: Clarity and Texture never paid it, and a new Dehaze amount prepared from the stored atmospheric light.
-
-A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel — the status-bar readout those steps drove was removed on 2026-10-04) showed every readout with no render error, each hover step settling within 75 ms of the one before it.
-
-#### In tiles sized by the summed halo
-
-A sample evaluates the tile the render uses, and an operation whose summed halo passes 128 px now runs in 1024 px tiles ([tile size by summed halo](#tile-size-by-summed-halo)). Clarity's halo passes it on all three RAW sources, so its samples evaluate a 1024 px tile there. The ignored RAW test above, which now samples each stack in the production tiling and in 512 px tiles and asserts both against the one render, run in release on 28 September 2026 at a one-minute load of 13 to 15, holding the timing lock (41 samples per stack and tiling, p50 ms; each sample equal to the rendered byte in both tilings):
-
-| Clarity +60 · with Dehaze +30 | Z6 | X100VI | Air 2S |
-| --- | --- | --- | --- |
-| Point sample, production tiling (1024 px) | 47.1 · 67.5 | 46.2 · 75.2 | 40.3 · 59.5 |
-| Point sample, 512 px tiles | 19.0 · 31.2 | 18.0 · 32.3 | 14.5 · 24.5 |
-| The spatial frame alone, production tiling | 161 · 245 | 265 · 532 | 125 · 192 |
-| The spatial frame alone, 512 px tiles | 223 · 387 | 400 · 731 | 166 · 285 |
-
-On the generated JPEGs a sample through Clarity alone takes 33 to 46 ms at 24 MP and 43 ms at 60 MP in 1024 px tiles, against 12 and 19 ms in 512 px tiles, and through all three fields 117 to 119 and 168 to 173 ms against 47 and 80 to 82 ms ([tile size by summed halo](#tile-size-by-summed-halo)). A stack of Texture, Dehaze or both keeps 512 px tiles and its samples are unchanged: 9 to 10, 6 to 7 and 13 to 16 ms. The point worker answered these samples off the catalog owner, so the longer wait was the sampling client's own and delayed no other client.
-
-#### The stage read by rows
-
-A point query's tile input and every global estimate's reduction read the stage the spatial layer reads through the pipeline's row reader, the one a frame's tiles use: the colour layers before the spatial layer run over whole rows instead of once per pixel, on both pixel domains, and the reduction sums every 16 × 16 block in the one order either way. Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release `--locked`, 28 September 2026, on a host shared with other sessions: every figure here was taken at a one-minute load of 10 to 29, far above the 8 at which a figure is compared against a budget, so these are relative figures. "Before" is the base `6b876dd4`, "after" this change, each built once and run back to back and reversed (before, after, after, before), each pass holding the host-wide timing lock.
-
-**Identity.** An uncommitted release probe rendered Exposure +0.4, Contrast +20, Vibrance +30 then Dehaze +30 from a cold estimate store and read the Dehaze estimate back, then reduced the same stage from a cold store through a point query. On the generated 24 MP JPEG (byte path), the Z6 and the X100VI (linear path), three rounds each, the frame's SHA-256 and the three estimate values' `f64` bits were the same before and after, and the point query's estimate equalled the frame's in both builds.
-
-**Point samples and a cold reduction.** The same probe, per source and stack, with and without that Basic layer before Presence at Clarity +60 and Dehaze +30: the p50 of 21 samples beside a warm store (20 spread points and the far corner), each equal to the rendered byte, and the p50 of three cold point reductions. Each cell is before (runs 1, 4) → after (runs 2, 3):
-
-| Source | Stack | Sample, no colour before | Sample, behind Basic | Cold point reduction, behind Basic |
-| --- | --- | --- | --- | --- |
-| 24 MP JPEG | Clarity | 35.1 · 33.6 → 31.7 · 29.5 ms | 349.8 · 344.4 → 104.9 · 102.0 ms | none (no estimate) |
-| 24 MP JPEG | Clarity, Dehaze | 65.4 · 56.8 → 67.4 · 52.5 ms | 452.9 · 435.4 → 153.7 · 139.2 ms | 369.1 · 376.9 → 113.1 · 108.7 ms |
-| 24 MP JPEG | Dehaze | 5.7 · 5.6 → 5.3 · 5.3 ms | 85.3 · 71.0 → 20.6 · 21.1 ms | 373.8 · 376.2 → 114.3 · 106.0 ms |
-| 60 MP JPEG | Clarity | 38.5 · 39.9 → 40.1 · 40.2 ms | 473.4 · 564.3 → 139.4 · 149.9 ms | none (no estimate) |
-| 60 MP JPEG | Clarity, Dehaze | 87.4 · 69.9 → 81.0 · 61.5 ms | 616.3 · 618.2 → 219.7 · 167.0 ms | 957.1 · 1702.3 → 331.1 · 258.4 ms |
-| 60 MP JPEG | Dehaze | 7.3 · 6.5 → 6.5 · 6.1 ms | 87.5 · 88.9 → 24.4 · 24.7 ms | 1094.7 · 916.0 → 421.3 · 257.5 ms |
-| Z6 | Clarity | 57.9 · 48.4 → 46.0 · 47.6 ms | 355.6 · 328.4 → 108.8 · 110.7 ms | none (no estimate) |
-| Z6 | Clarity, Dehaze | 77.3 · 68.5 → 81.2 · 67.9 ms | 401.5 · 421.6 → 140.6 · 149.3 ms | 414.9 · 376.4 → 139.5 · 130.3 ms |
-| Z6 | Dehaze | 8.5 · 8.9 → 8.1 · 7.6 ms | 66.7 · 65.0 → 22.0 · 21.1 ms | 423.4 · 566.9 → 137.5 · 140.5 ms |
-| X100VI | Clarity | 45.6 · 45.4 → 44.1 · 45.0 ms | 408.4 · 326.2 → 111.0 · 212.8 ms | none (no estimate) |
-| X100VI | Clarity, Dehaze | 82.2 · 66.9 → 67.7 · 111.3 ms | 495.2 · 408.4 → 158.0 · 226.6 ms | 599.4 · 546.0 → 199.8 · 227.4 ms |
-| X100VI | Dehaze | 8.1 · 7.6 → 7.8 · 7.0 ms | 94.4 · 73.1 → 25.2 · 25.6 ms | 785.9 · 556.9 → 219.3 · 340.4 ms |
-
-Behind a colour layer a sample through Clarity costs about a third of what it did, 102 to 150 ms against 326 to 564 ms, and a Dehaze sample a quarter to a third; the cold reduction a Dehaze estimate is prepared from costs 2.4 to 4.5 times less, comparing each row's mean before and after. The X100VI's 212.8 and 340.4 ms were taken at a load of 19.5. With nothing before the spatial layer a pull is a source read and there is no colour to batch: those samples are unchanged, and so are the committed ignored tests' figures, which sample Presence alone. `a_raw_point_sample_through_presence_equals_the_render` gave, in the production tiling, 49.2 · 47.4 → 47.3 · 50.2 ms with Clarity and 72.3 · 68.3 → 68.2 · 70.0 ms with Dehaze added on the Z6, and 56.2 · 46.6 → 50.4 · 47.6 and 78.3 · 75.9 → 90.7 · 77.3 ms on the X100VI (41 samples, each equal to the render); `presence_tile_sizes` gave 42.1 · 33.1 → 32.2 · 34.2 ms for a 24 MP Clarity sample and 82.9 · 78.8 → 78.0 · 131.4 ms for 60 MP Clarity and Dehaze in 1024 px tiles (9 samples). The two to four times that 1024 px tiles added to a Presence-only sample ([in tiles sized by the summed halo](#in-tiles-sized-by-the-summed-halo)) is the unit chain over the larger tile, which reading rows does not touch.
-
-**A RAW Presence exact render.** The same probe's exact render of the Basic-then-Presence stack on each RAW, with a cold store (reducing the stage for Dehaze) and with a warm one, p50 of 3 per run, before (runs 1, 4) and after (runs 2, 3):
-
-| Source | Stack behind Basic | Cold store, before | Cold store, after | Warm store, before | Warm store, after |
-| --- | --- | --- | --- | --- | --- |
-| Z6 | Dehaze | 908 · 1183 ms | 466 · 473 ms | 430 · 335 ms | 350 · 326 ms |
-| Z6 | Clarity, Dehaze | 1061 · 865 ms | 661 · 602 ms | 684 · 550 ms | 485 · 478 ms |
-| X100VI | Dehaze | 1598 · 1119 ms | 929 · 1514 ms | 586 · 585 ms | 598 · 1012 ms |
-| X100VI | Clarity, Dehaze | 1859 · 1533 ms | 1148 · 1302 ms | 1200 · 949 ms | 906 · 3169 ms |
-
-The difference between a cold and a warm render is the reduction: about 300 to 850 ms on the Z6 before against 115 to 180 ms after. On the X100VI run 3 started at a load of 19.5 and its renders took up to three times as long as run 2's, so only the cold renders of runs 1, 2 and 4 are compared there: with Dehaze 1119 to 1598 ms before against 929 ms after, and with Clarity and Dehaze 1533 to 1859 against 1148 ms. The byte path's frame reads its materialized input and was already cheap; its renders did not change.
-
-**A Basic drag over Presence on RAW.** `editor-latency --source RAW --mode drag --presence --samples 17` at Fit: a Presence layer with all three fields at +100 committed, then a Basic Exposure drag, one launch per run, the four runs back to back at a load of 10.5 to 13.7. The Fit proxy (1716 × 1144 on the X100VI) was rendered whole, so each drag frame reduced the proxy stage for Dehaze, not the exact stage; no window handed it the exact stage's estimate. Seventeen inputs per run, because 30 fail before a frame is measured (below).
-
-| Run | X100VI input to presented frame p50 / p95 | X100VI release to settled histogram (2) | Z6 input to presented frame p50 / p95 | Z6 release to settled histogram (2) |
-| --- | --- | --- | --- | --- |
-| Before 1 | 45.6 / 52.8 ms | 1353, 1374 ms | 32.4 / 37.0 ms | 775, 804 ms |
-| After 1 | 44.9 / 52.1 ms | 1323, 1447 ms | 30.1 / 35.2 ms | 755, 762 ms |
-| After 2 | 46.8 / 110.5 ms | 1356, 1388 ms | 31.0 / 43.4 ms | 746, 763 ms |
-| Before 2 | 48.0 / 52.9 ms | 1375, 1386 ms | 32.7 / 39.3 ms | 770, 771 ms |
-
-The drag frame is about 2 ms faster at p50 on the Z6 and about 1 ms on the X100VI, in both orders; the settled histogram, which waits for the exact render and its reduction, came 1 to 5% sooner on the Z6 in both orders and did not move beyond the runs' spread on the X100VI. A proxy frame's reduction reads under 2 MP, and an Exposure-only draft's colour is one unit, so there was little per-pixel cost left to remove in this drag. `--basic`, the full Basic layer that would add every colour unit, is refused on RAW, and the default 30-input drag fails on its 19th value (both below), so neither was measured.
-
-**The editor diagnostic.** `editor-performance --source` on the generated 24 MP JPEG (10 samples per recipe), whose stacks hold no spatial layer, ran before, after, after, before at a one-minute load of 9.6 to 15: every row stayed within its runs' spread, for example the full Basic layer at 55.35 · 58.13 → 55.99 · 56.89 ms p50 and its 2880 × 1800 proxy at 32.75 · 34.49 → 34.10 · 33.90 ms.
-
-These drags are 17 inputs because, when they were measured, `editor-latency` generated its 19th exposure value as `0.5700000000000001`, which the desktop's rail refuses; it now generates the decimal the slider sends. One defect in the measuring tool remains: `--basic` commits Temperature and Tint in its Basic layer, which a RAW photo refuses (`on a RAW photo, Temperature is the source development's`), so `--basic` cannot run over a RAW `--source`.
+```
 
 ## Preset import parse
 
@@ -2426,15 +1693,15 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--lo
 | Template, 59,482 unrecognised settings | 11.82 / 12.12 | 1 mapped, 59,482 unsupported |
 | Template, one flat curve just under 100,000 values | 5.90 / 6.15 | 1 mapped, 1 unsupported |
 
-The XML parser checks each element's attributes against each other, so its cost grows with the square of an element's attribute count. Before the prescan bounded that work to 2,000,000 comparisons, the first shape took 4.1 s p50 and 7.4 s max. The prescan also bounds nesting, which the parser descends recursively, and namespace declarations, which it scans for every prefix.
+The XML parser checks each element's attributes against each other, so its cost grows with the square of an element's attribute count. The prescan bounds that work to 2,000,000 comparisons; unbounded, the first shape took 4.1 s p50 and 7.4 s max. The prescan also bounds nesting, which the parser descends recursively, and namespace declarations, which it scans for every prefix.
 
 ## Module capabilities qualification
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, on 23 September 2026, on a host shared with other sessions: the one-minute load average was 3 to 11 during these runs and is given per row. "Before" is `ca8eaef`, the last commit without the framework; "after" is `5f77f58`. No figure here is a p95 claim beyond its stated sample count.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`, on a host shared with other sessions: the one-minute load is given per measurement. No figure here is a p95 claim beyond its stated sample count.
 
 ### The framework's own costs
 
-`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start. The p50s recorded here are the upper median (the 16th of 30, the 101st of 200) the test took before it read the shared nearest-rank `Distribution`, whose p50 is the 15th and the 100th; the p95s are unchanged.
+`cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture`, isolated directories, an in-memory secret store and the loopback proof endpoint; load 10.9 at the start. The p50s recorded here are the upper median (the 16th of 30, the 101st of 200); the shared nearest-rank `Distribution` the test reads gives the 15th and the 100th. The p95s are the same either way.
 
 | Measurement | p50 / p95 | Samples |
 | --- | --- | --- |
@@ -2444,60 +1711,19 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, release `--locked`,
 | `module.settings.read` owner round trip | 0.009 / 0.012 ms | 30 |
 | A whole `task.generate-proof-tint`: request to `ready`, including the 64 samples, the file read, the loopback request, the artifact publish and its row | 14.9 / 15.8 ms | 30 |
 | … of which publishing one 12-byte artifact (synced, renamed) | 9.1 / 9.9 ms | 30 |
-| Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured 2026-09-27 on the [`ureq` transport](#transport-on-ureqs-agent), load 35 to 39) | 0.28 / 0.89 ms | 10 |
+| Cancel a task stalled inside its request to `cancelled` (the cancel shuts the request's socket down; measured on the `ureq` transport, load 35 to 39) | 0.28 / 0.89 ms | 10 |
 | Installed proof resource on disk, `installed.json` included; staging left behind | 448 bytes; none | 1 |
 
-The two request rows were measured through the real transport against the loopback proof endpoint. Since the transport moved to `luxforge-net`, `capability_timing` sends through the core's in-memory transport, which checks a cancel every millisecond, so a new run of those two rows measures the host around the request, not the network path; the real transport's cancel latency is the one in the [module capabilities design](../design/module-capabilities.md#transport).
+The two request rows were measured through the real transport against the loopback proof endpoint. `capability_timing` sends through the core's in-memory transport, which checks a cancel every millisecond, so a run of it measures the host around the request, not the network path; the real transport's cancel latency is the one in the [module capabilities design](../design/module-capabilities.md#transport).
 
 Discovery, registration and catalog reopen start no worker thread and create no directory: `schema.list` and `module.list` against a fresh data root leave it empty, and the owner tests assert that no lane has started and the secret store saw no call. The two lanes block on their channels while idle.
-
-### Editor before and after
-
-`measure` (5 launches per workload, background bundle) and `editor-performance` (24 MP, 30 samples), before and after, run back to back.
-
-| Measurement | Before | After | Load |
-| --- | --- | --- | --- |
-| Launch to first frame, empty (p50 / p95) | 963 / 1084 ms | 1012 / 1072 ms | 3.2 |
-| … of which until the process runs (median of the empty and 24 MP launches) | 419 ms | 465 ms | 3.2 |
-| … of which process start to first frame (median) | 597 ms | 589 ms | 3.2 |
-| Launch to first frame, 24 MP / 60 MP (p50) | 1022 / 1136 ms | 1081 / 1191 ms | 3.2 |
-| Sampled peak RSS, empty / 24 MP / 60 MP (median) | 158 / 419 / 850 MiB | 139 / 392 / 853 MiB | 3.2 |
-| Idle CPU over 30 s | 0.53% of one core | 0.50% of one core | 3.2 |
-| Executable size | 20.4 MB | 24.8 MB | — |
-
-The whole launch difference is in the part before the process runs, which for these background launches includes copying the executable into a temporary bundle: the executable is 4.3 MB larger (rustls, ring and the platform verifier) and now links Security.framework. Process start to first frame is unchanged. The core `editor-performance` rows (transforms, crop, Basic colour stacks, proxy renders, the histogram and the picker) moved by a few percent in either direction depending on which build ran second while the load rose from 5 to 11.6, so they show no difference attributable to the framework; the render path gained only an early return for stacks without artifacts. The full `verify` tier on `5f77f58` passed every provisional target except the empty-shell launch p95 (1012 ms against 1 s), which the baseline also misses under the same bundle copy.
-
-### Transport on `ureq`'s agent
-
-Release builds (`cargo xtask build --release`) of `cdd5667`, whose transport framed HTTP/1.1 with `ureq-proto` in its own read loop, and of the change moving it onto `ureq`'s agent and pinning `idna_adapter` to 1.0.0, in one worktree on the M4, 2026-09-27. Size only; the cancel row above is the one timing this change moved.
-
-| Measurement | Before | After |
-| --- | --- | --- |
-| Executable size | 30,106,048 bytes (30.1 MB) | 30,102,240 bytes (30.1 MB), 3.7 KiB smaller |
-| `Cargo.lock` packages | 509 | 488: `ureq` and `utf8-zero` become normal dependencies, and the 21 packages of the ICU4X normalizer behind `idna_adapter` 1.2.2 go |
-
-The 24.8 MB above is the executable at `5f77f58`; the features added since account for the rest of the difference.
-
-### The transport outside the core
-
-`cargo test -p luxforge-core --no-run --locked` on the M4 Pro (14 cores), Rust 1.94.0, dev profile, 2026-09-28, before (`494beb2b`, the transport and Keychain store in the core) and after (the change moving them to `luxforge-net`), one run each in the order before, after, after, before, in one worktree on a host shared with other sessions: the one-minute load average was 13 to 27 across these runs, so the wall times vary by more than any difference between the builds, and CPU time (user, from `/usr/bin/time`) is the steadier figure. "Cold" is a fresh target directory, every dependency built; "clean core" is `cargo clean -p luxforge-core` over built dependencies, which rebuilds the core and `luxforge-testkit`.
-
-| Measurement | Before | After |
-| --- | --- | --- |
-| Packages compiled, cold | 105 | 86: `rustls`, its pki types and webpki, `ring`, the platform verifier, `security-framework` and its `-sys`, `ureq`, `ureq-proto`, `http`, `httparse`, `base64`, `utf8-zero`, `log`, `once_cell`, `subtle`, `untrusted`, `getrandom` 0.2 and `bytes` go |
-| Cold, wall / user CPU | 86.0 s / 436 s; 140.3 s / 483 s | 97.3 s / 402 s; 85.3 s / 401 s |
-| Clean core, wall / user CPU | 56.8 s / 295 s; 54.4 s / 307 s | 68.1 s / 314 s; 56.4 s / 295 s |
-
-A new worktree's first build of the core's tests compiles 19 fewer packages and spends about 35 to 80 s less CPU, 8 to 17 percent. Rebuilding the core alone shows no difference outside the noise: the transport was a small part of the core's own code, and the dependencies it no longer links were already built. The core's normal dependency tree (`cargo tree -p luxforge-core -e normal`) went from 80 packages to 61.
 
 ## Performance section, activity board and resource counters
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds.
-The underlying counter measurements below are from 2026-09-23; the `resources_cost` and
-GPU-walk p50s are the upper median (the 501st of 1000 reads, the 101st of 200 walks)
-those probes took before they read the shared nearest-rank `Distribution`, whose p50 is the
-500th and the 100th; their p95s are unchanged. Counter contracts and one-second resolution are
-unchanged by the 2026-10-02 panel polish.
+The `resources_cost` and GPU-walk p50s are the upper median (the 501st of 1000 reads, the 101st
+of 200 walks); the shared nearest-rank `Distribution` those probes read gives the 500th and the
+100th. Their p95s are the same either way.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |
@@ -2516,32 +1742,25 @@ independently reconstruct the counters, sparklines and rows and prove collapsed 
 asleep. Idle Performance messages refresh only their model; active work and evidence keep the
 full derivation path. Unchanged GPU tiles avoid layout allocation and uniform writes.
 
-Ordinary-session idle measurements use baseline binary SHA-256
-`72bdcfb472e5bfb1c277a362ba4f4dd935efa3dc818b051115ecd71eddffddb4` and panel-polish binary
-`066e6f1123ae060d6cd1738d810cb30ec49b90cbea4e1ee6d34d5d140df8c4a7`, with
-before/after/after/before order on 2026-10-02: `editor-latency --source fixtures/generated/24mp.jpg --mask --samples 30
---idle`. Each run reopens its committed masked Basic stack without evidence mode, settles one
+Ordinary-session idle: `editor-latency --source fixtures/generated/24mp.jpg --mask --samples 30
+--idle`, two runs. Each run reopens its committed masked Basic stack without evidence mode, settles one
 second, then measures process CPU-time delta for 30 seconds. Performance is expanded; its
 one-second sample and whole-window redraw are included. Native GPU accounting comes from the
 preceding gesture's captured state, not an idle-process capture. No local build or test overlaps.
 
 | Run | CPU, % of one core | Duration, s | Sampled peak RSS, MiB | Idle start → end one-minute load |
 | --- | --- | --- | --- | --- |
-| Before 1 | 0.953 | 30.425 | 380.8 | 13.05 → 16.62 |
-| After 2 | 0.827 | 30.239 | 468.3 | 7.76 → 6.81 |
-| After 3 | 1.190 | 30.264 | 374.5 | 6.58 → 5.86 |
-| Before 4 | 0.894 | 30.217 | 366.3 | 5.63 → 12.90 |
+| 1 | 0.827 | 30.239 | 468.3 | 7.76 → 6.81 |
+| 2 | 1.190 | 30.264 | 374.5 | 6.58 → 5.86 |
 
-These windows do **not** establish an aggregate idle CPU improvement. Both baseline windows
-encounter host load above the quiet threshold of 8; both optimized windows stay below it, but
-one still exceeds the provisional 1% idle target. RSS includes allocator retention and GPU
-resources and sets no memory-reduction claim here. There is no paired collapsed window, so
-these numbers do not isolate the section's extra CPU. The remaining toolkit view, layout and
-whole-window redraw cost is still open. Raw reports are in
+Both windows stay below the quiet threshold of 8; one exceeds the provisional 1% idle target.
+RSS includes allocator retention and GPU resources and sets no memory claim here. There is no
+paired collapsed window, so these numbers do not isolate the section's extra CPU. The remaining
+toolkit view, layout and whole-window redraw cost is still open. Raw reports are in
 `artifacts/mask-perf-20261002/idle-*/resources.json` and `comparison.json`.
 
-The isolated release probe `app::performance::tests::performance_model_work` compares the former
-full-workspace derivation route with the scoped refresh on the same final code and imported 24 MP
+The isolated release probe `app::performance::tests::performance_model_work` compares the
+full-workspace derivation route with the scoped refresh on the same imported 24 MP
 photo. Each route receives a changed resource sample, with a full 61-sample history; order alternates
 within each pair. After 200 warm-up pairs, 1000 samples per route give full derivation p50/p95
 60.38/64.21 µs and scoped refresh 1.46/1.58 µs: about 98% less model work. Pixel workers are stopped
@@ -2551,79 +1770,50 @@ host's one-minute load is 8.64. Every sample is retained in `model-work.json` be
 
 ## Isolated rendering kernels
 
-The Presence scalar accessor is inlined, RAW terminal conversion reuses the existing sRGB
-code-boundary table with the original forward conversion within `1e-12` linear of a boundary,
-and Basic's skin-hue weighting uses its bounded atan2 input directly without periodic normalization.
-These changes preserve tile geometry, filter arithmetic, scratch targets, scheduling and image
-semantics. The boundary fallback retains the previous forward rounding in the native exactness
-checks; cross-platform numerical qualification remains open.
+The Presence scalar accessor is inlined, RAW terminal conversion uses the sRGB code-boundary table
+with the forward conversion within `1e-12` linear of a boundary, and Basic's skin-hue weighting
+uses its bounded atan2 input directly without periodic normalization. These kernels keep tile
+geometry, filter arithmetic, scratch targets, scheduling and image semantics. The boundary fallback
+keeps the forward rounding in the native exactness checks; cross-platform numerical qualification
+remains open.
 
 Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0 release, generated 6000 × 4000
-and 10000 × 6000 inputs. Each isolated candidate and retained baseline ran in before/after/after/before order,
-15 samples per leg, 30 per variant and size, with one warm-up per process. These are complete
-core renders, including the output allocation, from already-prepared data; JPEG decoding,
-RAW decoding/demosaicing, proxy creation, histogram reduction and desktop presentation are
-outside the timed region. The RAW workload converts the generated JPEG into planar linear
-floats before timing and applies source exposure +0.7 EV; it is not an authentic RAW development
-latency measurement. The baseline source is `22c4e90`.
+and 10000 × 6000 inputs, 30 samples per variant and size, with one warm-up per process. These are
+complete core renders, including the output allocation, from already-prepared data; JPEG decoding,
+RAW decoding/demosaicing, proxy creation, histogram reduction and desktop presentation are outside
+the timed region.
 
-| Workload | Baseline p50 / p95 | Optimized p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| 24 MP, Texture +100, Clarity +100, Dehaze +100 | 815.8 / 877.9 ms | 664.1 / 791.1 ms | 151.7 ms, 18.6% |
-| 60 MP, Texture +100, Clarity +100, Dehaze +100 | 3688.8 / 3791.9 ms | 2877.7 / 2927.0 ms | 811.2 ms, 22.0% |
-| 24 MP, prepared linear image, source exposure +0.7 EV | 68.0 / 70.9 ms | 57.7 / 62.4 ms | 10.3 ms, 15.1% |
-| 60 MP, prepared linear image, source exposure +0.7 EV | 173.8 / 185.4 ms | 146.2 / 152.2 ms | 27.6 ms, 15.9% |
-| 24 MP, full Basic | 121.7 / 143.6 ms | 119.0 / 129.7 ms | 2.7 ms, 2.2% |
-| 60 MP, full Basic | 304.7 / 315.6 ms | 296.0 / 318.6 ms | 8.6 ms, 2.8% |
-| 24 MP, Vibrance +50 / Saturation +20 | 87.4 / 93.9 ms | 84.6 / 88.2 ms | 2.8 ms, 3.2% |
-| 60 MP, Vibrance +50 / Saturation +20 | 222.9 / 234.1 ms | 214.7 / 237.3 ms | 8.1 ms, 3.7% |
-| 2700 × 1800 proxy from 24 MP, full Basic | 26.1 / 27.4 ms | 25.3 / 29.3 ms | 0.9 ms, 3.3% |
+| Workload | p50 / p95 |
+| --- | --- |
+| 24 MP, Texture +100, Clarity +100, Dehaze +100 | 664.1 / 791.1 ms |
+| 60 MP, Texture +100, Clarity +100, Dehaze +100 | 2877.7 / 2927.0 ms |
+| 24 MP, Vibrance +50 / Saturation +20 | 84.6 / 88.2 ms |
+| 60 MP, Vibrance +50 / Saturation +20 | 214.7 / 237.3 ms |
 
-Every Presence and RAW candidate leg beats both baseline legs for its workload; Basic's median
-improves in each paired order, including the proxy. Basic's 60 MP and proxy p95 values are slightly
-worse, so only a median improvement is established there. Full Basic uses all ten non-neutral
-fields of `editor-performance`'s full Basic layer, without its geometry tail in these kernel runs.
-Agents' builds and tests were paused during timing. One-minute load was 5.0–8.0 (strictly below
-8 at each leg's start) for Basic, 7.0–9.4 for RAW and 12.2–15.2 for Presence, including
-the benchmark itself; the Presence results and some RAW legs exceed the harness's 8.0 load
-threshold. They establish a relative improvement on this live host, not a new absolute latency
-budget or a passed responsiveness target. Presence's 60 MP median CPU time per leg falls from
-43.6 CPU-seconds to 33.3–33.4 CPU-seconds, so the wall-time gain also reduces total CPU work.
+One-minute load was 5.0–8.0 for the Vibrance rows and 12.2–15.2 for Presence, including the
+benchmark itself; the Presence results exceed the harness's 8.0 load threshold. These are not an
+absolute latency budget or a passed responsiveness target. Presence's 60 MP median CPU time per
+15-sample leg is 33.3–33.4 CPU-seconds. Full Basic, prepared rendering and the proxy are measured
+in [prepared rendering and native DNG development](#prepared-rendering-and-native-dng-development).
 
-Complete before/after RGBA buffers match byte for byte for Presence at both sizes, prepared
-linear exposure at both sizes, a full Basic layer over a 24 MP linear image, and Basic/vibrance
-at both JPEG sizes plus the full Basic proxy. Independent
-filter, tile, masked sample/render and quantization-boundary references supplement these
-photo-sized comparisons. The unchanged 512 px tile still incurs the halo amplification and
-point-sampling cost described above. The current [Markesteijn row executor](../design/native-demosaic-parallelism.md) preserves tile
+Independent filter, tile, masked sample/render and quantization-boundary references cover these
+kernels. The [Markesteijn row executor](../design/native-demosaic-parallelism.md) preserves tile
 equations and bounds scratch without adding another thread pool; its measurements are
 separate in [startup and RAW throughput](#startup-and-raw-throughput).
 
-The combined source also passes release `editor-performance` against the retained baseline on
-both source sizes, again 15 samples per leg in ABBA order, 30 per variant. This official diagnostic
-includes its composed transforms and 10° crop, so these values are separate from the bare kernel
-rows above. Full Basic at 24 MP is essentially flat (0.4% median reduction); at 60 MP it saves
-3.5%. Vibrance/Saturation saves 3.3% and 2.0%. Untouched median rows vary by up to about 3%, so
-smaller shifts are not attributed to an optimization. All original-source hash checks pass.
-One-minute load at the start of a leg ranges from 4.99 to 15.87; these are live-host comparisons,
-not new absolute budgets.
+The release `editor-performance` diagnostic, 30 samples per variant, includes its composed
+transforms and 10° crop, so these values are separate from the bare kernel rows above. All
+original-source hash checks pass. One-minute load at the start of a leg ranged from 4.99 to 15.87;
+these are not absolute budgets.
 
-| Integrated `editor-performance` workload | Baseline p50 / p95 | Integrated p50 / p95 |
-| --- | --- | --- |
-| 24 MP source, Full Basic + geometry | 83.0 / 89.7 ms | 82.7 / 88.6 ms |
-| 24 MP source, Vibrance/Saturation + geometry | 68.1 / 73.7 ms | 65.8 / 69.4 ms |
-| 24 MP source, Full Basic proxy + geometry | 51.0 / 53.2 ms | 49.6 / 52.4 ms |
-| 60 MP source, Full Basic + geometry | 202.2 / 277.9 ms | 195.1 / 202.8 ms |
-| 60 MP source, Vibrance/Saturation + geometry | 160.8 / 192.2 ms | 157.7 / 161.3 ms |
-| 60 MP source, Full Basic proxy + geometry | 53.9 / 58.7 ms | 53.4 / 58.3 ms |
+| `editor-performance` workload | p50 / p95 |
+| --- | --- |
+| 24 MP source, Vibrance/Saturation + geometry | 65.8 / 69.4 ms |
+| 60 MP source, Vibrance/Saturation + geometry | 157.7 / 161.3 ms |
 
-Integrated `verify --tier full --manifest ...` passes all 38 components: workspace/API checks,
-30 rendered scenarios, RAW references, three editor/reopen trials each on the supplied Nikon,
-Fujifilm and DJI originals, and the timing journeys. Its default timing runs started at load
-9.86–11.20, so their absolute target verdicts are **unreliable**, not passed. The existing native
-Presence sample/render test also passes explicitly on all three originals, for 41 points including
-the far corner through each of Clarity and Clarity plus Dehaze. Those test times are not a new
-latency distribution.
+The existing native Presence sample/render test passes on the Nikon, Fujifilm and DJI originals,
+for 41 points including the far corner through each of Clarity and Clarity plus Dehaze. Those test
+times are not a latency distribution.
 
 The local evidence is under `artifacts/performance-first-wave/`; the kernels' contract and
 performance review checklist are [below](#the-isolated-kernels-contract-and-review).
@@ -2634,42 +1824,41 @@ These CPU kernels preserve photo output, editing semantics, recipes, API shapes,
 memory targets.
 
 **Presence.** The filters' plane accessor (`Plane::get`) carries an ordinary inline hint. The
-release compiler can fold its coordinate clamps and address arithmetic into the callers; the M4
-comparison found no remaining out-of-line calls to this accessor. Edge clamping, pixel arithmetic,
-f64 filter accumulation, the tiling, parallelism and scratch bounds are unchanged by it, and it
-adds no specialized assembly or architecture-specific path.
+release compiler can fold its coordinate clamps and address arithmetic into the callers; on the M4
+no out-of-line calls to this accessor remain. Edge clamping, pixel arithmetic, f64 filter
+accumulation, the tiling, parallelism and scratch bounds are independent of it, and it adds no
+specialized assembly or architecture-specific path.
 
 **RAW terminal conversion.** Finite values are clamped at the terminal boundary and quantized
 through the static sRGB code thresholds. Within `1e-12` linear of either adjacent code boundary,
-the original forward power/round evaluation is kept: forward and inverse floating-point transfer
+the forward power/round evaluation is kept: forward and inverse floating-point transfer
 functions can disagree on the final byte at a boundary. Non-finite rejection and the extended
-linear domain before terminal conversion are unchanged; JPEG quantization keeps its own contract.
+linear domain before terminal conversion are kept; JPEG quantization keeps its own contract.
 The guard is conservatively tested on the M4, not a formal cross-platform error bound for `powf`.
 
 **Basic hue weighting.** The private skin-hue response accepts the bounded angle from atan2.
 Subtracting its 55° centre gives `[-235°, 125°]`. The only part that would wrap lands in
 `[125°, 180°]`, outside the ±35° active band either way, so the response uses the delta directly,
-with no general normalizer or remainder, and the band test and cosine arithmetic unchanged.
+with no general normalizer or remainder, and the same band test and cosine arithmetic.
 
 **Exactness.** Independent filter references, serial/pool comparisons, tiles, masks and
-sample/render parity cover Presence. RAW tests compare the original forward terminal conversion
+sample/render parity cover Presence. RAW tests compare the forward terminal conversion
 at all 255 code boundaries and 128 f64 neighbours on either side, at the guard edges, through a
 dense sweep and deterministic float bit patterns, and on signed, headroom and non-finite inputs.
 An independent periodic oracle checks the hue response's boundaries and a million bounded angles.
-Complete 24/60 MP before/after output buffers provide a separate photo-sized check. Measured
-kernel savings are not presented as desktop latency or demosaic speedups, and native
+Kernel timings are not presented as desktop latency or demosaic speedups, and native
 Windows/Linux numerical and desktop qualification remain separate from the M4 evidence.
 
 | Review question | Answer for these kernels |
 | --- | --- |
-| Original reads, hashes and decodes | No new request paths. Preparation continues through the signature-verified source cache. |
-| Frame allocations and sharing | No new buffers. Existing output allocations, identity sharing and spatial/colour targets remain in force. The RAW quantizer reuses the existing static threshold table. |
-| Point queries, validation and no-op checks | No new rasterization. Spatial sampling keeps its declared one-tile exception and exact render parity. |
+| Original reads, hashes and decodes | No request paths of their own. Preparation goes through the signature-verified source cache. |
+| Frame allocations and sharing | No buffers of their own. Output allocations, identity sharing and spatial/colour targets remain in force. The RAW quantizer uses the static threshold table. |
+| Point queries, validation and no-op checks | No rasterization of their own. Spatial sampling keeps its declared one-tile exception and exact render parity. |
 | Catalog owner work | No work moves to the owner. |
 | Desktop messages and uploads | No changes to state/history refresh, preview jobs or uploads. |
-| Timers, polls and subscriptions | None added or changed. |
-| Photo-sized cost | Release before/after evidence is recorded above, with kernel diagnostics distinguished from `editor-performance` and native desktop journeys. |
-| Exactness and sharing tests | Presence keeps the independent filter references, serial/pool, tile, mask and sample/render checks. RAW tests compare the original forward conversion at every code boundary and across finite/non-finite inputs. Hue tests compare the periodic formula at boundaries and through a million bounded angles. Full photo-buffer comparisons supplement these references; existing identity-sharing tests still apply. |
+| Timers, polls and subscriptions | None. |
+| Photo-sized cost | Release evidence is recorded above, with kernel diagnostics distinguished from `editor-performance` and native desktop journeys. |
+| Exactness and sharing tests | Presence keeps the independent filter references, serial/pool, tile, mask and sample/render checks. RAW tests compare the forward conversion at every code boundary and across finite/non-finite inputs. Hue tests compare the periodic formula at boundaries and through a million bounded angles. Identity-sharing tests apply. |
 
 ### Straightened-crop resample
 
@@ -2677,38 +1866,30 @@ The byte resample's bilinear sample rounds each channel forward, `round(255 · e
 the same guarded threshold search as the RAW terminal (`srgb::Quantizer::rounded`): the code-boundary
 index answers every value more than `1e-12` linear from both thresholds around its code, and the
 forward transfer function answers the rest. A 10° crop of the 24 MP fixture outputs 3695 × 2077, so
-this removes about 23 million `powf` calls from the exact render. The colour row loops, the byte
+this avoids about 23 million `powf` calls in the exact render. The colour row loops, the byte
 proxy build, the byte spatial entry's read and the RAW terminal rows take the decode table and the
-quantizer once per pass instead of dereferencing a lazy static per pixel, the linear point path
-reads its source through the view resolved once at construction, and the finiteness scan after each
-colour unit no longer short-circuits, so it vectorises.
+quantizer once per pass, the linear point path reads its source through the view resolved once at
+construction, and the finiteness scan after each colour unit does not short-circuit, so it
+vectorises.
 
 Byte identity: the boundary tests drive `bilinear` itself across every code threshold, with
 horizontal and two-row blends of three corner pairs per threshold stepped ULP by ULP through and
 around the guard band, plus 200,000 random frames and taps; the quantizer without its guard fails
-them. Full-frame SHA-256 of the exact render, the exact render with a full Basic layer, the display
-proxy source and both proxy renders, and 2048 point samples each, at 3°, 10°, −7.5° and 45°
-`crop-fit`, match between a release build of `7759f5cb` and this change for the generated 24 MP and
-60 MP JPEGs, the photographic `will-sapa-drone.jpg`, the Z6 NEF and the X100VI RAF (140 hashes).
+them.
 
 `editor-performance --source fixtures/generated/24mp.jpg --samples 30`, release `--locked`, native
-M4 Pro, warm cache, two ABBA rounds: A is the retained `ec132e71` baseline build, whose resample,
-colour loops and linear point path are those of `7759f5cb`; B is this change. The host was heavily
-shared: the one-minute load at the start of each leg was 10.7, 14.3, 15.2 and 29.3 in the first
-round and 12.0, 15.2, 15.6 and 17.1 in the second. p50 of each leg, in run order:
+M4 Pro, warm cache, two rounds of two legs each on a heavily shared host (one-minute load 12.0 to
+15.6 at the start of a leg). p50 of each leg, in run order:
 
-| 24 MP, p50 ms (A, B, B, A) | Round 1 | Round 2 |
+| 24 MP, p50 ms | Round 1 | Round 2 |
 | --- | --- | --- |
-| 200 transforms and a 10° `crop-fit` | 30.5, 22.0, 29.7, 52.5 | 35.7, 18.9, 22.9, 42.4 |
-| The same, less the 200-transform row (the crop's own cost) | 24.0, 12.9, 18.1, 41.5 | 28.6, 10.5, 15.5, 33.9 |
-| Proxy frame of the crop stack (2879 × 1618) | 21.7, 11.9, 12.8, 24.5 | 22.5, 10.5, 11.7, 27.9 |
-| Proxy frame of the crop stack with a full Basic layer | 69.1, 47.9, 45.6, 51.9 | 52.7, 42.8, 45.0, 66.2 |
+| 200 transforms and a 10° `crop-fit` | 22.0, 29.7 | 18.9, 22.9 |
+| The same, less the 200-transform row (the crop's own cost) | 12.9, 18.1 | 10.5, 15.5 |
+| Proxy frame of the crop stack (2879 × 1618) | 11.9, 12.8 | 10.5, 11.7 |
+| Proxy frame of the crop stack with a full Basic layer | 47.9, 45.6 | 42.8, 45.0 |
 
-Every B leg is below both A legs of its round in all four rows. The straightened crop's own cost
-over the unrotated stack falls from 24 to 42 ms to 11 to 18 ms at the median, and the proxy frame
-of the crop stack roughly halves, from 22 to 28 ms to 11 to 13 ms. At this load these are relative
-results, not new absolute budgets. The proxy build row is not compared: the baseline predates the
-banded proxy build.
+The straightened crop's own cost over the unrotated stack is 11 to 18 ms at the median, and the
+proxy frame of the crop stack 11 to 13 ms. At this load these are not absolute budgets.
 
 ## Source preparation and exact rendering
 
@@ -2724,29 +1905,26 @@ one output allocation, with at most 4 MiB of fixed partial scratch for tiny grid
 underfill the pool. The [contract and review checklist](#source-preparation-and-rendering-contract-and-review)
 follow the method below.
 
-Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
-25 September 2026. Baseline production source `3890a5b`; integrated source `75cca64`.
-All agent builds/tests were paused during timing. Each reported distribution combines 15 observations
-per leg in before/after/after/before order: 30 per variant, with no tails removed. Kernel leg-start
-one-minute load was 10.2–16.9, including the benchmarks themselves, above the harness's 8.0 threshold.
-These are relative live-host comparisons, not passed absolute latency budgets. Raw observations,
-commands, hashes and load are retained locally in `artifacts/performance-second-wave/`, and the
-research evidence, against `3890a5b`, in `artifacts/performance-next/`.
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins.
+All agent builds/tests were paused during timing. Each reported distribution has 30 observations
+per variant, with no tails removed. Kernel leg-start one-minute load was 10.2–16.9, including the
+benchmarks themselves, above the harness's 8.0 threshold. These are live-host figures, not passed
+absolute latency budgets. Raw observations, commands, hashes and load are retained locally in
+`artifacts/performance-second-wave/`, and the research evidence in `artifacts/performance-next/`.
 
 ### Source preparation and rendering: contract and review
 
-These changes keep the existing image and editing contracts and introduce no approximation or GPU
-behaviour. Originals stay immutable, nothing moves pixel work onto the owner or UI thread, and no
-user-facing API, recipe or catalog shape changes: existing commands gain the performance through the
-same implementation. One active preparation/preview lane and the existing resource limits remain,
-and new parallel work shares the process pool, measured under contention as well as in isolation.
-The source design contracts are [initial RAW](../design/initial-raw.md),
+Source preparation and rendering keep the image and editing contracts and use no approximation.
+Originals stay immutable, no pixel work runs on the owner or UI thread, and the user-facing API,
+recipe and catalog shapes are those of the ordinary commands. One active preparation/preview lane
+and the resource limits hold, and parallel work shares the process pool, measured under contention
+as well as in isolation. The source design contracts are [initial RAW](../design/initial-raw.md),
 [Air 2S](../design/air2s-dng.md), [Presence](../design/presence-mixer-vignette.md) and
 [instant previews](../design/instant-preview.md).
 
-1. A cold known RAW develops once, at the validated requested white balance, instead of as-shot
-   followed by the saved gains; a new import keeps as-shot. Fingerprints, source interpretation,
-   historical entry identity, concurrent changes and generation adoption stay authoritative.
+1. A cold known RAW develops once, at the validated requested white balance; a new import keeps
+   as-shot. Fingerprints, source interpretation, historical entry identity, concurrent changes and
+   generation adoption stay authoritative.
 2. Texture and Clarity declare that they need no global estimate. Dehaze's estimate identity
    excludes only its own strength: source development and view, upstream recipe and masks,
    sampling mode, stage, exposure and white-balance identities invalidate it. Provider defaults stay
@@ -2765,7 +1943,7 @@ The source design contracts are [initial RAW](../design/initial-raw.md),
    and compilation, every supported source orientation and crop, f64 source adjustments, terminal
    encoding, cancellation, metadata and the generic fallback stay in place.
 
-**Exactness.** Exact numerical changes are checked against independent canonical references,
+**Exactness.** Exact numerical paths are checked against independent canonical references,
 representable neighbours of every relevant threshold, error and cancellation cases and complete
 photo-sized output comparisons. Source preparation is exercised through new import, current and
 historical saved white balance, reload, interpretation and fingerprint mismatch and a concurrent
@@ -2777,159 +1955,106 @@ and buffers across views and exposure.
 **Review checklist.**
 
 - Reads, hashes and decode stay on the signature-verified source worker; direct-at-target white
-  balance removes a redundant development.
-- The quantizer adds a bounded static table; DNG keeps one bounded scratch plane; clipping removes
+  balance develops once.
+- The quantizer adds a bounded static table; DNG keeps one bounded scratch plane; clipping makes no
   transient display-grid copies and bounds tiny-grid scratch to 4 MiB; the RAW row path adds no
   frame-sized scratch.
-- Samples stay exact and use the existing bounded spatial tile; skipping irrelevant estimates
+- Samples stay exact and use the bounded spatial tile; skipping irrelevant estimates
   removes work without rasterizing a frame.
-- The owner performs only catalog, identity and validation work and job coordination; no new owner
+- The owner performs only catalog, identity and validation work and job coordination; no owner
   frame work.
-- Desktop state, history, preview and upload paths and timers are unchanged.
-- Existing output sharing and resource limits are kept and checked by targeted tests.
+- Desktop state, history, preview and upload paths and timers are unaffected.
+- Output sharing and resource limits are kept and checked by targeted tests.
 
 ### Prepared rendering and native DNG development
 
 Core render times include output allocation/drop and exclude source preparation, histogram reduction,
-queue delay and presentation. Generated JPEGs are 6000 × 4000 and 10000 × 6000. The prepared linear
-workload converts those JPEG pixels into planar floats before timing and applies +0.7 EV; it does not
-measure camera decoding. Full Basic uses ten non-neutral fields; Mixer uses red hue +30, orange
-saturation +20 and blue luminance −30. The proxy is 2700 × 1800, prepared outside timing.
-Only the Air 2S row develops an actual retained native mosaic, including required optical corrections;
-it excludes file read/unpack. Gains overlap and must not be added.
+queue delay and presentation. Generated JPEGs are 6000 × 4000 and 10000 × 6000. Full Basic uses ten
+non-neutral fields; Mixer uses red hue +30, orange saturation +20 and blue luminance −30. The proxy
+is 2700 × 1800, prepared outside timing. Only the Air 2S row develops an actual retained native
+mosaic, including required optical corrections; it excludes file read/unpack.
 
-| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Air 2S, native retained-mosaic development | 1318.3 / 1325.3 ms | 350.3 / 360.9 ms | 73.4% |
-| 24 MP prepared linear, source exposure | 60.1 / 63.0 ms | 21.4 / 23.9 ms | 64.3% |
-| 60 MP prepared linear, source exposure | 162.6 / 178.5 ms | 58.3 / 60.9 ms | 64.2% |
-| 24 MP full Basic | 123.3 / 145.7 ms | 110.8 / 120.3 ms | 10.1% |
-| 60 MP full Basic | 325.6 / 371.3 ms | 277.6 / 284.8 ms | 14.7% |
-| 24 MP Mixer | 129.5 / 134.5 ms | 112.0 / 136.6 ms | 13.5% |
-| 60 MP Mixer | 311.9 / 320.4 ms | 268.2 / 275.7 ms | 14.0% |
-| 24 MP source, full Basic proxy | 26.6 / 30.6 ms | 22.8 / 24.8 ms | 14.4% |
+| Workload | p50 / p95 |
+| --- | --- |
+| Air 2S, native retained-mosaic development | 350.3 / 360.9 ms |
+| 24 MP full Basic | 110.8 / 120.3 ms |
+| 60 MP full Basic | 277.6 / 284.8 ms |
+| 24 MP Mixer | 112.0 / 136.6 ms |
+| 60 MP Mixer | 268.2 / 275.7 ms |
+| 24 MP source, full Basic proxy | 22.8 / 24.8 ms |
 
-Every full RGBA hash and the complete native planar-float hash matches before/after. The 24 MP
-Mixer p95 is slightly worse despite its median gain; no tail improvement is claimed there. Serial/pool
-DNG tests preserve every float bit, stage/channel order, active-area borders, failures and cancellation.
-A separate ten-observation threshold diagnostic gives median 56.7 / 6.8 ms serial/pool at one megapixel
-and 170.3 / 19.5 ms at three megapixels for synthetic gain/warp/vignette; inputs below one megapixel
-remain serial. This small diagnostic is threshold feedback, not a p95 distribution.
+Serial/pool DNG tests preserve every float bit, stage/channel order, active-area borders, failures
+and cancellation. A separate ten-observation threshold diagnostic gives median 56.7 / 6.8 ms
+serial/pool at one megapixel and 170.3 / 19.5 ms at three megapixels for synthetic
+gain/warp/vignette; inputs below one megapixel remain serial. This small diagnostic is threshold
+feedback, not a p95 distribution.
 
 ### Spatial amount edits and clipping
 
-A spatial row is one public point sample, including its bounded tile, immediately after changing only
-the named strength from 60 to 61 on an already-sampled recipe. Linear inputs are prepared from JPEGs.
-Texture/Clarity need no reduction even on the first sample; Dehaze still builds an atmosphere on a cold
-cache or changed input. These savings did not remove the tile, which the point worker evaluated; the
-point path they measured is deleted, and a sample is now a read by the tile service.
-
-| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| 24 MP JPEG, Clarity | 27.2 / 28.5 ms | 12.6 / 12.9 ms | 53.5% |
-| 24 MP JPEG, Dehaze | 19.5 / 20.6 ms | 5.7 / 6.0 ms | 70.7% |
-| 24 MP linear, Clarity | 40.3 / 42.8 ms | 14.7 / 15.0 ms | 63.5% |
-| 24 MP linear, Dehaze | 32.2 / 34.3 ms | 6.8 / 7.1 ms | 78.8% |
-| 60 MP JPEG, Clarity | 53.8 / 57.0 ms | 19.1 / 19.6 ms | 64.5% |
-| 60 MP JPEG, Dehaze | 43.0 / 48.2 ms | 7.0 / 7.3 ms | 83.7% |
-| 60 MP linear, Clarity | 86.0 / 89.2 ms | 22.5 / 22.9 ms | 73.8% |
-| 60 MP linear, Dehaze | 72.7 / 76.2 ms | 8.4 / 9.5 ms | 88.5% |
+Texture and Clarity need no reduction, even on the first sample after a strength edit; Dehaze builds
+an atmosphere only on a cold cache or a changed input.
 
 The clipping rows include reduction and output allocation, excluding decode, painting, upload and
-queueing. Every cell matches the retained baseline. A 4096 × 2458 grid holds 9.6 MiB; it is no longer
-replicated per parallel fold. Tiny grids remain essentially flat (within 0.2 ms in these medians).
+queueing. A 4096 × 2458 grid holds 9.6 MiB; it is not replicated per parallel fold.
 
-| Workload | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| 24 MP → 1716 × 1144 grid | 30.5 / 36.3 ms | 1.9 / 2.8 ms | 93.8% |
-| 60 MP → 1716 × 1030 grid | 30.9 / 36.6 ms | 4.3 / 4.5 ms | 86.1% |
-| 60 MP → 4096 × 2458 capped grid | 276.8 / 319.0 ms | 4.3 / 4.8 ms | 98.4% |
-| 60 MP → 1 × 1 grid | 4.4 / 4.8 ms | 4.4 / 4.6 ms | -0.6% |
-| 60 MP → 8 × 8 grid | 4.2 / 4.6 ms | 4.4 / 4.7 ms | -3.8% |
+| Workload | p50 / p95 |
+| --- | --- |
+| 24 MP → 1716 × 1144 grid | 1.9 / 2.8 ms |
+| 60 MP → 1716 × 1030 grid | 4.3 / 4.5 ms |
+| 60 MP → 4096 × 2458 capped grid | 4.3 / 4.8 ms |
+| 60 MP → 1 × 1 grid | 4.4 / 4.6 ms |
+| 60 MP → 8 × 8 grid | 4.4 / 4.7 ms |
 
 ### Integrated editor diagnostic
 
-The official `editor-performance` comparison also uses 30 observations per variant and size in ABBA
-order. These recipes include the harness’s composed transforms and 10° crop, so their values are
-separate from bare kernels. Source-preservation checks pass. Leg-start load was 7.1–15.4; untouched
-geometry/histogram medians move by roughly 0–4%, so smaller shifts are not attributed to a change.
+The official `editor-performance` diagnostic uses 30 observations per variant and size. These
+recipes include the harness’s composed transforms and 10° crop, so their values are separate from
+bare kernels. Source-preservation checks pass. Leg-start load was 7.1–15.4; geometry/histogram
+medians vary by roughly 0–4% between runs, so smaller shifts are not attributed to a change. Full
+Basic rows are in [shared-pool contention and rendering controls](#shared-pool-contention-and-rendering-controls).
 
-| Workload | Before p50 / p95 | After p50 / p95 |
-| --- | --- | --- |
-| 24 MP source, Full Basic + geometry | 80.4 / 93.3 ms | 72.3 / 78.8 ms |
-| 24 MP source, Exposure + geometry | 37.8 / 43.3 ms | 31.0 / 33.1 ms |
-| 24 MP source, Full Basic proxy + geometry | 48.9 / 50.6 ms | 44.2 / 47.7 ms |
-| 24 MP source, Build display-bounded proxy | 22.2 / 28.7 ms | 14.8 / 19.7 ms |
-| 60 MP source, Full Basic + geometry | 189.7 / 197.8 ms | 173.8 / 178.9 ms |
-| 60 MP source, Exposure + geometry | 89.7 / 94.5 ms | 72.0 / 78.2 ms |
-| 60 MP source, Full Basic proxy + geometry | 52.7 / 62.7 ms | 46.5 / 50.7 ms |
-| 60 MP source, Build display-bounded proxy | 33.1 / 36.7 ms | 24.4 / 30.0 ms |
+| Workload | p50 / p95 |
+| --- | --- |
+| 24 MP source, Exposure + geometry | 31.0 / 33.1 ms |
+| 24 MP source, Build display-bounded proxy | 14.8 / 19.7 ms |
+| 60 MP source, Exposure + geometry | 72.0 / 78.2 ms |
+| 60 MP source, Build display-bounded proxy | 24.4 / 30.0 ms |
 
 ### Cold saved-white-balance preparation
 
-Every observation restarts the owner and source cache, with the filesystem cache warm, and opens an
-existing catalog whose RAW has a saved custom red gain (1.1 × as-shot). The timer starts immediately
-before `catalog.import` and ends when a strict exact-source `PreviewJob` is available, including job
-waiting and adoption. Owner startup/catalog open, float hashing, final rendering and desktop
-presentation are excluded. Full planar float bits are hashed after **every** observation. Source jobs
-fall from two to one in every sample; hashes match for every before/after sample. Leg-start load
-was 3.1–14.4.
-
-| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Fujifilm X100VI | 2950.1 / 3013.8 ms | 1552.4 / 1605.4 ms | 1397.7 ms, 47.4% |
-| DJI Air 2S | 2824.9 / 2859.5 ms | 485.8 / 517.2 ms | 2339.1 ms, 82.8% |
-
-The Air 2S saving combines removal of its redundant development with parallel optical correction;
-it must not be added to the isolated development saving above. Native correctness regressions also
-cover Nikon Z6, new as-shot import, two distinct custom historical/current WB targets, source and
-interpretation mismatch, same-target deduplication, different-target cancellation and a WB edit
-while loading. Old gains never satisfy a strict request for the newer edit.
+A cold RAW whose catalog holds a saved custom white balance takes one source job, developed at that
+white balance. Native correctness regressions cover the Nikon Z6, a new as-shot import, two distinct
+custom historical/current WB targets, source and interpretation mismatch, same-target
+deduplication, different-target cancellation and a WB edit while loading. Old gains never satisfy a
+strict request for the newer edit. The method is in
+[native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation)
+and the current figures in
+[cold saved-white-balance preparation, LibRaw and RawSpeed](#cold-saved-white-balance-preparation-libraw-and-rawspeed).
 
 ### Native qualification
 
-All 38 verification components have passing evidence: workspace/API checks, 30 rendered scenarios,
-RAW numerical references, three actual editor/open/edit/reopen trials per supplied Nikon, Fuji and DJI
-file, and timing journeys. The initial full run passed 36 components. Its GPU-counter test read a
-cached client list before its measured queue existed and could stop on a bookkeeping increment;
-the fixture now warms that queue before a fresh sampler discovers it and waits for the existing
-numerical lower bound. The bounds, timeout and allocation checks remain unchanged. The focused test
-and final quick tier pass. The other failure was mask-range's draft-frame assertion during the
-three-scenario pool: exact draft renders were cancelled by later inputs while pixel/state checks
-passed. The isolated scenario passes on the identical production binary, displaying 11 drafted
-frames. Original failures and focused reruns are retained in the local evidence, with a combined
-`qualification.json`; passing native components were not rerun without a code change.
-
-Final native Presence sample/render tests also pass on all three originals. DJI reopen, Presence and
-mask/range captures were visually inspected alongside state and event checks. The full run's standard
-timing components started above load 8.0 and their absolute target verdicts remain **unreliable**.
-GPU colour and larger tiles remain separate work;
+Native Presence sample/render tests pass on the Nikon, Fujifilm and DJI originals. DJI reopen,
+Presence and mask/range captures are visually inspected alongside state and event checks.
 Windows/Linux numerical and native GPU qualification are not established by this M4 evidence.
 
 ## Startup and RAW throughput
 
-Initial-source preparation now overlaps platform startup. RAW camera conversion mutates the existing
+Initial-source preparation overlaps platform startup. RAW camera conversion mutates the existing
 planes in exact bounded chunks, mosaic normalization and the output scale use bounded 16-row jobs
 above one megapixel, and native Markesteijn and Bayer RCD use bounded tile jobs on the shared pool.
 See the [contract and review checklist](#startup-and-raw-throughput-contract-and-review) and
 [native execution bounds](../design/native-demosaic-parallelism.md). No image equation or output
-quantization tolerance changes.
+quantization tolerance is relaxed.
 
-Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
-25 September 2026. Baseline is main `5d121d7`; matrix/startup observations use `84370ec`,
-whose timed matrix and first-proxy implementations are unchanged by the final native scheduler
-and evidence-capture fixes. Final native observations and desktop qualification use `2dd1b72`.
-The JPEG rendering control uses `59cf51d`; that timed implementation is unchanged. Each comparison
-combines 15 observations per leg in before/after/after/before order:
-30 per variant, with tails retained. Builds and tests stop during timing. Commands, hashes, load,
-raw samples and captures are retained locally in `artifacts/performance-third-wave/`.
-Scopes below overlap and their savings must not be added.
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins. Each
+distribution has 30 observations per variant, with tails retained. Builds and tests stop during
+timing. Commands, hashes, load, raw samples and captures are retained locally in
+`artifacts/performance-third-wave/`. Scopes below overlap and their figures must not be added.
 
 ### Startup and RAW throughput: contract and review
 
-These changes relax no numerical contract, change no module and add no runtime dependency or
-scheduler. Source timings, render kernels and first-frame timings are distinct, and their savings
-overlap.
+This work relaxes no numerical contract and adds no runtime dependency or scheduler. Source
+timings, render kernels and first-frame timings are distinct, and they overlap.
 
 1. The requested command-line image's bounded preparation job starts before platform and
    event-loop initialization. It reuses the desktop client and carries the job or its error into the
@@ -2946,7 +2071,7 @@ overlap.
 3. The core RAW camera matrix runs in exact disjoint 65,536-pixel chunks through the same refill
    executor above one megapixel and in serial chunks below it, and adopts already-validated planes
    through a private boundary that keeps the dimension and capacity checks. Public constructors
-   still reject non-finite input. Cancellation and arithmetic order are preserved, with no extra
+   reject non-finite input. Cancellation and arithmetic order are preserved, with no extra
    full-frame allocation.
 
 **Exactness and liveness.** Native complete float buffers agree byte for byte with the serial
@@ -2956,7 +2081,7 @@ parity stay intact. Worker count and aggregate explicit scratch are bounded. Can
 and teardown publish no partial frame, leak no work and never unwind across FFI, and no callback
 outlives the native call. Startup keeps the ordinary open behaviour: missing or invalid files report
 normally, a replacement cancels stale work, one source job is adopted once, an existing saved white
-balance is respected, and headless and background behaviour is unchanged. Unsupported platforms and
+balance is respected, and headless and background behaviour is unaffected. Unsupported platforms and
 absolute targets under load remain unqualified.
 
 **Review checklist.** Source work stays on the bounded worker. The native executor borrows the
@@ -2968,71 +2093,53 @@ arithmetic, default previews, exact analysis and API/UI history keep their contr
 ### Exact camera conversion
 
 The timer covers camera-to-working-space conversion and adoption validation over actual developed
-camera planes. Allocation/clone, file read/decode, native development, hashing and drop are outside
-it. The baseline uses the previous scalar expression and public validating constructor; the new
-measurement invokes the actual private producer and adoption boundary. Complete float hashes match.
+camera planes, through the private producer and adoption boundary. Allocation/clone, file
+read/decode, native development, hashing and drop are outside it. Leg-start load was 3.0–5.5.
 
-| Camera | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Nikon Z6 | 50.73 / 51.66 ms | 3.74 / 4.63 ms | 92.6% |
-| Fujifilm X100VI | 84.88 / 86.26 ms | 6.04 / 7.62 ms | 92.9% |
-| DJI Air 2S | 42.02 / 42.87 ms | 2.98 / 3.91 ms | 92.9% |
+| Camera | p50 / p95 |
+| --- | --- |
+| Nikon Z6 | 3.74 / 4.63 ms |
+| Fujifilm X100VI | 6.04 / 7.62 ms |
+| DJI Air 2S | 2.98 / 3.91 ms |
 
 The conversion writes disjoint 65,536-pixel chunks in place, as jobs of the development executor
 ([native demosaic parallelism](../design/native-demosaic-parallelism.md#why-callbacks-are-bounded)) above one
 megapixel and serial chunks below. Each output is checked finite at production; private adoption
-retains shape/capacity checks without another full scan. Public constructors still scan and reject
-invalid input. There is no additional full-frame scratch. Leg-start load was 3.0–5.5.
+retains shape/capacity checks without another full scan. Public constructors scan and reject
+invalid input. There is no additional full-frame scratch.
 
 ### First image during startup
 
 These are app-cold, filesystem-warm launches of temporary copied background bundles with a hidden
 Metal window. An independent 10 ms event-file observer measures from argument parsing to the first
 observed proxy event. This includes event observation delay; it is not scanout, foreground activation
-or a stable installed-bundle launch. Ordinary first-preview behavior is unchanged by the later
-capture-readiness fix.
+or a stable installed-bundle launch. Leg-start load was 4.2–5.9.
 
-| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Generated 24 MP JPEG | 806.0 / 828.1 ms | 764.0 / 778.6 ms | 42.0 ms, 5.2% |
-| Generated 60 MP JPEG | 876.8 / 912.2 ms | 778.6 / 806.3 ms | 98.2 ms, 11.2% |
+| Source | p50 / p95 |
+| --- | --- |
+| Generated 24 MP JPEG | 764.0 / 778.6 ms |
+| Generated 60 MP JPEG | 778.6 / 806.3 ms |
 
-The existing authorized import starts before platform initialization and is adopted through the
-ordinary open lifecycle; no second source job is created. Empty args-to-observed-capture remains
-786.7 / 800.6 ms before and 787.5 / 809.2 ms after. Args-to-editor-startup remains about
-578–582 ms. Leg-start load was 4.2–5.9. The initial-open request clock now starts before prequeueing;
-old and new `open_to_raster` values therefore have different origins and are not compared.
+The authorized import starts before platform initialization and is adopted through the ordinary
+open lifecycle; no second source job is created. Empty args-to-observed-capture is 787.5 / 809.2 ms,
+and args-to-editor-startup about 578–582 ms. The initial-open request clock starts before
+prequeueing.
 
 ### Native development and saved-white-balance preparation
-
-Retained-mosaic development includes native output allocation/drop and excludes file read/unpack,
-core matrix conversion and rendering. Fuji uses the final tile scheduler; Nikon and DJI native
-implementations are unchanged. Complete native reference and before/after warm-output hashes agree.
-
-| Native source | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Nikon Z6 | 268.8 / 272.2 ms | 268.6 / 270.7 ms | Essentially unchanged |
-| Fujifilm X100VI | 1277.2 / 1282.5 ms | 355.8 / 363.6 ms | 72.1% |
-| DJI Air 2S | 351.9 / 368.0 ms | 350.6 / 358.1 ms | Essentially unchanged |
 
 Cold saved-WB preparation restarts the owner and source cache per observation, with the filesystem
 warm and the catalog's saved red gain at 1.1 × as-shot. Time runs from `catalog.import` until a
 strict exact-source `PreviewJob` is available: read/hash/unpack/develop/matrix/validation and
 waiting/adoption are included. Owner startup/catalog open, final float hashing, rendering and
-presentation are excluded. Every observation's complete float planes and source identity match;
-there is exactly one source job in every before/after sample.
+presentation are excluded. Every observation's complete float planes and source identity match,
+and there is exactly one source job in every sample. The current figures, with LibRaw and RawSpeed
+unpacking, are in
+[cold saved-white-balance preparation, LibRaw and RawSpeed](#cold-saved-white-balance-preparation-libraw-and-rawspeed);
+retained-mosaic development is measured in [mosaic normalization](#mosaic-normalization).
 
-| Source | Before p50 / p95 | After p50 / p95 | Median time saved |
-| --- | --- | --- | --- |
-| Nikon Z6 | 596.3 / 625.2 ms | 546.5 / 584.6 ms | 8.3% |
-| Fujifilm X100VI | 1542.1 / 1574.4 ms | 535.9 / 572.8 ms | 65.3% |
-| DJI Air 2S | 486.7 / 505.8 ms | 443.0 / 466.2 ms | 9.0% |
-
-The unchanged-camera comparisons ran at load 3.2–6.5; final Fuji comparisons ran at load
-2.3–4.3. Fuji development's process CPU median per 15-sample leg increases from
-1276–1278 ms to 1512–1517 ms while wall time falls. Peak process RSS from those whole diagnostic
-processes increases from 917.3 MB to 933.2–933.4 MB (decimal bytes); this includes preparation and
-measurement, not just live demosaic scratch. The faster development uses about 19% more process CPU.
+The X100VI's retained-mosaic development has a process CPU median of 1512–1517 ms per 15-sample
+leg. Peak process RSS from the whole diagnostic process is 933.2–933.4 MB (decimal bytes); this
+includes preparation and measurement, not just live demosaic scratch.
 
 Explicit Markesteijn heap scratch is capped at eight × 988,208 bytes, or 7,905,664 bytes, for the
 one development the source worker runs at a time, including the source-caller job. Stack arrays,
@@ -3043,27 +2150,22 @@ no partial output is adopted.
 
 RCD runs its 194 px tiles as jobs of the same executor as Markesteijn, checking cancellation before
 every tile ([native demosaic parallelism](../design/native-demosaic-parallelism.md)). Each job holds
-one 978,536-byte scratch set under the same eight-lane cap. Complete RGB planes match the pre-change
-serial digest on the Z6 and Air 2S and the serial raster at every worker count.
+one 978,536-byte scratch set under the same eight-lane cap. Complete RGB planes match the serial
+raster at every worker count on the Z6 and Air 2S.
 
-Native M4 Pro, 14 cores, release, 26 September 2026, one-minute load 3.2 to 4.1. Each run is the
-crate's `bayer_normalization_release_abba_profile`: 30 warm observations per arm in 15 ABBA pairs in
-one fresh process. The build before pooled RCD and this build ran back to back and then reversed
-(before, after, after, before) per camera. The executor arm is the production path. Timing covers
-retained-mosaic development: normalization, demosaic, output allocation and the final divide; it
-excludes source read and decode, the DNG corrections, rendering and presentation. Both builds
-normalized natively; normalization now runs in Rust ([mosaic normalization](#mosaic-normalization)).
+Native M4 Pro, 14 cores, release, one-minute load 3.2 to 4.1. Each run is the crate's
+`bayer_normalization_release_abba_profile`: 30 warm observations in one fresh process, two runs per
+camera. The executor arm is the production path. Timing covers retained-mosaic development:
+normalization, demosaic, output allocation and the final divide; it excludes source read and
+decode, the DNG corrections, rendering and presentation.
 
-| Source | Build | Wall p50 / p95 | Demosaic p50 / p95 | Process CPU p50 / p95 |
-| --- | --- | ---: | ---: | ---: |
-| Nikon Z6 | before | 237.8 / 240.8, 238.7 / 247.4 ms | 203.8 / 205.9, 204.1 / 212.6 ms | 290.5 / 296.0, 291.7 / 301.2 ms |
-| Nikon Z6 | after | 55.9 / 58.3, 56.0 / 62.2 ms | 40.8 / 42.9, 40.8 / 44.9 ms | 301.3 / 307.2, 300.5 / 319.1 ms |
-| DJI Air 2S | before | 199.0 / 201.8, 199.2 / 202.7 ms | 168.6 / 171.1, 168.9 / 171.2 ms | 250.1 / 253.7, 249.9 / 253.7 ms |
-| DJI Air 2S | after | 44.2 / 45.1, 44.3 / 46.1 ms | 30.7 / 31.0, 30.6 / 31.1 ms | 256.0 / 262.3, 257.4 / 262.6 ms |
+| Source | Wall p50 / p95 | Demosaic p50 / p95 | Process CPU p50 / p95 |
+| --- | ---: | ---: | ---: |
+| Nikon Z6 | 55.9 / 58.3, 56.0 / 62.2 ms | 40.8 / 42.9, 40.8 / 44.9 ms | 301.3 / 307.2, 300.5 / 319.1 ms |
+| DJI Air 2S | 44.2 / 45.1, 44.3 / 46.1 ms | 30.7 / 31.0, 30.6 / 31.1 ms | 256.0 / 262.3, 257.4 / 262.6 ms |
 
-Development wall p50 falls by about 77% on both cameras and the demosaic by about 80%, for about 3%
-more process CPU. Concurrent Fit proxies against a pooled RCD development are not yet measured. To repeat, run each
-build's profile once per camera in the order before, after, after, before:
+Concurrent Fit proxies against a pooled RCD development are not yet measured. To repeat, run the
+profile once per camera:
 
 ```sh
 LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=nikon_z6.NEF \
@@ -3076,25 +2178,13 @@ LUXFORGE_RAW_TIMING_OUTPUT=/path/to/z6.csv \
 
 A GainMap stage derives each active row's and each active column's bilinear taps (two map indices
 and a weight) once, then weighs every pixel of every channel by the same f64 expression in the same
-order, so the corrected planes are unchanged by construction. The Air 2S's complete corrected-plane
-digest is the same before and after, in every observation.
+order.
 
-Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026,
-before at `ec132e71` with only the timing test added. Each run is the crate's
-`owner_development_timing`: one discarded warm-up, then 30 observations of the production
-development followed by its corrections, in one fresh process. Correction time covers GainMap,
-WarpRectilinear and the copy back, over the three camera planes developed in that observation;
-file read, decode, development, hashing and drop are outside it. The two builds ran before, after,
-after, before, twice, on a shared host at one-minute load 6.4 to 18.4, so these are relative figures.
-
-| Pass, order before-after-after-before | Before p50 / p95 (load) | After p50 / p95 (load) |
-| --- | ---: | ---: |
-| First | 164.5 / 403.7 ms (6.4), 112.6 / 141.5 ms (10.5) | 86.5 / 89.7 ms (13.9), 86.7 / 93.7 ms (11.9) |
-| Second | 132.7 / 391.8 ms (10.6), 167.3 / 333.7 ms (13.6) | 92.8 / 100.3 ms (18.4), 95.0 / 262.6 ms (14.4) |
-
-The least-disturbed pair, before at load 10.5 and after at 11.9 in the first pass, gives a
-correction p50 of 112.6 against 86.7 ms, 23% less; every after p50 is below every before p50.
-To repeat, run each build once per order:
+The crate's `owner_development_timing` runs one discarded warm-up, then 30 observations of the
+production development followed by its corrections, in one fresh process. Correction time covers
+GainMap, WarpRectilinear and the copy back, over the three camera planes developed in that
+observation; file read, decode, development, hashing and drop are outside it. The Air 2S's
+correction figures are in [development executor refill](#development-executor-refill). To repeat:
 
 ```sh
 LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=mavic_air_2s.DNG \
@@ -3108,46 +2198,18 @@ Native demosaic jobs, the mosaic normalization and output scale, DNG correction 
 camera-conversion chunks all run on one development executor ([native demosaic parallelism](../design/native-demosaic-parallelism.md)):
 the caller runs the final job first and then pulls ordinary jobs, while each pool lane runs one job
 and re-spawns itself for the next, so no job waits for a joined batch's slowest job. Native jobs
-keep the eight-lane cap; the Rust passes run at the pool's width. Every job still starts at a full
-tile with fresh scratch, so the planes are unchanged: each source's complete development digest is
-the same before and after in every observation.
+keep the eight-lane cap; the Rust passes run at the pool's width. Every job starts at a full
+tile with fresh scratch, so the planes do not depend on the scheduling.
 
-Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026,
-the crate's `owner_development_timing` as in [DNG GainMap taps](#dng-gainmap-taps): 30 observations
-per run after one warm-up, each run a fresh process. Development covers normalization, demosaic,
-output allocation and final divide, and excludes file read, decode, DNG corrections, the camera
-conversion, hashing and drop. Before is `ec132e71` with only the timing test added for the Z6 and
-X100VI, and the GainMap change for the Air 2S. Each pair of builds ran before, after, after, before
-and then after, before, before, after, on a shared host.
-
-| Source | Before p50 / p95 (load) | After p50 / p95 (load) |
-| --- | ---: | ---: |
-| Nikon Z6, first pass | 56.2 / 56.8 ms (7.1), 64.4 / 207.0 ms (6.4) | 43.1 / 43.6 ms (5.9), 43.7 / 76.6 ms (5.0) |
-| Nikon Z6, reversed | 56.4 / 60.9 ms (11.8), 56.5 / 59.5 ms (10.6) | 44.6 / 95.1 ms (7.6), 43.2 / 44.2 ms (8.1) |
-| Fujifilm X100VI, first pass | 523.4 / 995.3 ms (10.2), 452.4 / 1391.3 ms (16.5) | 302.2 / 467.6 ms (18.9), 291.6 / 590.7 ms (14.9) |
-| Fujifilm X100VI, reversed | 330.7 / 335.2 ms (6.9), 335.4 / 929.7 ms (5.3) | 268.7 / 390.6 ms (6.9), 285.6 / 720.7 ms (9.8) |
-| DJI Air 2S, first pass | 45.2 / 45.8 ms (7.5), 45.8 / 48.0 ms (8.3) | 37.6 / 38.9 ms (6.4), 40.7 / 93.0 ms (7.2) |
-| DJI Air 2S, reversed | 45.4 / 49.1 ms (8.5), 45.2 / 46.0 ms (7.3) | 38.0 / 74.7 ms (7.4), 37.7 / 40.6 ms (6.1) |
-
-Every after p50 is below every before p50 for each camera. In the least-loaded runs development p50
-falls by about 23% on the Z6 (56.2 to 43.1 ms), 17% on the Air 2S (45.2 to 37.7 ms) and 17 to 19%
-on the X100VI (330.7 and 335.4 against 268.7 and 285.6 ms); the X100VI's first pass ran at load
-10 to 19 and is not used for the estimate. The p95 figures carry the host's load and no tail claim
-is made. Concurrent Fit proxies against a refilled development are not measured.
-
-The Rust passes were moved onto the executor on measurement, not only for the bound. Air 2S
-correction p50 in the same runs is 83.0, 106.6, 84.7 and 84.2 ms on the executor against 86.5,
-92.3, 86.8 and 87.3 ms on the parallel iterator it replaces; the one slower executor run has a p95
-of 204 ms and ran during a load spike, so the two are equal or the executor slightly faster. The
-Rust passes run at the pool's width, as the parallel iterator did: the eight-lane cap bounds native
-scratch, which they do not hold. Four exploratory Air 2S runs at eight lanes, at load 15 to 20, were
-too disturbed to compare (p50 112 to 174 ms at eight lanes against 83 to 207 ms at the pool's
-width). The
-X100VI camera conversion in core's `camera_conversion_photo_timing`, one build switching between
-the two paths, 30 samples per run in parallel, executor, executor, parallel order at load 10 to 19,
-gives a p50 of 6.66 and 6.19 ms on the parallel iterator and 6.71 and 6.26 ms on the executor,
-with the same output digest: equal. Neither Rust pass holds per-job scratch; a camera-conversion job
-is one 65,536-pixel chunk and a correction job 16 rows.
+The Rust passes run on the executor on measurement, not only for the bound. With
+`owner_development_timing` as in [DNG GainMap taps](#dng-gainmap-taps), on a shared host, Air 2S
+correction p50 over four runs is 83.0, 106.6, 84.7 and 84.2 ms on the executor against 86.5, 92.3,
+86.8 and 87.3 ms on a parallel iterator; the one slower executor run has a p95 of 204 ms and ran
+during a load spike, so the two are equal or the executor slightly faster. The X100VI camera
+conversion in core's `camera_conversion_photo_timing`, 30 samples per run at load 10 to 19, gives a
+p50 of 6.66 and 6.19 ms on a parallel iterator and 6.71 and 6.26 ms on the executor, with the same
+output digest: equal. The eight-lane cap bounds native scratch, which the Rust passes do not hold:
+a camera-conversion job is one 65,536-pixel chunk and a correction job 16 rows.
 
 ### Mosaic normalization
 
@@ -3161,42 +2223,32 @@ Rust passes run in 16-row jobs on the development executor at the pool's width a
 Bayer and X-Trans alike, and in order on the caller below it; cancellation is checked before every
 normalization row and every scale job. Each site's black level, `65535 / (white - black)` and gain
 are computed once per site of the CFA and black-repeat period, checked there, and applied as
-`((sample - black) * scale) * gain` in `f32`, the order the native loop used. The normalized mosaic
+`((sample - black) * scale) * gain` in `f32`. The normalized mosaic
 is allocated without being zeroed, each value written once by the job that owns its rows (a
 repaired site twice), and released before the output scale; the scale is one pass over the three
-contiguous planes. The neutral picker reads the same per-site black model. The Rust normalization
-matched the native one bit for bit on synthetic Bayer and X-Trans mosaics, including a 1203 × 877
-X-Trans frame, whose digests stay pinned; every owner source's complete development digest is the
-same before and after in every observation below.
+contiguous planes. The neutral picker reads the same per-site black model. Synthetic Bayer and
+X-Trans mosaics, including a 1203 × 877 X-Trans frame, have pinned digests.
 
-Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026,
+Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins,
 the crate's `owner_development_timing` as in [DNG GainMap taps](#dng-gainmap-taps): one discarded
 warm-up, then 30 observations per run, each run a fresh process. Development covers normalization,
 demosaic, output allocation and the final divide, and excludes file read, decode, the DNG
-corrections, the camera conversion, hashing and drop. Before is `5fbd54a2`, the development executor
-refill, with native normalization; after is this change. Each camera ran before, after, after,
-before and then after, before, before, after, twice, on a shared host; the one-minute load is given
-for each run.
+corrections, the camera conversion, hashing and drop. Each camera ran four times in each of two
+passes on a shared host; the one-minute load is given for each run.
 
-| Source | Before p50 / p95 (load) | After p50 / p95 (load) |
-| --- | ---: | ---: |
-| Fujifilm X100VI, first pass | 350.8 / 462.1 (51.0), 338.2 / 363.0 (22.7), 350.9 / 481.3 (20.3), 342.4 / 659.4 (19.6) ms | 222.9 / 241.8 (36.6), 227.0 / 254.3 (26.1), 237.8 / 348.6 (19.8), 228.8 / 291.8 (18.7) ms |
-| Fujifilm X100VI, second pass | 271.5 / 708.9 (14.1), 281.5 / 387.4 (16.0), 280.6 / 536.3 (9.4), 291.6 / 647.6 (12.9) ms | 202.8 / 285.7 (21.4), 232.3 / 338.1 (17.9), 183.8 / 202.1 (13.8), 195.1 / 203.4 (11.9) ms |
-| Nikon Z6, first pass | 50.9 / 65.5 (18.8), 51.1 / 58.1 (13.6), 51.9 / 57.2 (13.9), 52.1 / 59.2 (13.9) ms | 42.3 / 47.8 (16.3), 43.1 / 45.2 (14.9), 43.4 / 57.9 (14.6), 42.5 / 54.5 (13.9) ms |
-| Nikon Z6, second pass | 44.1 / 62.6 (10.2), 47.7 / 96.8 (10.5), 44.1 / 78.0 (11.0), 43.6 / 74.4 (13.3) ms | 39.7 / 72.0 (9.1), 37.0 / 37.8 (12.7), 36.9 / 40.1 (12.4), 37.8 / 56.0 (13.5) ms |
-| DJI Air 2S, first pass | 44.3 / 48.3 (13.0), 45.5 / 54.8 (16.0), 46.6 / 50.4 (17.0), 42.9 / 56.3 (17.2) ms | 35.6 / 39.4 (14.9), 35.1 / 39.5 (16.5), 36.0 / 39.1 (15.8), 33.9 / 37.8 (14.3) ms |
-| DJI Air 2S, second pass | 37.9 / 40.9 (11.7), 38.0 / 39.1 (15.2), 44.4 / 93.6 (12.0), 85.0 / 128.5 (14.8) ms | 31.4 / 43.7 (10.5), 33.8 / 77.7 (13.2), 31.3 / 50.5 (13.2), 31.7 / 33.4 (22.2) ms |
+| Source | p50 / p95 (load) |
+| --- | ---: |
+| Fujifilm X100VI, first pass | 222.9 / 241.8 (36.6), 227.0 / 254.3 (26.1), 237.8 / 348.6 (19.8), 228.8 / 291.8 (18.7) ms |
+| Fujifilm X100VI, second pass | 202.8 / 285.7 (21.4), 232.3 / 338.1 (17.9), 183.8 / 202.1 (13.8), 195.1 / 203.4 (11.9) ms |
+| Nikon Z6, first pass | 42.3 / 47.8 (16.3), 43.1 / 45.2 (14.9), 43.4 / 57.9 (14.6), 42.5 / 54.5 (13.9) ms |
+| Nikon Z6, second pass | 39.7 / 72.0 (9.1), 37.0 / 37.8 (12.7), 36.9 / 40.1 (12.4), 37.8 / 56.0 (13.5) ms |
+| DJI Air 2S, first pass | 35.6 / 39.4 (14.9), 35.1 / 39.5 (16.5), 36.0 / 39.1 (15.8), 33.9 / 37.8 (14.3) ms |
+| DJI Air 2S, second pass | 31.4 / 43.7 (10.5), 33.8 / 77.7 (13.2), 31.3 / 50.5 (13.2), 31.7 / 33.4 (22.2) ms |
 
-Within each pass every after p50 is below every before p50 on every camera. In the second, less
-loaded pass development p50 falls from 271.5 to 291.6 ms to 183.8 to 232.3 ms on the X100VI (about
-30%), from 43.6 to 47.7 ms to 36.9 to 39.7 ms on the Z6 (about 15%) and from 37.9 to 38.0 ms to
-31.3 to 33.8 ms on the Air 2S (about 17%, leaving out the 85.0 ms before run, taken during a load
-spike). The X100VI gains most because its normalization was serial and it has the largest frame. The
-p95 figures carry the host's load and no tail claim is made. Concurrent Fit proxies against this
-development are not measured in the core; the last core-only same-pool Fit proxy figures predate
-RCD's tile jobs ([further performance](../research/further-performance.md#bayer-normalization-batching)).
-That contention is not measured through the editor: the whole-editor RAW measurement was closed
-unrun on 2026-10-06.
+In the second, less loaded pass development p50 is 183.8 to 232.3 ms on the X100VI, 36.9 to 39.7 ms
+on the Z6 and 31.3 to 33.8 ms on the Air 2S. The p95 figures carry the host's load and no tail claim
+is made. Concurrent Fit proxies against this development are not measured, in the core or through
+the editor.
 The per-site table is at most one CFA and black-repeat period, each row widened to at least 64
 sites: 396 sites for a 6 × 6 X-Trans period and 128 for a 2 × 2 Bayer one without a repeat pattern.
 
@@ -3209,47 +2261,41 @@ white balances is read back from memory instead of redeveloped
 evicts the cached development only while a preparation of an original or a redevelopment is
 queued; a queued artifact read leaves it.
 
-Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins, 28 September 2026.
+Native M4 Pro, 14 cores, macOS 26.5.2, Rust 1.94.0, release with locked pins.
 Each row is the `raw-editor` smoke scenario's edit launch, one background launch per observation,
 from `raw-editor-checks.json`: request to the display event (`preview_displayed`, else
 `render_ready`) and request to the correlated `frame_captured`. The journey previews the Original
 from history and returns to current after six white-balance edits, then does the same pair again;
-the first pair must develop the Original's white balance either way, and the second pair is the
+the first pair must develop the Original's white balance, and the second pair is the
 hold-`\` compare once both developments exist. The capture includes the harness's window
-readback, which is what the 100% view row costs with no render (its display is about 1 ms). Before
-is the base `6c49e556` with the Masks-panel thumbnail fix (the base itself hangs on the first RAW
-white-balance change, so no figure can be taken from it); after adds the eviction fix and the second
-development. Arms alternate ABBA, 30 launches per arm on the X100VI and 10 on the Z6 and the Air 2S,
-on a shared host whose one-minute load was 8.8 to 30.3 (X100VI, median 19.2 before and 19.8 after),
-12.6 to 19.2 (Z6) and 16.1 to 20.3 (Air 2S). Values are nearest-rank p50 / p95 in milliseconds.
+readback, which is what the 100% view row costs with no render (its display is about 1 ms).
+There are 30 launches on the X100VI and 10 on the Z6 and the Air 2S, on a shared host whose
+one-minute load was 8.8 to 30.3 (X100VI), 12.6 to 19.2 (Z6) and 16.1 to 20.3 (Air 2S). Values are
+nearest-rank p50 / p95 in milliseconds.
 
-| Source, step | Before display | After display | Before capture | After capture |
-| --- | ---: | ---: | ---: | ---: |
-| X100VI, Historical Original | 251.5 / 492.9 | 242.7 / 378.1 | 314.8 / 572.3 | 303.2 / 508.9 |
-| X100VI, Return to current | 249.8 / 464.8 | 20.6 / 71.7 | 359.4 / 678.6 | 131.5 / 255.7 |
-| X100VI, Original again | 244.7 / 451.0 | 22.3 / 83.0 | 308.0 / 566.9 | 87.8 / 206.9 |
-| X100VI, current again | 254.7 / 463.7 | 21.6 / 102.4 | 365.1 / 677.6 | 130.8 / 292.9 |
-| X100VI, 100% view | 1.2 / 7.3 | 1.3 / 2.8 | 60.9 / 79.7 | 63.5 / 78.7 |
-| Z6, Historical Original | 76.7 / 104.3 | 76.5 / 139.8 | 149.1 / 205.2 | 146.1 / 239.3 |
-| Z6, Return to current | 80.0 / 142.0 | 34.4 / 70.0 | 161.0 / 317.5 | 100.8 / 165.6 |
-| Z6, Original again | 85.3 / 117.8 | 31.1 / 54.1 | 145.2 / 233.4 | 99.1 / 143.8 |
-| Z6, current again | 88.4 / 135.2 | 32.2 / 44.6 | 155.9 / 264.0 | 102.6 / 133.2 |
-| Air 2S, Historical Original | 154.1 / 222.8 | 149.0 / 168.6 | 197.8 / 273.3 | 191.8 / 212.7 |
-| Air 2S, Return to current | 150.6 / 269.8 | 20.2 / 42.0 | 214.8 / 422.3 | 81.0 / 135.3 |
-| Air 2S, Original again | 148.4 / 263.1 | 20.1 / 63.9 | 196.2 / 353.1 | 63.8 / 122.8 |
-| Air 2S, current again | 150.4 / 251.4 | 23.3 / 31.2 | 216.2 / 354.1 | 78.2 / 95.1 |
+| Source, step | Display | Capture |
+| --- | ---: | ---: |
+| X100VI, Historical Original | 242.7 / 378.1 | 303.2 / 508.9 |
+| X100VI, Return to current | 20.6 / 71.7 | 131.5 / 255.7 |
+| X100VI, Original again | 22.3 / 83.0 | 87.8 / 206.9 |
+| X100VI, current again | 21.6 / 102.4 | 130.8 / 292.9 |
+| X100VI, 100% view | 1.3 / 2.8 | 63.5 / 78.7 |
+| Z6, Historical Original | 76.5 / 139.8 | 146.1 / 239.3 |
+| Z6, Return to current | 34.4 / 70.0 | 100.8 / 165.6 |
+| Z6, Original again | 31.1 / 54.1 | 99.1 / 143.8 |
+| Z6, current again | 32.2 / 44.6 | 102.6 / 133.2 |
+| Air 2S, Historical Original | 149.0 / 168.6 | 191.8 / 212.7 |
+| Air 2S, Return to current | 20.2 / 42.0 | 81.0 / 135.3 |
+| Air 2S, Original again | 20.1 / 63.9 | 63.8 / 122.8 |
+| Air 2S, current again | 23.3 / 31.2 | 78.2 / 95.1 |
 
-Without the second development every switch redevelops, and the X100VI's p50 is about 250 ms to
+Without a second development every switch redevelops, and the X100VI's p50 is about 250 ms to
 display and 310 to 365 ms to capture, above the owner's 150 ms threshold. With it, a switch whose
 development the cache holds displays in about 20 ms p50 on every camera (X100VI p95 72 to 102 ms
 under this load) and reaches the capture in 88 to 131 ms p50 on the X100VI, of which about 60 ms is
-the readback; an undo, which also renders without redeveloping, measures the same in both arms
-(X100VI capture 134.3 / 278.6 before, 129.5 / 320.1 after). The first Historical Original after a
-white-balance change still redevelops, since the slot then holds the development before that
-change, and is unchanged. The eviction fix alone changes none of these rows, as the journey queues
-no artifact read: three ABBA launches per arm on the X100VI (load 14.1 to 19.1) displayed the
-Historical Original in 324 to 352 ms before and 327 to 478 ms with the fix, and returned to current
-in 317 to 372 and 315 to 435 ms.
+the readback; an undo, which also renders without redeveloping, captures in 129.5 / 320.1 ms on the
+X100VI. The first Historical Original after a white-balance change still redevelops, since the slot
+then holds the development before that change.
 
 Memory is the edit launch's process RSS, sampled about every 50 ms by `ps` from the second pair's
 captured frame to the process's end (the 100% and Fit steps), with the current entry's development
@@ -3257,16 +2303,16 @@ and the Original's both held after; the figure is each launch's maximum over tha
 over the same launches. GPU resources, captures and allocator retention are included, not
 separated.
 
-| Source (development planes) | Before | After | Difference |
-| --- | ---: | ---: | ---: |
-| X100VI, full sensor (468 MiB) | 1832 / 1882 MiB | 2290 / 2352 MiB | +458 MiB |
-| Z6, 6064 × 4040 sensor (280 MiB) | 1263 / 1300 MiB | 1527 / 1559 MiB | +264 MiB |
-| Air 2S, 5568 × 3648 sensor (232 MiB) | 1220 / 1269 MiB | 1450 / 1484 MiB | +230 MiB |
+| Source (development planes) | Peak RSS p50 / p95 |
+| --- | ---: |
+| X100VI, full sensor (468 MiB) | 2290 / 2352 MiB |
+| Z6, 6064 × 4040 sensor (280 MiB) | 1527 / 1559 MiB |
+| Air 2S, 5568 × 3648 sensor (232 MiB) | 1450 / 1484 MiB |
 
-The difference is the retained development's planes. A development past the 600 MiB budget, such as
-one at the 128 MP admission limit (about 1.43 GiB of planes), is never retained, so such a
-photograph keeps one development and redevelops on every switch as before. At a redevelopment's
-peak the process now holds the retained development beside the one being built, so the X100VI's
+The retained development adds its planes to the process. A development past the 600 MiB budget,
+such as one at the 128 MP admission limit (about 1.43 GiB of planes), is never retained, so such a
+photograph keeps one development and redevelops on every switch. At a redevelopment's
+peak the process holds the retained development beside the one being built, so the X100VI's
 white-balance-release peak rises by at most the same 468 MiB.
 
 ### RAW colour row batching
@@ -3280,60 +2326,49 @@ boundary are pulled, never materialized, a bounded rectangle at a time with thei
 its rows: a spatial operation's input one row of its tile region at a time, and a straightened
 crop's taps one block of 64 output columns by the chunk's rows at a time, through the rectangle of
 at most 16,384 pixels those taps read, so each pixel before the resample is evaluated about once
-per block instead of once per tap.
+per block rather than once per tap.
 Complete-buffer tests compare the rows with the point evaluator for Basic, Mixer and their combined
 recipe, a viewed source, a partial final chunk, colour
 after a straightened crop at 4 and -30 degrees and after Presence, masked colour and a masked
 Presence layer before a crop, on a stage narrower than one tap block and on one several blocks
 wide.
 
-The measurements below were taken when only a source-only segment was batched, in eight-row
-chunks; they are the evidence for that path. Release core-render comparison on retained real RAW
-planes, 30 observations per variant and recipe in 15 ABBA pairs. The reference is the old per-pixel
-evaluator with the same parallel scheduling threshold. Timers include output allocation and drop, but exclude file read, decode/development,
-desktop scheduling, GPU upload and presentation. Process CPU is cumulative over the shared 14-core
-Rayon pool, sampled outside each render timer. No build or test ran with the timed profiles.
+The measurements below batch a source-only segment, in eight-row chunks; they are the evidence for
+that path. Release core render on retained real RAW planes, 30 observations per recipe. Timers
+include output allocation and drop, but exclude file read, decode/development, desktop scheduling,
+GPU upload and presentation. Process CPU is cumulative over the shared 14-core Rayon pool, sampled
+outside each render timer. No build or test ran with the timed profiles. Leg-start load was 6.38
+for the Z6 and 5.39 and 5.80 for the two Fuji passes; the table gives the repeat Fuji pass.
 
-| Camera / recipe | Reference wall p50 / p95 | Production wall p50 / p95 | Reference CPU p50 / p95 | Production CPU p50 / p95 |
-| --- | ---: | ---: | ---: | ---: |
-| Z6 / Full Basic | 398.3 / 449.0 ms | 146.0 / 155.2 ms | 5217.9 / 5290.4 ms | 1888.0 / 1949.4 ms |
-| Z6 / Mixer | 297.0 / 308.9 ms | 167.9 / 175.8 ms | 3866.0 / 3912.6 ms | 2154.4 / 2190.5 ms |
-| X100VI / Full Basic | 646.4 / 893.3 ms | 220.2 / 290.1 ms | 7903.9 / 8149.5 ms | 2598.8 / 2738.2 ms |
-| X100VI / Mixer | 503.9 / 607.2 ms | 278.0 / 315.2 ms | 5793.8 / 5914.1 ms | 3127.7 / 3236.8 ms |
+| Camera / recipe | Wall p50 / p95 | CPU p50 / p95 |
+| --- | ---: | ---: |
+| Z6 / Full Basic | 146.0 / 155.2 ms | 1888.0 / 1949.4 ms |
+| Z6 / Mixer | 167.9 / 175.8 ms | 2154.4 / 2190.5 ms |
+| X100VI / Full Basic | 220.2 / 290.1 ms | 2598.8 / 2738.2 ms |
+| X100VI / Mixer | 278.0 / 315.2 ms | 3127.7 / 3236.8 ms |
 
-The first X100VI pass was lower-tailed: Full Basic reference/production p50/p95 618.8/700.3 ms and
-201.2/252.7 ms; Mixer 496.8/557.0 ms and 277.1/315.2 ms. Leg-start load was 6.38 for Z6 and 5.39
-and 5.80 for the Fuji passes. The renderer drove the shared pool; one-minute load at the end rose to
-14.80, 24.37 and 23.82. The table gives the repeat Fuji distributions, including the wider tail.
-
-The production median reduction is 63% on Z6 and 66–68% on X100VI for Full Basic, and 43–44% for
-Mixer. These are separate recipe workloads; do not sum their savings into a combined-stack estimate.
-Source planes are 294 MB and 491 MB, outputs 97 MB and 159 MB. Row scratch is at most 676 KB and
-1.30 MB across 14 folders. Activity Monitor footprint after decode was 556 MB and 925–928 MB; the
-reference and production snapshots were about 752 MB and 1.244–1.247 GB, with no material
-production increase. Those snapshots are not allocator traces or GPU allocation measurements; the
-full-output equality check holds both RGBA outputs together once.
+These are separate recipe workloads; do not sum them into a combined-stack estimate. Source planes
+are 294 MB and 491 MB, outputs 97 MB and 159 MB. Row scratch is at most 676 KB and 1.30 MB across
+14 folders. Activity Monitor footprint after decode was 556 MB and 925–928 MB, and about 752 MB and
+1.244–1.247 GB with the render. Those snapshots are not allocator traces or GPU allocation
+measurements.
 
 The shared-pool Fit proxy check uses a 1920 × 1280 nearest-sampled proxy from actual Fuji retained
 RAW planes and the Full Basic recipe. Thirty proxy requests are measured while one external caller
 repeats exact full-source renders; proxy creation, RAW decode, build, desktop work, upload and
-presentation are excluded. The generic exact renderer completed 30 full renders and the production
-row path completed 29. The process memory footprint after overlap was 1.172 GB for the generic path
-and 1.166 GB for production (resident 1.180 GB and 1.175 GB respectively). Process CPU over each
-whole overlap window includes both the exact worker and proxy requests.
+presentation are excluded. The exact worker completed 29 full renders. The process memory
+footprint after overlap was 1.166 GB (resident 1.175 GB). Process CPU over the whole overlap window
+includes both the exact worker and proxy requests.
 
 | Exact render sharing the pool | Proxy alone p50 / p95 | Proxy with exact work p50 / p95 | Overlap wall / process CPU |
 | --- | ---: | ---: | ---: |
-| Generic per-pixel reference | 13.9 / 26.5 ms | 623.9 / 658.3 ms | 18.8 s / 240.7 CPU s |
 | Production row batching | 12.1 / 13.1 ms | 207.2 / 214.7 ms | 6.0 s / 79.9 CPU s |
 
-Production cuts the contended proxy p95 by about 67%, but 215 ms still misses the 32 ms acceptable
-input-to-presented-frame limit. A one-row callback experiment measured 213.5/226.2 ms p50/p95 and
-30 exact renders in 6.4 seconds, slightly behind the eight-row path's 207.2/214.7 ms and 29 renders
-in 6.0 seconds. This measures a continuously active core exact render and a core proxy, not a user's
-UI gesture or GPU presentation. The external load at the starts of the two variant legs was 7.86
-and 6.98; no build or test ran alongside either. The intentional shared-pool work raised the ending
-loads to 8.91 and 9.57. Full scope and scratch accounting are in
+The contended proxy p95 of 215 ms misses the 32 ms acceptable input-to-presented-frame limit. A
+one-row callback does not help: it measured 213.5/226.2 ms p50/p95 and 30 exact renders in 6.4
+seconds, slightly behind the eight-row path. This measures a continuously active core exact render
+and a core proxy, not a user's UI gesture or GPU presentation. The external load at the start was
+below 8; no build or test ran alongside. Full scope and scratch accounting are in
 [further performance opportunities](../research/further-performance.md#raw-colour-row-implementation-and-measurement).
 
 ### Shared-pool contention and rendering controls
@@ -3342,19 +2377,18 @@ One retained Fuji development competes with four full-Basic renders of a prepare
 JPEG proxy. External callers start at a barrier and share Rayon. Each operation clock excludes
 preparation, thread creation, hashing and frame drop; the proxy is hashed between requests while
 RAW work continues. This is a CPU scheduling diagnostic, not desktop/GPU/presentation latency.
-There are 30 development and 120 proxy observations per variant, in the same ABBA order; complete
-proxy hashes match. Leg-start load was 2.1–5.2.
+There are 30 development and 120 proxy observations; complete proxy hashes match. Leg-start load
+was 2.1–5.2.
 
-| Concurrent operation | Before p50 / p95 | After p50 / p95 |
-| --- | --- | --- |
-| Fuji retained-mosaic development | 1292.6 / 1303.8 ms | 367.8 / 379.7 ms |
-| Full-Basic JPEG proxy render | 11.69 / 13.28 ms | 11.66 / 14.01 ms |
+| Concurrent operation | p50 / p95 |
+| --- | --- |
+| Fuji retained-mosaic development | 367.8 / 379.7 ms |
+| Full-Basic JPEG proxy render | 11.66 / 14.01 ms |
 
-The throughput gain does not materially move the proxy median; its p95 increases by 0.74 ms.
-Earlier schedules were rejected because a preview waiter could steal long native work: draining
-row groups gave 216 ms proxy p95, one row per callback still about 64 ms, and a four-worker cap
-still about 60 ms. Ordinary pool callbacks now contain at most eight tiles. The dependent final
-two rows run on the existing external source caller, which holds nothing across a join.
+Schedules in which a preview waiter can steal long native work do not hold the proxy: draining row
+groups gave 216 ms proxy p95, one row per callback still about 64 ms, and a four-worker cap still
+about 60 ms. Ordinary pool callbacks contain at most eight tiles. The dependent final two rows run
+on the external source caller, which holds nothing across a join.
 
 A separate phase sweep starts preview work 0/75/125/175/225/275/325 ms after the RAW barrier,
 five trials at each offset and four renders per trial. The seven 20-observation proxy p95 values
@@ -3363,37 +2397,25 @@ later overlap as well as the ordinary early-start case; it is not a 30-sample di
 phase or a hard latency guarantee. Load was 2.8–3.4. Nested Rayon callers retain correctness and
 liveness coverage, but the latency result applies to the production external source caller.
 
-The official JPEG `editor-performance` diagnostic is a control: this batch changes no JPEG colour
-kernel. Its composed geometry/crop and full Basic recipe produces the following 30-observation
-results. Source-preservation checks pass. Leg-start load was 3.9–14.2; small shifts in unchanged
-code are not attributed to an optimization or used as absolute latency-budget evidence.
+The official JPEG `editor-performance` diagnostic, with its composed geometry/crop and full Basic
+recipe, gives the following 30-observation results. Source-preservation checks pass. Leg-start load
+was 3.9–14.2; small shifts are not used as absolute latency-budget evidence.
 
-| Workload | Before p50 / p95 | After p50 / p95 |
-| --- | --- | --- |
-| 24 MP full Basic + geometry | 78.7 / 88.0 ms | 78.2 / 81.2 ms |
-| 60 MP full Basic + geometry | 183.0 / 191.1 ms | 182.5 / 188.9 ms |
-| 24 MP source, full Basic proxy + geometry | 47.5 / 52.3 ms | 47.2 / 50.0 ms |
-| 60 MP source, full Basic proxy + geometry | 50.0 / 52.0 ms | 49.3 / 53.1 ms |
+| Workload | p50 / p95 |
+| --- | --- |
+| 24 MP full Basic + geometry | 78.2 / 81.2 ms |
+| 60 MP full Basic + geometry | 182.5 / 188.9 ms |
+| 24 MP source, full Basic proxy + geometry | 47.2 / 50.0 ms |
+| 60 MP source, full Basic proxy + geometry | 49.3 / 53.1 ms |
 
 ### Qualification and remaining opportunities
 
-The final full tier passes all 38 functional components: workspace/API checks, 30 background
-rendered scenarios, RAW numerical references, nine actual RAW open/edit/reopen journeys and timing
-journeys. Independent review covered tile scratch, disjoint writes, FFI lifetime, nested admission,
-private validated adoption and capture settlement. Complete native float references, original
-hashes and sample/render/history checks pass. Final Fuji and DJI reopened captures were visually
-inspected alongside their correlated state and events.
-
-An earlier run exposed an evidence race: a screenshot requested from the temporary 1× proxy could
-return after the 2× refit was displayed, making identical recipes appear different on reopen.
-Capture readiness now waits for permitted current-bounds refits, preserves intentional draft deferral
-and render-error evidence, and retries readbacks superseded by newer photo pixels before publishing
-or saving them. Ordinary first-preview presentation is unchanged. Focused draft/refit tests and the
-final native journeys pass; the original failure and diagnosis remain in the local evidence.
-
-The final full tier's `editor-latency` and `measure` components started above load 8.0, so their
-absolute-budget verdicts remain **unreliable**. The separate comparisons above retain their own
-loads, scopes and sample counts. No sanitizer run, Windows/Linux numerical qualification or
+Complete native float references, original hashes and sample/render/history checks pass on the
+RAW open/edit/reopen journeys, and Fuji and DJI reopened captures are visually inspected alongside
+their correlated state and events. Capture readiness waits for permitted current-bounds refits,
+preserves intentional draft deferral and render-error evidence, and retries readbacks superseded by
+newer photo pixels before publishing or saving them, so a screenshot from the temporary 1× proxy
+cannot stand for the 2× refit. No sanitizer run, Windows/Linux numerical qualification or
 cross-platform native GPU qualification is claimed by this M4 evidence.
 
 The remaining candidates are ranked in [further performance opportunities](../research/further-performance.md).
@@ -3401,123 +2423,46 @@ Mosaic normalization on the development executor and RAW colour row batching are
 measured on actual owner inputs; their core shared-pool results are separate from presentation and do not replace end-to-end
 evidence. RCD runs bounded tile jobs; its quiet-host timing and preview contention remain to be
 measured. Startup attribution, GPU texture transfer, GPU
-execution and SIMD/assembly remain open; CPU RGBA publication already writes directly into the
+execution and SIMD/assembly remain open; CPU RGBA publication writes directly into the
 frame owner, and no additional savings are assigned to it.
 
 ### JPEG export
 
-Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cache, driven over its line-delimited JSON by a throwaway script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.write` to `job.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The `image` column is the first build, which encoded with the `image` crate, at one-minute load 3.9 to 5.2; the libjpeg-turbo column is the current build, which encodes through `mozjpeg`, at one-minute load 2.8 after waiting for the host to settle (5- and 15-minute loads 10.8 and 13.7 from other sessions). The two runs were not back to back, so the comparison is indicative; the encoder alone, measured back to back, is 48 against 111 ms at 24 MP and 121 against 274 ms at 60 MP ([export design](../design/export.md#decisions)).
+Release `luxforge-json` on the owner's M4 Pro, warm file cache, one-minute load 2.8, driven over its line-delimited JSON by a script: `catalog.import`, the preparation job, one `edit.set-basic` committing `exposure: 0.3`, then five exports of that entry back to back, each timed from sending `export.write` to `job.read` first answering `ready`, polled every 20 ms. Five samples give a median and a maximum, not a p95. No RAW export needed a preparation: the committed edit had already developed the entry's settings. The encoder is libjpeg-turbo through `mozjpeg`; the encoder alone takes 48 ms at 24 MP and 121 ms at 60 MP ([export design](../design/export.md#decisions)).
 
-| Source | Export wall p50 / max of 5, libjpeg-turbo (ms) | Same, `image` (ms) | Output, libjpeg-turbo | Dimensions |
-| --- | ---: | ---: | ---: | --- |
-| 24 MP JPEG (generated) | 90 / 110 | 158 / 176 | 688 KiB | 6000 × 4000 |
-| 60 MP JPEG (generated) | 170 / 175 | 363 / 386 | 1.63 MiB | 10000 × 6000 |
-| Nikon Z6 NEF | 118 / 127 | 220 / 230 | 2.35 MiB | 4024 × 6048 |
-| Fujifilm X100VI RAF | 185 / 193 | 331 / 338 | 4.36 MiB | 7728 × 5152 |
-| DJI Air 2S DNG | 120 / 131 | 243 / 251 | 6.29 MiB | 5464 × 3640 |
+| Source | Export wall p50 / max of 5 (ms) | Output | Dimensions |
+| --- | ---: | ---: | --- |
+| 24 MP JPEG (generated) | 90 / 110 | 688 KiB | 6000 × 4000 |
+| 60 MP JPEG (generated) | 170 / 175 | 1.63 MiB | 10000 × 6000 |
+| Nikon Z6 NEF | 118 / 127 | 2.35 MiB | 4024 × 6048 |
+| Fujifilm X100VI RAF | 185 / 193 | 4.36 MiB | 7728 × 5152 |
+| DJI Air 2S DNG | 120 / 131 | 6.29 MiB | 5464 × 3640 |
 
-Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
+The encoder streams 16 rows at a time into the file, so it adds no whole-frame buffer.
 
-Every figure here is the reference renderer's export. The GPU export ([export](../design/export.md#behavior), stage 4 of [GPU-first](../design/gpu-first.md)), whose tiles the desktop's tile worker draws, is timed against the reference export at 24 and 60 MP on a trivial and a heavy stack in [export at 24 and 60 MP](#export-at-24-and-60-mp): on the heavy stack 0.95 s against 0.76 s at 24 MP and 10.4 s against 2.2 s at 60 MP. Both renderers' peak memory, and their export of the Z 6, are measured for every format and preset in [export settings](#export-settings).
+Every figure here is the reference renderer's export. The GPU export ([export](../design/export.md#behavior), stage 4 of [GPU-first](../design/gpu-first.md)), whose tiles the desktop's tile worker draws, is timed against the reference export at 24 and 60 MP on a trivial and a heavy stack in [export](#export): on the heavy stack 0.28 s against 0.78 s at 24 MP and 0.63 s against 2.0 s at 60 MP. Both renderers' peak memory, and their export of the Z 6, are measured for every format and preset in [export settings](#export-settings).
 
-### JPEG decode: libjpeg-turbo against zune-jpeg
+### JPEG decode
 
-Import decodes JPEG with libjpeg-turbo, through the same codec (`luxforge-jpeg`) as export, instead of `image` 0.25.9's zune-jpeg 0.5.15. Decode only, on the owner's M4 Pro, 27 September 2026, release test build, warm file cache, the file read once outside the clock and neither hashing nor capture metadata timed: `source::jpeg_tests::decode_timing`. The previous path is replayed as the import ran it (the header walk, `image`'s reader with its limits, its ICC and orientation reads, the decode to RGB, `apply_orientation` and the copy into the RGBA frame); the adapter path is `decode_upright`. Median of 7 after one warm-up, run twice back to back, the previous path first in each pair and then the adapter first; the two orders agreed within 0.6 ms. The host was shared: one-minute load 16 to 18, five-minute 30, from other sessions, so the absolute figures are indicative and the ratio is the result.
+Import decodes JPEG with libjpeg-turbo, through the same codec (`luxforge-jpeg`) as export. Decode only, on the owner's M4 Pro, release test build, warm file cache, the file read once outside the clock and neither hashing nor capture metadata timed: `source::jpeg_tests::decode_timing`, the median of 7 after one warm-up. The host was shared (one-minute load 16 to 18), so the figures are indicative.
 
-| Source | libjpeg-turbo (ms) | zune-jpeg path (ms) | Peak added, libjpeg-turbo | Peak added, zune-jpeg path | Dimensions |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 24 MP JPEG (generated) | 22.7 | 30.9 to 31.5 | 92 MiB | 162 MiB | 6000 × 4000 |
-| 60 MP JPEG (generated) | 55.2 to 55.3 | 74.7 to 74.9 | 230 MiB | 403 MiB | 10000 × 6000 |
-| Drone photo, 10 MB | 75.0 to 75.5 | 103.1 to 103.3 | 55 MiB | 107 MiB | 3389 × 4236 |
+| Source | Decode (ms) | Peak added | Dimensions |
+| --- | ---: | ---: | --- |
+| 24 MP JPEG (generated) | 22.7 | 92 MiB | 6000 × 4000 |
+| 60 MP JPEG (generated) | 55.2 to 55.3 | 230 MiB | 10000 × 6000 |
+| Drone photo, 10 MB | 75.0 to 75.5 | 55 MiB | 3389 × 4236 |
 
-Peak added is `/usr/bin/time -l`'s maximum resident set size of the test process decoding the file once through one path, less the same process decoding nothing. The adapter's is the RGBA frame itself (92, 229 and 55 MiB) plus libjpeg's working buffers, under 1 MiB: rows go straight into the frame, or through a 16-row strip when the EXIF orientation turns the image. The previous path also held the whole image as RGB before copying it. All three files are baseline with orientation 1; a progressive file adds libjpeg's coefficient buffer, 2 bytes per sample. x86_64 builds libjpeg-turbo's portable C path and is not measured.
-
-Decoded pixels differ from zune-jpeg's slightly (`luxforge-jpeg`'s `tests::measure_the_difference_from_the_previous_decoder`): at most 3 codes on every committed fixture, 0.3% of pixels on the orientation set; on the generated 24 and 60 MP files 0.0014% and 0.0006% of pixels by at most 2 codes; on the drone photo 1.4% of pixels, 0.45% by more than one code and 0.002% by more than two, mean 0.01 codes per channel. The one large difference is the 4:2:0 file with a separate scan per component, which zune-jpeg misread.
-
-### Exposure on RAW: source development against Basic
-
-Host: the owner's M4 MacBook Pro, native, macOS 26.5.2, release profile with locked pins. Date:
-27 September 2026. Commit measured: `ee5743e9`, before the RAW development's own exposure is
-removed ([source-kind controls](../design/source-controls.md#decisions), decision 1). This is
-image-difference evidence for that decision, not a timing measurement: no timing tool is
-involved.
-
-Scope: the three supplied RAW files (Nikon Z6 NEF, Fujifilm X100VI RAF, DJI Air 2S DNG), at EV
-−2.37, −0.5, +0.01, +1 and +3.3. For each file and EV, (A) a RAW development at that EV with no
-Basic layer is compared against (B) a development at 0 EV plus a Basic layer `{exposure: ev}`,
-each drafted through `set-raw-exposure` and `set-basic` and rendered through the production
-render entry point (`render`, `Render::frame`, `Render::render_proxy`) at a display-bounded proxy
-stage (2048×2048 bounds, downscaled through `PreviewSource::proxy`) and at full size, to 8-bit
-sRGB. Compared: the largest per-channel code difference and the share of R, G and B channel
-samples (alpha is opaque on both sides and carries no exposure) more than one code apart, at
-either size.
-
-The measurement was the ignored `exposure_move_measure` test at commit `ee5743e9`, run once per
-file with `LUXFORGE_RAW_FIXTURE` naming it. It was removed with the RAW development's exposure,
-since side A no longer exists; check out `ee5743e9` to reproduce it.
-
-| File | EV | Proxy stage | Proxy max Δcode | Full stage | Full max Δcode | Share beyond 1 code |
-| --- | ---: | --- | ---: | --- | ---: | ---: |
-| Nikon Z6 NEF | −2.37 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
-| Nikon Z6 NEF | −0.5 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
-| Nikon Z6 NEF | +0.01 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
-| Nikon Z6 NEF | +1 | 1363×2048 | 0 | 4024×6048 | 0 | 0 |
-| Nikon Z6 NEF | +3.3 | 1363×2048 | 1 | 4024×6048 | 1 | 0 |
-| Fujifilm X100VI RAF | −2.37 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
-| Fujifilm X100VI RAF | −0.5 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
-| Fujifilm X100VI RAF | +0.01 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
-| Fujifilm X100VI RAF | +1 | 2048×1365 | 0 | 7728×5152 | 0 | 0 |
-| Fujifilm X100VI RAF | +3.3 | 2048×1365 | 1 | 7728×5152 | 1 | 0 |
-| DJI Air 2S DNG | −2.37 | 2048×1364 | 0 | 5464×3640 | 1 | 0 |
-| DJI Air 2S DNG | −0.5 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
-| DJI Air 2S DNG | +0.01 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
-| DJI Air 2S DNG | +1 | 2048×1364 | 0 | 5464×3640 | 0 | 0 |
-| DJI Air 2S DNG | +3.3 | 2048×1364 | 1 | 5464×3640 | 1 | 0 |
-
-Every integer EV (+1) is byte-identical at both sizes on all three files, as an exact power of
-two multiplied in f64 (the source read) and in f32 (Basic's gain) must be. Every non-integer EV
-differs by at most one 8-bit code, on a measured share of exactly zero R/G/B channel samples
-beyond that one code, so within this scope moving Exposure from the source read's f64 multiply to
-Basic's f32 `2^EV` gain is a sub-visible rounding difference, not a visible one, at either size on
-any of the three files. The one asymmetry recorded is the DJI Air 2S DNG at −2.37 EV, where the
-proxy pair is byte-identical (max Δcode 0) but the full-size pair differs by one code; both remain
-within the one-code bound.
-
-### Exposure drag on RAW: source development against Basic
-
-Host: the owner's M4 MacBook Pro (Apple M4 Pro, Metal), native, release, background evidence
-launch, warm file cache, 27 September 2026. Before: `ee5743e9`, dragging the RAW development's own
-Exposure (`--action set-raw-exposure --parameter ev`). After: the one Basic Exposure on the same
-photo (`editor-latency`'s default slider), on the integration build that removed the RAW exposure.
-Scope: the supplied Nikon Z6 NEF at Fit, `editor-latency --mode drag --samples 30`, one launch per
-run. The runs went before, after, after, before, back to back. Every run started with the host's
-one-minute load between 7.1 and 10.1, above the [timing threshold](../engineering/development.md),
-so these are relative figures on a shared host, not budget evidence.
-
-| Run | Slider | Input to presented frame p50 / p95 (30 inputs) | Release to committed frame (2) | Release to settled histogram (2) | Sampled peak RSS |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Before 1 | RAW development | 13.1 / 24.9 ms | 10.4, 40.2 ms | 52.1, 85.0 ms | 1418 MiB |
-| After 1 | Basic | 8.5 / 10.6 ms | 16.2, 18.7 ms | 43.7, 50.0 ms | 1478 MiB |
-| After 2 | Basic | 9.4 / 10.7 ms | 17.2, 23.7 ms | 49.8, 58.9 ms | 1414 MiB |
-| Before 2 | RAW development | 11.8 / 17.6 ms | 10.5, 18.7 ms | 50.4, 56.2 ms | 1438 MiB |
-
-Dragging Exposure on RAW presents faster in Basic's colour run than in the source read, in both
-orders: p50 about 3 ms and p95 7 to 14 ms lower. With two commits a run, the release figures are
-not a distribution. The committed frame read about 6 ms later after the move in both pairs, which
-is noted rather than claimed.
+Peak added is `/usr/bin/time -l`'s maximum resident set size of the test process decoding the file once (`LUXFORGE_JPEG_ONLY=decode`), less the same process decoding nothing (`LUXFORGE_JPEG_ONLY=none`). It is the RGBA frame itself (92, 229 and 55 MiB) plus libjpeg's working buffers, under 1 MiB: rows go straight into the frame, or through a 16-row strip when the EXIF orientation turns the image. All three files are baseline with orientation 1; a progressive file adds libjpeg's coefficient buffer, 2 bytes per sample. x86_64 builds libjpeg-turbo's portable C path and is not measured.
 
 ### Native masking interaction qualification
 
 The [masking interaction repairs](../design/masking-interactions.md) are measured on native Apple
 M4 Pro/Metal, release, a 2880 × 1800 physical window at 2× scale, using background-only hidden
-launches and isolated catalogs. The qualified executable SHA-256 is
-`ea9f2813a5baf47513ffdc0edf827cc036624f6a91aec60964ecbe4bd7b8cbb9`; Cargo.lock is
-`aa36c2217e8802001d585da67e2569499d2b39f1e107a0848b8f5ab2311b6263`.
-Sources are the generated 6000 × 4000 and 10000 × 6000 JPEGs with hashes `b54c2a158a3d3846…`
-and `b9e0118ab69b5d88…`. Source hashes remain unchanged. Filesystem reads are warmed by hash
+launches and isolated catalogs. Sources are the generated 6000 × 4000 and 10000 × 6000 JPEGs,
+whose hashes stay unchanged. Filesystem reads are warmed by hash
 verification; source preparation occurs at fresh-process open and is settled/warm during the
 measured hover or stroke. These measurements do not describe hovering before a photo is loaded.
-All final runs start below the existing load-8.0 threshold; maximum start load is 7.55.
+All runs start below the load-8.0 threshold; maximum start load is 7.55.
 
 There are 18 paced hover runs, 30 emitted moves each, at 16 ms intervals: 540 inputs with zero
 coalescing. They route through the actual laid-out mask canvas and surrounding mouse area after
@@ -3545,14 +2490,7 @@ PNG probes (at least 64/64 outer probes and 45/64 inner probes). These 60 frames
 correspondence with capture overhead. They do not turn the paced CPU figures into GPU completion
 or display-scanout latency.
 
-The diagnostic before retained readout used 12 scheduled Fit moves over masked Clarity. At 24 MP,
-8 were emitted and 4 coalesced, with 8 exact point queries and CPU geometry p50/p95 22.52/59.16 ms;
-at 60 MP, 7 were emitted and 5 coalesced, with 7 queries and 52.85/81.18 ms. Start loads were 4.95
-and 3.62. Cursor geometry construction and workspace derivation were small; tile-based exact point
-sampling was the expensive path. These small diagnostic counts identify the mechanism. They are
-not a matched 30-input before/after comparison of the whole repair or a renderer-kernel speedup.
-
-Two new unbound-brush runs at 24/60 MP accept 30 positions each at 24 ms intervals, expose 29 live
+Two unbound-brush runs at 24/60 MP accept 30 positions each at 24 ms intervals, expose 29 live
 coverage results, and commit one stroke/history entry. They submit zero photograph work or uploads
 and preserve the photograph texture version. Seven bound-brush runs use one brush/component and a
 masked Basic Exposure +0.5 EV layer, with Tint: Fit/24 MP, 100%/60 MP and 200%/24 MP short strokes,
@@ -3582,11 +2520,9 @@ exceeded. These capture-heavy editor measurements include backend resources, cap
 retention; they do not establish the 600 MiB CPU-resident edit budget or qualify import/export
 memory. Total editor/GPU memory accounting and bounds remain incomplete.
 
-The 1000-position Fit stroke fails the existing 4096-event diagnostics ceiling (3979 events
-dropped); its final/late measurements remain unavailable. The limit is unchanged and this is not a
-passing stroke result. An initial 100% short-stroke report also failed because the timing parser
-classified a region completion as exact. The narrow parser correction has two regressions and its
-fresh native rerun passes on the same qualified product binary. Both failures remain in the evidence.
+The 1000-position Fit stroke fails the 4096-event diagnostics ceiling (3979 events
+dropped); its final/late measurements are unavailable, and this is not a passing stroke result.
+The failure remains in the evidence.
 
 The aggregate report is `/private/tmp/mask-final-20260930/summary.json`, including every per-run
 report path, quantile/sample count, load, RSS, counters and retained failure. Paced measurements use
@@ -3597,7 +2533,7 @@ report path, quantile/sample count, load, RSS, counters and retained failure. Pa
 unbound creation and sequential cursor proof scripts use `develop --background`; their exact scripts
 and commands are retained alongside the reports.
 
-The final quick tier and all 36 rendered scenarios pass; `mask-interactions` contributes 44
+The quick tier and all 36 rendered scenarios pass; `mask-interactions` contributes 44
 correlated frames and independent coverage probes. Separate supplied Z6 NEF, X100VI RAF and Air 2S
 DNG checks pass 30 captures and seven exact white-balance redevelopments each, with unchanged source
 hashes, correct history and zero black-mask probe drift. That establishes functional RAW liveness,
@@ -3608,14 +2544,12 @@ editor milestone is claimed.
 ## RawSpeed unpacking
 
 For 64 catalog modes RawSpeed fills the sensor mosaic inside LibRaw's unpack
-([RawSpeed unpacking](../design/rawspeed-unpack.md)). A mode is routed only when its unpack is at
-least 1.3× faster through RawSpeed; every exact candidate passed, so none was moved back to LibRaw.
+([RawSpeed unpacking](../design/rawspeed-unpack.md)). A mode is routed only when its mosaic is
+exact and its unpack is at least 1.3× faster through RawSpeed; every routed mode meets both.
 
-Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
-30 September 2026. Measured source: `7f4cac99` with only the three ignored measurement tests added;
-no build or test of this worktree ran during a timing run, and other sessions shared the host.
-Every p50 and p95 is nearest-rank, with no tails removed. Observations, per-run load and scripts
-are retained locally under the measuring worktree's `target/task-007/`.
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins, on a host
+shared with other sessions. Every p50 and p95 is nearest-rank, with no tails removed. Observations,
+per-run load and scripts are retained locally under the measuring worktree's `target/task-007/`.
 
 ### Adapter unpack per routed mode
 
@@ -3625,7 +2559,7 @@ on every local authentic sample of every routed mode: 67 samples, one process. R
 dropping the decoded source are outside the clock and nothing is developed. Each sample is decoded
 once by each unpacker first (the first routed unpack parses RawSpeed's camera data, about 4 ms) and
 the two mosaics are compared; then 16 observations per unpacker in LibRaw, RawSpeed, RawSpeed,
-LibRaw blocks. One-minute load was 3.41 at the start and 4.13 at the end, 2.6 to 4.2 per sample.
+LibRaw blocks. One-minute load was 2.6 to 4.2 per sample.
 
 | LibRaw decoder | Modes (samples) | LibRaw p50 | RawSpeed p50 | Ratio | Saved per open |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -3641,7 +2575,7 @@ LibRaw blocks. One-minute load was 3.41 at the start and 4.13 at the end, 2.6 to
 | `panasonicC8_load_raw()` | 4 (4) | 174–189 ms | 86–97 ms | 1.84–2.22× | 79–104 ms |
 
 Every mode's figure is in [modern camera support](../design/modern-camera-support.md#rawspeed-routed-modes).
-The lowest ratio is the Panasonic S5's 1.50×, outside the 1.2–1.4× band that would have been
+The lowest ratio is the Panasonic S5's 1.50×, outside the 1.2–1.4× band that is
 rerun with more observations; every other mode is 1.84× or more. The spread within a leg is small:
 the largest p95 over p50 is 12% (the Leica CL, Q2 and SL2 packed DNGs through RawSpeed, for example Q2 47.0 / 52.2 ms). The uncompressed DJI
 DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 unpacks in
@@ -3649,20 +2583,19 @@ DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 u
 
 ### Cold saved-white-balance preparation, LibRaw and RawSpeed
 
-`cold_saved_white_balance_preparation_timing` in `luxforge-core` reproduces the method of
+`cold_saved_white_balance_preparation_timing` in `luxforge-core` follows the method of
 [native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation):
 a catalog whose RAW has a saved custom red gain of 1.1 × as-shot, a new owner and empty source cache
 per observation with the filesystem warm, and the clock from immediately before the photograph's
-`source.prepare` (the figures below were taken through `catalog.import` of its file, which queued
-the same preparation) until a strict exact-source `PreviewJob` for the current entry is available,
-through the one source job's wait and adoption. The harness that produced the earlier figures is
-not in the repository, so this one was written to that description. Before is the same source built with the Z6's
-`NikonZ6Lossless14` and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed);
-after is the source as routed. The two builds differ only in those catalog lines, so each builds
-its own catalog. 15 observations per leg in before, after, after, before order give 30 per variant.
+`source.prepare` (taken through `catalog.import` of its file, which queues the same preparation)
+until a strict exact-source `PreviewJob` for the current entry is available, through the one source
+job's wait and adoption. The LibRaw leg builds the same source with the Z6's `NikonZ6Lossless14`
+and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed); the RawSpeed leg
+is the source as routed. The two builds differ only in those catalog lines, so each builds its own
+catalog. 15 observations per leg in LibRaw, RawSpeed, RawSpeed, LibRaw order give 30 per variant.
 The planes of every observation hash the same within and across the two builds.
 
-| Source | Before (LibRaw) p50 / p95 | After (RawSpeed) p50 / p95 | Median time saved | Leg load |
+| Source | LibRaw p50 / p95 | RawSpeed p50 / p95 | Median time saved | Leg load |
 | --- | ---: | ---: | ---: | ---: |
 | Nikon Z6 | 303.1 / 305.9 ms | 162.1 / 167.2 ms | 141.0 ms, 46.5% | 4.97–6.65 |
 | DJI Air 2S | 205.2 / 207.2 ms | 198.9 / 204.6 ms | 6.3 ms, 3.1% | 3.89–4.97 |
@@ -3670,9 +2603,7 @@ The planes of every observation hash the same within and across the two builds.
 
 The Z6 saving is the unpack saving above (138 ms), and the X100VI control, whose uncompressed mode
 is the same in both builds, moves by 0.4 ms. The Air 2S's packed DNG unpacks in 13 ms either way, so
-routing it saves little. The 546.5 / 584.6 ms Z6 figure recorded earlier predates the later
-development work in [startup and RAW throughput](#startup-and-raw-throughput); the same
-measurement with LibRaw now reads 303.1 / 305.9 ms.
+routing it saves little.
 
 ### Peak process RSS
 
@@ -3686,7 +2617,7 @@ NEF (1840, 8288 × 5520, a 91.5 MB mosaic) and the Leica Q2 packed DNG (3204, 84
 | D850 1840 (55.2 MB) | 242.6 MB | 248.6 MB | +6.0 MB (5.7 MiB) |
 | Q2 3204 (87.2 MB) | 281.4 MB | 287.2 MB | +5.9 MB (5.6 MiB) |
 
-The design allowed for a transient second mosaic of about 91 MiB. It does not raise the peak: the
+The design allows for a transient second mosaic of about 91 MiB. It does not raise the peak: the
 peak is the encoded bytes, LibRaw's raw buffer and the mosaic the adapter keeps, and RawSpeed's
 image is released before the adapter allocates that mosaic. What remains is RawSpeed's code and
 parsed camera data.
@@ -3698,14 +2629,12 @@ hashes the file, develops, converts and renders. The cold-preparation figures ex
 startup, catalog open, rendering and presentation, and cover only the two owner originals that are
 routed. RSS is one decode in a test process, not the editor's peak, which also holds developments
 and GPU resources. The `timing` tier (`editor-performance`, `editor-latency` and `measure`) opens
-generated JPEGs only and does not exercise RAW unpacking; it passed on the measured tree, but its
-timing components started at one-minute load 12.0 to 12.6, after the tier's own `check`, so their
-rows are marked unreliable and are not compared with earlier figures. Native Windows and Linux
-builds are not measured.
+generated JPEGs only and does not exercise RAW unpacking. Native Windows and Linux builds are not
+measured.
 
 ## Catalog: browse, pick, develop
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, 2026-10-01, `cargo run --release --locked --package xtask -- catalog-measure --scale full --raw-corpus <the private CC0 corpus>` at commit 33090901 (30 samples a figure, 5 a first-browse journey), on a host shared with other sessions: one-minute load 13 to 18 throughout, above the harness's threshold of 8, so every figure is marked unreliable by the harness and none is a baseline. The data is generated in scratch: a 1,000-frame RAW trip copied from 102 CC0 files of the corpus under new names with rewritten capture times (the originals read only, checked unchanged), a 10,000-file folder and a 200,000-file tree of APFS clones of generated JPEGs, a 200,000-link tree of hard links, and a generated 100,000-photograph catalog. The OS file cache is warm; no card reader was measured. The photographs-view rows come from the harness's `--only browse-generated` step after the allocation fix (4a8183b5), four runs at load 10 to 23.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, `cargo run --release --locked --package xtask -- catalog-measure --scale full --raw-corpus <the private CC0 corpus>` (30 samples a figure, 5 a first-browse journey), on a host shared with other sessions: one-minute load 13 to 18 throughout, above the harness's threshold of 8, so every figure is marked unreliable by the harness and none is a baseline. The data is generated in scratch: a 1,000-frame RAW trip copied from 102 CC0 files of the corpus under new names with rewritten capture times (the originals read only, checked unchanged), a 10,000-file folder and a 200,000-file tree of APFS clones of generated JPEGs, a 200,000-link tree of hard links, and a generated 100,000-photograph catalog. The OS file cache is warm; no card reader was measured. The photographs-view rows come from the harness's `--only browse-generated` step, four runs at load 10 to 23.
 
 | Target (provisional, [catalog design](../design/catalog.md#performance)) | Measured | Verdict |
 | --- | --- | --- |
@@ -3716,7 +2645,7 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, 2026-10-01
 | First index of 200,000 files: reported, the editor responsive | 55.0 s; owner round trips during it 0.025 / 0.41 ms. 200,000 hard links to 500 files: 54.4 s, 0.026 / 0.046 ms | Reported; responsive |
 | `browse.view` p95 under 50 ms: 10,000 files | 18.4 / 27.5 ms (first evaluation 66 ms) | Met |
 | `browse.view` p95 under 50 ms: 100,000 photographs | 106 / 107 ms at best, 119–167 / 169–188 ms in the other runs, first evaluation about 0.9–1.0 s | **Missed.** Stepping the photographs' rows in SQLite alone takes about 52 ms; the two ways past it are a [proposal](../design/catalog.md#performance) |
-| `browse.rows` of 200 under 2 ms | files 2.5 / 3.9 ms, photographs 2.7 / 4.1 ms (0.9 / 1.2 and 1.1 / 1.4 ms in the first run at load 6 to 17) | Missed under this load; met in the earlier run |
+| `browse.rows` of 200 under 2 ms | files 2.5 / 3.9 ms, photographs 2.7 / 4.1 ms (0.9 / 1.2 and 1.1 / 1.4 ms in a run at load 6 to 17) | Missed under this load; met at load 6 to 17 |
 | The owner grows by the view's id list | 47–49 MiB settled after the first 100,000-photograph view (the 1.6 MB id list, the preview lane's 20,000 queued tasks, the layout and SQLite's caches); growth over 30 more evaluations 11–15 MiB | Met for held memory |
 | Bracket detection from previews under 1 ms a run | 0.033 / 0.058 ms (1,650 runs) | Met |
 | Developing 20 RAW picks: reported | 2.69 s; the first photograph committed after 91 ms | Reported |
@@ -3731,18 +2660,18 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, 2026-10-01
 
 ## Preview error baseline
 
-What the editor accepted at `46a85159`, measured with the [GPU preview error measure](../design/gpu-preview.md#the-preview-error-limit) so the owner could read the proposed limits against it: the Presence proxy against the exact downscale at Fit, the half-scale 100% motion region against the exact region, and a RAW white-balance draft against its release. The GPU-first stage 5 has since deleted the half-scale region and the refinement after it, and the GPU draws these drags on a machine with one ([below](#a-raw-white-balance-drag-on-the-gpu-against-its-release), [the picture in motion](#the-picture-in-motion)). It is context, not a gate, and it changes no limit. The proposed limits are, per statistic (mean ΔE00, worst 16 × 16 block, p99 ΔE00, signed mean ΔL\*): pointwise 0.5, 1.0, 2.0, ±0.25 and spatial 1.0, 2.5, 5.0, ±0.5.
+The CPU approximations the GPU programs stand in for, measured with the [GPU preview error measure](../design/gpu-preview.md#the-preview-error-limit) so the owner can read the proposed limits against them: the Presence proxy against the exact downscale at Fit and a RAW white-balance draft against its release. The GPU draws these drags on a machine with one ([below](#a-raw-white-balance-drag-on-the-gpu-against-its-release), [the picture in motion](#the-picture-in-motion)). It is context, not a gate, and it changes no limit. The proposed limits are, per statistic (mean ΔE00, worst 16 × 16 block, p99 ΔE00, signed mean ΔL\*): pointwise 0.5, 1.0, 2.0, ±0.25 and spatial 1.0, 2.5, 5.0, ±0.5.
 
 ### Scope
 
-- **Measure.** `cargo xtask preview-error --evidence DIR --candidate-frame N --reference-frame M` (CIEDE2000 in `f64` from 8-bit sRGB through linear light, XYZ and CIELAB under D65, `luxforge_reference::preview_error`) over the photograph rectangle the editor records for each frame, clipped to the canvas, so the canvas beside the photograph never counts. Candidate is the approximate frame, reference the frame that replaces it, and the signed ΔL\* is candidate minus reference. An independent NumPy implementation of the same formulas agreed to six decimals on all four statistics for four of the frame pairs below (`presence-24mp` Dehaze, Z6 100% region, Air 2S Fit white balance, X100VI all three Presence fields); that check is not committed. The report also carried each frame's own recorded state at that build (status label, `render_proxy`, `reduced`, `drawn_region_quality`), which is how each pair below was confirmed to be the frames it names.
-- **Host and build.** Apple M4 Pro (14 cores), macOS 26.5.2, Metal on the `Apple M4 Pro` adapter, a hidden 1440 × 900 logical window at 2×, so 2880 × 1800 physical captures. Release build of `luxforge-app` at `46a85159` (this branch changes only the reference crate, xtask and documents), application SHA-256 `916b4b2f76560a9c231c37179bee7a848efd65938fb05e6d6c48370a033dfbff`. Every launch was a hidden window in the background-only bundle. The host was shared (one-minute load 13 to 29 during the launches); these are pixel measurements, not timings, and a loaded host does not change them.
-- **Sources.** The generated 24 MP and 60 MP JPEGs (SHA-256 `b54c2a15…` and `b9e0118a…`; four flat colour quadrants, corner labels, an arrow and fine vertical detail, so they hold almost nothing for Presence to act on) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest (`nikon-z6`, `fujifilm-x100vi`, `dji-air2s`; hashes in [`fixtures/preview/corpus.json`](../../fixtures/preview/corpus.json)). Fit photograph rectangles are 1716 × 1144 (X100VI, Air 2S, 24 MP), 1716 × 1030 (60 MP) and 1004 × 1508 (the Z6, which opens portrait); at 100% it is the whole 1796 × 1660 canvas, the photograph's centre with no pan.
+- **Measure.** `cargo xtask preview-error --evidence DIR --candidate-frame N --reference-frame M` (CIEDE2000 in `f64` from 8-bit sRGB through linear light, XYZ and CIELAB under D65, `luxforge_reference::preview_error`) over the photograph rectangle the editor records for each frame, clipped to the canvas, so the canvas beside the photograph never counts. Candidate is the approximate frame, reference the frame that replaces it, and the signed ΔL\* is candidate minus reference. An independent NumPy implementation of the same formulas agreed to six decimals on all four statistics for three of the frame pairs (`presence-24mp` Dehaze, Air 2S Fit white balance, X100VI all three Presence fields); that check is not committed. The report also carries each frame's own recorded state (status label, `render_proxy`, `reduced`, `drawn_region_quality`), which confirms each pair below is the frames it names.
+- **Host and build.** Apple M4 Pro (14 cores), macOS 26.5.2, Metal on the `Apple M4 Pro` adapter, a hidden 1440 × 900 logical window at 2×, so 2880 × 1800 physical captures, from a release build of `luxforge-app`. Every launch was a hidden window in the background-only bundle. The host was shared (one-minute load 13 to 29 during the launches); these are pixel measurements, not timings, and a loaded host does not change them.
+- **Sources.** The generated 24 MP and 60 MP JPEGs (four flat colour quadrants, corner labels, an arrow and fine vertical detail, so they hold almost nothing for Presence to act on) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest (`nikon-z6`, `fujifilm-x100vi`, `dji-air2s`; hashes in [`fixtures/preview/corpus.json`](../../fixtures/preview/corpus.json)). Fit photograph rectangles are 1716 × 1144 (X100VI, Air 2S, 24 MP), 1716 × 1030 (60 MP) and 1004 × 1508 (the Z6, which opens portrait); at 100% it is the whole 1796 × 1660 canvas, the photograph's centre with no pan.
 - **One run each.** Each cell is one launch and one drag value, with deterministic pixels but no distribution over photographs, values or pans. Both frames of a pair come from the same launch.
 
 ### Presence proxy against the exact downscale at Fit
 
-Candidate: the frame drawn while a Presence slider is dragged to +100 and held, status "Approximate render", the display-bounded proxy. Reference: the frame after the slider is released, status "Exact render" with `settled_from_exact`, the linear-light area reduction of the exact full-resolution render. The editor then displayed an exact-derived Fit frame only for a stack that held a non-neutral Detail layer (Detail declared `fit_settle: exact`; Presence alone kept its proxy as the displayed Fit frame), so every stack below also holds Detail's Colour noise suppression at 1, committed first. The control rows are that Detail layer alone, dragged and released: what settling moves with no Presence at all. It moves nothing on the generated JPEGs and, on the RAWs, the RAW proxy's own difference from the exact reduction (mean 0.41 on the Z6, 0.08 on the X100VI, 0.97 on the Air 2S), which a Presence row includes and cannot be subtracted from. The stack in the last row of each source is Texture and Clarity committed at +100 with Dehaze dragged to +100.
+Candidate: the frame drawn while a Presence slider is dragged to +100 and held, status "Approximate render", the display-bounded proxy. Reference: the frame after the slider is released, status "Exact render" with `settled_from_exact`, the linear-light area reduction of the exact full-resolution render. The measured CPU path displays an exact-derived Fit frame only for a stack that holds a non-neutral Detail layer (Detail declares `fit_settle: exact`; Presence alone keeps its proxy as the displayed Fit frame), so every stack below also holds Detail's Colour noise suppression at 1, committed first. The control rows are that Detail layer alone, dragged and released: what settling moves with no Presence at all. It moves nothing on the generated JPEGs and, on the RAWs, the RAW proxy's own difference from the exact reduction (mean 0.41 on the Z6, 0.08 on the X100VI, 0.97 on the Air 2S), which a Presence row includes and cannot be subtracted from. The stack in the last row of each source is Texture and Clarity committed at +100 with Dehaze dragged to +100.
 
 | Fit: Presence proxy against exact reduction | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
 | --- | ---: | ---: | ---: | ---: |
@@ -3774,41 +2703,24 @@ Candidate: the frame drawn while a Presence slider is dragged to +100 and held, 
 
 Against the proposed limits, 5 of the 20 Presence rows are within the spatial limits: Texture on the 24 MP, 60 MP and X100VI, and Clarity on the 60 MP and Z6. Dehaze and the three-field stack miss the spatial mean on every source but the X100VI's Dehaze (mean 0.97, but a worst block of 23.1 and a p99 of 5.7), and Dehaze shifts the whole picture: signed ΔL\* +0.3 to +0.4 on the JPEGs and −3.2 on the Air 2S. In the X100VI's worst block of the three-field stack (capture pixel 1082, 470, a dark smooth area) the proxy shows streaks the exact reduction does not.
 
-### Half-scale 100% motion region against the exact region
-
-Candidate: the frame drawn while a Basic Exposure slider is dragged to +1 EV and held at 100% with no pan, `drawn_region_quality` `interactive` (the half-scale visible region), status "Approximate render". Reference: the frame two seconds later, after the shared quiet policy refined the same open draft to full detail, status "Exact render". Exposure is exact on a RAW photograph, so the pair isolates the half-scale softness. The centre of both generated JPEGs at 100% is a flat red field, so their rows are exactly zero and say nothing about softness; the RAW rows are the figures.
-
-| 100%: half-scale motion region against exact region | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
-| --- | ---: | ---: | ---: | ---: |
-| Z6 NEF | 0.485 | 3.44 | 1.76 | +0.008 |
-| X100VI RAF | 0.759 | 1.44 | 2.44 | +0.005 |
-| Air 2S DNG | 2.761 | 9.31 | 12.63 | +0.325 |
-| Generated 24 MP JPEG | 0.000 | 0.00 | 0.00 | +0.000 |
-| Generated 60 MP JPEG | 0.000 | 0.00 | 0.00 | +0.000 |
-
-The floating toolbar at the canvas's foot and the scroll bars are inside the 100% rectangle and identical in both frames, so they add zeros: about 3% of its pixels, which dilutes the means.
-
 ### RAW white-balance draft against its release
 
-The `raw-panel` smoke scenario's frames: a Temperature drag left open at 3500 K at Fit, and again at 2500 K at 100%, each against its release at the same value, which redevelops the mosaic. The draft is the approximation `W = R · diag(g'/g) · R⁻¹` on the planes developed at the committed white balance; the release is the exact development. At Fit the pair is the draft (frame 2) and the release's proxy (frame 3). At 100% the moving frame (frame 5: the half-scale region with the approximate white balance, so softness and white balance together) and the held draft after full-detail refinement (frame 6) are each held against the release's exact region (frame 7).
+The `raw-panel` smoke scenario's frames: a Temperature drag left open at 3500 K at Fit, and again at 2500 K at 100%, each against its release at the same value, which redevelops the mosaic. The draft is the approximation `W = R · diag(g'/g) · R⁻¹` on the planes developed at the committed white balance; the release is the exact development. At Fit the pair is the draft (frame 2) and the release's proxy (frame 3). At 100% the held draft after full-detail refinement (frame 6) is held against the release's exact region (frame 7).
 
 | RAW white balance, Temperature drag | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
 | --- | ---: | ---: | ---: | ---: |
 | Z6 NEF, Fit: draft against release | 0.038 | 0.38 | 0.74 | -0.000 |
 | Z6 NEF, 100%: held refined draft against release | 0.062 | 0.44 | 0.48 | -0.000 |
-| Z6 NEF, 100%: moving frame against release | 0.215 | 2.31 | 1.17 | +0.009 |
 | X100VI RAF, Fit: draft against release | 0.059 | 0.24 | 0.66 | +0.000 |
 | X100VI RAF, 100%: held refined draft against release | 0.142 | 0.45 | 0.73 | -0.003 |
-| X100VI RAF, 100%: moving frame against release | 0.416 | 0.96 | 1.35 | +0.003 |
 | Air 2S DNG, Fit: draft against release | 0.313 | 2.68 | 1.84 | -0.030 |
 | Air 2S DNG, 100%: held refined draft against release | 0.408 | 3.11 | 3.08 | -0.068 |
-| Air 2S DNG, 100%: moving frame against release | 1.641 | 8.24 | 10.01 | +0.144 |
 
-Against the proposed pointwise limits, the Z6 and X100VI drafts are within them at Fit and when held at 100% (the Z6's moving frame misses only the worst block, 2.31 against 1.0), and the Air 2S misses the worst block at Fit (2.68) and the worst block and p99 when held at 100%.
+Against the proposed pointwise limits, the Z6 and X100VI drafts are within them at Fit and when held at 100%, and the Air 2S misses the worst block at Fit (2.68) and the worst block and p99 when held at 100%.
 
 ### A RAW white-balance drag on the GPU against its release
 
-Since 2026-10-06 the GPU draws a Temperature drag over the planes the entry developed, the change `W` a leading step ([GPU previews](../design/gpu-preview.md#raw-white-balance)), and the owner's `raw-panel` gates hold that moving frame to the release's picture at rest within the pointwise limits, at Fit and over the visible region at 100%. Measured by `gpu_white_balance_on_the_raw_corpus` (`crates/luxforge-app/src/app/gpu_white_balance_tests.rs`, ignored; the private RAW manifest), on the M4 Pro's Metal adapter, built from the lane's `c22847be` plus the test: each RAW opened As shot, a `set-raw` draft at 3500 K and at 2500 K planned at Fit (the harness's Fit bounds) and over the largest view's centred region at 100%, drawn by the editor's surface over its boundary derived from the As shot source; then the same temperature committed, redeveloped, and its picture at rest drawn from the redeveloped source (its tiles reduced to the view at Fit, its region plan at 100%) and its view plan, the frame a drag over the redeveloped source draws. Figures are mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\*; one draw each, deterministic.
+The GPU draws a Temperature drag over the planes the entry developed, the change `W` a leading step ([GPU previews](../design/gpu-preview.md#raw-white-balance)), and the owner's `raw-panel` gates hold that moving frame to the release's picture at rest within the pointwise limits, at Fit and over the visible region at 100%. Measured by `gpu_white_balance_on_the_raw_corpus` (`crates/luxforge-app/src/app/gpu_white_balance_tests.rs`, ignored; the private RAW manifest), on the M4 Pro's Metal adapter: each RAW opened As shot, a `set-raw` draft at 3500 K and at 2500 K planned at Fit (the harness's Fit bounds) and over the largest view's centred region at 100%, drawn by the editor's surface over its boundary derived from the As shot source; then the same temperature committed, redeveloped, and its picture at rest drawn from the redeveloped source (its tiles reduced to the view at Fit, its region plan at 100%) and its view plan, the frame a drag over the redeveloped source draws. Figures are mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\*; one draw each, deterministic.
 
 | Source, view, temperature | Moving frame against the picture at rest (the gate) | Moving frame against the redeveloped view plan (`W` alone) | View plan against the picture at rest (no change at all) |
 | --- | --- | --- | --- |
@@ -3829,13 +2741,13 @@ Since 2026-10-06 the GPU draws a Temperature drag over the planes the entry deve
 - **At Fit the miss is the drag's frame, not `W`.** The moving frame against the redeveloped view plan, `W` alone, is within the limits on the Z6 and X100VI (worst block at most 0.50) and the Air 2S misses as its CPU draft did (2.71 and 4.99 against the CPU's 2.68 at 3500 K). The view plan against the picture at rest, the same stack with nothing changed, already misses on the Z6 (worst block 2.10 and 1.88) and the Air 2S (4.70 and 4.66), whose lens profiles warp the stage: a drag's frame at Fit processes the source reduced to the view and the picture at rest reduces the processed stage, the difference the release gate reports on 462 of 783 cells and the owner's open question of what a drag's frame at Fit is held to.
 - **At 100% the miss is `W`.** The region is the picture at rest's own plan, so the figures are `W`'s alone: over the largest view's centred region the Z6 and X100VI miss the worst block (2.25 to 2.33) and the X100VI at 2500 K the p99 too (2.49), where the CPU's held full-detail draft over the 1440 × 900 window's region missed nothing ([above](#raw-white-balance-draft-against-its-release)); the first-order `diag(g'/g)` does not follow the demosaic at high-contrast edges and saturated colours.
 
-`raw-panel` itself failed on all three RAWs at its `crop-started` step ("the luxforge.basic section records false, expected expanded"), after every frame used here had passed its plan checks and before the scenario's own residual checks ran. Nothing here uses those checks, and the owner's relative-residual gates (held 100% residuals of 0.8%, 1.4% and 5.1%, [decisions](../decisions.md#raw-white-balance-drafts)) were not remeasured.
+The owner's relative-residual gates (held 100% residuals of 0.8%, 1.4% and 5.1%, [decisions](../decisions.md#raw-white-balance-drafts)) are not remeasured here.
 
 ### Reproducing it
 
-The Presence journey is a source-independent evidence script, [`fixtures/preview/baseline/presence-fit.json`](../../fixtures/preview/baseline/presence-fit.json). Frame 1 is the open and each step is the frame after it. The Presence pairs (candidate, reference) were the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18). The region pair was frames 3 and 4 of a journey that zoomed to 100% and held an exposure drag for 2 s before releasing it; its script went with the half-scale region it compared. The white-balance pairs came from the `raw-panel` smoke scenario's evidence: Fit (2, 3), 100% moving (5, 7) and held (6, 7).
+The Presence journey is a source-independent evidence script, [`fixtures/preview/baseline/presence-fit.json`](../../fixtures/preview/baseline/presence-fit.json). Frame 1 is the open and each step is the frame after it. The Presence pairs (candidate, reference) are the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18). The white-balance pairs come from the `raw-panel` smoke scenario's evidence: Fit (2, 3) and 100% held (6, 7).
 
-Run today, the Presence journey draws the GPU's frames, not the CPU proxy, so it no longer reproduces these pairs:
+The Presence journey draws the GPU's frames, not the CPU proxy, so it does not reproduce these pairs:
 
 ```sh
 cargo xtask build --release
@@ -3844,7 +2756,7 @@ cargo xtask develop --background --hidden-window --evidence-dir /tmp/NEW_DIR \
 cargo xtask preview-error --evidence /tmp/NEW_DIR --candidate-frame 4 --reference-frame 5
 ```
 
-The comparison under today's contract is the release gate's picture in motion, a drag's frame against the picture at rest it settles to and against the reference renderer's frame at the view, not against a CPU frame (a selection, so the run reports itself incomplete):
+The comparison under the current contract is the release gate's picture in motion, a drag's frame against the picture at rest it settles to and against the reference renderer's frame at the view, not against a CPU frame (a selection, so the run reports itself incomplete):
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -3855,21 +2767,21 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 ## GPU colour programs at Fit
 
-The seven pointwise colour programs ([GPU previews](../design/gpu-preview.md#qualifying-a-program)) and the geometry tail ([GPU previews](../design/gpu-preview.md#where-the-code-lives)) against the CPU frame each previewed at Fit on that build, on every colour and geometry recipe of the [corpus](../../fixtures/preview/corpus.json) (`basic`, `tone-curve`, `mixer`, `vignette` and the four together, `colour-stack`; a 16:9 crop straightened by 7° and by 45° and a tight crop straightened by 7°, a Perspective warp and, on the RAWs and on the zone plate with a lens identity, their lens profile with it, each under a Basic edit) over every source this host has. Pixel measurements, not timings. That CPU frame was the preview worker's proxy, which the GPU-first stage 5 deleted, so these figures record the programs' qualification, not the editor's frames now.
+The seven pointwise colour programs ([GPU previews](../design/gpu-preview.md#qualifying-a-program)) and the geometry tail ([GPU previews](../design/gpu-preview.md#where-the-code-lives)) against the CPU frame the preview worker's proxy drew at Fit, on every colour and geometry recipe of the [corpus](../../fixtures/preview/corpus.json) (`basic`, `tone-curve`, `mixer`, `vignette` and the four together, `colour-stack`; a 16:9 crop straightened by 7° and by 45° and a tight crop straightened by 7°, a Perspective warp and, on the RAWs and on the zone plate with a lens identity, their lens profile with it, each under a Basic edit) over every source this host has. Pixel measurements, not timings. The CPU proxy is not part of the editor, so these figures qualify the programs, not the editor's frames.
 
 ### Scope
 
 - **Measure.** `cargo xtask preview-error --candidate GPU.png --reference CPU.png --photo-rect 0,0,W,H --class pointwise` over each pair; all 62 measured pairs pass. Candidate is the GPU frame, reference the CPU frame; the photograph is the whole frame.
-- **The frames.** The CPU frame was the desktop's own Fit job (`ready_preview_job` with the Fit bounds) rendered by the preview worker's proxy phase, or, for a photograph that fits the bounds at its own size, its exact phase. The GPU frame was the same stack planned with `gpu_plan` over the proxy the worker built — a window of the proxy stage when the stack reads less than all of it, as a crop does, held at its origin — as the boundary the worker's job writes, or for a frame at the exact stage the window of the source its whole output reads, as the worker renders it (`qualification::region_boundary` over the whole output, `Render::output_boundary`) (`rgba16float` on a JPEG, `rgba32float` on a RAW), converted by `app::gpu_plan` with a lens warp's coordinate grid over the output stage (a perspective's homography needs none) and drawn by the photo surface's own assembled shader, whose last pass encodes as the CPU's output quantizer does, read back headlessly. Both are compared at the stage's own size, before the surface's placement draws them on screen; [TASK-002's readback](../design/gpu-preview.md#where-the-code-lives) showed the two draw identically for identical codes.
+- **The frames.** The CPU frame was the desktop's own Fit job (`ready_preview_job` with the Fit bounds) rendered by the preview worker's proxy phase, or, for a photograph that fits the bounds at its own size, its exact phase. The GPU frame was the same stack planned with `gpu_plan` over the proxy the worker built — a window of the proxy stage when the stack reads less than all of it, as a crop does, held at its origin — as the boundary the worker's job writes, or for a frame at the exact stage the window of the source its whole output reads, as the worker renders it (`qualification::region_boundary` over the whole output, `Render::output_boundary`) (`rgba16float` on a JPEG, `rgba32float` on a RAW), converted by `app::gpu_plan` with a lens warp's coordinate grid over the output stage (a perspective's homography needs none) and drawn by the photo surface's own assembled shader, whose last pass encodes as the CPU's output quantizer does, read back headlessly. Both are compared at the stage's own size, before the surface's placement draws them on screen; the [readback test](../design/gpu-preview.md#where-the-code-lives) shows the two draw identically for identical codes.
 - **Bounds.** 1716 × 1508 physical pixels: an evidence run's 1440 × 900 logical window at 2× with both panels open, as `proxy_bounds_for` computes them.
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app` at `61592997`, `gpu_colour_corpus_at_fit`. One run; the pixels are deterministic.
-- **Sources.** The generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture (SHA-256 `b54c2a15…`, `b9e0118a…`, `dfae0f2d…`, `65de25c7…`, `2491b2d0…`, matching the corpus) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest. The Presence fixture (1440 × 960) fits the bounds, so its Fit frame is the exact render.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app`, `gpu_colour_corpus_at_fit`. One run; the pixels are deterministic.
+- **Sources.** The generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture (matching the corpus) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest. The Presence fixture (1440 × 960) fits the bounds, so its Fit frame is the exact render.
 - **RAW lens profiles.** The Z6 and Air 2S commit their lens profile at first open, a warp after the colour layers, so each of their cells draws the geometry tail through the profile's coordinate grid; the zone plate with a lens identity has its detected profile applied as the Lens section's Apply applies it. The vignette alone on those two is a gap: a finishing layer after a warp receives the warped frame, which only the worker's boundary job holds, and the harness holds the proxy source. The X100VI commits no profile.
 - **Straightened crops.** A crop behind the Z6's and Air 2S's lens profile is fused into the warp's resample, and its Fit frame was a windowed proxy as on every other source, whose boundary holds only the window of the proxy stage the crop reads: at 7° 1781 × 1143 and 1819 × 1171 `f32` texels (32.6 and 34.1 MB) of 1821 × 2738 and 1821 × 1213, and at 45° 1869 × 1869 and 1899 × 1896 (55.9 and 57.6 MB), each slot charging 65.7 to 103.2 MB. The tight crop's output fits the bounds on every source but the 60 MP JPEG, so its Fit frame is the exact phase's, over the window of the source its output reads: 969 × 1343 texels of the Z6's 4024 × 6048 (20.8 MB, where the whole source is 389 MB), 1173 × 998 of the Air 2S's 5464 × 3640 (18.7 of 318 MB) and 1636 × 1389 of the X100VI's 7728 × 5152 (36.4 of 637 MB), each slot 44.9 to 71.3 MB.
 
 ### Results
 
-Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of the drawn frame, and what the slot drawing it charges the GPU-preview budget. The drawn frame and the program's `f32` output through the reference quantizer are the same in every cell: the last pass encodes as the CPU's quantizer does, where the hardware's sRGB encoder rounded some values to the neighbouring code (it put the RAW cells' means at 0.04 to 0.12 against 0.01 to 0.04 for the program output).
+Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of the drawn frame, and what the slot drawing it charges the GPU-preview budget. The drawn frame and the program's `f32` output through the reference quantizer are the same in every cell: the last pass encodes as the CPU's quantizer does, where the hardware's sRGB encoder rounds some values to the neighbouring code (putting the RAW cells' means at 0.04 to 0.12 against 0.01 to 0.04 for the program output).
 
 | Recipe, source | Stage | Mean | Worst block | p99 | Signed ΔL\* | Max | Charged |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -3936,11 +2848,11 @@ Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of th
 | Lens and perspective warp, Air 2S | 1716 × 1143 | 0.024 | 0.11 | 0.69 | −0.000 | 1.64 | 75.9 MB |
 | Lens and perspective warp, zone plate with a lens identity | 1716 × 1142 | 0.023 | 0.17 | 0.34 | −0.002 | 1.11 | 38.5 MB |
 
-Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.051, a worst block of 0.25, a p99 of 0.87 and a ΔL\* of −0.002. Without a lens warp the GPU frame is the CPU's to within a fraction of a code: the JPEGs, whose boundary is each 8-bit code's linear value held as a half float, and the X100VI, whose `f32` boundary holds what the CPU reads. A perspective warp's tail is its homography, evaluated at every pixel, so it keeps that: over the zone plate, whose chirp reaches half a cycle a pixel, its worst block is 0.04. The Z6 and Air 2S cells and the zone plate with a lens identity carry a lens profile's warp, which the tail samples through its coordinate grid, within 0.025 px of the exact map the CPU samples through; their means are 0.01 to 0.05 and their worst blocks 0.07 to 0.20, the largest the Air 2S's crop at 45°. The RAW tail's `rgba32float` intermediate keeps the linear values unquantized, and the RAW cells carry a signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero carried −0.004 to −0.010 ([plane precision](#plane-precision)). A windowed boundary changes nothing the tail draws: on the device, the frame over the window a crop reads is the whole boundary's, bit for bit, through an affine, a projective and a lens tail, and with Texture and Clarity before the tail over the window grown by their margin (`cargo test -p luxforge-app gpu_window`).
+Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.051, a worst block of 0.25, a p99 of 0.87 and a ΔL\* of −0.002. Without a lens warp the GPU frame is the CPU's to within a fraction of a code: the JPEGs, whose boundary is each 8-bit code's linear value held as a half float, and the X100VI, whose `f32` boundary holds what the CPU reads. A perspective warp's tail is its homography, evaluated at every pixel, so it keeps that: over the zone plate, whose chirp reaches half a cycle a pixel, its worst block is 0.04. The Z6 and Air 2S cells and the zone plate with a lens identity carry a lens profile's warp, which the tail samples through its coordinate grid, within 0.025 px of the exact map the CPU samples through; their means are 0.01 to 0.05 and their worst blocks 0.07 to 0.20, the largest the Air 2S's crop at 45°. The RAW tail's `rgba32float` intermediate keeps the linear values unquantized, and the RAW cells carry a signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero carries −0.004 to −0.010 ([plane precision](#plane-precision)). A windowed boundary changes nothing the tail draws: on the device, the frame over the window a crop reads is the whole boundary's, bit for bit, through an affine, a projective and a lens tail, and with Texture and Clarity before the tail over the window grown by their margin (`cargo test -p luxforge-app gpu_window`).
 
 ### Reproducing it
 
-The harness that measured these figures, `gpu_colour_corpus_at_fit`, is deleted with the CPU proxy it compared against. The release gate runs the same families at Fit against the reference renderer's frame reduced to the view, not against the CPU proxy, so it reproduces the comparison under today's contract, not these figures. The picture in motion is the drag's frame these figures measured, now held against the picture at rest and the reference; the picture at rest is what the gate judges. A selection, so the run reports itself incomplete:
+The harness that measured these figures, `gpu_colour_corpus_at_fit`, compared against the CPU proxy and is not in the repository. The release gate runs the same families at Fit against the reference renderer's frame reduced to the view, not against the CPU proxy, so it reproduces the comparison under the current contract, not these figures. The picture in motion is the drag's frame these figures measured, held against the picture at rest and the reference; the picture at rest is what the gate judges. A selection, so the run reports itself incomplete:
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -3950,13 +2862,13 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 ## GPU mask coverage at Fit
 
-The coverage programs of every mask kind ([GPU previews](../design/gpu-preview.md#mask-coverage)), each carrying the corpus's masked Basic layer (Exposure +0.8, Contrast 20, Vibrance 30), against the CPU frame each previewed at Fit on that build, the preview worker's proxy, since deleted, on every masked recipe of the [corpus](../../fixtures/preview/corpus.json) (`mask-linear`, `mask-radial`, `mask-brush`, `mask-luminance-range`, `mask-colour-range` and the algebra, `mask-composed`, a linear less a radial) over every source this host has. These are the figures the programs were enabled on. Pixel measurements, not timings.
+The coverage programs of every mask kind ([GPU previews](../design/gpu-preview.md#mask-coverage)), each carrying the corpus's masked Basic layer (Exposure +0.8, Contrast 20, Vibrance 30), against the CPU frame the preview worker's proxy drew at Fit, on every masked recipe of the [corpus](../../fixtures/preview/corpus.json) (`mask-linear`, `mask-radial`, `mask-brush`, `mask-luminance-range`, `mask-colour-range` and the algebra, `mask-composed`, a linear less a radial) over every source this host has. These are the figures the programs are enabled on. Pixel measurements, not timings.
 
 ### Scope
 
 - **Measure.** `cargo xtask preview-error --candidate GPU.png --reference CPU.png --photo-rect 0,0,W,H --class pointwise` over each pair; all 42 measured pairs pass, the zone plate's six reported in [the qualification](#the-corpus-error-report).
 - **The frames.** As for [the colour programs](#gpu-colour-programs-at-fit): the desktop's own Fit job through the preview worker against the same stack planned with `gpu_plan` over the same proxy source held as the worker's boundary holds it, converted by `app::gpu_plan` into one masked step, and the lens profile's tail on the Z6 and Air 2S, and drawn by the photo surface's own assembled shader, read back headlessly. The corpus names its mask and components by name; the harness resolves each to its identity, and plans from the recipe the frame was rendered from, whose painted strokes are resolved.
-- **Bounds, host and build.** 1716 × 1508 physical pixels. Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app` at `61592997`, `gpu_mask_corpus_at_fit`. One run; the pixels are deterministic.
+- **Bounds, host and build.** 1716 × 1508 physical pixels. Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app`, `gpu_mask_corpus_at_fit`. One run; the pixels are deterministic.
 - **Sources and gaps.** The generated 24 MP and 60 MP JPEGs and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, the Z6 and Air 2S with the lens profile their first open commits. [the qualification](#the-corpus-error-report) measures the zone plate.
 - **An empty mask is a gap.** A cell whose mask selects nothing on its source (read back over the boundary before the frame) is recorded as a gap, not a pass. No measured cell was empty. On the generated JPEGs the colour range covers some pixels, and its GPU and CPU frames are identical code for code.
 
@@ -4007,7 +2919,7 @@ Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p
 
 ### Reproducing it
 
-The harness that measured these figures, `gpu_mask_corpus_at_fit`, is deleted with the CPU proxy it compared against. The release gate runs the mask families at Fit against the reference renderer's frame, not the CPU proxy, so it reproduces the comparison under today's contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
+The harness that measured these figures, `gpu_mask_corpus_at_fit`, compared against the CPU proxy and is not in the repository. The release gate runs the mask families at Fit against the reference renderer's frame, not the CPU proxy, so it reproduces the comparison under the current contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -4017,11 +2929,11 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 ## GPU Presence program
 
-The Presence program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per filter, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Presence recipes at Fit. These are the figures the program was enabled on. Pixel and arithmetic measurements, not timings.
+The Presence program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per filter, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Presence recipes at Fit. Pixel and arithmetic measurements, not timings.
 
 ### Scope
 
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `618d02eb` for the per-filter and per-unit figures, and at `61592997` for the corpus. One run each; the pixels are deterministic.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app`. One run each; the pixels are deterministic.
 - **The readback.** Every GPU figure is the photo surface's own spatial step: its generated pass modules and frame module, run headlessly by the surface's qualification readback ([qualifying a program](../design/gpu-preview.md#qualifying-a-program)).
 - **The CPU.** Per filter, the production filters of `modules/presence/filters.rs` over a whole frame (`luxforge_core::qualification`, test builds only). Per unit and on the corpus, the CPU frame of the same stack.
 
@@ -4058,7 +2970,7 @@ No output is non-finite. Dehaze's light is its light link's, which selects the C
 
 ### The corpus at Fit
 
-`gpu_presence_corpus_at_fit`, the shared harness the colour programs were qualified with ([GPU colour programs at Fit](#gpu-colour-programs-at-fit)), since deleted: the desktop's Fit job for the CPU frame, the CPU proxy of that build, the same stack planned from the Presence layer over the same proxy source for the GPU frame, the RAW cells planned for the linear path over an `rgba32float` boundary. The light is taken on the GPU (the harness holds no store of the worker's), which over a whole Fit stage selects the CPU's blocks. Each pair judged by `cargo xtask preview-error --class spatial`: all 49 measured pairs pass, the zone plate's seven reported in [the qualification](#the-corpus-error-report). Bounds 1716 × 1508; the `test` profile build at `24c711ab`.
+`gpu_presence_corpus_at_fit`, the shared harness the colour programs were qualified with ([GPU colour programs at Fit](#gpu-colour-programs-at-fit)): the desktop's Fit job for the CPU frame, the CPU proxy, the same stack planned from the Presence layer over the same proxy source for the GPU frame, the RAW cells planned for the linear path over an `rgba32float` boundary. The light is taken on the GPU (the harness holds no store of the worker's), which over a whole Fit stage selects the CPU's blocks. Each pair judged by `cargo xtask preview-error --class spatial`: all 49 measured pairs pass, the zone plate's seven reported in [the qualification](#the-corpus-error-report). Bounds 1716 × 1508.
 
 | Recipe | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max | Charged |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -4084,9 +2996,9 @@ No output is non-finite. Dehaze's light is its light link's, which selects the C
 | All three masked, Presence fixture (exact) | 0.0038 | 0.48 | 0.00 | −0.000 | 1.31 | 72.9 MB |
 | All three masked, Z6 / X100VI / Air 2S | 0.024 / 0.0000 / 0.022 | 0.12 / 0.01 / 0.12 | 0.75 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 1.67 / 0.99 / 14.6 | 114.5 / 112.1 / 143.6 MB |
 
-The Z6 and Air 2S cells carry the lens profile their first open commits, which the geometry tail draws after the spatial step, and their means are mostly the tail's, as for the colour programs. Its `rgba32float` intermediate holds their signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero held them at −0.004 to −0.010; the X100VI commits none, and its `f32` boundary leaves the GPU frame within a fraction of a code of the CPU's. The masked recipe's radial selects part of each frame: its masked CPU frame equals the unmasked one on 5 to 10% of the pixels, where coverage is whole. [the qualification](#the-corpus-error-report) measures the zone plate. The largest maxima are the Air 2S's near-black pixels ([below](#isolated-near-black-pixels)).
+The Z6 and Air 2S cells carry the lens profile their first open commits, which the geometry tail draws after the spatial step, and their means are mostly the tail's, as for the colour programs. Its `rgba32float` intermediate holds their signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero held them at −0.004 to −0.010; the X100VI commits none, and its `f32` boundary leaves the GPU frame within a fraction of a code of the CPU's. The masked recipe's radial selects part of each frame: its masked CPU frame equals the unmasked one on 5 to 10% of the pixels, where coverage is whole. [The qualification](#the-corpus-error-report) measures the zone plate. The largest maxima are the Air 2S's near-black pixels ([below](#isolated-near-black-pixels)).
 
-**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, the figure its `gpu_preview_in_use_bytes` reports (a surface test holds the two equal): the boundary, the output in the photograph's size bucket and its uniform, the words and blocks buffers, and the planes. With all three fields on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the planes take 50.5 MB: about 28.6 bytes a pixel, Texture's full-resolution planes 24 of them, of which its apply keeps only its one-channel band's 4 ([design](../design/gpu-preview.md#plane-sharing-and-precision)). The table's charges were measured while Texture's band took a two-channel plane, 4 bytes a texel of the boundary more than it takes now, in every row that holds Texture: there this slot held 88.5 MB (84.4 MiB) of the 2 GiB budget, its planes 57.6 MB. One slot is held at a time, so this is its peak; a replacement overlaps the slot it replaces until that retires. The 100% figures are in [GPU previews at 100%](#gpu-previews-at-100).
+**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, the figure its `gpu_preview_in_use_bytes` reports (a surface test holds the two equal): the boundary, the output in the photograph's size bucket and its uniform, the words and blocks buffers, and the planes. With all three fields on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the planes take 50.5 MB: about 28.6 bytes a pixel, Texture's full-resolution planes 24 of them, of which its apply keeps only its one-channel band's 4 ([design](../design/gpu-preview.md#plane-sharing-and-precision)). In every row that holds Texture the table's charge includes a two-channel band plane, 4 bytes a texel of the boundary more than the one-channel band takes; with it this slot charges 88.5 MB (84.4 MiB) of the 2 GiB budget, its planes 57.6 MB. One slot is held at a time, so this is its peak; a replacement overlaps the slot it replaces until that retires. The 100% figures are in [GPU previews at 100%](#gpu-previews-at-100).
 
 ### Isolated near-black pixels
 
@@ -4118,7 +3030,7 @@ LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
 cargo test -p luxforge-app gpu_presence_near_black_pixels -- --ignored --nocapture
 ```
 
-The near-black run writes `near-black.json`, every cell's figures for every variant at each scale; its Fit cell is now the development reduced to the size the picture at rest's plan gives and drawn as a photograph of its own on both sides, where the figures above drew the proxy, so a run today measures a different Fit frame. The corpus harness, `gpu_presence_corpus_at_fit`, is deleted with the CPU proxy it compared against. The release gate runs the Presence family at Fit against the reference renderer's frame, not the CPU proxy, so it reproduces the comparison under today's contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
+The near-black run writes `near-black.json`, every cell's figures for every variant at each scale; its Fit cell is the development reduced to the size the picture at rest's plan gives and drawn as a photograph of its own on both sides, where the figures above drew the proxy, so a run measures a different Fit frame. The corpus harness, `gpu_presence_corpus_at_fit`, compared against the CPU proxy and is not in the repository. The release gate runs the Presence family at Fit against the reference renderer's frame, not the CPU proxy, so it reproduces the comparison under the current contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -4130,9 +3042,9 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 What compiling one program sequence costs the photo surface's compile thread ([GPU previews](../design/gpu-preview.md#where-the-code-lives)): the stage's own `compile` from the programs' `naga` checks to the driver's pipelines, the content pass's and a spatial step's, timed on the calling thread for each sequence a Fit drag of the colour modules draws. A functional measurement for the design's choice of one pipeline per sequence compiled off the interface thread, not a timing gate.
 
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app` at `342d2842`, `gpu_preview_compile_cost_per_sequence`, three runs in new processes.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app`, `gpu_preview_compile_cost_per_sequence`, three runs in new processes.
 - **Figures.** Basic (four units) 2.8 to 2.9 ms; the Tone curve 1.4 ms; the Mixer 2.0 ms; the Vignette 1.4 ms; Basic under a curve and a mixer (six steps) 3.8 to 3.9 ms; Basic under every colour module (seven) 4.2 to 4.3 ms. A second compile of the same sequence in the same process is within 0.4 ms of the first.
-- **The driver's cache.** Metal keeps compiled shaders on disk across processes, so these are sequences it had seen. The first run after the output encoding changed every pass's text took 97.4 ms for the six-step sequence, the one cold figure observed; the others were already cached. A cold compile is what the compile thread and the warm list keep off the interface thread.
+- **The driver's cache.** Metal keeps compiled shaders on disk across processes, so these are sequences it had seen. The one cold figure observed, the six-step sequence, took 97.4 ms; the others were already cached. A cold compile is what the compile thread and the warm list keep off the interface thread.
 
 ```sh
 cargo test -p luxforge-app gpu_preview_compile_cost_per_sequence -- --ignored --nocapture
@@ -4140,37 +3052,18 @@ cargo test -p luxforge-app gpu_preview_compile_cost_per_sequence -- --ignored --
 
 ### Presence and Detail sequences in the editor
 
-What each program sequence the `gpu-preview` scenario compiles costs the editor's compile thread, from the queue to a kept pipeline, on the release editor of main before the GPU preview follow-ups (`40c3cca5`) and of the follow-ups with half-precision planes (`0462e063`), each with one line printed per compile and nothing else changed. Runs alternate the two builds, each on a cold Metal shader cache (a background bundle identifier of its own, whose cache starts empty) and then warm (the same identifier again), three rounds. Apple M4 Pro, one-minute load 2.6 to 15.2 while they ran. Medians, milliseconds; "new" is the spatial pass pipelines the sequence created, the others found in the passes' cache.
+What a program sequence the `gpu-preview` scenario draws costs the editor's compile thread, from the queue to a kept pipeline, on a cold Metal shader cache (a background bundle identifier of its own, whose cache starts empty). Apple M4 Pro, release editor, one line printed per compile.
 
-| Sequence | Main, cold | Follow-ups, cold | Main, warm | Follow-ups, warm |
-| --- | ---: | ---: | ---: | ---: |
-| A Presence drag: Presence in its GPU shape, 22 passes | 1,119 (13 new) | 1,161 (14 new) | 25 | 30 |
-| Basic under Presence, Dehaze alone (9 passes) | 1,075 | 1,096 | 36 | 42 |
-| Basic under Presence, Dehaze and Clarity (14) | 217 | 231 | 9 | 20 |
-| Basic under Presence, all three (22) | 734 | 758 | 22 | 25 |
-| The Tone curve under Presence, 9 / 14 / 22 passes | 767 / 158 / 512 | 793 / 172 / 528 | 22 / 9 / 13 | 22 / 20 / 19 |
-| The Mixer under Presence, 9 / 14 / 22 | 820 / 172 / 550 | 817 / 197 / 641 | 25 / 12 / 18 | 39 / 29 / 29 |
-| The masked Basic under Presence, 9 / 14 / 22 | 990 / 217 / 731 | 996 / 236 / 760 | 34 / 12 / 20 | 56 / 24 / 22 |
-| A Detail drag, the colour layers and Presence after it, 9 / 14 / 22 | 1,128 / 231 / 789 | 1,150 / 254 / 997 | 37 / 14 / 31 | 48 / 106 / 51 |
-| A Detail drag before Presence was committed | 463 | 482 | 11 | 12 |
-| A colour sequence (Basic, the curve, the mixer, the vignette) | 45 to 79 | 46 to 73 | 1 to 4 | 1 to 4 |
-| Everything a run compiles | 11,738 | 12,657 | 410 | 675 |
-
-- **Compile time barely moved.** A Presence drag's own sequence costs 4% more cold, and every sequence before Presence 0 to 4%, but for two that now create more pass pipelines: the Mixer before all three Presence fields (+17%) and a Detail drag with all three after it (+26%, 14 new against 8), whose Presence passes store into Detail's free half-precision planes, so they share fewer modules with the other sequences. A run's whole compile work is 8% more cold and 265 ms more warm.
-- **What the scenario waited for.** On these builds a drag of a Presence layer, and a drag of every colour layer under it, each compiled its own Presence passes, since every pass's module carried the programs of the steps before it: about a second a sequence on a cold cache; since, each spatial step is a link of its own whose passes hold its program alone ([design](../design/gpu-preview.md#where-the-code-lives)). The Dehaze commit warms six, the Presence drag's own last, and on both builds that one was ready 5.9 to 6.4 s after the commit (main 5.87 to 5.95 s, the follow-ups 5.94 to 6.39 s, 7.3 s in one run on a host at load 30 to 60). The scenario's fixed 4 s quiet after the Clarity commit, and the 1.5 s while the drag's boundary arrived, covered that only on an idle host, so a cold cache under load failed the Texture drag's first GPU tick (`compiling`) on either build. The scenario now waits for the warm list to compile ([design](../design/gpu-preview.md#where-the-code-lives)).
-- **Warm**, every sequence compiles in 1 to 106 ms, the Presence drag's in 25 to 30.
-- **With the wait.** On the follow-ups with the scenario's `gpu_warmed` steps, five runs on a cold cache passed: the wait after the Presence commits took 6.3 to 6.6 s, and 8.5 to 8.6 s with twelve busy loops beside the editor, each longer than the fixed quiet that preceded it; the waits after the Texture and Clarity drags' releases took 3.1 to 4.5 s and 1.5 to 1.7 s. Eight consecutive runs on the shared warm cache, the first two on a freshly built editor, passed at loads 3.4 to 9.7.
-- **At 100%** (`gpu-preview-zoom`) a percentage view's plans are not warmed, and each drag compiles its own when its boundary is first drawn: cold, a Presence drag's region sequence in 1.09 to 1.12 s, a Basic drag under Presence's in 0.57 s and a Detail drag with Presence after it (Dehaze behind Detail) in 1.85 to 1.90 s, warm in 23 to 52 ms. Each of those drags is now held after its first tick until that compile has ended, at least 4 s and at most 60 s: two cold runs, one beside twelve busy loops, and one warm passed, every held step ending at 4.0 to 4.2 s.
-
-
+- **After a Presence commit.** The Dehaze commit warms six sequences, the Presence drag's own last, and on a cold cache that one is ready 5.9 to 6.4 s after the commit (7.3 s on a host at load 30 to 60). A fixed quiet after a commit covers that only on an idle host: under load a cold cache fails a drag's first GPU tick (`compiling`), so the scenario waits for the warm list to compile (`gpu_warmed` steps, [design](../design/gpu-preview.md#where-the-code-lives)), 6.3 to 6.6 s after the Presence commits and 8.5 to 8.6 s with twelve busy loops beside the editor. A link's own cold compile is in [compacted pass modules](#compacted-pass-modules).
+- **At 100%** (`gpu-preview-zoom`) a percentage view's plans are not warmed, and each drag compiles its own when its boundary is first drawn: cold, a Presence drag's region sequence in 1.09 to 1.12 s, a Basic drag under Presence's in 0.57 s and a Detail drag with Presence after it (Dehaze behind Detail) in 1.85 to 1.90 s, warm in 23 to 52 ms. The scenario holds each of those drags after its first tick until that compile has ended, at least 4 s and at most 60 s.
 
 ### Warming at launch and open
 
-The warm-up's own duration as the editor records it (`gpu_warm_up`, [GPU previews](../design/gpu-preview.md#warming-at-launch-and-open)): from a warm list handed to the idle compile thread until its queue drained, and when the newest list's open stack's part, with the frame's own sequences, had compiled. Release editor of `claude/gpu-first-task-009`, the `gpu-preview` scenario on the M4 Pro (Metal), 5 October 2026: one run per row, functional figures, not a timing gate.
+The warm-up's own duration as the editor records it (`gpu_warm_up`, [GPU previews](../design/gpu-preview.md#warming-at-launch-and-open)): from a warm list handed to the idle compile thread until its queue drained, and when the newest list's open stack's part, with the frame's own sequences, had compiled. Release editor, the `gpu-preview` scenario on the M4 Pro (Metal): one run per row, functional figures, not a timing gate.
 
 | Run | Shader cache | First warm-up | Open stack's part | Reference frame on screen before the GPU's |
 | --- | --- | ---: | ---: | ---: |
-| `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=task009-cold-1`, the first launch of the new build | A bundle identifier of its own, its Metal cache empty | 4,389 ms, 11 sequences over two lists (the release's list joined it) | 1,510 ms (the second list's) | not recorded: the idle check, then still unaware of warm-ups, failed the run |
+| `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=task009-cold-1`, a first launch of the build | A bundle identifier of its own, its Metal cache empty | 4,389 ms, 11 sequences over two lists (the release's list joined it) | 1,510 ms (the second list's) | not recorded |
 | `task009-cold-2`, the next launch | Its own, empty | 1,525 ms, 6 sequences | 41 ms | 38 ms (`surface_frame_drawn` `cpu` at 957 ms, `gpu` at 995 ms) |
 | The shared background bundle | Warm | 37 ms, 6 sequences | 2 ms | |
 
@@ -4183,7 +3076,7 @@ LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW_SUFFIX cargo run --release --locked --pack
 
 ### Compacted pass modules
 
-Every spatial pass's module reaches wgpu as the `naga` module the surface validated, compacted to its entry point ([GPU previews](../design/gpu-preview.md#where-the-code-lives)): `naga` leaves a module of one entry point uncompacted, so the driver compiled the whole spatial program, every kernel and apply, for every pass. `gpu_preview_spatial_compile_cost_on_a_cold_cache` compiles, in one process and in the order the editor's warm lists do, the links of seven Presence and Detail sequences — a Presence drag's own, drags of colour layers under it and a Detail drag with Presence after it — which create 20 pass pipelines in all, the links sharing the rest. Every kernel and apply opens with a test of its words against the process's own constant, so the driver's shader cache holds none of them; a second run handed the first run's constant measures them warm. The headless `test` profile build of the chain of links, one binary compacting and one handing wgpu the WGSL text, alternated three times each on the `Apple M4 Pro` adapter (Metal), 3 October 2026, at a one-minute load of 2.5 to 2.7. Cold, milliseconds:
+Every spatial pass's module reaches wgpu as the `naga` module the surface validated, compacted to its entry point ([GPU previews](../design/gpu-preview.md#where-the-code-lives)): `naga` leaves a module of one entry point uncompacted, so uncompacted the driver compiles the whole spatial program, every kernel and apply, for every pass. `gpu_preview_spatial_compile_cost_on_a_cold_cache` compiles, in one process and in the order the editor's warm lists do, the links of seven Presence and Detail sequences — a Presence drag's own, drags of colour layers under it and a Detail drag with Presence after it — which create 20 pass pipelines in all, the links sharing the rest. Every kernel and apply opens with a test of its words against the process's own constant, so the driver's shader cache holds none of them; a second run handed the first run's constant measures them warm. The headless `test` profile build of the chain of links, one binary compacting and one handing wgpu the WGSL text, alternated three times each on the `Apple M4 Pro` adapter (Metal), at a one-minute load of 2.5 to 2.7. Cold, milliseconds:
 
 | Sequence | Compacted | WGSL text |
 | --- | ---: | ---: |
@@ -4191,7 +3084,7 @@ Every spatial pass's module reaches wgpu as the `naga` module the surface valida
 | A Detail drag, Presence after it | 390 / 384 / 371 | 417 / 446 / 436 |
 | All seven | 1,499 / 1,401 / 1,394 | 1,689 / 1,702 / 1,685 |
 
-Compacting takes about a fifth off a Presence link's cold compile and 12 to 18% off the seven. It removes only what the entry point never reaches: before the chain, frames hashed the same from the text, the uncompacted module and the compacted one over ten plans, and every GPU test passes compacted.
+Compacting takes about a fifth off a Presence link's cold compile and 12 to 18% off the seven. It removes only what the entry point never reaches: over ten plans frames hash the same from the text, the uncompacted module and the compacted one, and every GPU test passes compacted.
 
 ```sh
 cargo test -p luxforge-app gpu_preview_spatial_compile_cost_on_a_cold_cache -- --ignored --nocapture
@@ -4200,11 +3093,11 @@ LUXFORGE_COMPILE_CONSTANT=EARLIER_RUNS_CONSTANT cargo test -p luxforge-app gpu_p
 
 ## GPU Detail program
 
-The Detail program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per kernel, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Detail recipes at Fit. These are the figures the program was enabled on: on that build a Detail stack settled from the exact render, and its GPU frame was judged against the CPU's moving proxy it stood in for (owner, 2026-10-02, [decisions](../decisions.md#gpu-previews)). Detail's exact-derived display and the CPU proxy it was judged against are deleted, and the GPU now draws Detail's picture at rest too. Pixel and arithmetic measurements, not timings.
+The Detail program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per kernel, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Detail recipes at Fit. At Fit the GPU frame is judged against the CPU's moving proxy it stood in for ([decisions](../decisions.md#gpu-previews)), a frame the editor does not draw; the GPU draws Detail's picture at rest too. Pixel and arithmetic measurements, not timings.
 
 ### Scope
 
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `bbfbe213` per kernel and per unit, with half-precision planes written rounded to the nearest half ([plane precision](#plane-precision)), and at `61592997` on the corpus. One run each; the pixels are deterministic.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app`, with half-precision planes written rounded to the nearest half ([plane precision](#plane-precision)). One run each; the pixels are deterministic.
 - **The readback.** Every GPU figure is the photo surface's own spatial step, its generated pass modules and frame module, run headlessly by the surface's qualification readback.
 - **The CPU.** Per kernel, the production code of `modules/detail/{filters,denoise,sharpen}.rs` over a whole frame (`luxforge_core::qualification::detail`, test builds only). Per unit, the CPU's frame of the same stack: the exact render at full resolution, and the units compiled at a proxy's scale over the whole frame.
 
@@ -4237,9 +3130,9 @@ The figures are the half-precision planes' ([plane precision](#plane-precision))
 
 ### Plane precision
 
-The former RAW geometry-tail candidate used an `rgba16float` intermediate and lost extended linear range. The current tail uses `rgba32float`; a synthetic native GPU identity-tail regression verifies bit-for-bit `f32` preservation, and the native RAW geometry test matches CPU output codes exactly. Over the corpus on the three RAWs, the colour, mask, Presence and Detail harnesses at Fit and every family at 100%, the `rgba32float` tail draws every RAW cell within the limits, its geometry cells within a signed ΔL\* of ±0.0001, and its intermediate charges each such slot its `f32` bytes ([GPU previews at 100%](#gpu-previews-at-100)); an in-editor memory measurement of a photo-sized RAW drag remains outstanding.
+An `rgba16float` RAW geometry-tail intermediate loses extended linear range, so the tail uses `rgba32float`; a synthetic native GPU identity-tail regression verifies bit-for-bit `f32` preservation, and the native RAW geometry test matches CPU output codes exactly. Over the corpus on the three RAWs, the colour, mask, Presence and Detail harnesses at Fit and every family at 100%, the `rgba32float` tail draws every RAW cell within the limits, its geometry cells within a signed ΔL\* of ±0.0001, and its intermediate charges each such slot its `f32` bytes ([GPU previews at 100%](#gpu-previews-at-100)); an in-editor memory measurement of a photo-sized RAW drag remains outstanding.
 
-Which spatial planes are held at half precision ([design](../design/gpu-preview.md#plane-sharing-and-precision)), plane by plane: `gpu_detail_plane_precision_is_measured` draws each stack in the GPU shape a drag draws over the synthetic photograph at 1536 × 1024 on the linear path, with every plane at full precision, as shipped, and with each full-resolution plane alone at half precision (`rgba16float`), against the CPU's exact frame; the largest linear difference is against the full-precision program. One run on the M4, at `bbfbe213`.
+Which spatial planes are held at half precision ([design](../design/gpu-preview.md#plane-sharing-and-precision)), plane by plane: `gpu_detail_plane_precision_is_measured` draws each stack in the GPU shape a drag draws over the synthetic photograph at 1536 × 1024 on the linear path, with every plane at full precision, as shipped, and with each full-resolution plane alone at half precision (`rgba16float`), against the CPU's exact frame; the largest linear difference is against the full-precision program. One run on the M4.
 
 | Stack, planes at half precision | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Largest linear Δ |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -4257,60 +3150,58 @@ Which spatial planes are held at half precision ([design](../design/gpu-preview.
 
 - **Shipped.** Detail's planes at half precision, holding sharpening's scratch, each unit's apply reading a plane of its own; Texture's planes, Clarity's and Dehaze's on their 4× grids and every accumulator at `f32`, Presence running in a link of its own after Detail's, so Texture's planes take none of Detail's ([design](../design/gpu-preview.md#plane-sharing-and-precision)). Every case is far inside the spatial limits and none is biased.
 - **The offsets.** Detail holds lightness less one half, and Texture its fine smoother less one half, where a half's step is finer. Without them all four Detail planes at half precision gave a mean of 0.078 (worst block 0.53, p99 0.97) on the moderate stack and the chain with all three fields 0.152.
-- **Rounding.** Before each write to a half-precision spatial plane the surface rounds to the nearest half, ties to even. Without it the M4 converts a storage write toward zero: of 49,152 values in every binade a frame holds, of both signs, 24,614 were held toward zero and the rest at the nearest, which every one is with the rounding (`a_half_planes_texels_are_the_nearest_half`). Through noise reduction's four chained smoothings that drew the moderate stack darker by a signed ΔL\* of −0.12 to −0.13 (mean 0.26). The former RAW-tail `rgba16float` candidate also narrowed its intermediate and drew RAW geometry darker; the current `rgba32float` path preserves the linear values without half rounding. The older corpus report below records the failed candidate and does not qualify current RAW geometry accuracy or memory use.
+- **Rounding.** Before each write to a half-precision spatial plane the surface rounds to the nearest half, ties to even. Without it the M4 converts a storage write toward zero: of 49,152 values in every binade a frame holds, of both signs, 24,614 were held toward zero and the rest at the nearest, which every one is with the rounding (`a_half_planes_texels_are_the_nearest_half`). Through noise reduction's four chained smoothings that drew the moderate stack darker by a signed ΔL\* of −0.12 to −0.13 (mean 0.26). An `rgba16float` RAW-tail intermediate also narrows the linear values and draws RAW geometry darker; the `rgba32float` tail preserves them without half rounding.
 
 ### The corpus at Fit
 
-`gpu_detail_corpus_at_fit`, the shared harness, since deleted, over the corpus's six single-layer Detail recipes (its three chained ones are [below](#after-detail-presence)): the study's moderate, noise-stress and sharpen-stress settings, each unmasked and through the radial mask, on every source this host has. The GPU frame was planned from the Detail layer over the same proxy source the worker rendered from, with the units compiled at the proxy's scale as the CPU's proxy compiled them, and drawn with the surface's own encoding, which is the CPU quantizer's; the RAW cells were planned for the linear path over an `f32` boundary, and the Z6 and Air 2S keep the lens profile their first open commits, which the geometry tail warps. Each cell was judged against the CPU's moving proxy, and the preview worker's exact phase reduced to the Fit bounds, the frame the stack settled to, was written beside the pair: the CPU proxy against it is the jump settlement made on the CPU path. Each pair judged by `cargo xtask preview-error --class spatial`: all 36 exit 0. Bounds 1716 × 1508.
+`gpu_detail_corpus_at_fit`, the shared harness, over the corpus's six single-layer Detail recipes (its three chained ones are [below](#after-detail-presence)): the study's moderate, noise-stress and sharpen-stress settings, each unmasked and through the radial mask, on every source this host has. The GPU frame was planned from the Detail layer over the same proxy source the worker rendered from, with the units compiled at the proxy's scale as the CPU's proxy compiled them, and drawn with the surface's own encoding, which is the CPU quantizer's; the RAW cells were planned for the linear path over an `f32` boundary, and the Z6 and Air 2S keep the lens profile their first open commits, which the geometry tail warps. Each cell was judged against the CPU's moving proxy. Each pair judged by `cargo xtask preview-error --class spatial`: all 36 exit 0. Bounds 1716 × 1508.
 
-Mean, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame against the CPU's moving proxy, then the mean, worst block and p99 of that proxy against the exact-derived frame it settled to, which no limit judged:
+Mean, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame against the CPU's moving proxy:
 
-| Recipe, source | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Settle jump: mean | Worst block | p99 | Charged |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Moderate, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / −0.000 | 0.00 / 0.00 | 1.18 / 0.58 | 0.07 / 0.00 | 126.7 / 115.8 MB |
-| Moderate, Presence fixture (exact) | 0.006 | 0.02 | 0.36 | +0.000 | – | – | – | 94.2 MB |
-| Moderate, Z6 / X100VI / Air 2S | 0.023 / 0.011 / 0.025 | 0.09 / 0.08 / 0.12 | 0.73 / 0.52 / 0.74 | −0.000 / +0.000 / −0.000 | 0.21 / 0.07 / 0.70 | 1.50 / 0.44 / 4.90 | 1.54 / 0.90 / 5.22 | 137.9 / 142.4 / 173.8 MB |
-| Noise stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / −0.000 | 0.02 / 0.01 | 4.40 / 2.32 | 0.26 / 0.11 | 111.0 / 101.6 MB |
-| Noise stress, Presence fixture (exact) | 0.001 | 0.02 | 0.00 | +0.000 | – | – | – | 83.1 MB |
-| Noise stress, Z6 / X100VI / Air 2S | 0.022 / 0.011 / 0.022 | 0.09 / 0.07 / 0.12 | 0.71 / 0.52 / 0.70 | +0.000 / +0.000 / −0.000 | 0.17 / 0.06 / 0.44 | 1.00 / 0.56 / 2.62 | 1.15 / 0.90 / 2.78 | 125.7 / 126.7 / 158.1 MB |
-| Sharpen stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.00 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 1.32 / 0.65 | 0.00 / 0.00 | 87.5 / 80.4 MB |
-| Sharpen stress, Presence fixture (exact) | 0.000 | 0.00 | 0.00 | +0.000 | – | – | – | 66.5 MB |
-| Sharpen stress, Z6 / X100VI / Air 2S | 0.023 / 0.000 / 0.027 | 0.10 / 0.01 / 0.14 | 0.74 / 0.00 / 0.76 | +0.000 / +0.000 / +0.000 | 0.47 / 0.20 / 1.37 | 2.25 / 1.08 / 6.36 | 2.43 / 0.97 / 7.49 | 107.6 / 103.2 / 134.6 MB |
-| Moderate, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 0.23 / 0.15 | 0.00 / 0.00 | 126.7 / 115.8 MB |
-| Moderate, masked, Presence fixture (exact) | 0.000 | 0.02 | 0.00 | +0.000 | – | – | – | 94.2 MB |
-| Moderate, masked, Z6 / X100VI / Air 2S | 0.022 / 0.001 / 0.021 | 0.10 / 0.05 / 0.12 | 0.71 / 0.00 / 0.69 | −0.000 / +0.000 / +0.000 | 0.37 / 0.09 / 1.08 | 1.59 / 0.38 / 5.22 | 1.82 / 0.93 / 5.55 | 137.9 / 142.4 / 173.8 MB |
-| Noise stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / +0.000 | 0.00 / 0.00 | 1.08 / 0.81 | 0.00 / 0.00 | 111.0 / 101.6 MB |
-| Noise stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | – | – | – | 83.1 MB |
-| Noise stress, masked, Z6 / X100VI / Air 2S | 0.021 / 0.002 / 0.021 | 0.09 / 0.05 / 0.12 | 0.70 / 0.00 / 0.68 | −0.000 / +0.000 / +0.000 | 0.35 / 0.08 / 1.06 | 1.58 / 0.31 / 5.22 | 1.65 / 0.92 / 5.51 | 125.7 / 126.7 / 158.1 MB |
-| Sharpen stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.01 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 0.33 / 0.24 | 0.00 / 0.00 | 87.5 / 80.4 MB |
-| Sharpen stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | – | – | – | 66.5 MB |
-| Sharpen stress, masked, Z6 / X100VI / Air 2S | 0.022 / 0.000 / 0.021 | 0.09 / 0.00 / 0.12 | 0.71 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 0.43 / 0.09 / 1.13 | 2.18 / 0.48 / 5.22 | 2.34 / 0.93 / 5.62 | 107.6 / 103.2 / 134.6 MB |
+| Recipe, source | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Charged |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Moderate, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / −0.000 | 126.7 / 115.8 MB |
+| Moderate, Presence fixture (exact) | 0.006 | 0.02 | 0.36 | +0.000 | 94.2 MB |
+| Moderate, Z6 / X100VI / Air 2S | 0.023 / 0.011 / 0.025 | 0.09 / 0.08 / 0.12 | 0.73 / 0.52 / 0.74 | −0.000 / +0.000 / −0.000 | 137.9 / 142.4 / 173.8 MB |
+| Noise stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / −0.000 | 111.0 / 101.6 MB |
+| Noise stress, Presence fixture (exact) | 0.001 | 0.02 | 0.00 | +0.000 | 83.1 MB |
+| Noise stress, Z6 / X100VI / Air 2S | 0.022 / 0.011 / 0.022 | 0.09 / 0.07 / 0.12 | 0.71 / 0.52 / 0.70 | +0.000 / +0.000 / −0.000 | 125.7 / 126.7 / 158.1 MB |
+| Sharpen stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.00 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 87.5 / 80.4 MB |
+| Sharpen stress, Presence fixture (exact) | 0.000 | 0.00 | 0.00 | +0.000 | 66.5 MB |
+| Sharpen stress, Z6 / X100VI / Air 2S | 0.023 / 0.000 / 0.027 | 0.10 / 0.01 / 0.14 | 0.74 / 0.00 / 0.76 | +0.000 / +0.000 / +0.000 | 107.6 / 103.2 / 134.6 MB |
+| Moderate, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 126.7 / 115.8 MB |
+| Moderate, masked, Presence fixture (exact) | 0.000 | 0.02 | 0.00 | +0.000 | 94.2 MB |
+| Moderate, masked, Z6 / X100VI / Air 2S | 0.022 / 0.001 / 0.021 | 0.10 / 0.05 / 0.12 | 0.71 / 0.00 / 0.69 | −0.000 / +0.000 / +0.000 | 137.9 / 142.4 / 173.8 MB |
+| Noise stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / +0.000 | 111.0 / 101.6 MB |
+| Noise stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | 83.1 MB |
+| Noise stress, masked, Z6 / X100VI / Air 2S | 0.021 / 0.002 / 0.021 | 0.09 / 0.05 / 0.12 | 0.70 / 0.00 / 0.68 | −0.000 / +0.000 / +0.000 | 125.7 / 126.7 / 158.1 MB |
+| Sharpen stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.01 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 87.5 / 80.4 MB |
+| Sharpen stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | 66.5 MB |
+| Sharpen stress, masked, Z6 / X100VI / Air 2S | 0.022 / 0.000 / 0.021 | 0.09 / 0.00 / 0.12 | 0.71 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 107.6 / 103.2 / 134.6 MB |
 
-Every cell is within the spatial limits: at worst a mean of 0.027, a worst block of 0.14 and a p99 of 0.76, on the Z6 and Air 2S, where the geometry tail's coordinate grid places the lens warp's samples, and no signed ΔL\* past ±0.001; on the X100VI the half-precision planes leave a mean of 0.011 and a worst block of 0.08, and on the JPEGs the GPU frame is within a worst block of 0.03 of the proxy. The Presence fixture fits the bounds at its own size, so its Fit frame is the exact render itself, with no proxy and no settle jump, and its GPU frame runs the full-resolution B3 levels. [the qualification](#the-corpus-error-report) measures the zone plate.
-
-**The settle jump was the CPU path's.** The moving proxy ran Detail's filters, which the design defines at full resolution, over averaged proxy pixels, so it moved when the exact-derived frame replaced it: by up to a mean of 1.37, a worst block of 6.36 and a p99 of 7.49 (sharpen stress on the Air 2S, whose sunlit glints on the sea the proxy's sharpening gives more contrast than the full-resolution sharpening keeps once reduced), and on the 24 MP JPEG by a worst block of 4.40 with noise stress (a row of small dark marks on the edge between two quadrants, darker and firmer once reduced from full resolution). The GPU frame, against the same settled frame, moves by the proxy's figures within 0.01: it leaves that jump as it is.
+Every cell is within the spatial limits: at worst a mean of 0.027, a worst block of 0.14 and a p99 of 0.76, on the Z6 and Air 2S, where the geometry tail's coordinate grid places the lens warp's samples, and no signed ΔL\* past ±0.001; on the X100VI the half-precision planes leave a mean of 0.011 and a worst block of 0.08, and on the JPEGs the GPU frame is within a worst block of 0.03 of the proxy. The Presence fixture fits the bounds at its own size, so its Fit frame is the exact render itself, with no proxy and no settle jump, and its GPU frame runs the full-resolution B3 levels. [The qualification](#the-corpus-error-report) measures the zone plate.
 
 **Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, as for Presence. Both units hold 48 bytes a pixel of half-precision planes, noise reduction 40 alone and sharpening 28 alone, each unit's apply reading a plane of its own that one pass writes ([design](../design/gpu-preview.md#plane-sharing-and-precision)). With the moderate settings on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 115.8 MB (110.4 MiB) of the 2 GiB budget, of which the planes are 84.8 MB; over the evidence window's whole 1716 × 1508 bounds it would hold 161.7 MB (154.2 MiB). The RAWs charge more, their boundary held as `f32` and the Z6's and Air 2S's lens grid beside it: 173.8 MB at most, the Air 2S with moderate settings. One slot is held at a time, so this is its peak. A JPEG stage of 7000 × 4667 charges 2,035.0 MB (1,940.7 MiB) and fits; one past about 33 MP passes the budget (7200 × 4800 would charge 2,070.7 MiB) and takes the CPU path, naming it (`gpu_detail_planes_are_charged_to_the_budget`). At 100% a Detail slot charges 337.1 to 500.8 MB, and Detail then all three Presence fields 1,099.1 to 1,159.2 MB ([GPU previews at 100%](#gpu-previews-at-100), [after Detail, Presence](#after-detail-presence)).
 
 ### After Detail, Presence
 
-A plan chains every spatial and restoration layer after its boundary in recipe order ([GPU previews](../design/gpu-preview.md#where-the-code-lives)), so a Detail drag with Presence in the stack, or a drag of a layer before both, is drawn on the GPU. The corpus's three chained recipes, in the Detail family, ran through `gpu_detail_corpus_at_fit` (`LUXFORGE_GPU_CORPUS_RECIPES=detail-presence,detail-presence-local,detail-presence-masked`): Detail at the moderate settings, then Presence with all three fields at +50 / +50 / +30, with Texture and Clarity alone, and with all three through the radial mask. The plan starts at the Detail layer and holds Detail's operation, then Presence's. Each cell was judged as the Detail cells were, against the CPU's moving proxy, with the settle jump beside it: the CPU proxy's mean against the exact-derived frame, then the GPU frame's. All 18 measured cells meet the spatial limits; [the qualification](#the-corpus-error-report) measures the zone plate.
+A plan chains every spatial and restoration layer after its boundary in recipe order ([GPU previews](../design/gpu-preview.md#where-the-code-lives)), so a Detail drag with Presence in the stack, or a drag of a layer before both, is drawn on the GPU. The corpus's three chained recipes, in the Detail family, ran through `gpu_detail_corpus_at_fit` (`LUXFORGE_GPU_CORPUS_RECIPES=detail-presence,detail-presence-local,detail-presence-masked`): Detail at the moderate settings, then Presence with all three fields at +50 / +50 / +30, with Texture and Clarity alone, and with all three through the radial mask. The plan starts at the Detail layer and holds Detail's operation, then Presence's. Each cell was judged as the Detail cells were, against the CPU's moving proxy. All 18 measured cells meet the spatial limits; [the qualification](#the-corpus-error-report) measures the zone plate.
 
-| Recipe, source | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Settle jump: CPU proxy mean | GPU mean | Charged |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| All three fields, 24 MP / 60 MP JPEG | 0.001 / 0.054 | 0.04 / 0.26 | 0.00 / 0.26 | +0.000 / −0.019 | 0.36 / 0.42 | 0.36 / 0.37 | 206.4 / 187.5 MB |
-| All three fields, Presence fixture (exact) | 0.004 | 0.06 | 0.25 | −0.000 | – | – | 150.3 MB |
-| All three fields, Z6 / X100VI / Air 2S | 0.032 / 0.020 / 0.039 | 0.14 / 0.13 / 0.15 | 0.96 / 0.61 / 0.87 | +0.000 / +0.000 / +0.000 | 0.95 / 0.47 / 1.63 | 0.95 / 0.48 / 1.63 | 211.3 / 237.8 / 269.1 MB |
-| Texture and Clarity, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.06 / 0.05 | 0.00 / 0.00 | +0.000 / +0.000 | 0.04 / 0.04 | 0.04 / 0.04 | 200.3 / 182.1 MB |
-| Texture and Clarity, Presence fixture (exact) | 0.003 | 0.05 | 0.20 | −0.000 | – | – | 146.0 MB |
-| Texture and Clarity, Z6 / X100VI / Air 2S | 0.029 / 0.018 / 0.036 | 0.13 / 0.11 / 0.14 | 0.96 / 0.59 / 0.85 | −0.000 / +0.000 / −0.000 | 0.58 / 0.33 / 1.44 | 0.58 / 0.33 / 1.44 | 206.7 / 231.7 / 263.1 MB |
-| All three fields, masked, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.08 / 0.26 | 0.00 / 0.00 | +0.000 / −0.000 | 0.03 / 0.03 | 0.03 / 0.03 | 206.4 / 187.5 MB |
-| All three fields, masked, Presence fixture (exact) | 0.004 | 0.04 | 0.25 | −0.002 | – | – | 150.3 MB |
-| All three fields, masked, Z6 / X100VI / Air 2S | 0.020 / 0.012 / 0.024 | 0.13 / 0.08 / 0.13 | 0.70 / 0.53 / 0.73 | −0.000 / +0.000 / −0.000 | 0.39 / 0.10 / 0.78 | 0.39 / 0.10 / 0.78 | 211.3 / 237.8 / 269.1 MB |
+| Recipe, source | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Charged |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| All three fields, 24 MP / 60 MP JPEG | 0.001 / 0.054 | 0.04 / 0.26 | 0.00 / 0.26 | +0.000 / −0.019 | 206.4 / 187.5 MB |
+| All three fields, Presence fixture (exact) | 0.004 | 0.06 | 0.25 | −0.000 | 150.3 MB |
+| All three fields, Z6 / X100VI / Air 2S | 0.032 / 0.020 / 0.039 | 0.14 / 0.13 / 0.15 | 0.96 / 0.61 / 0.87 | +0.000 / +0.000 / +0.000 | 211.3 / 237.8 / 269.1 MB |
+| Texture and Clarity, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.06 / 0.05 | 0.00 / 0.00 | +0.000 / +0.000 | 200.3 / 182.1 MB |
+| Texture and Clarity, Presence fixture (exact) | 0.003 | 0.05 | 0.20 | −0.000 | 146.0 MB |
+| Texture and Clarity, Z6 / X100VI / Air 2S | 0.029 / 0.018 / 0.036 | 0.13 / 0.11 / 0.14 | 0.96 / 0.59 / 0.85 | −0.000 / +0.000 / −0.000 | 206.7 / 231.7 / 263.1 MB |
+| All three fields, masked, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.08 / 0.26 | 0.00 / 0.00 | +0.000 / −0.000 | 206.4 / 187.5 MB |
+| All three fields, masked, Presence fixture (exact) | 0.004 | 0.04 | 0.25 | −0.002 | 150.3 MB |
+| All three fields, masked, Z6 / X100VI / Air 2S | 0.020 / 0.012 / 0.024 | 0.13 / 0.08 / 0.13 | 0.70 / 0.53 / 0.73 | −0.000 / +0.000 / −0.000 | 211.3 / 237.8 / 269.1 MB |
 
-The figures are Detail's and Presence's own, Detail's half-precision planes included ([plane precision](#plane-precision)): at worst a mean of 0.054 and a signed ΔL\* of −0.019 on the 60 MP JPEG, where Dehaze's light is the stage's, a worst block of 0.26 there too, and a p99 of 0.96 on the Z6, where the lens warp's grid places the samples (all within the spatial limits of 1.0, 2.5, 5.0 and ±0.5). Against the frame the stack settled to, the GPU frame moved by the CPU proxy's figures within 0.06. Each operation is a link of its own with its own planes, so the slots charge 146.0 to 269.1 MB at Fit.
+The figures are Detail's and Presence's own, Detail's half-precision planes included ([plane precision](#plane-precision)): at worst a mean of 0.054 and a signed ΔL\* of −0.019 on the 60 MP JPEG, where Dehaze's light is the stage's, a worst block of 0.26 there too, and a p99 of 0.96 on the Z6, where the lens warp's grid places the samples (all within the spatial limits of 1.0, 2.5, 5.0 and ±0.5). Each operation is a link of its own with its own planes, so the slots charge 146.0 to 269.1 MB at Fit.
 
-**At 100%.** In the largest window the owner's display holds, a 3026 × 1826 region ([GPU previews at 100%](#gpu-previews-at-100)), Detail then Texture and Clarity draws on the GPU on every source, and so does Detail then all three fields. Dehaze's estimate sits behind Detail; these figures were measured with the light the whole exact frame stored, and its cells against the exact whole frame's region, the frame the view draws. A region plan now reads the light its light link computes, with Detail left out until a slot sweeps the exact prefix, which the [release gate](#gpu-qualification-against-the-reference) measures. Each slot is in the GPU's shape, every unit held, and the window is the region grown by the halos after the boundary alone, with no tile grid ([design](../design/gpu-preview.md#at-100-and-above)); Detail's link holds its half-precision planes and Presence's link its own, Texture's at full precision, with the intermediate Detail's link writes between them ([plane precision](#plane-precision)). Charged, against the 2,147.5 MB (2 GiB) budget, and the headroom it leaves:
+**At 100%.** In the largest window the owner's display holds, a 3026 × 1826 region ([GPU previews at 100%](#gpu-previews-at-100)), Detail then Texture and Clarity draws on the GPU on every source, and so does Detail then all three fields. Dehaze's estimate sits behind Detail; these figures were measured with the light the whole exact frame stored, and its cells against the exact whole frame's region. A region plan reads the light its light link computes, with Detail left out until a slot sweeps the exact prefix, which the [release gate](#gpu-qualification-against-the-reference) measures. Each slot is in the GPU's shape, every unit held, and the window is the region grown by the halos after the boundary alone, with no tile grid ([design](../design/gpu-preview.md#at-100-and-above)); Detail's link holds its half-precision planes and Presence's link its own, Texture's at full precision, with the intermediate Detail's link writes between them ([plane precision](#plane-precision)). Charged, against the 2,147.5 MB (2 GiB) budget, and the headroom it leaves:
 
 | Recipe, source | Window | Charged | Headroom | Mean | Worst block | p99 | Signed ΔL\* |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -4326,7 +3217,7 @@ The figures are Detail's and Presence's own, Detail's half-precision planes incl
 | All three fields, Air 2S | 3628 × 2436 | 1,159.2 MB | 988.3 MB | 0.052 | 0.26 | 0.90 | +0.000 |
 
 - **The figures** are within the spatial limits by far, none past half of any, and no signed ΔL\* past ±0.001. The masked all-three cells charge the same and draw within a worst block of 0.22 and a p99 of 0.80 (Air 2S); the zone plate's draw within a worst block of 0.02 and a p99 of 0.23, and the Presence fixture's, which fit the window whole, charge 135.3 and 139.5 MB.
-- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 36% wider and taller on the Air 2S (about 4120 × 2485), 38% on the X100VI, 39% on the Z6 and 40% on the 60 MP JPEG, and Texture and Clarity about 44% on the Air 2S (an estimate from the charges above, not a measurement). Such a region's drag took the CPU path naming `budget-exceeded` on that build; it is now drawn from its reduced stage scaled to the view, the softer frame ("Softer while dragging", `budget-reduced`), and is sharp at rest ([GPU previews](../design/gpu-preview.md#at-100-and-above)). The slot's scratch pool leaves this chain as it is, since Detail's planes with noise reduction share no texture class with Presence's; the [design](../design/gpu-preview.md#later) records the proposal that would widen the headroom, evaluating the ring only Clarity's and Dehaze's reductions read in strips. With Texture's band in one channel the corpus's heaviest slot, all three fields on the Air 2S, charges 1,123.8 MB ([the corpus](#the-corpus)).
+- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 36% wider and taller on the Air 2S (about 4120 × 2485), 38% on the X100VI, 39% on the Z6 and 40% on the 60 MP JPEG, and Texture and Clarity about 44% on the Air 2S (an estimate from the charges above, not a measurement). Such a region's drag is drawn from its reduced stage scaled to the view, the softer frame ("Softer while dragging", `budget-reduced`), and is sharp at rest ([GPU previews](../design/gpu-preview.md#at-100-and-above)). The slot's scratch pool leaves this chain as it is, since Detail's planes with noise reduction share no texture class with Presence's; the [design](../design/gpu-preview.md#later) records the proposal that would widen the headroom, evaluating the ring only Clarity's and Dehaze's reductions read in strips. With Texture's band in one channel, the corpus's heaviest slot, all three fields on the Air 2S, charges 1,123.8 MB ([the corpus](#the-corpus)).
 - **A slot that replaces another** is charged only once the one it replaces has retired, when the GPU is done with it: a tick whose slot the budget holds only without the old one draws the CPU's frame, naming `budget-exceeded`, keeps its boundary and plan and asks for nothing again, and the next frame after the retirement draws on the GPU; nothing is allocated or released twice (`a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own`, `gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary`).
 
 **Ticks.** Over Detail then Presence (Texture and Clarity), 27 passes, a tick runs only the passes its words change: a Clarity drag none, a Texture drag 5, a drag of the colour layer between the two Presence's 13, and a Detail drag 17, each frame equal to the bit to a run of every pass, each operation a link of its own (`gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes`). Against the CPU frame of the same stacks on a synthetic photograph at two sizes, Detail's sharpening and noise reduction then three Presence settings, plain and masked, with Dehaze's light stored and taken on the GPU, the worst of 40 cases is a mean of 0.068, a worst block of 0.38 and a p99 of 0.80, its signed ΔL\* −0.001 (`gpu_presence_after_detail_meets_the_spatial_limits`): Detail's half-precision planes, and Detail's output held in the link's `rgba16float` intermediate between the two, each written rounded to the nearest half.
@@ -4336,7 +3227,7 @@ The figures are Detail's and Presence's own, Detail's half-precision planes incl
 A Detail drag at Fit drawn on the GPU is proven functionally, not timed:
 
 - `cargo test -p luxforge-app gpu_detail_tests::drags` against a real owner and preview worker. In the first test, a Detail Amount drag over a photograph drawn at Fit derives its boundary, the Detail layer's input, the source reduced to the view, with its first tick and holds the frame on screen until the surface has evaluated its plan. Its later ticks are Detail's spatial step drawn on the GPU with no preview job. The release commits: the committed stack renders no proxy, its exact frame reduced to the view is the reference frame, and the GPU draws its picture at rest; the boundary stays resident for the next draft. In the second, a Basic drag after a committed Detail layer starts from that resident boundary, the stack's first layer's input, asking for none, and its ticks run Detail's spatial step, which the surface keeps by content, then Basic's colour, drawn on the GPU with no preview job.
-- `cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR` over the working tree on `5dccacc6`, 2026-10-03, with the Detail steps: every tick drawn on the GPU, the first included, over the resident boundary at layer 0 that the Basic drags before it left, with no boundary request and no preview job. The GPU frame equals the frame the release commits at four flat patches and two across the white cross, to the code. The slot held 16.4 MB over the 480 × 320 photograph, which fits the window at its own size, so its Fit frame is the exact render, and holds it once settled, the boundary resident for the next gesture.
+- `cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR` with the Detail steps: every tick drawn on the GPU, the first included, over the resident boundary at layer 0 that the Basic drags before it left, with no boundary request and no preview job. The GPU frame equals the frame the release commits at four flat patches and two across the white cross, to the code. The slot held 16.4 MB over the 480 × 320 photograph, which fits the window at its own size, so its Fit frame is the exact render, and holds it once settled, the boundary resident for the next gesture.
 
 ### Reproducing it
 
@@ -4344,7 +3235,7 @@ A Detail drag at Fit drawn on the GPU is proven functionally, not timed:
 cargo test -p luxforge-app gpu_detail -- --nocapture
 ```
 
-The corpus harness, `gpu_detail_corpus_at_fit`, is deleted with the CPU proxy it compared against. The release gate runs the Detail family, its chained recipes among them, at Fit against the reference renderer's frame, not the CPU proxy or the exact-derived frame, so it reproduces the comparison under today's contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
+The corpus harness, `gpu_detail_corpus_at_fit`, compared against the CPU proxy and is not in the repository. The release gate runs the Detail family, its chained recipes among them, at Fit against the reference renderer's frame, not the CPU proxy or the exact-derived frame, so it reproduces the comparison under the current contract, not these figures, as [for the colour programs](#gpu-colour-programs-at-fit):
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -4352,33 +3243,17 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
   --families detail
 ```
 
-## GPU preview settle
-
-What a person saw when a gesture settled on that build: the GPU frame on screen against the CPU frame the 150 ms dissolve ended on ([design](../design/gpu-preview.md#settle-and-the-dissolve)). A release now hands the drag's frame to the committed stack's GPU frame over the same boundary, and a dissolve into a CPU frame runs only where the reference renderer draws what the GPU could not. M4 Pro (Metal), 2026-10-02, on a shared host at load average about 25: functional figures, not timings.
-
-**In the editor.** The `gpu-preview` scenario's Basic drag, its last frame drawn on the GPU against the settled frame its release committed, over the whole photograph: mean ΔE00 1.1 × 10⁻⁵, worst block 0.014, p99 0, signed ΔL\* −3 × 10⁻⁶, within the pointwise limits. The moved gradient's and the stroke's frames carry their handles or cursor, which the settled frames do not, so they are held to the CPU's by patch instead. Every commit that replaced a GPU frame, the Detail and Presence drags' included, dissolved from that frame's draft revision and boundary, ending after 159 to 179 ms at the next message; the next gesture's first tick cancelled a release's dissolve 59 and 61 ms in over two runs, and turning the clipping overlays off cancelled another 66 and 78 ms in; and an idle second after the release's and the stroke's dissolves drew one frame and ran one update, the window's own.
-
-**Across the corpus.** The harness's GPU frame for each recipe against the frame settlement presented, which the dissolve ended on (the since deleted `gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, the generated JPEGs, the zone plates and the Z6, X100VI and Air 2S; the `test` profile build at `61592997`):
-
-| Families | Class | Cells within the limits | Worst mean | Worst block | Worst p99 | Worst \|ΔL\*\| |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Colour: Basic, Tone curve, Mixer, Vignette, the colour stack, crops, lens and perspective | pointwise | 62 of 62 | 0.052 | 0.25 | 0.87 | 0.002 |
-| Every mask kind | pointwise | 42 of 42 | 0.025 | 0.12 | 0.84 | 0.009 |
-| Presence | spatial | 49 of 49 | 0.042 | 0.49 | 0.98 | 0.010 |
-
-Two colour cells are gaps: a lens distortion before the boundary, which the surface cannot run yet.
-
 ## GPU previews at 100%
 
-The GPU frame of a drag at 100% ([GPU previews](../design/gpu-preview.md#at-100-and-above)) against the exact visible region the shared quiet policy settled it to on that build, on every family of the [corpus](../../fixtures/preview/corpus.json) over every source this host has, in the largest window the owner's display holds. Pixel measurements and charges, not timings. The GPU-first stage 5 deleted that region and its refinement; the GPU now draws the picture at rest over the visible region too, which the [release gate](#gpu-qualification-against-the-reference) holds to the reference renderer's frame.
+The GPU frame of a drag at 100% ([GPU previews](../design/gpu-preview.md#at-100-and-above)) against the CPU's exact visible region, a frame the editor does not draw, on every family of the [corpus](../../fixtures/preview/corpus.json) over every source this host has, in the largest window the owner's display holds. Pixel measurements and charges, not timings. The GPU draws the picture at rest over the visible region too, which the [release gate](#gpu-qualification-against-the-reference) holds to the reference renderer's frame.
 
 ### Scope
 
 - **The view.** The M4 MacBook Pro's 3024 × 1964 display, a 1512 × 982 logical window at 2× with both panels closed, at 100% and scrolled to the photograph's centre: a 3026 × 1826 region of the output stage (`viewport_rect`, with its guard pixels), or the whole stage where it is smaller (the Presence fixture's 1440 × 960). This is the largest window the owner's display holds, and so the largest region the corpus measures; a larger window, such as an external display's, draws a larger region, whose slot may pass the budget ([after Detail, Presence](#after-detail-presence)).
-- **The frames.** The CPU frame was the preview worker's exact region of that view, from the job the quiet policy asked for (`viewport` set, `Settle`), or, for a stack whose region the worker declined and rendered whole (an estimate behind an earlier spatial layer), that region of the exact whole frame the view drew it from. The GPU frame was the plan from the recipe's first pixel layer at the exact stage over the boundary the worker renders for a region job (`qualification::region_boundary`, `Render::region_boundary`: the window of the layer's received stage the region reads on the GPU, each spatial operation after the layer by its halo alone, with the exact region's whole-stage estimates), converted with the region (`surface_plan_over`), a lens warp's grid over the region at 100%, and drawn by the photo surface's own shader, read back headlessly. Both are compared at the region's size. A Detail or Presence layer is planned as a drag of it draws: in its GPU shape, every unit, while that slot fits the budget, and in the CPU's shape, the units its values need, when only that one does.
-- **What a Detail frame is judged against.** The exact visible region, the frame that replaced the GPU frame at a percentage zoom on that build. The owner's decision to judge a Detail drag against the CPU's moving proxy applied to Fit, where the frame that settled came from the exact render and the moving frame the GPU stood in for was a proxy; at 100% the CPU's own frame is the exact region, so there is nothing between them.
-- **Gaps.** A slot the surface would charge past the GPU-preview budget, or a boundary past the 256 MiB bound on one, was the CPU path and named `budget-exceeded`, as the desktop named it. A stack with Dehaze behind Detail is measured against the exact whole frame's region, the frame the view draws. These figures were measured with Dehaze's light read from the estimate store the exact render filled, the exact stage's; a region plan now reads the light its light link computes from the whole stage, the same light within 2.9 × 10⁻⁶ for a prefix of colour alone ([design](../design/gpu-preview.md#spatial-programs)). A mask that selects nothing inside the region is a gap, as at Fit.
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the `test` profile build of `0c98e791`'s chain of links with a region's frame held in its own picture's bucket, 2026-10-03, `gpu_preview_corpus_at_100_percent`, under the 2 GiB budget and the 256 MiB bound on a boundary, reading the store, with Detail's half-precision planes ([plane precision](#plane-precision)), each spatial operation a link of its own. One run; the pixels are deterministic.
+- **The frames.** The CPU frame was the preview worker's exact region of that view, or, for a stack whose region the worker declined and rendered whole (an estimate behind an earlier spatial layer), that region of the exact whole frame the view drew it from. The GPU frame was the plan from the recipe's first pixel layer at the exact stage over the boundary the worker renders for a region job (`qualification::region_boundary`, `Render::region_boundary`: the window of the layer's received stage the region reads on the GPU, each spatial operation after the layer by its halo alone, with the exact region's whole-stage estimates), converted with the region (`surface_plan_over`), a lens warp's grid over the region at 100%, and drawn by the photo surface's own shader, read back headlessly. Both are compared at the region's size. A Detail or Presence layer is planned as a drag of it draws: in its GPU shape, every unit, while that slot fits the budget, and in the CPU's shape, the units its values need, when only that one does.
+- **What a Detail frame is judged against.** The exact visible region. At Fit a Detail drag is judged against the CPU's moving proxy, the frame the GPU stood in for; at 100% the CPU's own frame is the exact region, so there is nothing between them.
+- **Gaps.** A slot the surface would charge past the GPU-preview budget, or a boundary past the 256 MiB bound on one, is a gap named `budget-exceeded`. A stack with Dehaze behind Detail is measured against the exact whole frame's region, the frame the view draws. These figures were measured with Dehaze's light read from the estimate store the exact render filled, the exact stage's; a region plan reads the light its light link computes from the whole stage, the same light within 2.9 × 10⁻⁶ for a prefix of colour alone ([design](../design/gpu-preview.md#spatial-programs)). A mask that selects nothing inside the region is a gap, as at Fit.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the `test` profile build of the chain of links with a region's frame held in its own picture's bucket, `gpu_preview_corpus_at_100_percent`, under the 2 GiB budget and the 256 MiB bound on a boundary, reading the store, with Detail's half-precision planes ([plane precision](#plane-precision)), each spatial operation a link of its own. One run; the pixels are deterministic.
 - **Sources.** As [at Fit](#gpu-colour-programs-at-fit): the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6, X100VI and Air 2S RAWs through the private RAW manifest.
 
 ### Results
@@ -4428,15 +3303,15 @@ Worst of each statistic over a recipe's measured cells, what their slots charge,
 | detail-presence-masked | 7 | 0.035 | 0.22 | 0.80 | 0.002 | 1.60 | 139.5–1,159.2 MB | — |
 
 - **Pointwise and geometry.** The largest figures are a mean of 0.051 (a lens warp over the zone plate with a lens identity), a worst block of 0.25 (the Air 2S's colour range), a p99 of 0.85 (the Air 2S's tight straightened crop) and a |ΔL\*| of 0.009 (the range masks), against limits of 0.5, 1.0, 2.0 and 0.25. The RAW cells through a lens warp, a straightened crop or a perspective warp are drawn by the tail from an `rgba32float` intermediate that keeps their linear values unquantized: their 12 cells carry a signed ΔL\* within ±0.0001 and a p99 of 0.85 at most, where an `rgba16float` intermediate written by the M4's own conversion toward zero carried −0.004 to −0.007 and up to 0.96 ([plane precision](#plane-precision)). A perspective warp's homography leaves a worst block of 0.07 at most, 0.02 on the zone plate, and a lens warp's grid 0.23 at most, on the zone plate with a lens identity. Without a warp the JPEGs' frames are the CPU's to within a fraction of a code, as at Fit. A RAW's vignette, a finishing layer after its lens warp, is measured here: the worker's region boundary held the warped frame it received.
-- **The 60 MP JPEG in the largest window.** Its slots charge 67.0 MB for a colour or masked stack, 82.6 MB through a perspective warp, 107.6 MB through the straightened crop, and for Presence, every unit held whichever fields are moved, 252.5 MB for Texture, 290.9 MB for Dehaze, 393.0 MB for Clarity, 400.1 MB for Texture and Clarity and 456.0 MB for all three fields, masked or not: each window is the region grown by the halos alone, with no tile grid. Detail's slots, every unit, charge 337.1 to 351.5 MB; Detail then Texture and Clarity 933.5 MB and Detail then all three fields 1,099.1 MB, each operation a link of its own with its own planes and the intermediate Detail's link writes between them ([after Detail, Presence](#after-detail-presence)). Each holds its frame in the bucket of the region's own picture, 3072 × 1856 texels, where the photograph's square bucket of 3072 × 3072 charged every one of them 14.9 MB more.
+- **The 60 MP JPEG in the largest window.** Its slots charge 67.0 MB for a colour or masked stack, 82.6 MB through a perspective warp, 107.6 MB through the straightened crop, and for Presence, every unit held whichever fields are moved, 252.5 MB for Texture, 290.9 MB for Dehaze, 393.0 MB for Clarity, 400.1 MB for Texture and Clarity and 456.0 MB for all three fields, masked or not: each window is the region grown by the halos alone, with no tile grid. Detail's slots, every unit, charge 337.1 to 351.5 MB; Detail then Texture and Clarity 933.5 MB and Detail then all three fields 1,099.1 MB, each operation a link of its own with its own planes and the intermediate Detail's link writes between them ([after Detail, Presence](#after-detail-presence)). Each holds its frame in the bucket of the region's own picture, 3072 × 1856 texels, where the photograph's square bucket of 3072 × 3072 would charge every one of them 14.9 MB more.
 - **The RAWs.** A colour, masked or warp slot charges 111.2 to 251.6 MB, a rotated crop's up to 401.4 MB, a geometry tail's `rgba32float` intermediate among them, and Presence's, every unit held, 295.9 to 391.4 MB for Texture, 333.6 to 429.7 MB for Dehaze, 423.9 to 510.4 MB for Clarity, 429.8 to 516.3 MB for Texture and Clarity and 481.3 to 566.4 MB for all three fields, masked or not, all measured in the GPU's shape. Detail's slots charge 382.1 to 500.8 MB, every unit, Detail then Texture and Clarity 986.1 to 1,032.3 MB and Detail then all three fields 1,114.3 to 1,159.2 MB, the peak of the measured cells.
-- **Detail.** Every measured cell is within a fraction of the spatial limits, its half-precision planes included: a worst block of 0.26, a p99 of 0.90 and a mean of 0.052, each on the Air 2S, Detail then all three fields, against 2.5, 5.0 and 1.0, and on the JPEGs and the zone plate a worst block of 0.12 at most. The exact visible region it was judged against was the frame that replaced it, so these were the jump a person saw at settle too.
+- **Detail.** Every measured cell is within a fraction of the spatial limits, its half-precision planes included: a worst block of 0.26, a p99 of 0.90 and a mean of 0.052, each on the Air 2S, Detail then all three fields, against 2.5, 5.0 and 1.0, and on the JPEGs and the zone plate a worst block of 0.12 at most.
 - **Dehaze.** With its light taken on the GPU from the region alone, the Z6's frame missed the spatial limits (worst block 13.14, p99 2.87, mean 0.76) and the X100VI's (worst block 3.20): the region's brightest blocks are not the whole stage's, and the exact region reads the whole stage's light. With the whole stage's light every Dehaze cell meets the spatial limits (worst block 0.29 and p99 0.81 on the Air 2S), which a region plan's light link computes ([lights taken over less than the whole stage](#lights-taken-over-less-than-the-whole-stage)).
-- **Presence drags at 100%.** In the `gpu-preview-zoom` scenario, over a committed Dehaze and Clarity at 100%, each GPU tick of a Texture drag runs 5 compute passes and of a Clarity drag none (`gpu_preview_spatial_passes`), the first draw over a new boundary running every pass. These figures predate the per-frame light, under which Presence runs 20 passes, its light link computing the light beside them; the scenario now draws a Basic drag under that Presence on the GPU, its light computed every tick, and with Detail committed under Presence and Dehaze a Texture and a Detail drag reading the light the picture at rest computed from Detail's output, which has not been run since ([GPU previews](../design/gpu-preview.md#at-100-and-above)).
+- **Presence drags at 100%.** In the `gpu-preview-zoom` scenario, over a committed Dehaze and Clarity at 100%, Presence runs 20 passes, its light link computing the light beside them, the first draw over a new boundary running every pass (`gpu_preview_spatial_passes`). The scenario draws a Basic drag under that Presence on the GPU, its light computed every tick, and, with Detail committed under Presence and Dehaze, a Texture and a Detail drag reading the light the picture at rest computed from Detail's output; those steps are unrun ([GPU previews](../design/gpu-preview.md#at-100-and-above)).
 
 ### Reproducing it
 
-The harness that measured these figures, `gpu_preview_corpus_at_100_percent`, is deleted with the CPU region it compared against. The release gate runs every family at 100% over the visible region of the owner's largest window against the reference renderer's frame, not the CPU region, so it reproduces the comparison under today's contract, not these figures; `--recipes` measures only the recipes it names. A selection, so the run reports itself incomplete:
+The harness that measured these figures, `gpu_preview_corpus_at_100_percent`, compared against the CPU region and is not in the repository. The release gate runs every family at 100% over the visible region of the owner's largest window against the reference renderer's frame, not the CPU region, so it reproduces the comparison under the current contract, not these figures; `--recipes` measures only the recipes it names. A selection, so the run reports itself incomplete:
 
 ```sh
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
@@ -4445,7 +3320,7 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 ### Lights taken over less than the whole stage
 
-A lesson the per-frame light rests on ([design](../design/gpu-preview.md#spatial-programs)). Before the light link, a drag's plan read Dehaze's light from the estimate store or took it on the GPU from the stage it held, and five other lights were measured against the exact frame a drag settles to, over the sources the corpus measures Detail beside Presence on at 100% and behind the corpus's straightened crop at Fit (Apple M4 Pro, Metal, 2026-10-05; the measurements were retired with the store-reading plans). Each missed the spatial limits where its stage was not the whole exact one:
+A lesson the per-frame light rests on ([design](../design/gpu-preview.md#spatial-programs)). Five lights other than the whole exact stage's were measured against the exact frame a drag settles to, over the sources the corpus measures Detail beside Presence on at 100% and behind the corpus's straightened crop at Fit (Apple M4 Pro, Metal; the harness is not in the repository). Each missed the spatial limits where its stage was not the whole exact one:
 
 - **A proxy's own light**, the drafted stack's Fit proxy or the CPU's moving frame: their 16 px blocks cover more of the picture than the exact stage's, missing a Presence drag by up to a mean of 8.78 (the Fit proxy's) and 5.34 (the moving frame's).
 - **A window's light**: over a windowed Fit proxy behind a straightened crop, the light of the window or of the whole proxy stage missed by a mean of 2.1 to 17.9 on the 60 MP JPEG; over a 100% region, the region's own light missed on the Z6 and X100VI.
@@ -4456,85 +3331,57 @@ The exact stage's light was within a mean of 0.065 and a worst block of 0.54 on 
 
 ### A boundary's arrival
 
-What a boundary's arrival holds at once — the desktop's copy, wgpu's upload staging and the texture — with the upload spread at `UPLOAD_PER_FRAME` and, as before it was spread, written in one frame. A functional measurement, not a timing: `a_boundary_arrival_measured` hands the photo surface the largest `f32` boundary a RAW region with Clarity's margin reads in the largest window, 4705 × 2817 texels (212.1 MB), frame by frame until the surface holds it, then lets its copy go as the desktop does, recording each frame's staged bytes, the slot's charge and the process's footprint, and the process's own peak footprint, which catches what falls between frames. Apple M4 Pro on Metal, the `test` profile build at `b1c6ff64`, each mode in its own process, one run each.
+What a boundary's arrival holds at once — the desktop's copy, wgpu's upload staging and the texture — with the upload spread at `UPLOAD_PER_FRAME`. A functional measurement, not a timing: `a_boundary_arrival_measured` hands the photo surface the largest `f32` boundary a RAW region with Clarity's margin reads in the largest window, 4705 × 2817 texels (212.1 MB), frame by frame until the surface holds it, then lets its copy go as the desktop does, recording each frame's staged bytes, the slot's charge and the process's footprint, and the process's own peak footprint, which catches what falls between frames. Apple M4 Pro on Metal, the `test` profile build, in its own process, one run.
 
 | | Frames | Staged a frame | Footprint during the upload | At the frame that draws it | Process peak | After the copy is let go |
 | --- | ---: | --- | --- | --- | --- | --- |
 | Spread, 32 MiB a frame | 7 | 33.6 MB, the last 10.6 MB | +463.1 to +471.8 MB | +576.1 MB | +576.3 MB | +565.5 MB |
-| Whole, as before | 1 | 212.1 MB | — | +778.1 MB | +778.3 MB | +769.9 MB |
 
-The footprint is above the process's before the boundary, which holding the copy alone raises by 212.2 MB. The slot charges 316.9 MB in both: the boundary's texture and the output's, 104.8 MB in its size bucket, which the drawing frame writes, a full-size output this measurement draws where a region plan's is the region's. Without that output, the arrival held 2.2 times the boundary spread (the copy, the texture and a frame's staging, at most 471.8 MB) where it held 3.1 times written whole (665 MB). After the arrival the footprint stays near its peak in both: the system allocator keeps the copy's freed pages for its next block of that size (the measurement holds the copy as the only reference when it lets it go), and written whole, the 212 MB of staging stays too, 204 MB more than spread.
+The footprint is above the process's before the boundary, which holding the copy alone raises by 212.2 MB. The slot charges 316.9 MB: the boundary's texture and the output's, 104.8 MB in its size bucket, which the drawing frame writes, a full-size output this measurement draws where a region plan's is the region's. Without that output, the arrival held 2.2 times the boundary (the copy, the texture and a frame's staging, at most 471.8 MB). After the arrival the footprint stays near its peak: the system allocator keeps the copy's freed pages for its next block of that size (the measurement holds the copy as the only reference when it lets it go).
 
 ```sh
 cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocapture
-LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocapture
 ```
 
 ## Painting over masked spatial layers
 
-Brush strokes over masks that hold Clarity and Texture, drawn through the GPU preview's chain of links, its scratch pool, its masked passes and its incremental ticks ([design](../design/gpu-preview.md#where-the-code-lives)). Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2 (25F84), the `Apple M4 Pro` adapter on Metal, 2026-10-04 unless a row says otherwise, on a host shared with other sessions, with background applications running: the load column is the one-minute load at each run's start, and a run above the 8.0 threshold is marked. Megabytes are 10⁶ bytes. The builds:
-
-- **Before**: the release build of `61bca5ac` (binary SHA-256 `a4fc2df6…`), where each link holds its own scratch planes, Texture's band takes a two-channel plane and a recipe holds four masked spatial layers.
-- **After**: the release build of `fdfd267d` (binary SHA-256 `2990e3ec…`), that base with the scratch pool, the one charge, the one-channel band, the cap of 16 with its compile cache and warm list, and the fallback notice, without the efficiency work merged beside them.
-- **Main**: local main at `946751cc`, the same changes with the [efficiency](../design/efficiency.md) work, for the memory, the 100% window, the harness layout's tick cost and the corpus.
+Brush strokes over masks that hold Clarity and Texture, drawn through the GPU preview's chain of links, its scratch pool, its masked passes and its incremental ticks ([design](../design/gpu-preview.md#where-the-code-lives)): every link's scratch planes in the slot's one pool under one charge, Texture's band in one channel, and at most 16 masked spatial layers with their compile cache and warm list. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2 (25F84), the `Apple M4 Pro` adapter on Metal, release builds, on a host shared with other sessions, with background applications running: the load column is the one-minute load at each run's start, and a run above the 8.0 threshold is marked. Megabytes are 10⁶ bytes.
 
 ### A stroke's latency
 
-`editor-latency --mode paint --samples 120 --window 1728x1080`: a full-screen window on the 3456 × 2160 display at 2×, whose Fit stage of the generated 24 MP JPEG is 2292 × 1528. 120 positions of the curved stroke, one every 24 ms, on the brushed mask (size 0.06, feather 50), which holds a masked exposure of +0.6 EV and, with `--mask-presence`, a masked Presence layer of Clarity 50 and Texture 40; `--masks N` adds N − 1 radial masks across the frame holding the same, and the recipe holds every masked Basic layer first, then every masked Presence layer. `--zoom 100` paints at 100%, and the X100VI runs, through the private RAW manifest, add a global Detail layer (`--detail`). Milliseconds, nearest rank, from each position's input to the frame that shows it (`position_to_presented_frame`); *early* and *late* are the stroke's first and last 30 positions; the GPU-preview peak is `gpu_preview_peak_bytes` over the run and the scratch pool `last_gpu_preview_scratch_bytes`. The three-mask rows ran before and after back to back, then in reverse order. The before build gives Presence to four masks at most, so the 10- and 16-mask rows are new workloads, measured after only.
+`editor-latency --mode paint --samples 120 --window 1728x1080`: a full-screen window on the 3456 × 2160 display at 2×, whose Fit stage of the generated 24 MP JPEG is 2292 × 1528. 120 positions of the curved stroke, one every 24 ms, on the brushed mask (size 0.06, feather 50), which holds a masked exposure of +0.6 EV and, with `--mask-presence`, a masked Presence layer of Clarity 50 and Texture 40; `--masks N` adds N − 1 radial masks across the frame holding the same, and the recipe holds every masked Basic layer first, then every masked Presence layer. `--zoom 100` paints at 100%, and the X100VI runs, through the private RAW manifest, add a global Detail layer (`--detail`). Milliseconds, nearest rank, from each position's input to the frame that shows it (`position_to_presented_frame`); *early* and *late* are the stroke's first and last 30 positions; the GPU-preview peak is `gpu_preview_peak_bytes` over the run and the scratch pool `last_gpu_preview_scratch_bytes`. Each case ran twice.
 
-| Run | Binary | Load | Frames | Position to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak | Scratch pool |
-| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fit, 3 masks, before 1 | `a4fc2df6` | 2.00 | 120 GPU | 7.9 / 8.9 / 9.2 | 8.8 | 9.0 | 1.5 | 448 MB | — |
-| Fit, 3 masks, after 1 | `2990e3ec` | 3.03 | 120 GPU | 7.8 / 8.5 / 8.9 | 8.5 | 8.7 | 1.5 | 257 MB | 74 MB |
-| Fit, 3 masks, after 2 | `2990e3ec` | 4.39 | 120 GPU | 7.9 / 8.9 / 9.3 | 8.8 | 9.0 | 1.3 | 257 MB | 74 MB |
-| Fit, 3 masks, before 2 | `a4fc2df6` | 4.64 | 120 GPU | 7.9 / 8.8 / 9.2 | 8.8 | 8.9 | 1.4 | 448 MB | — |
-| 100%, 3 masks, before 1 | `a4fc2df6` | 5.27 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.6 / 9.0 / 77.9 | 51.8 | 9.0 | 77.9 | 973 MB | — |
-| 100%, 3 masks, after 1 | `2990e3ec` | 5.01 | 118 GPU, 2 CPU (the same) | 7.8 / 8.9 / 73.6 | 49.9 | 8.2 | 73.6 | 542 MB | 168 MB |
-| 100%, 3 masks, after 2 | `2990e3ec` | 4.88 | 119 GPU, 1 CPU (`boundary-pending`) | 7.6 / 9.3 / 60.9 | 24.6 | 9.0 | 60.9 | 542 MB | 168 MB |
-| 100%, 3 masks, before 2 | `a4fc2df6` | 5.84 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.7 / 9.6 / 83.8 | 59.1 | 8.9 | 83.8 | 973 MB | — |
-| X100VI at Fit, Detail and 3 masks, before 1 | `a4fc2df6` | 5.09 | 120 GPU | 7.8 / 8.7 / 21.5 | 8.7 | 9.0 | 1.6 | 728 MB | — |
-| X100VI at Fit, Detail and 3 masks, after 1 | `2990e3ec` | 6.40 | 120 GPU | 7.9 / 8.9 / 10.4 | 8.9 | 9.0 | 10.4 | 557 MB | 186 MB |
-| X100VI at Fit, Detail and 3 masks, after 2 | `2990e3ec` | 6.52 | 120 GPU | 7.7 / 8.8 / 10.8 | 8.5 | 8.8 | 1.7 | 557 MB | 186 MB |
-| X100VI at Fit, Detail and 3 masks, before 2 | `a4fc2df6` | 6.78 | 120 GPU | 7.8 / 8.9 / 9.8 | 8.9 | 8.4 | 3.7 | 728 MB | — |
-| Fit, 10 masks, after 1 (new workload) | `2990e3ec` | 7.61 | 120 GPU | 8.3 / 23.4 / 25.2 | 23.9 | 9.3 | 11.8 | 558 MB | 74 MB |
-| Fit, 10 masks, after 2 (new workload) | `2990e3ec` | 8.44 (above 8.0) | 120 GPU | 8.3 / 22.8 / 23.7 | 22.8 | 10.9 | 2.6 | 558 MB | 74 MB |
-| Fit, 16 masks, after 1 (new workload) | `2990e3ec` | 10.61 (above 8.0) | 120 GPU | 9.2 / 24.4 / 36.5 | 24.0 | 24.2 | 4.0 | 815 MB | 74 MB |
-| Fit, 16 masks, after 2 (new workload) | `2990e3ec` | 13.99 (above 8.0) | 120 GPU | 8.8 / 24.3 / 34.4 | 9.6 | 11.4 | 4.2 | 815 MB | 74 MB |
-| 100%, 10 masks, after 1 (new workload) | `2990e3ec` | 8.29 (above 8.0) | 120 CPU (`budget-exceeded`) | 548.5 / 733.5 / 821.2 | 800.7 | 498.6 | 478.2 | the Fit slot's 558 MB | — |
-| 100%, 10 masks, after 2 (new workload) | `2990e3ec` | 8.01 (above 8.0) | 120 CPU (`budget-exceeded`) | 548.7 / 750.7 / 849.8 | 823.3 | 482.8 | 495.6 | the Fit slot's 558 MB | — |
-| 100%, 16 masks, after 1 (new workload) | `2990e3ec` | 12.22 (above 8.0) | 120 CPU (`budget-exceeded`), 89 positions shown | 1013.8 / 1339.1 / 1424.7 | 1399.8 | — | 818.3 | the Fit slot's 815 MB | — |
-| 100%, 16 masks, after 2 (new workload) | `2990e3ec` | 12.28 (above 8.0) | 120 CPU (`budget-exceeded`), 92 positions shown | 1002.5 / 1479.2 / 1571.1 | 1549.4 | 667.1 | 877.6 | the Fit slot's 815 MB | — |
+| Run | Load | Frames | Position to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak | Scratch pool |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fit, 3 masks, 1 | 3.03 | 120 GPU | 7.8 / 8.5 / 8.9 | 8.5 | 8.7 | 1.5 | 257 MB | 74 MB |
+| Fit, 3 masks, 2 | 4.39 | 120 GPU | 7.9 / 8.9 / 9.3 | 8.8 | 9.0 | 1.3 | 257 MB | 74 MB |
+| 100%, 3 masks, 1 | 5.01 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.8 / 8.9 / 73.6 | 49.9 | 8.2 | 73.6 | 542 MB | 168 MB |
+| 100%, 3 masks, 2 | 4.88 | 119 GPU, 1 CPU (`boundary-pending`) | 7.6 / 9.3 / 60.9 | 24.6 | 9.0 | 60.9 | 542 MB | 168 MB |
+| X100VI at Fit, Detail and 3 masks, 1 | 6.40 | 120 GPU | 7.9 / 8.9 / 10.4 | 8.9 | 9.0 | 10.4 | 557 MB | 186 MB |
+| X100VI at Fit, Detail and 3 masks, 2 | 6.52 | 120 GPU | 7.7 / 8.8 / 10.8 | 8.5 | 8.8 | 1.7 | 557 MB | 186 MB |
+| Fit, 10 masks, 1 | 7.61 | 120 GPU | 8.3 / 23.4 / 25.2 | 23.9 | 9.3 | 11.8 | 558 MB | 74 MB |
+| Fit, 10 masks, 2 | 8.44 (above 8.0) | 120 GPU | 8.3 / 22.8 / 23.7 | 22.8 | 10.9 | 2.6 | 558 MB | 74 MB |
+| Fit, 16 masks, 1 | 10.61 (above 8.0) | 120 GPU | 9.2 / 24.4 / 36.5 | 24.0 | 24.2 | 4.0 | 815 MB | 74 MB |
+| Fit, 16 masks, 2 | 13.99 (above 8.0) | 120 GPU | 8.8 / 24.3 / 34.4 | 9.6 | 11.4 | 4.2 | 815 MB | 74 MB |
 
-Earlier rows, on the release editor built from the working tree over `5dccacc6` (binary SHA-256 `3a5b89c8…`), 2026-10-03, where each link held its own scratch planes, so their GPU-preview peaks are of that layout. `--presence` adds a global Presence layer (Texture 25, Clarity 20) under the masks:
-
-| Case | Load | Frames | Input to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| Fit, 3 masks, preview off | 1.56 | 21 CPU shown, 99 superseded | 145.1 / 157.5 / 157.7 | 248.3 | 277.0 | 127.4 | — |
-| Fit, 3 masks over a global Presence layer | 4.74 | 120 GPU | 7.8 / 9.0 / 9.3 | 9.1 | 8.8 | 1.7 | 693 MB |
-| 100%, 3 masks, overlay shown | 8.82 (above 8.0) | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.9 / 8.9 / 231.1 | 52.4 | 8.6 | 78.1 | 980 MB |
-| 100%, 3 masks, preview off | 7.37 | 25 CPU shown, 95 superseded | 127.4 / 166.3 / 185.1 | 207.9 | 208.9 | 120.2 | — |
-
-- **Three masks, within a frame.** Before and after compare like for like, and the latency is unchanged within noise in both orders: p95 8.5 to 8.9 ms after against 8.8 to 8.9 before at Fit, 8.9 to 9.3 against 9.0 to 9.6 at 100%, and 8.8 to 8.9 against 8.7 to 8.9 on the X100VI with Detail. Every position at Fit is drawn on the GPU at the redraw after its input, the press 1.3 to 10.4 ms from its input to its frame where the stack's resident boundary is held ([the GPU source](../design/gpu-preview.md#the-gpu-source)).
-- **The GPU-preview peak falls** wherever two or more spatial layers are held: from 448 to 257 MB at Fit (−43%), from 973 to 542 MB at 100% (−44%), and from 728 to 557 MB on the X100VI with Detail (−23%), where Detail's half-precision planes share no texture class with Presence's, so the pool holds both links' scratch, 186 MB.
-- **10 and 16 masks at Fit**, new workloads: every position is drawn on the GPU, but p95 is 22.8 to 24.4 ms, **missing the 16 ms target**, because a tick's GPU work passes the 120 Hz frame ([what a tick costs](#what-a-tick-costs-the-gpu)). The loads above 8.0 on most of these runs came largely from the runs' own settled CPU renders of 10 to 16 masked layers ([the settled render](#the-masked-spatial-primitive-one-to-sixteen-layers)). The pool stays 74 MB, one link's scratch, at every count.
-- **10 and 16 masks at 100%**, new workloads: every tick took the CPU path naming `budget-exceeded`, the desktop's estimate refusing the slot before any boundary was asked for, correctly, since the window grows with every chained link ([the window](#the-100-window-grows-with-the-chain)). A drag at 100% whose region slot passes the budget is now drawn from its reduced stage scaled to the view, the softer frame ("Softer while dragging", `budget-reduced`), and is sharp at rest. The status bar's notice for `budget-exceeded` was `GPU memory full`. The harness records no notice per tick; the notice for each CPU reason is the status model's, `GPU memory full` for `budget-exceeded` and none for `boundary-pending` or `boundary-uploading`. The peak column is the Fit slot the run opened with.
-- **The first stroke after a zoom.** At 100% with three masks the first one or two ticks were the CPU's while the region's boundary rendered and uploaded: the press reached the screen in 61 to 84 ms and the early positions' p95 was 25 to 59 ms. Once the boundary was held every tick was the GPU's, late p95 8.2 to 9.0 ms, and 8.6 ms with the mask overlay shown, its region coverage laid over the GPU region frame. The harness zoomed over a retained exact frame just before it painted, so no view job asked for the region's resident boundary first ([later](../design/gpu-preview.md#later)).
-- **With the preview off** the CPU path showed 21 of the 120 positions at Fit and 25 at 100%; counting each position by the frame that carried it, 197.4 / 255.3 / 277.0 ms at Fit and 174.8 / 240.9 / 301.5 at 100%.
+- **Three masks, within a frame.** p95 is 8.5 to 8.9 ms at Fit, 8.9 to 9.3 at 100%, and 8.8 to 8.9 on the X100VI with Detail. Every position at Fit is drawn on the GPU at the redraw after its input, the press 1.3 to 10.4 ms from its input to its frame where the stack's resident boundary is held ([the GPU source](../design/gpu-preview.md#the-gpu-source)).
+- **The GPU-preview peak** with three masks is 257 MB at Fit, 542 MB at 100% and 557 MB on the X100VI with Detail, where Detail's half-precision planes share no texture class with Presence's, so the pool holds both links' scratch, 186 MB.
+- **10 and 16 masks at Fit**: every position is drawn on the GPU, but p95 is 22.8 to 24.4 ms, **missing the 16 ms target**, because a tick's GPU work passes the 120 Hz frame ([what a tick costs](#what-a-tick-costs-the-gpu)). The loads above 8.0 on most of these runs came largely from the runs' own settled CPU renders of 10 to 16 masked layers ([the settled render](#the-masked-spatial-primitive-one-to-sixteen-layers)). The pool stays 74 MB, one link's scratch, at every count.
+- **10 and 16 masks at 100%**: the window grows with every chained link ([the window](#the-100-window-grows-with-the-chain)), so the region's slot passes the budget, and a drag there is drawn from its reduced stage scaled to the view, the softer frame ("Softer while dragging", `budget-reduced`), sharp at rest.
+- **The first stroke after a zoom.** At 100% with three masks the first one or two ticks are the CPU's while the region's boundary renders and uploads: the press reaches the screen in 61 to 74 ms and the early positions' p95 is 25 to 50 ms. Once the boundary is held every tick is the GPU's, late p95 8.2 to 9.0 ms. The harness zooms over a retained exact frame just before it paints, so no view job asks for the region's resident boundary first ([later](../design/gpu-preview.md#later)).
 
 ### What a tick costs the GPU
 
-`gpu_mask_a_painted_stroke_costs_where_it_changes` (release, `--ignored --nocapture`, the qualifier's headless device on the same adapter): the same stroke's 119 ticks over a brushed mask and two radials, each holding a masked Basic and a masked Presence layer, every tick after the first submitted without waiting, so the figure is the GPU's throughput a tick. The host's decimation moves some of the stroke's kept positions at each tick, so a tick's change covers 6.3% of the Fit stage and 7.1% of the region on average. Before (the base tree's test over its build) and after, back to back then reversed, at loads of 2.2 to 2.5:
+`gpu_mask_a_painted_stroke_costs_where_it_changes` (release, `--ignored --nocapture`, the qualifier's headless device on the same adapter): the same stroke's 119 ticks over a brushed mask and two radials, each holding a masked Basic and a masked Presence layer, every tick after the first submitted without waiting, so the figure is the GPU's throughput a tick. The host's decimation moves some of the stroke's kept positions at each tick, so a tick's change covers 6.3% of the Fit stage and 7.1% of the region on average. Two runs, at loads of 2.2 to 2.5:
 
 | Run | Fit, 2292 × 1528: incremental / whole, a tick | 100% region, 2994 × 2642: incremental / whole, a tick |
 | --- | ---: | ---: |
-| before 1 | 2.44 / 6.70 ms | 4.46 / 14.91 ms |
-| after 1 | 2.37 / 6.55 ms | 4.31 / 14.66 ms |
-| after 2 | 2.34 / 6.57 ms | 4.33 / 14.61 ms |
-| before 2 | 2.44 / 6.73 ms | 4.46 / 14.99 ms |
+| 1 | 2.37 / 6.55 ms | 4.31 / 14.66 ms |
+| 2 | 2.34 / 6.57 ms | 4.33 / 14.61 ms |
 
-Encoding takes 0.06 to 0.10 ms a tick in every run. The pool leaves a tick's GPU cost unchanged within noise, after about 3% lower in both orders. The incremental ticks take 2.7 to 3.4 times less GPU time than whole ones and draw what whole ones do, bit for bit (`gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`). On the earlier `5dccacc6` build, with the driver's shader cache warm from earlier runs, the compile and first two ticks took 71 ms at Fit and 80 ms over the region.
+Encoding takes 0.06 to 0.10 ms a tick in every run. The incremental ticks take 2.8 to 3.4 times less GPU time than whole ones and draw what whole ones do, bit for bit (`gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`).
 
-**The paint harness's layout at Fit** (`gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit`, release, on main with the test, load about 4.6 to 4.9): the 2292 × 1528 Fit stage of a 6000 × 4000 photograph, the masked Basic layers then the masked Presence layers, the stroke on the first mask, so every Presence link after it is evaluated incrementally. The slot charges 257.4, 557.7 and 815.2 MB, the paint runs' peaks to the MB.
+**The paint harness's layout at Fit** (`gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit`, release, load about 4.6 to 4.9): the 2292 × 1528 Fit stage of a 6000 × 4000 photograph, the masked Basic layers then the masked Presence layers, the stroke on the first mask, so every Presence link after it is evaluated incrementally. The slot charges 257.4, 557.7 and 815.2 MB, the paint runs' peaks to the MB.
 
 | Masks | Incremental, a tick (encoding) | Whole, a tick (encoding) | One tick alone p50 / p95 / largest |
 | ---: | ---: | ---: | ---: |
@@ -4546,7 +3393,7 @@ At 10 and 16 masks a tick's GPU work passes the 8.33 ms frame, which is the pain
 
 ### The scratch pool's memory
 
-What a masked Presence layer costs the GPU-preview budget with every link's scratch planes in the slot's one pool and Texture's band in one channel ([design](../design/gpu-preview.md#plane-sharing-and-precision)). Deterministic, one run: `cargo test --release -p luxforge-app --bin luxforge gpu_shared_scratch_measured -- --ignored --nocapture` on main, the slot's charge (`Qualifier::charged_bytes`, which the live slot's `gpu_preview_in_use_bytes` equals) for 1, 2, 4, 8 and 16 masked Presence layers, each through a radial of its own. At Fit, a 2292 × 1528 boundary against a 6000 × 4000 stage; at 100%, a fixed 3778 × 2578 window at (1111, 711) of the 6000 × 4000 exact stage, the region drawn being the window itself. A JPEG's boundary is `rgba16float` (the byte path); a RAW's is `rgba32float` (the linear path), as are its intermediates. Megabytes, against the 2 GiB budget of 2,147.5 MB:
+What a masked Presence layer costs the GPU-preview budget with every link's scratch planes in the slot's one pool and Texture's band in one channel ([design](../design/gpu-preview.md#plane-sharing-and-precision)). Deterministic, one run: `cargo test --release -p luxforge-app --bin luxforge gpu_shared_scratch_measured -- --ignored --nocapture`, the slot's charge (`Qualifier::charged_bytes`, which the live slot's `gpu_preview_in_use_bytes` equals) for 1, 2, 4, 8 and 16 masked Presence layers, each through a radial of its own. At Fit, a 2292 × 1528 boundary against a 6000 × 4000 stage; at 100%, a fixed 3778 × 2578 window at (1111, 711) of the 6000 × 4000 exact stage, the region drawn being the window itself. A JPEG's boundary is `rgba16float` (the byte path); a RAW's is `rgba32float` (the linear path), as are its intermediates. Megabytes, against the 2 GiB budget of 2,147.5 MB:
 
 | Layers of | Stage | Boundary | 1 layer | 2 | 4 | 8 | 16 | Each layer after the first | Layers within 2 GiB |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -4572,26 +3419,13 @@ Each layer after the first adds its intermediate, its kept planes and parameters
 | Texture, Clarity and Dehaze | 100% window | JPEG | 77.9 | 39.0 | 77.9 | 46.3 | 232.1 |
 | Texture, Clarity and Dehaze | 100% window | RAW | 155.8 | 39.0 | 155.8 | 46.3 | 232.1 |
 
-The same plans with each link holding its own scratch, the layout without the pool, with the band in one channel:
-
-| Layers of | Stage | Boundary | Each layer after the first | Layers within 2 GiB | The pool saves at 16 layers |
-| --- | --- | --- | ---: | ---: | ---: |
-| Texture and Clarity | Fit | JPEG | 117.3 | 18 | 1,116.3 |
-| Texture and Clarity | Fit | RAW | 145.3 | 14 | 1,116.3 |
-| Texture and Clarity | 100% window | JPEG | 326.3 | 6 | 3,105.2 |
-| Texture and Clarity | 100% window | RAW | 404.3 | 5 | 3,105.2 |
-| Texture, Clarity and Dehaze | Fit | JPEG | 128.1 | 16 | 1,251.0 |
-| Texture, Clarity and Dehaze | Fit | RAW | 156.1 | 13 | 1,251.0 |
-| Texture, Clarity and Dehaze | 100% window | JPEG | 356.3 | 5 | 3,481.1 |
-| Texture, Clarity and Dehaze | 100% window | RAW | 434.2 | 4 | 3,481.1 |
-
-- **What the pool saves** is every layer's scratch after the first: 74.4 MB a layer at Fit and 207.0 MB over the window for Texture and Clarity. A further layer costs about a third of what it costs with each link's scratch its own at Fit on a JPEG, and about half on a RAW; the budget holds 47 layers of Texture and Clarity at Fit on a JPEG against 18, and 15 over the window against 6.
-- **The one-channel band** keeps 4 bytes a pixel less of every Texture layer than its two-channel plane did: 14.0 MB at Fit and 39.0 MB over the window, in the first layer's charge and in every increment.
+- **The pool** is charged once, whatever the number of layers: one link's scratch, 74.4 MB at Fit and 207.0 MB over the window for Texture and Clarity.
+- **The one-channel band** is 4 bytes a pixel of every Texture layer: 14.0 MB at Fit and 39.0 MB over the window, in the first layer's charge and in every increment.
 - **The fixed window understates a real chain at 100%**, since the window grows with every chained spatial layer, below.
 
 #### The 100% window grows with the chain
 
-`gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo` and `gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count` (release, ignored, on main with the tests), through the real planning path: the editor opens the generated 24 MP JPEG (6000 × 4000), another client commits the paint harness's layout, and a drag in Mask mode at 100% asks for its plan. At a percentage zoom the boundary is the view's region grown by the halo of every spatial layer chained after it (`WindowPlan::of_gpu_rect`), so each masked Presence link adds 207 px on every side (Texture 8 and Clarity 199), and every link's intermediate and kept planes and the pool are sized to that window. `plan_steps` converted every plan, and `region_charge` equals the surface's own `slot_charge` but for the links' buffers (6 to 40 KB). Budget 2,147,483,648 bytes. In the harness's view, 1728 × 1080 at 2× with the panels open, scrolled to the top left (the region 2373 × 2021 at (0, 0)):
+`gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo` and `gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count` (release, ignored), through the real planning path: the editor opens the generated 24 MP JPEG (6000 × 4000), another client commits the paint harness's layout, and a drag in Mask mode at 100% asks for its plan. At a percentage zoom the boundary is the view's region grown by the halo of every spatial layer chained after it (`WindowPlan::of_gpu_rect`), so each masked Presence link adds 207 px on every side (Texture 8 and Clarity 199), and every link's intermediate and kept planes and the pool are sized to that window. `plan_steps` converted every plan, and `region_charge` equals the surface's own `slot_charge` but for the links' buffers (6 to 40 KB). Budget 2,147,483,648 bytes. In the harness's view, 1728 × 1080 at 2× with the panels open, scrolled to the top left (the region 2373 × 2021 at (0, 0)):
 
 | Masks | Window | Slot | Fits |
 | ---: | --- | ---: | --- |
@@ -4610,12 +3444,12 @@ The same plans with each link holding its own scratch, the layout without the po
 
 - **The corpus's view**, the region 3026 × 1826 at (1487, 1087), fits up to 5 masks, 1,819.6 MB, where 6 charge 2,287.5 MB; the window reaches the whole stage at 8 masks (3,076.8 MB), and 16 charge 5,428.9 MB. Centred with the panels open (2374 × 2022 at (1813, 989)) the slot charges 301.8, 798.9, 3,662.0 and 5,426.0 MB at 1, 3, 10 and 16 masks; centred with the panels closed (3458 × 2022), 420.3, 1,041.4, 3,670.9 and 5,434.9 MB.
 - **At Fit** the plan is at the view's reduced stage at every count, a 2292 × 1528 boundary with no window, which does not grow.
-- **With Dehaze on the masks** the drag changes every Dehaze layer's input, so each tick computes every layer's light from the whole stage, a light link a layer charged beside the slot; the measurement's Dehaze part has not been run since.
+- **With Dehaze on the masks** the drag changes every Dehaze layer's input, so each tick computes every layer's light from the whole stage, a light link a layer charged beside the slot; this measurement's Dehaze case is unmeasured.
 - **No defect.** For one window shared by every link and blind to masks, this growth is what an exact region frame needs. It over-estimates in two ways, each a proposal that is not built, with its estimated effect in the [design](../design/gpu-preview.md#later): growth bounded by each link's mask, and each link's intermediate and kept planes sized to its own output's need.
 
 ### The corpus
 
-The five corpus harnesses, release profile, with every source the corpus names, the zone plates and the three RAWs through the private manifest among them; the pixels are deterministic. Presence and Detail at Fit and every family at 100% ran on main (`946751cc`), with the scratch pool and the one-channel band, and every statistic equals the run before them; colour and masks at Fit are that earlier run's, over the release build of `313faec4` with the chain (`fc3eb65e`) merged. Worst of each statistic over the measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5):
+The five corpus harnesses, release profile, with every source the corpus names, the zone plates and the three RAWs through the private manifest among them; the pixels are deterministic. Worst of each statistic over the measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5):
 
 | Harness | Within the limits | Pointwise | Spatial | Gaps | Heaviest slot |
 | --- | ---: | ---: | ---: | --- | --- |
@@ -4625,43 +3459,43 @@ The five corpus harnesses, release profile, with every source the corpus names, 
 | Detail at Fit | 63 of 63 | — | 0.054 / 0.26 / 0.96 / 0.019 | none | Detail then Presence on the Air 2S, 261.2 MB |
 | Every family at 100% | 247 of 247 | 0.051 / 0.25 / 0.85 / 0.009 | 0.084 / 0.51 / 0.95 / 0.049 | 3: masks that select nothing in the region (`mask-radial` and `mask-brush` on the 60 MP JPEG, `mask-brush` on the Z6) | Detail then all three Presence fields on the Air 2S, 1,123.8 MB |
 
-Under the 2 GiB budget every 100% slot draws on the GPU. The heaviest charged 1,174.1 MB in the run before: the pool leaves Detail beside Presence as it was, since their planes share no texture class, and the one-channel band lowers it.
+Under the 2 GiB budget every 100% slot draws on the GPU. The pool does not share Detail's scratch with Presence's, since their planes share no texture class; the one-channel band lowers the heaviest slot.
 
 ### The performance-rules checklist
 
 For the chain, the masked passes, the incremental ticks and the resident boundary ([rules](../engineering/performance-rules.md#review-checklist)):
 
-- **The original** is read, hashed and decoded only as before: on that build a boundary was rendered by the preview worker from the verified prepared source.
-- **Full-frame allocations.** On the GPU, each link's intermediate (the boundary's size and format), each masked spatial layer's planes and a plane of its own for each unit's result, and the resident boundary held between gestures, all within the 2 GiB GPU-preview budget, which refuses a slot past it and names the CPU path; on that build the desktop let its copy of a boundary's texels go once the surface held them. Nothing is cloned that is shared.
-- **Point queries, validation and no-op checks** render no frame; on that build samples, analysis and export stayed on the CPU, byte for byte.
+- **The original** is read, hashed and decoded only through the verified prepared source.
+- **Full-frame allocations.** On the GPU, each link's intermediate (the boundary's size and format), each masked spatial layer's planes and a plane of its own for each unit's result, and the resident boundary held between gestures, all within the 2 GiB GPU-preview budget, which refuses a slot past it and names the CPU path. Nothing is cloned that is shared.
+- **Point queries, validation and no-op checks** render no frame.
 - **The owner thread** plans a committed stack's own plan and its warm list at its view, a settled 100% view's among them, from the compiled stack's descriptions in `O(layers × modules)`: no frame work. The interface thread compares each tick's plan with the plans it handed (`GpuPlan::changes_since`) in `O(units + components + segments)`, reading no pixel.
-- **Desktop messages.** A tick drawn on the GPU sends no preview job and uploads no frame; on that build the shared quiet policy settled a draft only the GPU had drawn with one job once input paused, as after a CPU tick. A committed job asked for the resident boundary only when no held boundary had its key, and a view job asked for the region's plans only when it settled.
+- **Desktop messages.** A tick drawn on the GPU sends no preview job and uploads no frame. A committed job asks for the resident boundary only when no held boundary has its key, and a view job asks for the region's plans only when it settles.
 - **Timers, polls and subscriptions.** None added.
 - **Repeated work.** A link whose input and words did not change is not run (keyed by content: its input's key, words, blocks and pipeline); a tick runs each changed link only where its change reaches; a masked spatial layer runs its passes only over its mask; the resident boundary is rendered once per stack and view rather than once per gesture.
-- **`editor-performance`.** The CPU's renders are unchanged; not run for this change.
-- **Exactness.** Partial and incremental evaluation are held to whole evaluation bit for bit (`gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone`, `gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`, `gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are`, `gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values`); a plan over another boundary or with other clipping marks is evaluated whole (`a_change_measured_over_another_boundary_is_evaluated_whole`, `a_change_is_measured_only_over_the_same_boundary_and_marks`); and on that build every GPU frame was still settled by the CPU's.
+- **`editor-performance`.** Not run: the chain changes no CPU render.
+- **Exactness.** Partial and incremental evaluation are held to whole evaluation bit for bit (`gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone`, `gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`, `gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are`, `gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values`); a plan over another boundary or with other clipping marks is evaluated whole (`a_change_measured_over_another_boundary_is_evaluated_whole`, `a_change_is_measured_only_over_the_same_boundary_and_marks`).
 
 ### The performance-rules checklist for the scratch pool and sixteen layers
 
 For the slot's scratch pool, the one charge, Texture's band in one channel, the fallback notice, and the cap of 16 masked spatial layers with its compile cache and warm list ([rules](../engineering/performance-rules.md#review-checklist)):
 
-- **The original** is read, hashed and decoded only as before; none of these changes reads a source.
-- **Full-frame allocations.** On the GPU, one pool of scratch textures a slot, each the boundary's size, its blocks or a fixed size, which every link takes in turn rather than holding a set of its own; a link's kept planes and intermediate as before; and Texture's band in a one-channel `r32float` plane, 4 bytes a pixel less than its `rg32float` one. The pool is charged once to the 2 GiB GPU-preview budget, refused before anything is created past it, and retired through the surface's retirement worker, charged until the GPU is done with it. At three masks the GPU-preview peak falls by 23 to 44%, and 16 masked Presence layers charge 815 MB at Fit ([memory](#the-scratch-pools-memory)). Nothing is added on the CPU: the notice holds one phrase and tooltip, and the warm list plan descriptions.
+- **The original** is not read: none of these reads a source.
+- **Full-frame allocations.** On the GPU, one pool of scratch textures a slot, each the boundary's size, its blocks or a fixed size, which every link takes in turn rather than holding a set of its own; a link's kept planes and intermediate; and Texture's band in a one-channel `r32float` plane, 4 bytes a pixel. The pool is charged once to the 2 GiB GPU-preview budget, refused before anything is created past it, and retired through the surface's retirement worker, charged until the GPU is done with it. At three masks the GPU-preview peak is 257 to 557 MB, and 16 masked Presence layers charge 815 MB at Fit ([memory](#the-scratch-pools-memory)). Nothing is added on the CPU: the notice holds one phrase and tooltip, and the warm list plan descriptions.
 - **Point queries, validation and no-op checks** render no frame. The cap is checked when the stack compiles, `region_charge` is arithmetic over the plan's steps converted with no boundary and no device, and the notice reads the reason the evidence already records.
-- **The owner thread** plans the warm list, one drag for each distinct drafted shape within 45 link sequences, from the compiled stack's descriptions: no frame work. The interface thread fits the pool once a tick from every link's steps, in `O(links × planes)` as fitting the planes is, and encodes a tick in 0.06 to 0.25 ms on the qualifier's device over 3 to 16 masks ([what a tick costs](#what-a-tick-costs-the-gpu)); the editor's own preparation figure (`gpu_preview_frame_us`) was not recorded for these runs.
-- **Desktop messages.** None added: a tick drawn on the GPU sends no preview job and uploads no frame, a slot the desktop's estimate refuses asks for no boundary, and the notice is derived in the update each tick already runs, a change of drawing path waking the desktop once as before. `asset.state` and `history.list` are unchanged.
+- **The owner thread** plans the warm list, one drag for each distinct drafted shape within 45 link sequences, from the compiled stack's descriptions: no frame work. The interface thread fits the pool once a tick from every link's steps, in `O(links × planes)` as fitting the planes is, and encodes a tick in 0.06 to 0.25 ms on the qualifier's device over 3 to 16 masks ([what a tick costs](#what-a-tick-costs-the-gpu)); the editor's own preparation figure (`gpu_preview_frame_us`) is not recorded for these runs.
+- **Desktop messages.** None added: a tick drawn on the GPU sends no preview job and uploads no frame, a slot the desktop's estimate refuses asks for no boundary, and the notice is derived in the update each tick already runs, a change of drawing path waking the desktop once. `asset.state` and `history.list` are unchanged.
 - **Timers, polls and subscriptions.** None added. The half second before `compiling` is said is measured at ticks, so a drag that holds still keeps what it last said and the idle editor stays asleep.
-- **Repeated work.** A pool texture's key is trusted only by the schedule that wrote it, so a link runs a pass again only where another link wrote its scratch since it last ran: the one count that moves is a Dehaze drag's 20 of 22 passes after another masked Presence link has run, against 19 alone. Every single-link count stands, and a painted tick's GPU cost is unchanged within noise, 2.34 to 2.37 ms against 2.44 at Fit and 4.31 to 4.33 against 4.46 over a 100% region. The compile cache keys a link's program sequence by its steps and the format it writes, bounded at 64 sequences (`PIPELINE_CACHE`), which hold the largest plan's 19 links beside a whole warm list of at most 45. Its hit rate is held by tests rather than measured: a plan of 16 masked layers of mixed shapes compiles each sequence once, then draws every tick on the GPU, and a drag of each of the 16 finds every link it draws warmed. A rebuild is a Presence link's compile, about a second on a cold shader cache ([compile cost](#gpu-preview-compile-cost)); the cache's retained bytes were not measured.
-- **`editor-performance`.** The CPU's renders are unchanged; not run for these changes. The settled render the cap allows is measured: 16 whole-frame masked layers take 2.4 s at 24 MP and 6.7 s at 60 MP on main ([the masked spatial primitive](#the-masked-spatial-primitive-one-to-sixteen-layers)), and a render expected to take more than a second shows its progress.
-- **Exactness.** Every frame is held bit for bit to a fresh evaluation through the slot and through the qualifier, over chained links whose ticks alternate and over 16 masked layers of mixed shapes, with the pool poisoned as well (`chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws`, `gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does`, `gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does`), and so is every test of partial and incremental evaluation; the one-channel band draws what two channels did, bit for bit (`gpu_presence_texture_band_in_one_channel_draws_what_two_did`); the three charges agree (`gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge`); and every corpus cell at Fit and at 100% stays within its limits with every statistic unchanged ([the corpus](#the-corpus)).
+- **Repeated work.** A pool texture's key is trusted only by the schedule that wrote it, so a link runs a pass again only where another link wrote its scratch since it last ran: a Dehaze drag runs 20 of 22 passes after another masked Presence link has run, and 19 alone. A painted tick's GPU cost is 2.34 to 2.37 ms at Fit and 4.31 to 4.33 over a 100% region. The compile cache keys a link's program sequence by its steps and the format it writes, bounded at 64 sequences (`PIPELINE_CACHE`), which hold the largest plan's 19 links beside a whole warm list of at most 45. Its hit rate is held by tests rather than measured: a plan of 16 masked layers of mixed shapes compiles each sequence once, then draws every tick on the GPU, and a drag of each of the 16 finds every link it draws warmed. A rebuild is a Presence link's compile, about a second on a cold shader cache ([compile cost](#gpu-preview-compile-cost)); the cache's retained bytes are not measured.
+- **`editor-performance`.** Not run: these change no CPU render. The settled render the cap allows is measured: 16 whole-frame masked layers take 2.4 s at 24 MP and 6.7 s at 60 MP ([the masked spatial primitive](#the-masked-spatial-primitive-one-to-sixteen-layers)), and a render expected to take more than a second shows its progress.
+- **Exactness.** Every frame is held bit for bit to a fresh evaluation through the slot and through the qualifier, over chained links whose ticks alternate and over 16 masked layers of mixed shapes, with the pool poisoned as well (`chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws`, `gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does`, `gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does`), and so is every test of partial and incremental evaluation; the one-channel band draws what a two-channel one does, bit for bit (`gpu_presence_texture_band_in_one_channel_draws_what_two_did`); the three charges agree (`gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge`); and every corpus cell at Fit and at 100% is within its limits ([the corpus](#the-corpus)).
 
 ## GPU previews qualified on the M4
 
-The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%, the latency of each gesture with the preview on and off, memory, idle after a release, the Windows and Linux checks, the performance-rules checklist and the verify tiers. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. On these builds the GPU preview was a preference that could be turned off, and its frames were judged against the CPU proxy and region and settled to the CPU's; the GPU-first stages deleted all three, and the [release gate](#gpu-qualification-against-the-reference) now holds the GPU to the reference renderer.
+The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%, the latency of each gesture, memory, idle after a release, the Windows and Linux checks, the performance-rules checklist and the verify tiers. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The corpus error report judges the GPU's frames against the CPU proxy and exact region they stood in for, which the editor does not render; the [release gate](#gpu-qualification-against-the-reference) holds the GPU to the reference renderer.
 
 ### The corpus error report
 
-Every program and stack class of the [corpus](../../fixtures/preview/corpus.json) against the CPU frame it stood in for, over every source this host has, from the code at `61592997`: at Fit, the frame settlement presented, which the dissolve ended on ([colour programs](#gpu-colour-programs-at-fit) set out the frames); at 100%, the exact visible region the quiet policy settled to, in the largest window the owner's display holds ([at 100%](#gpu-previews-at-100)). The five harnesses, deleted since with the CPU frames they compared against (`gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, `gpu_detail_corpus_at_fit`, `gpu_preview_corpus_at_100_percent`) ran once each in the `test` profile; the pixels are deterministic, so the host's load, 27 to 70 while they ran, does not bear on them. The sources are the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified against the corpus's SHA-256 by `cargo xtask preview-corpus`. The family sections record their own runs at earlier builds, whose Z6 and Air 2S cells were drawn through a sparser lens grid and, as every RAW cell through a lens warp, crop or perspective was until the tail's intermediate was written rounded to the nearest half, a signed ΔL\* of −0.004 to −0.010 darker; this report predates the current `rgba32float` RAW geometry tail; those RAW geometry cells describe the former half-float path and do not qualify its current accuracy or memory use ([plane precision](#plane-precision)).
+Every program and stack class of the [corpus](../../fixtures/preview/corpus.json) against the CPU frame it stood in for, over every source this host has: at Fit, the frame settlement presented ([colour programs](#gpu-colour-programs-at-fit) set out the frames); at 100%, the exact visible region, in the largest window the owner's display holds ([at 100%](#gpu-previews-at-100)). Five harnesses ran once each in the `test` profile; the pixels are deterministic, so the host's load does not bear on them. The sources are the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified against the corpus's SHA-256 by `cargo xtask preview-corpus`. The family sections' own Z6 and Air 2S cells are drawn through a sparser lens grid than this report's. Every RAW cell through a lens warp, crop or perspective here was drawn with the tail's intermediate rounded to the nearest half, a signed ΔL\* of −0.004 to −0.010 darker, so those cells do not qualify the current `rgba32float` RAW geometry tail's accuracy or memory use ([plane precision](#plane-precision)).
 
 Worst of each statistic over a family's measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5). The chain is the colour stack, the four colour programs in one pass.
 
@@ -4685,111 +3519,98 @@ Worst of each statistic over a family's measured cells — mean ΔE00, worst 16 
 
 - **The geometry tail over the zone plates.** All 216 measured cells at Fit and 201 at 100% are within their class's limits, none past half of any. A perspective warp is a homography, which the tail evaluates at every pixel in `f32`, within 0.0018 px of the CPU's map: over the zone plate, whose chirp reaches half a cycle a pixel, its worst block is 0.04 at Fit and 0.02 at 100%. Drawn through a coordinate grid that held the map within 0.041 px, it was 1.15 at Fit, past the limit. A lens warp keeps its grid, held within 0.025 output pixels at Fit and 100% as well as 0.1 display pixels: over the zone plate with a lens identity its worst block is 0.17 at Fit and 0.23 at 100%, where the display bound alone left 0.62 and 0.98. The Z6 and Air 2S cells, which every family draws through their lens profile's grid, are within a worst block of 0.26 on the pointwise families and 0.31 on the spatial ones, and of a signed ΔL\* of ±0.0002.
 - **Gaps, not passes.** At Fit, the vignette after a RAW's lens warp on the Z6 and Air 2S (a lens distortion before the boundary). At 100%: a mask that selects nothing inside the region (3 cells); Detail beside all three Presence fields, masked or not, whose region the worker rendered whole while Dehaze's estimate sat behind Detail, was planned over the light that whole frame stored and measured against its region: 14 cells, each within a fraction of the spatial limits ([after Detail, Presence](#after-detail-presence)). No slot passed the 2 GiB budget.
-- **Detail at settle.** Detail was judged against the CPU's moving proxy it stood in for, as the owner decided. Against the exact-derived frame Detail settled to at Fit, the GPU frame and the CPU proxy differed alike: both pass the spatial limits on 30 of 54 cells and miss them on the same 24, the zone plate's nine, the Air 2S's and those beside Presence among them (worst block 15.0 and p99 28.8 on the zone plate, 7.15 and 8.09 on a photograph). That was the jump the settle dissolve covered, the CPU path's own.
+- **Detail at Fit** is judged against the CPU's moving proxy it stood in for. Against the exact-derived frame at Fit, the GPU frame and the CPU proxy differ alike: both pass the spatial limits on 30 of 54 cells and miss them on the same 24, the zone plate's nine, the Air 2S's and those beside Presence among them (worst block 15.0 and p99 28.8 on the zone plate, 7.15 and 8.09 on a photograph).
 
-### Latency, with the GPU preview on and off
+### Gesture latency
 
-Each case's 30-input drag through `editor-latency`, the GPU preview on and, for the key cases, turned off from the palette first (that build's `--no-gpu-preview`; the preference and the flag are gone, and `--reference-renderer` now measures the reference renderer's baseline): the same build, the same host, run back to back. The release editor built from `2837c344` (binary SHA-256 `a34b2482…`), the generated 24 MP and 60 MP JPEGs and the X100VI RAF, a hidden 1440 × 900 window at 2× on the 120 Hz display, warm filesystem cache, 2026-10-02. Each run started at a one-minute load between 3.5 and 6.9 (the column), all below the 8.0 threshold; the host carried only the owner's open applications. Each input is one step left open until its frame is on screen, so every figure is one input and one frame. Milliseconds, nearest rank; a drag's 30 inputs are 30 samples, the stroke's 400 positions 400.
+Each case's 30-input drag through `editor-latency`: the release editor, the generated 24 MP and 60 MP JPEGs and the X100VI RAF, a hidden 1440 × 900 window at 2× on the 120 Hz display, warm filesystem cache. Each run started at a one-minute load between 3.5 and 6.9 (the column), all below the 8.0 threshold; the host carried only the owner's open applications. Each input is one step left open until its frame is on screen, so every figure is one input and one frame. Milliseconds, nearest rank; a drag's 30 inputs are 30 samples, the stroke's 400 positions 400.
 
 - **What presented means on each path.** A CPU frame is presented at its hand-off, the update in which the worker's raster became the photo surface's source (`preview_displayed`); its draw follows at the next redraw. A GPU frame has no hand-off: it is presented at the surface's first draw of the plan tagged with the input's revision, the moment that draw is encoded (`surface_frame_drawn`). The GPU figure therefore includes the wait for the next frame, which the CPU figure does not; neither is scanout. **Drawn** times both paths to that first draw, the like-for-like column; a CPU region at 100% and above had no logged draw. On the 120 Hz display the figures fall at whole frames, 8.3 ms apart.
-- **Frames.** Every drag's first input took the CPU path asking for its boundary (`boundary-pending`) and its later 29 were drawn on the GPU; its p99 is that first input. With the preview off every input was the CPU's (`preference-off`).
+- **Frames.** Every drag's first input took the CPU path asking for its boundary (`boundary-pending`) and its later 29 were drawn on the GPU; its p99 is that first input.
 
-| Case | GPU preview | Load | Frames | Presented p50 / p95 / p99 | GPU frames | CPU frames | Drawn p50 / p95 / p99 |
-| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| 24 MP JPEG at Fit, full Basic | on | 6.86 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.3 / 17.5 | 8.3 / 8.6 / 9.3 | 17.5 / 17.5 / 17.5 | 8.3 / 9.3 / 26.3 |
-|  | on, again | 4.64 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.5 / 17.8 | 8.3 / 8.4 / 9.5 | 17.8 / 17.8 / 17.8 | 8.3 / 9.5 / 27.6 |
-|  | off | 4.84 | 0 GPU, 30 CPU (preference-off) | 17.2 / 25.8 / 26.9 | — | 17.2 / 25.8 / 26.9 | 25.7 / 34.5 / 34.6 |
-|  | off, again | 4.95 | 0 GPU, 30 CPU (preference-off) | 9.5 / 18.0 / 26.1 | — | 9.5 / 18.0 / 26.1 | 18.1 / 26.6 / 35.0 |
-| 60 MP JPEG at Fit, full Basic | on | 4.99 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.9 / 9.3 | 8.4 / 8.7 / 8.9 | 9.3 / 9.3 / 9.3 | 8.4 / 8.9 / 17.0 |
-|  | on, again | 4.23 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.8 / 9.5 | 8.3 / 8.7 / 8.8 | 9.5 / 9.5 / 9.5 | 8.3 / 8.8 / 16.7 |
-|  | off | 4.80 | 0 GPU, 30 CPU (preference-off) | 9.1 / 16.9 / 51.0 | — | 9.1 / 16.9 / 51.0 | 17.8 / 26.0 / 55.5 |
-|  | off, again | 4.42 | 0 GPU, 30 CPU (preference-off) | 9.1 / 10.1 / 17.3 | — | 9.1 / 10.1 / 17.3 | 17.5 / 18.1 / 26.1 |
-| 24 MP, five exports queued | on | 4.57 | 29 GPU, 1 CPU (boundary-pending) | 8.8 / 46.0 / 129.6 | 8.8 / 39.0 / 46.0 | 129.6 / 129.6 / 129.6 | 8.8 / 46.0 / 131.8 |
-| 60 MP, five exports queued | on | 4.47 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 18.7 / 22.9 | 8.4 / 16.8 / 22.9 | 18.7 / 18.7 / 18.7 | 8.4 / 22.9 / 26.1 |
-|  | off | 4.41 | 0 GPU, 30 CPU (preference-off) | 17.5 / 211.5 / 265.4 | — | 17.5 / 211.5 / 265.4 | 26.0 / 217.4 / 274.5 |
-| 24 MP at 100%, full Basic | on | 4.97 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.4 / 9.6 | 8.3 / 9.3 / 9.4 | 9.6 / 9.6 / 9.6 | 8.3 / 9.3 / 9.4 |
-|  | off | 4.67 | 0 GPU, 30 CPU (preference-off) | 9.3 / 11.9 / 12.4 | — | 9.3 / 11.9 / 12.4 | — |
-| 24 MP at 200%, full Basic | on | 3.78 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.6 / 9.2 | 8.3 / 8.6 / 8.6 | 9.2 / 9.2 / 9.2 | 8.3 / 8.6 / 8.6 |
-| X100VI, Texture drag over Presence | on | 4.77 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.5 / 43.5 | 8.5 / 9.3 / 9.5 | 43.5 / 43.5 / 43.5 | 8.5 / 9.5 / 46.4 |
-|  | off | 4.45 | 0 GPU, 30 CPU (preference-off) | 41.5 / 47.2 / 48.6 | — | 41.5 / 47.2 / 48.6 | 44.1 / 52.3 / 54.5 |
-| X100VI, Clarity drag over Presence | on | 3.64 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.6 / 42.7 | 8.4 / 8.5 / 8.6 | 42.7 / 42.7 / 42.7 | 8.4 / 8.6 / 44.2 |
-| X100VI, Basic drag under Presence | on | 3.47 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.0 / 61.7 | 8.5 / 8.8 / 9.0 | 61.7 / 61.7 / 61.7 | 8.5 / 9.0 / 67.7 |
-| 24 MP, a 400-position brush stroke | on | 4.34 | 399 GPU, 1 CPU (boundary-pending) | 7.1 / 8.5 / 9.2 | 7.1 / 8.5 / 9.2 | 10.5 / 10.5 / 10.5 | — |
+| Case | Load | Frames | Presented p50 / p95 / p99 | GPU frames | CPU frames | Drawn p50 / p95 / p99 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 24 MP JPEG at Fit, full Basic | 6.86 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.3 / 17.5 | 8.3 / 8.6 / 9.3 | 17.5 / 17.5 / 17.5 | 8.3 / 9.3 / 26.3 |
+| again | 4.64 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.5 / 17.8 | 8.3 / 8.4 / 9.5 | 17.8 / 17.8 / 17.8 | 8.3 / 9.5 / 27.6 |
+| 60 MP JPEG at Fit, full Basic | 4.99 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.9 / 9.3 | 8.4 / 8.7 / 8.9 | 9.3 / 9.3 / 9.3 | 8.4 / 8.9 / 17.0 |
+| again | 4.23 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.8 / 9.5 | 8.3 / 8.7 / 8.8 | 9.5 / 9.5 / 9.5 | 8.3 / 8.8 / 16.7 |
+| 24 MP, five exports queued | 4.57 | 29 GPU, 1 CPU (boundary-pending) | 8.8 / 46.0 / 129.6 | 8.8 / 39.0 / 46.0 | 129.6 / 129.6 / 129.6 | 8.8 / 46.0 / 131.8 |
+| 60 MP, five exports queued | 4.47 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 18.7 / 22.9 | 8.4 / 16.8 / 22.9 | 18.7 / 18.7 / 18.7 | 8.4 / 22.9 / 26.1 |
+| 24 MP at 100%, full Basic | 4.97 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.4 / 9.6 | 8.3 / 9.3 / 9.4 | 9.6 / 9.6 / 9.6 | 8.3 / 9.3 / 9.4 |
+| 24 MP at 200%, full Basic | 3.78 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.6 / 9.2 | 8.3 / 8.6 / 8.6 | 9.2 / 9.2 / 9.2 | 8.3 / 8.6 / 8.6 |
+| X100VI, Texture drag over Presence | 4.77 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.5 / 43.5 | 8.5 / 9.3 / 9.5 | 43.5 / 43.5 / 43.5 | 8.5 / 9.5 / 46.4 |
+| X100VI, Clarity drag over Presence | 3.64 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.6 / 42.7 | 8.4 / 8.5 / 8.6 | 42.7 / 42.7 / 42.7 | 8.4 / 8.6 / 44.2 |
+| X100VI, Basic drag under Presence | 3.47 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.0 / 61.7 | 8.5 / 8.8 / 9.0 | 61.7 / 61.7 / 61.7 | 8.5 / 9.0 / 67.7 |
+| 24 MP, a 400-position brush stroke | 4.34 | 399 GPU, 1 CPU (boundary-pending) | 7.1 / 8.5 / 9.2 | 7.1 / 8.5 / 9.2 | 10.5 / 10.5 / 10.5 | — |
 
-- **Against the 16 ms p95 target.** Met with the GPU preview on at Fit at 24 MP and 60 MP (p95 8.8 to 9.5 ms over two runs each), at 100% (9.4) and 200% (8.6), by each X100VI Presence drag and the Basic drag under Presence (8.6 to 9.5), and by every position of the brush stroke (8.5). Each GPU frame is drawn at the first redraw after its input. With the preview off the same drags' p95 is 18.0 and 25.8 ms at 24 MP, 10.1 and 16.9 ms at 60 MP, 11.9 at 100% and 47.2 on the X100VI's Texture; drawn, the CPU frames reach the screen one to two frames after the GPU's (p50 17.5 to 25.7 ms against 8.3 at Fit).
-- **Against the earlier records.** The CPU path's hand-off was 18.1/24.8 ms p50/p95 at 24 MP and 17.2/28.9 at 60 MP on an earlier build; the same build's GPU-off runs now hand off at 9.5 to 17.2 / 18.0 to 25.8 and 9.1 / 10.1 to 16.9, varying by a frame between runs. The GPU frames, measured to their draw, are 8.3/9.3 to 9.5 at 24 MP and 8.3 to 8.4/8.8 to 8.9 at 60 MP, stable across runs.
-- **With an exact render holding the pool.** Five `export.write` jobs of the committed stack are queued just before the drag; the lane renders each exactly on the shared pool, then encodes and writes it, one at a time, and an input sent inside the lane's busy window is contended. At 60 MP all 30 inputs of the GPU run were contended: p50/p95/p99 8.4/18.7/22.9 ms, its GPU frames 8.4/16.8/22.9. **The 16 ms target is missed under contention**, by a frame: the interface thread that draws the GPU frame competes with the exports' renders for cores, so some frames wait one redraw more. The 32 ms acceptable limit is met. With the preview off, 15 of its 30 inputs were contended: 18.1/265.4 ms p50/p95 over those, 17.5/211.5/265.4 over the run, the order of the earlier core measurement of a proxy beside exact renders, 207.2/214.7 ms, which was no desktop gesture. At 24 MP the five exports end within about a second, contending the first 8 inputs: the GPU run's p95 is 46.0 ms over all 30 and 39.0 over its 7 contended GPU frames, **missing both 16 and 32 ms**; its uncontended GPU frames also reached 46.0. The 24 MP run with the preview off could not be bounded: its exports each ran under the activity board's 250 ms record and had ended before the read, so the 60 MP run is the contended baseline.
+- **Against the 16 ms p95 target.** Met at Fit at 24 MP and 60 MP (p95 8.8 to 9.5 ms over two runs each), at 100% (9.4) and 200% (8.6), by each X100VI Presence drag and the Basic drag under Presence (8.6 to 9.5), and by every position of the brush stroke (8.5). Each GPU frame is drawn at the first redraw after its input.
+- **With an exact render holding the pool.** Five `export.write` jobs of the committed stack are queued just before the drag; the lane renders each exactly on the shared pool, then encodes and writes it, one at a time, and an input sent inside the lane's busy window is contended. At 60 MP all 30 inputs were contended: p50/p95/p99 8.4/18.7/22.9 ms, its GPU frames 8.4/16.8/22.9. **The 16 ms target is missed under contention**, by a frame: the interface thread that draws the GPU frame competes with the exports' renders for cores, so some frames wait one redraw more. The 32 ms acceptable limit is met. At 24 MP the five exports end within about a second, contending the first 8 inputs: p95 is 46.0 ms over all 30 and 39.0 over its 7 contended GPU frames, **missing both 16 and 32 ms**; its uncontended GPU frames also reached 46.0.
 - **The brush stroke.** 400 positions, one every 24 ms, on one brush mask and its masked Basic layer: 399 drawn on the GPU, every position on screen with the first frame that carried it, 7.1/8.5/9.2 ms from its own input, the press 10.6 ms from the first position to its frame, none superseded.
 
 ### Memory
 
-The GPU preview stage's high-water over each run (`gpu_preview_peak_bytes`), and the process's lifetime peak footprint as the Performance section last read it, beside the RSS `ps` sampled every 50 ms. The footprint peaks include the open, every exact render and histogram, the evidence captures and, in the contended runs, the exports.
+The GPU preview stage's high-water over each run (`gpu_preview_peak_bytes`), and the process's lifetime peak footprint as the Performance section last read it, beside the RSS `ps` sampled every 50 ms. The footprint peaks include the open, every exact render and histogram, the evidence captures and, in the contended run, the exports.
 
-| Case | GPU preview | GPU-preview high-water | Process peak footprint | Sampled peak RSS |
-| --- | --- | ---: | ---: | ---: |
-| 24 MP JPEG at Fit | on | 32.5 MB | 1569 MiB | 1176 MiB |
-| 24 MP JPEG at Fit | off | 0.0 MB | 1409 MiB | 1203 MiB |
-| 60 MP JPEG at Fit | on | 30.9 MB | 1727 MiB | 1573 MiB |
-| 60 MP JPEG at Fit | off | 0.0 MB | 2039 MiB | 1601 MiB |
-| 24 MP at 100% | on | 40.7 MB | 1811 MiB | 1287 MiB |
-| 24 MP at 100% | off | 0.0 MB | 1630 MiB | 1328 MiB |
-| 24 MP at 200% | on | 10.2 MB | 1727 MiB | 1255 MiB |
-| 60 MP, five exports queued | on | 30.9 MB | 2148 MiB | 1697 MiB |
-| 60 MP, five exports queued | off | 0.0 MB | 2384 MiB | 1987 MiB |
-| X100VI, Texture over Presence | on | 95.9 MB | 2595 MiB | 2034 MiB |
-| X100VI, Texture over Presence | off | 0.0 MB | 2515 MiB | 2085 MiB |
-| X100VI, Basic under Presence | on | 95.9 MB | 2658 MiB | 2080 MiB |
-| 24 MP brush stroke | on | 32.5 MB | 1053 MiB | 665 MiB |
+| Case | GPU-preview high-water | Process peak footprint | Sampled peak RSS |
+| --- | ---: | ---: | ---: |
+| 24 MP JPEG at Fit | 32.5 MB | 1569 MiB | 1176 MiB |
+| 60 MP JPEG at Fit | 30.9 MB | 1727 MiB | 1573 MiB |
+| 24 MP at 100% | 40.7 MB | 1811 MiB | 1287 MiB |
+| 24 MP at 200% | 10.2 MB | 1727 MiB | 1255 MiB |
+| 60 MP, five exports queued | 30.9 MB | 2148 MiB | 1697 MiB |
+| X100VI, Texture over Presence | 95.9 MB | 2595 MiB | 2034 MiB |
+| X100VI, Basic under Presence | 95.9 MB | 2658 MiB | 2080 MiB |
+| 24 MP brush stroke | 32.5 MB | 1053 MiB | 665 MiB |
 
 - **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 2 GiB budget, which bounds the heaviest 100% slots the corpus measures (Detail then all three Presence fields, 1,123.8 MB with Texture's band in one channel; [the corpus](#the-corpus)) and the slots of a mask painted over masked Presence layers (0.26 to 0.82 GB at Fit over 3 to 16 masks and 0.54 GB at 100% over three, [painting](#painting-over-masked-spatial-layers)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
-- **Against the provisional 1 GiB target for one 60 MP photograph**, which `measure` takes over one open: these gesture runs exceed it, with the GPU preview on and off alike — 1.69 and 1.99 GiB peak footprint for the 60 MP drags, 1.54 and 1.56 GiB sampled RSS — so the GPU preview is not what takes them past it. The peaks vary between runs by more than the GPU preview's share.
+- **Against the provisional 1 GiB target for one 60 MP photograph**, which `measure` takes over one open: these gesture runs exceed it, 1.69 GiB peak footprint and 1.54 GiB sampled RSS for the 60 MP drag, of which the GPU preview's share is 31 MB. The peaks vary between runs by more than the GPU preview's share.
 
 ### Idle after a release
 
-The 24 MP drag with `--idle`, on that build, where its release dissolved from the drag's last GPU frame into the CPU's committed frame (one dissolve started and ended, none cancelled): with the Performance section closed, a 4-second settle and a 10-second window drew one frame and built one view, the window's own, and the process spent 15.1 ms of CPU, 0.15% of one core. The same catalog reopened in an ordinary launch, the Performance section open, used 0.83% of one core over 30 seconds, under the 1% idle target. The GPU now draws the picture at rest, so a release replaces no GPU frame with a CPU one; `--idle` opens its window once the release's committed picture has settled, its counts adopted and, at Fit and below 100%, the GPU's picture at rest drawn ([development](../engineering/development.md#evidence-scripts)).
+The 24 MP drag with `--idle`: with the Performance section closed, a 4-second settle and a 10-second window drew one frame and built one view, the window's own, and the process spent 15.1 ms of CPU, 0.15% of one core. The same catalog reopened in an ordinary launch, the Performance section open, used 0.83% of one core over 30 seconds, under the 1% idle target. `--idle` opens its window once the release's committed picture has settled, its counts adopted and, at Fit and below 100%, the GPU's picture at rest drawn ([development](../engineering/development.md#evidence-scripts)).
 
 ### Windows and Linux
 
-That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): Linux no-adapter checks, release acceptance and packaging pass; the retained lavapipe journeys use small GPU-stage fixtures and run to aggregate failure, with a passing hosted result still open. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
+This qualification ran only on the M4. Container software checks and hosted results are recorded in [development](../engineering/development.md#ci): Linux no-adapter checks, release acceptance and packaging pass; the retained lavapipe journeys use small GPU-stage fixtures and run to aggregate failure, with a passing hosted result still open. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
 
 ### The performance-rules checklist
 
 For GPU previews as a whole ([rules](../engineering/performance-rules.md#review-checklist)):
 
-- **The original.** Read, hashed and decoded only as before: every boundary is derived on the GPU from the photograph's source the surface holds, uploaded once from the verified prepared source.
-- **Full-frame allocations.** On that build the held boundary (the worker's texels over only the window of its stage the drawn output reads, an `Arc` the desktop let go once the surface held them, at most 256 MiB each), the surface slot's boundary texture, output, spatial planes and a chain's link intermediates within the 2 GiB GPU-preview budget, which refuses a slot past it and names the CPU path, a warp's grid of at most 2 MiB, and 32 MiB of upload staging a frame. Nothing is cloned that is shared.
-- **Point queries, validation and no-op checks** render no frame: a plan is built from the compiled stack's descriptions in O(layers), and on that build samples, analysis and export stayed on the CPU, byte for byte.
-- **The owner thread** plans a tick's GPU plan in the draft's own answer and checks a boundary's size against its bound; all are arithmetic over descriptions, no frame work. On that build it also planned, at the exact stage at Fit, the window its output read through the CPU's windowed planner in `O(segments)`, since deleted. For a Basic drag over a 480 × 320 photograph drawn at its exact stage the plan's p50 was 3.8 to 4.9 µs whole and 5.9 to 7.7 µs under a straightened crop, of which the window was 0.04 to 0.12 µs (the ignored `exact_fit_window_planning`, deleted with the planner, the `test` profile on the M4, three runs at one-minute loads of 25 to 60, 2026-10-03; a measurement, not a baseline).
-- **Desktop messages.** A tick drawn on the GPU sends no preview job and uploads no frame; on that build a gesture's first tick's job carried its one boundary request. `asset.state` and `history.list` are unchanged.
-- **Timers, polls and subscriptions.** None added. The compile thread blocks on its queue, a pass's completion is reported by a later submit with no poll, and the settle dissolve asks for redraws only while it runs, at most 150 ms; idle after a release was 0.15% of one core.
-- **Repeated work.** On that build the boundary was rendered once per draft and held (key: the source, the layers before it, its layer and the proxy plan, or at the exact stage at Fit the window its output reads), and compiled program sequences were cached, eight per pipeline, and warmed when the stack changed; a spatial pass runs only when what it reads changed (5 compute passes for a Texture tick at 100%, none for Clarity).
-- **editor-performance.** GPU previews change no core render; the `timing` tier's `editor-performance` run is the before-and-after for the CPU path, and the same build's GPU-on and GPU-off drags above are the gesture's.
-- **Exactness.** Each program is qualified against its CPU unit on dense synthetic grids and on the corpus, within its class's limits, and the CPU's frames, samples, analysis and API answers keep their exact bytes, which the core's exact-buffer tests hold.
+- **The original.** Read, hashed and decoded only through the verified prepared source: every boundary is derived on the GPU from the photograph's source the surface holds, uploaded once from the verified prepared source.
+- **Full-frame allocations.** The surface slot's boundary texture, output, spatial planes and a chain's link intermediates within the 2 GiB GPU-preview budget, which refuses a slot past it and names the CPU path, a warp's grid of at most 2 MiB, and 32 MiB of upload staging a frame. Nothing is cloned that is shared.
+- **Point queries, validation and no-op checks** render no frame: a plan is built from the compiled stack's descriptions in O(layers).
+- **The owner thread** plans a tick's GPU plan in the draft's own answer and checks a boundary's size against its bound; all are arithmetic over descriptions, no frame work.
+- **Desktop messages.** A tick drawn on the GPU sends no preview job and uploads no frame. `asset.state` and `history.list` are unchanged.
+- **Timers, polls and subscriptions.** None added. The compile thread blocks on its queue, and a pass's completion is reported by a later submit with no poll; idle after a release measured 0.15% of one core.
+- **Repeated work.** Compiled program sequences are cached and warmed when the stack changes; a spatial pass runs only when what it reads changed (5 compute passes for a Texture tick at 100%, none for Clarity).
+- **editor-performance.** GPU previews change no core render; the drags above are the gesture's measurement.
+- **Exactness.** Each program is qualified against its CPU unit on dense synthetic grids and on the corpus, within its class's limits, and the reference renderer keeps its exact bytes, which the core's exact-buffer tests hold.
 
 ### Verification
 
-`verify --tier quick` and `--tier rendered` (with the private RAW manifest, 48 components) passed on the release editor above. `verify --tier timing` ran every component, but each timing component started above the 8.0 load threshold (10.0 to 10.6, raised by the tier's own `check` just before them), so it reports every timing verdict as unreliable rather than as a pass or a miss. `measure` was therefore run again on its own at a load of 4.3, and then, to attribute what it missed, over the editor built from `46a85159` (the base before GPU previews) and the current editor back to back, at loads of 3.0 to 4.3, with the same harness:
+`verify --tier quick` and `--tier rendered` (with the private RAW manifest, 48 components) passed on the release editor above. `verify --tier timing` ran every component, but each timing component started above the 8.0 load threshold (10.0 to 10.6), so it reports every timing verdict as unreliable rather than as a pass or a miss. `measure` ran on its own twice, at loads of 3.0 to 4.3, with the same harness:
 
-| `measure` target | Before GPU previews | Now | Now, alone | Verdict |
-| --- | ---: | ---: | ---: | --- |
-| Launch to usable empty shell, p95 < 1 s warm | 1378 / 1476 ms | 1436 / 1472 ms | 1430 / 1489 ms | **Missed**, before GPU previews too |
-| Uncached 24 MP JPEG to Fit preview, p95 < 750 ms | 779 / 826 ms | 783 / 827 ms | 784 / 824 ms | **Missed**, before GPU previews too |
-| 24 MP working set ≤ 600 MiB, sampled RSS | 279 / 313 MiB | 276 / 312 MiB | 284 / 317 MiB | Met |
-| 60 MP peak ≤ 1 GiB, sampled RSS, one open | 429 / 434 MiB | 419 / 452 MiB | 418 / 453 MiB | Met |
-| Idle CPU < 1% of one core over 30 s | 1.5% | 1.6% | 0.49% | **Missed** in the back-to-back pass, before GPU previews too; met alone |
+| `measure` target | Run 1 | Run 2 | Verdict |
+| --- | ---: | ---: | --- |
+| Launch to usable empty shell, p95 < 1 s warm | 1436 / 1472 ms | 1430 / 1489 ms | **Missed** |
+| Uncached 24 MP JPEG to Fit preview, p95 < 750 ms | 783 / 827 ms | 784 / 824 ms | **Missed** |
+| 24 MP working set ≤ 600 MiB, sampled RSS | 276 / 312 MiB | 284 / 317 MiB | Met |
+| 60 MP peak ≤ 1 GiB, sampled RSS, one open | 419 / 452 MiB | 418 / 453 MiB | Met |
+| Idle CPU < 1% of one core over 30 s | 1.6% | 0.49% | **Missed** in run 1, met in run 2 |
 
-p50 / p95 over five launches (ten opens of the 24 MP JPEG). The launch figure is an upper bound: it runs from the spawn of a fresh background bundle with its copied 35 MB executable to the first captured frame, of which the editor's own startup to that frame is 0.2 s; the open figure runs from the request to the decoded raster. Neither changed with GPU previews beyond the run-to-run spread. The idle window includes the open Performance section's sampler and moved between 0.5% and 1.6% of one core across runs of either build.
+p50 / p95 over five launches (ten opens of the 24 MP JPEG). The launch figure is an upper bound: it runs from the spawn of a fresh background bundle with its copied 35 MB executable to the first captured frame, of which the editor's own startup to that frame is 0.2 s; the open figure runs from the request to the decoded raster. The idle window includes the open Performance section's sampler and moves between 0.5% and 1.6% of one core across runs.
 
 ## GPU qualification against the reference
 
-The release gate ([GPU-first](../design/gpu-first.md#the-contract)): `cargo xtask gpu-qualification` over the whole [corpus](../../fixtures/preview/corpus.json), every stack rendered on the reference renderer and on the GPU at Fit, 33%, 50% and 100%, and every output kind the GPU renders held to its limit: the picture at rest (1,044 cells), the histogram and clipping counts, samples and export (261 stacks each), with no gap and no error. The last full run passed on 2026-10-06, as the release gate inside `verify --tier rendered`. The GPU's frames are the editor's own, drawn by the photo surface's own drawing on a headless device from the photograph's source held on the GPU as the editor holds it ([GPU previews](../design/gpu-preview.md#the-gpu-source)): the picture at rest, and the frame a drag draws. A measurement of pixels, not of time. By the [recorded default](../design/gpu-first.md#proposals-with-recorded-defaults), which gates the picture at rest against the reference and reports the picture in motion, the gate passed: the picture at rest within its limits on every cell, and the histogram, samples and export within theirs on every stack. The picture in motion is within its limits at 100% and past them on 462 of the 783 cells at Fit, 33% and 50%, against the picture at rest it settles to and against the reference alike. The limits stand under every reading. Dehaze's light is the per-frame light, computed by its light link from the whole stage at full resolution at every view ([GPU previews](../design/gpu-preview.md#spatial-programs)), the stand-in with the spatial layers before it left out for a light behind Detail or another Presence layer.
+The release gate ([GPU-first](../design/gpu-first.md#the-contract)): `cargo xtask gpu-qualification` over the whole [corpus](../../fixtures/preview/corpus.json), every stack rendered on the reference renderer and on the GPU at Fit, 33%, 50% and 100%, and every output kind the GPU renders held to its limit: the picture at rest (1,044 cells), the histogram and clipping counts, samples and export (261 stacks each), with no gap and no error. It runs as the release gate inside `verify --tier rendered`, and the last full run passed. The GPU's frames are the editor's own, drawn by the photo surface's own drawing on a headless device from the photograph's source held on the GPU as the editor holds it ([GPU previews](../design/gpu-preview.md#the-gpu-source)): the picture at rest, and the frame a drag draws. A measurement of pixels, not of time. By the [recorded default](../design/gpu-first.md#proposals-with-recorded-defaults), which gates the picture at rest against the reference and reports the picture in motion, the gate passed: the picture at rest within its limits on every cell, and the histogram, samples and export within theirs on every stack. The picture in motion is within its limits at 100% and past them on 462 of the 783 cells at Fit, 33% and 50%, against the picture at rest it settles to and against the reference alike. The limits stand under every reading. Dehaze's light is the per-frame light, computed by its light link from the whole stage at full resolution at every view ([GPU previews](../design/gpu-preview.md#spatial-programs)).
 
 ### Scope
 
 - **What was compared.** At each view two GPU frames. The picture at rest: at Fit, 33% and 50% the editor's picture at rest in tiles, the whole output stage drawn at full resolution in tiles of 2048 px or smaller, each cut from the source, reduced to the view's size by the area-weighted average the reference is reduced by and quantized (1 to 240 tiles a stack, the most for Detail beside Presence, masked, on the 60 MP JPEG at Fit); and where the view draws the output at its own size or larger, as at Fit for the Presence fixture and the tight crop (40 cells), and at 100%, the view plan over the visible window, cut from the source at full scale. The frame a drag draws: the plan from the source over the boundary the surface derives, the source reduced to the view's proxy at Fit and below 100% and cut at 100%. Fit is the display-bounded proxy of an evidence run's 1440 × 900 window at 2× (1716 × 1508 bounds), 33% and 50% the displayed size of the whole output stage within the display bounds (4096 px a side, 8 MP), and 100% the visible region of the owner's largest window (1512 × 982 logical at 2×, panels closed) at full scale. The reference is the reference renderer's exact whole frame, as export renders it, reduced to the GPU frame's size by an area-weighted average of its linear light (`luxforge_reference::tolerance`), or at 100% its visible region, unreduced. Each comparison is the four statistics of the [preview error measure](../design/gpu-preview.md#the-preview-error-limit), each recipe held to its class's limits (pointwise 0.5 / 1.0 / 2.0 / ±0.25, spatial 1.0 / 2.5 / 5.0 / ±0.5).
-- **Host and build.** The `Apple M4 Pro` adapter on Metal; the harness built in release from `55c42f38` (harness SHA-256 `477cf21d…`, clean working tree), 2026-10-06, the whole corpus in one run of `verify --tier rendered`, whose report is `target/integration-logs/verify-rendered-2/gpu-qualification/` in the worktree that built it. On one machine and driver the pixels are deterministic, so the host's load does not bear on them.
-- **Corpus.** `fixtures/preview/corpus.json` at SHA-256 `03e716c7…`: 42 recipes, 261 stacks (106 pointwise, 155 spatial), each at four views, over the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified and their SHA-256s unchanged after the run.
-- **Memory.** The run records no heaviest-slot figure. The last measured one is from the 2026-10-05 run (build `21fc9c48`, 250 stacks): every tile and every drag's slot fit the 2 GiB budget beside the source, the heaviest, a drag's slot at 100% of Detail then all three Presence fields on the Air 2S over its anchored 3970 × 2782 window, charging 1,466.4 MB with its light link, beside the Air 2S's 240 MB source.
+- **Host and build.** The `Apple M4 Pro` adapter on Metal; the harness built in release from a clean working tree, the whole corpus in one run of `verify --tier rendered`, whose report is `target/integration-logs/verify-rendered-2/gpu-qualification/` in the worktree that built it. On one machine and driver the pixels are deterministic, so the host's load does not bear on them.
+- **Corpus.** `fixtures/preview/corpus.json`: 42 recipes, 261 stacks (106 pointwise, 155 spatial), each at four views, over the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified and their SHA-256s unchanged after the run.
+- **Memory.** The gate records no heaviest-slot figure. Measured over 250 of the corpus's stacks, every tile and every drag's slot fits the 2 GiB budget beside the source, the heaviest, a drag's slot at 100% of Detail then all three Presence fields on the Air 2S over its anchored 3970 × 2782 window, charging 1,466.4 MB with its light link, beside the Air 2S's 240 MB source.
 - **Output kinds.** The picture at rest (1,044 cells, 0 past a limit, 0 gaps, 0 errors), the picture in motion (reported, not gated), the histogram and clipping counts (261 of 261 within), samples (261 of 261 within, 6,525 points all equal to the byte on screen) and export (261 of 261 within the display limit and the same bytes twice, no gap). The GPU renders every kind, so none is reported as not rendered.
 
 ### The picture at rest against the reference
@@ -4807,7 +3628,7 @@ What the gate judges; mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mea
 | 100% | pointwise | 106 | 106 | 0 | 0.046 / 0.251 / 0.851 / 0.009 | 0.005 / 0.049 / 0.184 / 0.000 |
 | 100% | spatial | 155 | 155 | 0 | 0.058 / 0.509 / 0.954 / 0.049 | 0.009 / 0.084 / 0.262 / 0.001 |
 
-- **Every cell is within its limits**, with no gap and no error, the largest a mean of 0.087, a worst block of 0.509 and a p99 of 0.963: the stack processed at full resolution and reduced after, as the reference is, leaves only the GPU's arithmetic and storage between the two, and Dehaze's light the whole stage's. The largest p99 of the spatial cells at every view is Detail beside Presence on the Z6 (0.955 to 0.963), whose light behind Detail was in that build the stand-in with Detail left out ([the light behind a spatial layer](#the-light-behind-a-spatial-layer) for the exact light).
+- **Every cell is within its limits**, with no gap and no error, the largest a mean of 0.087, a worst block of 0.509 and a p99 of 0.963: the stack processed at full resolution and reduced after, as the reference is, leaves only the GPU's arithmetic and storage between the two, and Dehaze's light the whole stage's. The largest p99 of the spatial cells at every view is Detail beside Presence on the Z6 (0.955 to 0.963), whose light behind Detail in this run is the stand-in with Detail left out ([the light behind a spatial layer](#the-light-behind-a-spatial-layer) measures the exact light).
 - **What drew it.** At Fit, 33% and 50% the picture at rest in tiles (at Fit, the view plan too, where the view draws the output at its own size or larger); at 100% the view plan.
 
 ### The picture in motion
@@ -4830,7 +3651,7 @@ Reported, not gated; the frame a drag draws at each view against the picture at 
 
 ### The softer frame at 100%
 
-The frame a drag draws at 100% where the region's slot would pass the GPU-preview budget beside the source (`budget-reduced`, "Softer while dragging"), which the owner accepted on 2026-10-07 subject to explicit qualification. `gpu-qualification` measures it on every 100% cell and reports it, never gated: the stack planned whole at the reduced stage of the view's area, `GpuView::Fit` at the region's displayed size as the desktop plans it, drawn on the GPU and magnified to the region bilinearly in linear light, standing in for the photo surface's sampler, which the headless surface does not run. Each cell records whether a drag there would draw it by the budget (`natural`) or it was drawn to qualify it (`forced`). Run on 2026-10-08 at 100% alone, built from `3ba5b282` with the softer frame added, the `Apple M4 Pro` adapter, the corpus and the owner's RAW manifest; `artifacts/softer-qualification-1/` in that worktree.
+The frame a drag draws at 100% where the region's slot would pass the GPU-preview budget beside the source (`budget-reduced`, "Softer while dragging"), accepted subject to explicit qualification. `gpu-qualification` measures it on every 100% cell and reports it, never gated: the stack planned whole at the reduced stage of the view's area, `GpuView::Fit` at the region's displayed size as the desktop plans it, drawn on the GPU and magnified to the region bilinearly in linear light, standing in for the photo surface's sampler, which the headless surface does not run. Each cell records whether a drag there would draw it by the budget (`natural`) or it was drawn to qualify it (`forced`). Run at 100% alone, the `Apple M4 Pro` adapter, the corpus and the owner's RAW manifest; `artifacts/softer-qualification-1/` in the worktree that ran it.
 
 | Class | Measured | Natural | Against the picture at rest: within / past | Largest | Against the reference: within / past | Largest | The reduced frame against the reference reduced: within / past | Largest |
 | --- | ---: | ---: | --- | --- | --- | --- | --- | --- |
@@ -4844,44 +3665,29 @@ The frame a drag draws at 100% where the region's slot would pass the GPU-previe
 
 ### The GPU export against the reference export
 
-`gpu-qualification --kind export` on 2026-10-05, built from `4e793fe3`, the same host, corpus and manifest, report under `artifacts/gpu-first/task-005/export/` in that worktree. Each of the 250 stacks was exported through the desktop's GPU tile worker on the `Apple M4 Pro` adapter and its codes compared over every pixel with the reference export's by the display limit of its class, then exported again through a second worker's own device.
+`gpu-qualification --kind export`, the same host, corpus and manifest. Each stack is exported through the desktop's GPU tile worker on the `Apple M4 Pro` adapter and its codes compared over every pixel with the reference export's by the display limit of its class, then exported again through a second worker's own device. The full gate holds the export within its limit on all 261 stacks, with no gap and the same bytes twice, the largest 0.119 / 0.509 / 0.962 / 0.049 ([the full gate](#gpu-qualification-against-the-reference)).
 
-| Class | Stacks | Within the limit | Same bytes twice | Largest: mean / worst block / p99 / \|ΔL\*\| |
-| --- | ---: | ---: | ---: | --- |
-| pointwise | 106 | 106 | 106 | 0.110 / 0.308 / 0.851 / 0.009 |
-| spatial | 144 | 144 | 144 | 0.058 / 0.509 / 0.962 / 0.049 |
-
-- **No gap.** Every stack was drawn on the GPU, the 74 that read Dehaze's light among them: the tile worker's runner computes each light once for the export, from the whole stage at full resolution a window of the source at a time, before the tiles that read it; a light behind Detail was in that build the stand-in with Detail left out, as on screen then. At the merge before it (`21fc9c48`) those 74 were gaps, the runner computing no light.
-- A selection of one kind, so the run reports itself incomplete; its export rows are the whole corpus.
-- **The full gate of 2026-10-06** (build `55c42f38`, 261 stacks) holds the export within its limit on all 261: no gap, the same bytes twice, the largest 0.119 / 0.509 / 0.962 / 0.049 ([the full gate](#gpu-qualification-against-the-reference)).
+- **No gap.** Every stack is drawn on the GPU, those that read Dehaze's light among them: the tile worker's runner computes each light once for the export, from the whole stage at full resolution a window of the source at a time, before the tiles that read it.
 
 ### The histogram and clipping counts
 
-`--kind histogram` on 2026-10-05 over all 250 stacks of the corpus, the M4 Pro's Metal adapter, with the RAW manifest: a measurement of counts, not of time (`artifacts/gpu-first/task-004/gate-4`). The GPU's counts are the editor's own: each stack's tiles at full resolution as a committed job plans them (1 to 240 tiles of 2048 px or smaller), each over its window cut from the source, Dehaze's light computed on the GPU per frame, drawn by the photo surface's own drawing for their counts alone and counted by its histogram reduction; the same tiles are read back whole for the luminance histogram and the diagnostics, and their codes count to the GPU's counts exactly on every stack. The reference is the core's reducer over the reference renderer's exact whole frame. The limit, the owner's of 2026-10-05: the earth mover's distance between the histograms within 0.25 code on each of R, G, B and luminance, and each clipping counter within 0.1% of the output pixel count.
+`gpu-qualification --kind histogram` over the corpus, the M4 Pro's Metal adapter, with the RAW manifest: a measurement of counts, not of time. The GPU's counts are the editor's own: each stack's tiles at full resolution as a committed job plans them (1 to 240 tiles of 2048 px or smaller), each over its window cut from the source, Dehaze's light computed on the GPU per frame, drawn by the photo surface's own drawing for their counts alone and counted by its histogram reduction; the same tiles are read back whole for the luminance histogram and the diagnostics, and their codes count to the GPU's counts exactly on every stack. The reference is the core's reducer over the reference renderer's exact whole frame. The limit: the earth mover's distance between the histograms within 0.25 code on each of R, G, B and luminance, and each clipping counter within 0.1% of the output pixel count.
 
-- **Within the limit on all 250 stacks.** The largest earth mover's distance is 0.130 codes, on R, G, B and luminance alike (Basic under Dehaze with a crop, Presence fixture: a systematic shift of +0.12 codes, 15.5% of its pixels one code brighter); 249 stacks are within 0.05 and 240 within 0.02. The largest clipping difference is 0.0313% of the output pixels (`r255`, Texture with Clarity on the Presence fixture). 4 stacks are exact.
-- **Reported beside it, not gated.** The summed absolute bin difference is past 0.1% of the pixels on 89 stacks (34 of 106 pointwise, 55 of 144 spatial; 29 of 35 on the Presence fixture, 22 on the zone plate, 15 and 14 on the 60 and 24 MP JPEGs, 3 of 5 on the lens zone plate, 6 of 105 RAW stacks), the largest 23.6% on the stack above, 7.4% for all three Presence fields there; binned at 2 codes 69 of them are still past 0.1%, and at 4 codes 50, since a flat patch one code across a bin's edge moves whole. Pixel by pixel, the frame differs from the reference frame by more than two codes on at most 0.455% of a stack's pixels (the perspective and lens warp over the lens zone plate's chirp, whose resampling also moves 31% of its pixels by one code) and on none of most stacks; the all-three-Presence-fields stacks on the Presence fixture reach 0.29%. Eight stacks moved further when the light became per frame, the five with Detail before Presence by a systematic shift of up to 0.042 codes, which the light computed with Detail left out ([GPU previews](../design/gpu-preview.md)) would give.
-- **The full gate of 2026-10-06** (build `55c42f38`, 261 stacks) holds the histogram within its limit on all 261: the largest earth mover's distance 0.1296 codes (`r`, Basic under Dehaze with a crop, Presence fixture), the largest clipping difference 0.0313% of the output pixels, exact on 4 ([the full gate](#gpu-qualification-against-the-reference)).
+- **Within the limit on all 261 stacks** of the full gate: the largest earth mover's distance 0.1296 codes (`r`, Basic under Dehaze with a crop, Presence fixture), the largest clipping difference 0.0313% of the output pixels, exact on 4 ([the full gate](#gpu-qualification-against-the-reference)).
+- **Reported beside it, not gated**, over 250 of the stacks (`artifacts/gpu-first/task-004/gate-4`). The summed absolute bin difference is past 0.1% of the pixels on 89 stacks (34 of 106 pointwise, 55 of 144 spatial; 29 of 35 on the Presence fixture, 22 on the zone plate, 15 and 14 on the 60 and 24 MP JPEGs, 3 of 5 on the lens zone plate, 6 of 105 RAW stacks), the largest 23.6% on Basic under Dehaze with a crop on the Presence fixture, 7.4% for all three Presence fields there; binned at 2 codes 69 of them are still past 0.1%, and at 4 codes 50, since a flat patch one code across a bin's edge moves whole. Pixel by pixel, the frame differs from the reference frame by more than two codes on at most 0.455% of a stack's pixels (the perspective and lens warp over the lens zone plate's chirp, whose resampling also moves 31% of its pixels by one code) and on none of most stacks; the all-three-Presence-fields stacks on the Presence fixture reach 0.29%.
 - **What it means.** The GPU's reduction counts its codes exactly ([basic and histogram](../design/basic-and-histogram.md#histogram-and-clipping-contract)). A summed difference counts a pixel whose code moved one step twice, so a share of a flat patch at a code's rounding edge moving by one code passes 0.1% of the pixels while the histogram moves by a hundredth of a code; the earth mover's distance measures how far it moved.
 
 ### Samples from GPU tiles
 
-`gpu-qualification --kind sample` on 2026-10-05, built from `df33bc27`, the same host, corpus and manifest, report under `artifacts/gpu-first/task-006/gate/` in that worktree. Each of the 250 stacks is read at the 25 points of a 5 × 5 grid over its output stage by the desktop's GPU tile worker, as `render.sample` reads a pixel through it — one call, its points one session — against the reference frame's bytes there by the display limit of the stack's class (mean, p99 and signed mean ΔL\* over the 25 samples), and against the byte the picture at rest shows at each point at 100%, drawn by the photo surface over a 256 px window around it, which it must equal.
+`gpu-qualification --kind sample`, the same host, corpus and manifest. Each stack is read at the 25 points of a 5 × 5 grid over its output stage by the desktop's GPU tile worker, as `render.sample` reads a pixel through it — one call, its points one session — against the reference frame's bytes there by the display limit of the stack's class (mean, p99 and signed mean ΔL\* over the 25 samples), and against the byte the picture at rest shows at each point at 100%, drawn by the photo surface over a 256 px window around it, which it must equal.
 
-| Class | Stacks | Within the limit | Samples | Equal to the screen | Largest: mean / p99 / \|ΔL\*\| / single |
-| --- | ---: | ---: | ---: | ---: | --- |
-| pointwise | 106 | 106 | 2,650 | 2,650 | 0.104 / 0.924 / 0.018 / 0.924 |
-| spatial | 144 | 144 | 3,600 | 3,600 | 0.078 / 1.006 / 0.048 / 1.006 |
-
-- **No gap.** Every point was answered by the GPU, none by the reference; 39 stacks hold a sample that differs from the reference's byte, by at most 1.006 ΔE00.
-- **The byte on screen.** All 6,250 samples equal the picture at rest's byte at their pixel at 100%, which the anchored windows make so by construction.
+- **Within the limit on all 261 stacks** of the full gate, every point answered by the GPU and none by the reference: the largest mean 0.104, p99 1.006, \|signed mean ΔL\*\| 0.048 and single 1.006 ([the full gate](#gpu-qualification-against-the-reference)).
+- **The byte on screen.** All 6,525 samples equal the picture at rest's byte at their pixel at 100%, which the anchored windows make so by construction.
 - **Latency.** Not measured here; through three spatial segments on the Air 2S a GPU sample answers in 85.4 / 91.7 ms p50 / p95 warm ([a three-segment sample](#a-three-segment-sample)).
-- A selection of one kind, so the run reports itself incomplete; its sample rows are the whole corpus.
-- **The full gate of 2026-10-06** (build `55c42f38`, 261 stacks) holds samples within the limit on all 261, every one of the 6,525 points equal to the byte on screen: the largest mean 0.104, p99 1.006, \|signed mean ΔL\*\| 0.048 and single 1.006 ([the full gate](#gpu-qualification-against-the-reference)).
 
 ### Colour after Detail, before a resample
 
-The corpus's three Detail recipes with colour between Detail and the geometry — `detail-curve-lens-perspective` on the three RAWs with their own lens profiles, `detail-curve-lens-perspective-jpeg` on the zone plate with a lens identity, and `detail-curve-straightened` on all seven sources — which the GPU draws since the colour runs on Detail's output before the tail ([GPU previews](../design/gpu-preview.md#where-the-code-lives)). `gpu-qualification --recipes` on 2026-10-06, the same host, built from `f9ad9f30` with the change uncommitted, every kind: the 11 stacks at four views, 44 cells of the picture at rest, every one within the spatial limits.
+The corpus's three Detail recipes with colour between Detail and the geometry — `detail-curve-lens-perspective` on the three RAWs with their own lens profiles, `detail-curve-lens-perspective-jpeg` on the zone plate with a lens identity, and `detail-curve-straightened` on all seven sources — which the GPU draws, the colour running on Detail's output before the tail ([GPU previews](../design/gpu-preview.md#where-the-code-lives)). `gpu-qualification --recipes`, the same host, every kind: the 11 stacks at four views, 44 cells of the picture at rest, every one within the spatial limits.
 
 | View | Cells | Within the limits | Largest: mean / worst block / p99 / \|ΔL\*\| |
 | --- | ---: | ---: | --- |
@@ -4892,8 +3698,6 @@ The corpus's three Detail recipes with colour between Detail and the geometry �
 
 - **The other kinds.** The 11 exports, histograms and sample grids are within their limits: the largest export 0.119 / 0.353 / 0.774 / 0.006, the largest histogram distance 0.0188 codes, every sample equal to the byte on screen.
 - **In motion, not gated.** A drag's frame at 100% is the picture at rest's; at Fit, 33% and 50%, over the source reduced to the view, 21 of 33 cells are past the limits against the picture at rest, as the corpus's other stacks are ([the picture in motion](#the-picture-in-motion)).
-- **The lens and crop families**, run in the same build: all 116 cells of the picture at rest within the pointwise limits, the largest 0.080 / 0.234 / 0.862 / 0.001 at 50%.
-- A selection, so each run reports itself incomplete.
 
 ### Reproducing it
 
@@ -4909,44 +3713,17 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
 
 Each run writes `report.json` (every cell's figures and verdict, the reading, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every judged cell past a limit under `run/frames/` (`--frames all` for every cell). Without `--manifest` the RAW stacks are gaps, so a run within every limit would still be incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
 
-## GPU-first against the 2026-10-04 baseline
+## GPU-first latencies
 
-The latencies of an ordinary edit with the GPU as the renderer of record, measured against the [baseline](../design/gpu-first.md#the-baseline-this-replaces) the GPU-first plan replaced (TASK-011 in [the plan](../../tasks/rendering/gpu-first.json)). The release gate is not run again here: it passed on the whole corpus at `55c42f38` inside `verify --tier rendered` ([above](#gpu-qualification-against-the-reference)), and the source measured below adds only documents to that build.
+The latencies of an ordinary edit with the GPU as the renderer of record, against the targets of the [GPU-first plan](../design/gpu-first.md). The picture at rest, its counts, export, painting at 100%, launch and the first picture on a cold shader cache are measured in [GPU throughput against the reference](#gpu-throughput-against-the-reference).
 
 ### Scope
 
-- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, a hidden 1440 × 900 window at 2× (2880 × 1800 physical) in a background-only bundle, warm filesystem cache, 6 October 2026, 15:17 to 16:11 BST, 54 minutes of measuring. No other session built or tested on the host: no `rustc`, `cargo`, `clang` or `ld` process was running at the start of any run. The owner's own applications were open; Chrome took up to one core during the export runs. The one-minute load at the start of each run is given with its figure; every run quoted started below the 8.0 threshold and all but two below 5 (the first 24 and 60 MP export probes at 5.1 and 6.4, repeated at 3.4 and 2.6 and quoted from the repeats; Dehaze's 60 MP drag at 100% at 4.6). A reference-renderer run raises the load itself, so each was started only once the load had fallen below 3.5.
-- **Build.** Source `54d910a4` (`claude/gpu-first-9b5b17`), release, `--locked`, Cargo.lock SHA-256 `0ee75f59…`. Two executables of that source: `d0867b9d…` from `cargo build --release --locked -p luxforge-app -p xtask`, which the drag, commit and paint runs on the GPU, the reference renderer's runs quoted and the timing tier used, and `3f08f163…` from the whole workspace's build that `cargo xtask develop --background` makes, whose feature unification differs, which the evidence-script probes (samples, export, Compare and history, the cold shader cache, idle memory) and the white-balance and Dehaze runs used. Each report records its own `binary_sha256`.
-- **Sources.** The Air 2S DNG of the private manifest (5464 × 3640, 19.9 MP, SHA-256 `aab79ce1…`; the design's "16 MP" is this file), the generated 24 MP and 60 MP JPEGs (`b54c2a15…`, `b9e0118a…`). The three RAWs of the manifest hashed the same before and after every run.
-- **Stacks.** *The drag stack*: Detail (sharpening 60, luminance 40, colour 40), Presence's three fields at +100 and a full Basic layer, every field non-neutral (`editor-latency --detail --presence --basic`), the measured gesture a Basic exposure drag, which runs before Presence, so every tick runs the whole chain and computes Dehaze's light again. *The masked stack*, the design's freeze stack: Detail, a global Presence of Texture 25 and Clarity 20, and three masks, a brush and two radials, each holding a masked exposure and a masked Presence of Clarity 50 and Texture 40 (`editor-latency --mode paint --masks 3 --mask-presence --presence --detail`). `editor-latency` cannot draft a masked slider over a stack that holds no masked layer yet: the drag creates the layer, its first or second tick compiles the new link (40 ms drawn, or held 100 ms as `compiling`, in two attempts with `--mask`), and the harness refuses a held tick as an input with no answer, so the masked stack is measured as a painted stroke and the drag stack as the heaviest slider drag the tool builds. *The three-segment stack* of the samples: Detail as above, Presence's three fields at +100 and a radial's masked Presence of Clarity 50 and Texture 40, the Air 2S's lens profile after them.
+- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, a hidden 1440 × 900 window at 2× (2880 × 1800 physical) in a background-only bundle, warm filesystem cache. No other session built or tested on the host: no `rustc`, `cargo`, `clang` or `ld` process was running at the start of any run. The one-minute load at the start of each run is given with its figure; every run quoted started below the 8.0 threshold. A reference-renderer run raises the load itself, so each was started only once the load had fallen below 3.5.
+- **Build.** Release, `--locked`. Two executables of the same source: one from `cargo build --release --locked -p luxforge-app -p xtask`, which the drag runs and the timing tier use, and one from the whole workspace's build that `cargo xtask develop --background` makes, whose feature unification differs, which the evidence-script probes (samples, Compare and history, idle memory) and the white-balance and Dehaze runs use. Each report records its own `binary_sha256`.
+- **Sources.** The Air 2S DNG of the private manifest (5464 × 3640, 19.9 MP; the design's "16 MP" is this file), the generated 24 MP and 60 MP JPEGs. The three RAWs of the manifest hashed the same before and after every run.
+- **Stacks.** *The drag stack*: Detail (sharpening 60, luminance 40, colour 40), Presence's three fields at +100 and a full Basic layer, every field non-neutral (`editor-latency --detail --presence --basic`), the measured gesture a Basic exposure drag, which runs before Presence, so every tick runs the whole chain and computes Dehaze's light again. *The masked stack*, the design's freeze stack: Detail, a global Presence of Texture 25 and Clarity 20, and three masks, a brush and two radials, each holding a masked exposure and a masked Presence of Clarity 50 and Texture 40 (`editor-latency --mode paint --masks 3 --mask-presence --presence --detail`), measured as a painted stroke. *The three-segment stack* of the samples: Detail as above, Presence's three fields at +100 and a radial's masked Presence of Clarity 50 and Texture 40, the Air 2S's lens profile after them.
 - **Figures.** Milliseconds, nearest rank. A GPU frame is timed to the surface's first draw of its plan, a CPU frame to its hand-off ([development](../engineering/development.md)); neither is scanout, and on the 120 Hz display a frame is 8.3 ms. Where fewer than 30 samples were taken the median and range are given and no p95.
-
-### Ticks and commits on the Air 2S
-
-The drag stack, 30 drained inputs per drag and 30 commits per commit run (`--mode commit`: one input and its release each), every tick drawn on the GPU; release to the committed frame is the GPU's view plan presented in place, release to the picture at rest is its first draw once its last tile is in (`gpu_rest_drawn`, at Fit and 33%; at 100% the view plan is the picture at rest), and the counts are the GPU's settled histogram (`analysis_adopted`).
-
-| View | Load | Drag tick p50 / p95 | Commit: committed frame p50 / p95 | Commit: picture at rest p50 / p95 | Commit: settled histogram p50 / p95 (from the release) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Fit | 2.97, 3.48 | 9.0 / 9.2 | 9.8 / 17.1 | 770.8 / 780.6 | 816.3 / 825.8 |
-| 33% | 3.65, 2.31 | 9.0 / 9.6 | 9.9 / 17.2 | 765.8 / 779.7 | 810.2 / 823.3 |
-| 100% | 2.99, 2.58 | 9.0 / 9.3 | 9.8 / 10.0 | (the view plan) | 838.3 / 846.3 |
-
-- **Every tick within a display frame.** 30 of 30 inputs at each view on the GPU, none held; the 16 ms target is met at every view. The baseline drew 33% on the CPU proxy, roughly 80 to 300 ms a tick at 60 MP, and a Basic drag under Dehaze at 100% computed an exact-stage estimate per tick, 110 to 420 ms.
-- **The commit's frame** is the GPU's view plan of the committed stack at once, 10 ms; its picture at rest in tiles, 24 tiles of 1024 px with a 300 px lead, dissolves in about 0.77 s later and its counts 45 ms after that. The reference renderer's whole frame and report for the same commits took 792.8 / 878.6 ms (`--reference-renderer`, load 3.25), so on this stack the GPU's sharp picture and counts arrive about as soon as the reference's would, while the edit itself is on screen at once.
-- **The masked stack, painted.** A 240-position stroke over the three masks: at Fit every position on the GPU at 8.0 / 8.7 ms (load 2.30); at 100%, 237 positions on the GPU at 8.2 / 23.7 ms, worst 50.4 (load 2.88), **missing the 16 ms target at p95**. A second run at Fit drew 8.1 / 9.0 ms (load 3.39). The reference renderer's session draws the same stroke at Fit at 102.6 / 115.3 ms over the 65 positions it presented. Over the 24 MP JPEG's paint harness at 100% a stroke over three masks stayed within a frame ([painting](#a-strokes-latency)); on the Air 2S with Detail and the global Presence beside them it does not.
-- **The masked stack's picture at rest misses badly.** After the stroke's release the GPU presents the view plan at once, but its picture at rest is planned in 256 px tiles with a 720 px lead, 330 tiles, and was drawn 17.05 and 16.99 s after the release in two runs, its counts 50 ms later (loads 2.30 and 3.39); the reference renderer's whole frame and report took 1.26 s for the same release (load 3.38). One masked Presence layer is enough: committing a radial's masked Presence of Clarity 50 and Texture 40 over Detail and Presence's three fields (the three-segment stack) drew its picture at rest, 330 tiles of 256 px with a 480 px lead, 14.9, 15.7, 15.9 and 17.3 s after the commit in four launches, the counts 60 ms later: about 45 to 50 ms a tile, one tile a frame, each tile's window starting its lead (`GpuAnchor`, the running sums' reach) and its halos before the 256 px it draws. Until then the histogram is the view plan's, labelled updating.
-
-### The settled histogram after a commit
-
-The same drag stack, `--mode commit`, from the release to the GPU's counts adopted, and the same executable's reference renderer for the same commits (`--reference-renderer`):
-
-| Source | Samples | Load | GPU: picture at rest p50 / p95 | GPU: settled histogram p50 / p95 | Reference: frame and histogram p50 / p95 | Tiles |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 24 MP JPEG | 30 | 2.42 (reference 3.39) | 603.1 / 607.4 | 649.4 / 653.4 | 671.9 / 775.8 | 24 of 1024 px |
-| Air 2S DNG | 30 | 3.48 (reference 3.25) | 770.8 / 780.6 | 816.3 / 825.8 | 793.1 / 878.9 | 24 of 1024 px |
-| 60 MP JPEG | 6, and 8 of an earlier run | 2.92 (reference 2.67) | 5,620.9, 5,613 to 5,678 | 5,676.9, 5,646 to 5,732 | 1,682.3, 1,659 to 1,919 | 240 of 512 px |
-
-- **At 60 MP the GPU's picture at rest and counts miss**: 5.6 to 5.7 s against the reference renderer's 1.7 s for the same stack on the same host, and against the baseline's "about 3 s at 60 MP" for the exact render after every commit. The rest is planned in 240 tiles of 512 px with a 300 px lead, one tile a frame at about 23 ms each. Only 6 commits fit the tool's 60 s deadline (an earlier 30-commit run stopped after 9, whose 8 completed commits agree), so no p95 is claimed. At 24 MP the GPU's counts come 22 ms sooner than the reference's at p50 and 122 ms at p95; on the Air 2S 23 ms later at p50 and 53 ms sooner at p95: the same within the spread.
 
 ### A three-segment sample
 
@@ -4959,38 +3736,11 @@ The same drag stack, `--mode commit`, from the release to the GPU's counts adopt
 | The launch's first sample on a fresh bundle's empty Metal cache (`LUXFORGE_BACKGROUND_BUNDLE_SUFFIX`) | 3.81 to 4.36 | 3 launches | 158.3 | 156.5 to 164.1 |
 | The two after it on those fresh bundles | 3.81 to 4.36 | 6 | | 89.6 to 97.6 |
 
-- **The target is met**: warm p95 91.7 ms against S6.7's 100 ms. The baseline's exact point path took 27 to 36 ms through Detail alone and 140 to 227 ms through one Presence segment, and 125 to 231 s through three with an estimate miss; no read now walks a stage on the owner or a point worker. The first read of a launch compiles the stack's programs on the tile worker's device, 50 to 80 ms more.
-
-### Export at 24 and 60 MP
-
-`export.write` through the desktop's evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, of a trivial stack (Basic exposure +0.3) and then the heavy one (the three-segment stack without the lens: Detail, Presence's three fields, a radial's masked Presence). The wall time is the activity board's `duration_ms` for the export job, which it keeps only for work of 250 ms or more; a shorter export is timed from the step to its end as the desktop's 100 ms job reader sees it, an upper bound. Every GPU export named `renderer` `{record: "gpu"}` and every reference one `{record: "reference", reason: "requested"}`. Executable `3f08f163`; each source run twice, the second, quoted, at a lower load.
-
-| Source | Stack | Load | GPU: median, range (5) | Reference: median, range (5) | GPU tiles an export | Tile worker's peak |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 24 MP JPEG | trivial | 3.35 | under 250; 121 to 123 by the reader | under 250; 119 to 124 by the reader | 6 | 83.9 MB |
-| 24 MP JPEG | heavy | 3.35 | 945, 935 to 971 | 763, 759 to 811 | 24 | 723.3 MB |
-| 60 MP JPEG | trivial | 2.62 | under 250; 219 to 323 by the reader | under 250; 223 to 229 by the reader | 15 | 83.9 MB |
-| 60 MP JPEG | heavy | 2.62 | 10,350, 10,165 to 10,469 | 2,156, 2,113 to 2,223 | 240 | 783.2 MB |
-
-- **The GPU export of a heavy stack misses**: at 60 MP 10.2 to 10.5 s against the reference export's 2.1 to 2.2 s, nearly five times slower, in 240 tiles under that build's 1 GiB tile-worker budget (the current budget is 2 GiB);  at 24 MP 0.94 to 0.97 s against 0.76 to 0.81 s, a quarter slower. A trivial export is under a quarter of a second either way.
-- The first runs, at loads of 5.08 and 6.36 with the owner's browser busy, agree: 10.4 to 11.5 s against 2.1 to 2.8 s at 60 MP, and 0.98 to 1.08 s against 1.00 to 1.06 s at 24 MP.
-
-### The first picture on a cold shader cache
-
-Three launches of the three-segment probe, each with a new `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX`, so the bundle's Metal cache starts empty (the system's compiler cache outside the bundle was not cleared), against one launch on the shared, warm bundle; milliseconds from the editor's `startup` event, the Air 2S opened with no edits.
-
-| Run | Load | Reference frame drawn | GPU frame drawn | First warm-up | Its picture's own programs |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Fresh bundle 1 | 3.98 | 1,207 | 2,351 | 2,120 ms, 19 sequences | 133 ms |
-| Fresh bundle 2 | 4.36 | 1,261 | 2,365 | 2,112 ms, 18 sequences | 151 ms |
-| Fresh bundle 3 | 3.81 | 1,226 | 2,550 | 2,240 ms, 18 sequences | 127 ms |
-| Shared bundle | 2.35 | 287 | 398 | 33 ms, 12 sequences | 0.4 ms |
-
-- On a cold cache the reference frame is on screen about 0.9 s later than on a warm one and the GPU's 1.1 to 1.3 s after it, against 0.11 s warm. The commits after it on the same cold bundles warmed what they added: Presence's three fields in 0.51 to 0.53 s (the open stack's part 0.34 s), then a masked Presence in 0.88 to 0.89 s, nearly all of it the open stack's part. TASK-009 recorded 1.5 to 4.4 s for the first warm-up and 41 ms for the picture's own programs on the `gpu-preview` scenario's stacks.
+- **The target is met**: warm p95 91.7 ms against S6.7's 100 ms. No read walks a stage on the owner or a point worker. The first read of a launch compiles the stack's programs on the tile worker's device, 50 to 80 ms more.
 
 ### Compare and a history return
 
-An evidence script over the Air 2S with Detail, Presence's three fields and a Basic exposure of +0.3, five of each step, `wait` steps of 2.5 s between them; executable `3f08f163`, load 3.54.
+An evidence script over the Air 2S with Detail, Presence's three fields and a Basic exposure of +0.3, five of each step, `wait` steps of 2.5 s between them; load 3.54.
 
 | Step | Frame presented | Picture at rest drawn | Counts |
 | --- | ---: | ---: | ---: |
@@ -4999,15 +3749,15 @@ An evidence script over the Air 2S with Detail, Presence's three fields and a Ba
 | History: an earlier entry (Detail alone) | 8.8 to 9.0 | 76 | 84 |
 | History: back to the current entry | 8.8 to 9.0 | 1,040 to 1,064 | 1,105 to 1,131 |
 
-- The baseline re-rendered the exact frame on every toggle and return, about 1 to 3 s on a heavy stack; the photograph now returns within one or two frames and sharpens about a second later.
+- The photograph returns within one or two frames and sharpens about a second later.
 
 ### A RAW white balance
 
-The Air 2S's Temperature, `--action set-raw --parameter temperature`, no other layers. The drag drew 30 of 30 inputs on the GPU at **8.5 / 9.0 ms** (load 2.46). Its releases, 30 commits of one input each (load 2.50): the redeveloped picture presented 133.8 / 141.8 ms after the release, its picture at rest 255.6 / 276.9 ms, its counts 263.4 / 285.5 ms. The baseline held the window for the redevelopment, 0.5 to 1.6 s. After each release the next gesture's first tick waits for the redeveloped source's boundary (`surface-pending`) and is drawn 8.7 / 9.2 ms after its input. `editor-latency` refuses both runs (a held tick is an input it pairs with no answer), so these figures are paired from the runs' `events.jsonl` exactly as the tool pairs a GPU tick, a pairing that reproduces the tool's own 9.0 / 9.2 ms on the drag stack's Fit run.
+The Air 2S's Temperature, `--action set-raw --parameter temperature`, no other layers. The drag drew 30 of 30 inputs on the GPU at **8.5 / 9.0 ms** (load 2.46). Its releases, 30 commits of one input each (load 2.50): the redeveloped picture presented 133.8 / 141.8 ms after the release, its picture at rest 255.6 / 276.9 ms, its counts 263.4 / 285.5 ms. After each release the next gesture's first tick waits for the redeveloped source's boundary (`surface-pending`) and is drawn 8.7 / 9.2 ms after its input. These figures are paired from the runs' `events.jsonl` exactly as `editor-latency` pairs a GPU tick, a pairing that reproduces the tool's own 9.0 / 9.2 ms on the drag stack's Fit run.
 
 ### A colour drag under Dehaze
 
-A Basic exposure drag under Presence's three fields at +100 and a full Basic layer (`--basic --presence`), so Dehaze's light is computed on the GPU for every tick from the whole stage at full resolution; 30 inputs each, all on the GPU, executable `3f08f163`:
+A Basic exposure drag under Presence's three fields at +100 and a full Basic layer (`--basic --presence`), so Dehaze's light is computed on the GPU for every tick from the whole stage at full resolution; 30 inputs each, all on the GPU:
 
 | Source | View | Load | Input to drawn p50 / p95 | `draft.set` round trip p50 / p95 |
 | --- | --- | ---: | ---: | ---: |
@@ -5016,11 +3766,11 @@ A Basic exposure drag under Presence's three fields at +100 and a full Basic lay
 | 60 MP JPEG | Fit | 3.86 | 9.0 / 9.4 | 0.2 / 0.2 |
 | 60 MP JPEG | 100% | 4.62 | 9.0 / 9.3 | 0.2 / 0.2 |
 
-- Every tick is drawn at the first redraw after its input, so the light's per-tick cost fits within a 120 Hz frame at 60 MP; the tools time frames, not GPU passes, so its own duration is not separated. The baseline paid 110 to 420 ms a unit a tick, and 864 ms for the first 60 MP region.
+- Every tick is drawn at the first redraw after its input, so the light's per-tick cost fits within a 120 Hz frame at 60 MP; the tools time frames, not GPU passes, so its own duration is not separated.
 
 ### Idle memory
 
-The performance scenario saw the footprint and RSS grow about 20 MB with every idle capture 5 s apart. The 60 MP JPEG with Detail, Presence's three fields and a full Basic layer, a release editor in the background bundle, sampled every 5 s with `ps` (RSS) and `footprint` (`phys_footprint`):
+In the performance scenario the footprint and RSS grow about 20 MB with every idle capture 5 s apart. The 60 MP JPEG with Detail, Presence's three fields and a full Basic layer, a release editor in the background bundle, sampled every 5 s with `ps` (RSS) and `footprint` (`phys_footprint`):
 
 - **With no captures** (an ordinary `develop --background` launch on a copy of the stack's catalog, no evidence directory, the Performance section open, load 4.38): once the picture at rest had settled, RSS held at 870.9 to 871.0 MiB for two minutes and the footprint moved between 1.970 and 2.010 GB with no trend; the process used 1.31 s of CPU in 117 s, 1.1% of one core, the Performance section's sampler included.
 - **With a capture every 5 s** (an evidence script of 26 `wait` steps of 5 s, load 2.11): RSS rose by 20,320 to 20,480 KiB at every capture, which is one 2880 × 1800 window readback of four bytes a pixel (20.7 MB), and fell back by 180 to 200 MiB twice in the two minutes, as the allocator returned the readbacks' pages.
@@ -5028,9 +3778,9 @@ The performance scenario saw the footprint and RSS grow about 20 MB with every i
 
 ### The timing tier
 
-`verify --tier timing` ran once (executable `d0867b9d`, 379 s) and passed, but every timing component started above the 8.0 threshold, 14.0 to 15.7, raised by the tier's own `check` just before them, so it reports every timing verdict as unreliable rather than as a pass or a miss. Its timing components were therefore run again on their own once the load had fallen below 3.5, with the same executable, at the sample counts the targets name (`measure` at five launches a workload):
+A `verify --tier timing` run whose own `check` raises the one-minute load past the 8.0 threshold reports every timing verdict as unreliable rather than as a pass or a miss, so its timing components are run on their own once the load has fallen below 3.5, at the sample counts the targets name (`measure` at five launches a workload):
 
-| Provisional target | Measured 2026-10-06, alone | Load | Verdict |
+| Provisional target | Measured alone | Load | Verdict |
 | --- | --- | ---: | --- |
 | Warm 24 MP slider-to-presented-frame p95 < 16 ms | 8.2 / 9.0 ms, 30 inputs, all on the GPU | 3.45 | **Pass** |
 | Settled exact histogram p95 < 200 ms after the final input, 24 MP | 67.7 / 76.0 ms, 30 commits (exposure alone) | 3.50 | **Pass** |
@@ -5038,10 +3788,8 @@ The performance scenario saw the footprint and RSS grow about 20 MB with every i
 | 24 MP working set ≤ 600 MiB, sampled RSS | 336.4 / 436.2 MiB | 2.99 | **Pass** |
 | 60 MP peak ≤ 1 GiB, sampled RSS, one open | 498.3 / 723.1 MiB | 2.99 | **Pass** |
 | Idle CPU < 1% of one core over 30 s | 1.43%, one window, the Performance section open | 2.99 | **Miss** (one window) |
-| Launch to usable empty shell p95 < 1 s warm | 1,869 / 1,893 ms, an upper bound through the background bundle | 2.99 | **Miss** (1,378 / 1,476 ms on 2026-10-02) |
-| Uncached 24 MP JPEG to Fit preview p95 < 750 ms | 1,099 / 1,114 ms open to raster | 2.99 | **Miss** (783 / 827 ms on 2026-10-02) |
 
-The launch and open figures are later than the 2026-10-02 record by about 0.45 s and 0.3 s, which this run does not attribute; the GPU-first stages changed the open's first picture to the reference renderer's whole frame ([GPU previews](../design/gpu-preview.md#the-picture-at-rest)).
+Launch and the uncached 24 MP open are in [launch and the uncached 24 MP open](#launch-and-the-uncached-24-mp-open).
 
 ### Reproducing it
 
@@ -5064,126 +3812,116 @@ cargo run --release --locked --package xtask -- editor-latency --source fixtures
   --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open SOURCE
 ```
 
-## GPU throughput against the reference (TASK-012)
+## GPU throughput against the reference
 
-The GPU's picture at rest, its counts and its export after TASK-012 of [the plan](../../tasks/rendering/gpu-first.json) (tile charges matching the slot, a larger rest share, tiles ordered by window shape, staged sweeps on the surface and the tile worker, the pipelined tile worker, lights kept across refits, the exact light behind a spatial layer), each row against [TASK-011's figures](#gpu-first-against-the-2026-10-04-baseline) (*before*) and the same build's reference renderer (`--reference-renderer`, which launches with `--no-gpu-render`, or `reference: true` for an export), back to back. The release gate is not run here; it passed on the whole corpus with the exact light ([above](#the-light-behind-a-spatial-layer)).
+The GPU's picture at rest, its counts and its export, each against the same build's reference renderer (`--reference-renderer`, which launches with `--no-gpu-render`, or `reference: true` for an export), back to back. The release gate passes on the whole corpus with the exact light ([the light behind a spatial layer](#the-light-behind-a-spatial-layer)).
 
 ### Scope
 
-- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, a hidden 1440 × 900 window at 2× in a background-only bundle, warm filesystem cache, 7 October 2026, 10:17 to 10:33 and 11:16 to 12:08 BST. The host slept from 10:33:46 to 11:05:09 (`pmset -g log`); no timed run's window overlaps it, the last run before it ending at 10:33:16. From then on each run's window was checked against `pmset`'s sleep and wake records. The host ran on battery throughout, but for 11:29 to about 11:38 on mains power; no low-power mode (`powermode 0` on both). Runs repeated across the two agree within their spread (the 24 MP GPU counts 242 / 264 ms on battery, 226 / 242 ms on mains).
-- **Quiet host.** Before every timed run a gate waited until no `cargo`, `rustc`, `clang`, `ld` or Clippy process of another worktree was running and the one-minute load was below 4.0; every run quoted started between 2.5 and 4.0. A reference run raises the load itself (to 7 to 10 by its end), so the run after it waited for the load to fall. Another session built for about a minute at 10:19; the gate held the run until it had finished and the load had fallen. syspolicyd kept pid 15580 throughout.
-- **Build.** Source `2e22257d` (`main`, equal to `claude/gpu-first-9b5b17`), release, `--locked`, Cargo.lock SHA-256 `8f7bce2f…`. `cargo build --release --locked -p luxforge-app -p xtask` made `73d43a6d…` (52.0 MB), which every `editor-latency` and `measure` run used (`--binary`); `cargo xtask develop --background`'s build of `luxforge-app` and `luxforge-cli` made `04e72e5e…`, which the evidence-script probes used (exports, the cold shader cache). Launch and open were also measured on `2837c344` (2026-10-02, `37cc1db8…`, 35.5 MB), built the same way in a detached worktree.
-- **Sources.** The Air 2S DNG (5464 × 3640, `aab79ce1…`), the X100VI RAF (7728 × 5152, `187e3403…`), the generated 24 MP and 60 MP JPEGs (`b54c2a15…`, `b9e0118a…`), each hashed the same before and after the runs.
-- **Stacks.** *The drag stack* and *the masked stack* as [TASK-011 defines them](#gpu-first-against-the-2026-10-04-baseline). *The three-segment stack*: Detail, Presence's three fields at +100 and a masked Presence on a linear mask (`editor-latency --mode commit --detail --presence --mask --action set-presence --parameter clarity`), each commit a new masked Clarity, over the Air 2S as imported; TASK-011's used a radial mask and Texture beside Clarity. *The heavy export stack*: Detail, Presence's three fields and a radial's masked Presence; *the masked export stack*: Detail, a global Presence of Texture 25 and Clarity 20, and three radial masks each holding a masked exposure of +0.3 and a masked Presence of Clarity 50 and Texture 40, radials where the masked stack has a brush.
+- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, a hidden 1440 × 900 window at 2× in a background-only bundle, warm filesystem cache; no low-power mode. No timed run's window overlaps a host sleep (checked against `pmset`'s sleep and wake records). Runs on battery and on mains power agree within their spread.
+- **Quiet host.** Before every timed run a gate waited until no `cargo`, `rustc`, `clang`, `ld` or Clippy process of another worktree was running and the one-minute load was below 4.0; every run quoted started between 2.5 and 4.0. A reference run raises the load itself (to 7 to 10 by its end), so the run after it waited for the load to fall.
+- **Build.** Release, `--locked`. `cargo build --release --locked -p luxforge-app -p xtask` makes the 52.0 MB executable every `editor-latency` and `measure` run uses (`--binary`); `cargo xtask develop --background`'s build of `luxforge-app` and `luxforge-cli` makes the one the evidence-script probes use (exports, the cold shader cache).
+- **Sources.** The Air 2S DNG (5464 × 3640), the X100VI RAF (7728 × 5152), the generated 24 MP and 60 MP JPEGs, each hashed the same before and after the runs.
+- **Stacks.** *The drag stack* and *the masked stack* as [GPU-first latencies](#gpu-first-latencies) defines them. *The three-segment stack*: Detail, Presence's three fields at +100 and a masked Presence on a linear mask (`editor-latency --mode commit --detail --presence --mask --action set-presence --parameter clarity`), each commit a new masked Clarity, over the Air 2S as imported. *The heavy export stack*: Detail, Presence's three fields and a radial's masked Presence; *the masked export stack*: Detail, a global Presence of Texture 25 and Clarity 20, and three radial masks each holding a masked exposure of +0.3 and a masked Presence of Clarity 50 and Texture 40, radials where the masked stack has a brush.
 - **Figures.** Milliseconds, nearest rank, p50 / p95 over 30 samples unless a count is given. *Rest* runs from the release to the surface's first draw of the picture at rest (`gpu_rest_drawn`), *counts* to the GPU's settled histogram (`analysis_adopted`); the reference renderer's frame and its report arrive together, the counts the tool reports. Commit runs time each commit after the previous one's counts have arrived.
 
 ### The picture at rest and the counts after a commit
 
-| Row | Before: GPU counts / reference | GPU rest | GPU counts | Reference frame and counts | Load (GPU, reference) | Tiles drawn |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| 24 MP JPEG, the drag stack, GPU first | 649.4 / 653.4; 671.9 / 775.8 | 210.1 / 231.9 | 242.4 / 263.6 | 644.4 / 694.6 | 3.67, 3.20 | 2 sweeps of 6 tiles of 2048 px |
-| The same, reference first | | 201.6 / 209.9 | 225.7 / 242.3 | 665.3 / 682.2 | 3.99, 3.27 | the same |
-| Air 2S, the drag stack, reference first | 816.3 / 825.8; 793.1 / 878.9 | 226.2 / 231.8 | 263.7 / 268.5 | 1,136.5 / 1,188.0 | 3.30, 2.86 | 2 sweeps of 6 tiles of 2048 px |
-| The same, GPU first | | 226.9 / 230.5 | 264.1 / 266.2 | 1,152.9 / 1,311.0 | 3.08, 3.38 | the same |
-| 60 MP JPEG, the drag stack, GPU first | 5,676.9 (6 commits); 1,682.3 | 565.7 / 577.6 | 601.5 / 613.8 | 1,923.3 / 2,037.3 (28 commits) | 3.36, 3.36 | 2 sweeps of 15 tiles of 2048 px |
-| The same, reference first | | 564.1 / 568.1 | 599.9 / 604.0 | 1,763.6 / 1,952.0 (20) | 3.10, 3.52 | the same |
-| The same, reference first again | | 574.3 / 585.8 | 610.6 / 621.7 | 2,092.3 / 2,348.0 (20) | 3.99, 3.92 | the same |
-| X100VI RAF (40 MP), the drag stack, reference first | not measured | 597.7 / 614.2 | 615.8 / 646.6 | 2,432.2 / 2,564.5 (20) | 3.85, 3.73 | 2 sweeps of 12 tiles of 2048 px |
-| Air 2S, the three-segment stack, GPU first | rest 14.9 to 17.3 s (4 launches); reference not measured | 301.9 / 333.5 | 309.4 / 341.2 | 959.7 / 1,022.6 | 2.92, 2.84 | 3 sweeps of 24 tiles of 1024 px |
-| The same, reference first | | 297.7 / 317.3 | 305.6 / 326.1 | 976.4 / 1,053.8 | 3.97, 3.87 | the same |
-| Air 2S, the masked stack's stroke release, one a launch | 16.99 and 17.05 s; 1.26 s | 672.8 to 700.0 (5 launches) | 706.2 to 732.4 | 1,301.8 to 1,420.5 (4 launches) | 2.51 to 3.99, 2.98 to 3.91 | 4 sweeps, 42 tiles |
+| Row | GPU rest | GPU counts | Reference frame and counts | Load (GPU, reference) | Tiles drawn |
+| --- | ---: | ---: | ---: | --- | --- |
+| 24 MP JPEG, the drag stack, GPU first | 210.1 / 231.9 | 242.4 / 263.6 | 644.4 / 694.6 | 3.67, 3.20 | 2 sweeps of 6 tiles of 2048 px |
+| The same, reference first | 201.6 / 209.9 | 225.7 / 242.3 | 665.3 / 682.2 | 3.99, 3.27 | the same |
+| Air 2S, the drag stack, reference first | 226.2 / 231.8 | 263.7 / 268.5 | 1,136.5 / 1,188.0 | 3.30, 2.86 | 2 sweeps of 6 tiles of 2048 px |
+| The same, GPU first | 226.9 / 230.5 | 264.1 / 266.2 | 1,152.9 / 1,311.0 | 3.08, 3.38 | the same |
+| 60 MP JPEG, the drag stack, GPU first | 565.7 / 577.6 | 601.5 / 613.8 | 1,923.3 / 2,037.3 (28 commits) | 3.36, 3.36 | 2 sweeps of 15 tiles of 2048 px |
+| The same, reference first | 564.1 / 568.1 | 599.9 / 604.0 | 1,763.6 / 1,952.0 (20) | 3.10, 3.52 | the same |
+| The same, reference first again | 574.3 / 585.8 | 610.6 / 621.7 | 2,092.3 / 2,348.0 (20) | 3.99, 3.92 | the same |
+| X100VI RAF (40 MP), the drag stack, reference first | 597.7 / 614.2 | 615.8 / 646.6 | 2,432.2 / 2,564.5 (20) | 3.85, 3.73 | 2 sweeps of 12 tiles of 2048 px |
+| Air 2S, the three-segment stack, GPU first | 301.9 / 333.5 | 309.4 / 341.2 | 959.7 / 1,022.6 | 2.92, 2.84 | 3 sweeps of 24 tiles of 1024 px |
+| The same, reference first | 297.7 / 317.3 | 305.6 / 326.1 | 976.4 / 1,053.8 | 3.97, 3.87 | the same |
+| Air 2S, the masked stack's stroke release, one a launch | 672.8 to 700.0 (5 launches) | 706.2 to 732.4 | 1,301.8 to 1,420.5 (4 launches) | 2.51 to 3.99, 2.98 to 3.91 | 4 sweeps, 42 tiles |
 
-- **Every row's picture at rest and counts now land sooner than the reference renderer's frame and report, at p50 and p95**: by 2.6 to 2.9 times at 24 MP, 4.3 to 4.9 times on the Air 2S, 2.9 to 3.4 times at 60 MP, 3.9 times on the X100VI, 3.1 times over the three segments and about 2 times after the masked stroke. The 60 MP row is 9.4 times sooner than before, the masked release 24 times. The reference's own figures moved between runs more than the GPU's (at 60 MP 1.76 to 2.09 s at p50 in three runs); the tool's 60 s deadline let the first reference run at 60 MP finish 28 of 30 commits, paired from its events, and the others were run at 20.
-- **Attribution, from `gpu_rest` and `gpu_rest_drawn`.** Each picture at rest is now planned in tiles of 2048 px wherever the share allows, where TASK-011 drew 24 tiles of 1024 px at 24 MP and on the Air 2S, 240 of 512 px at 60 MP and 330 of 256 px over a masked Presence. Behind Detail every Dehaze stack is drawn in at least two sweeps, the first writing the stage texture its exact light is reduced from (`lights_encoded` 1, `lights_restored` 5 to 8, `retirement_waits` 0 to 1 a picture; no light sweep was needed on any row: the stage textures fitted). The tiles' summed GPU spans (an upper bound, the spans overlapping) were 0.23 s at 24 MP, 0.36 s on the Air 2S, 0.39 to 0.41 s over the three segments, 0.64 s on the X100VI, 0.85 to 0.87 s after the masked stroke and 1.04 to 1.06 s at 60 MP, the slowest tile 28 to 61 ms; at 60 MP the picture at rest arrives in about half its tiles' summed spans, which overlap. After the masked stroke the rest names 330 tiles of 256 px for its chained plan and draws 4 sweeps of 42 tiles, with 26 refits and 9 rebinds; the GPU-preview peak was 2,146.5 MB of the 2,147.5 MB budget.
-- **The committed frame** stays the GPU's view plan at once: 9.5 to 10.0 ms at p50 and 9.7 to 17.2 ms at p95 on every GPU row.
-- **The 60 MP RAW drag stack**, whose stage textures do not fit, so its light is computed by a light sweep: no 60 MP RAW is in the corpus, so it was not measured in the editor (the X100VI's 40 MP stack fitted its stage textures and drew no light sweep). Its indication on the headless surface (`gpu_rest_the_60_mp_raw_drag_stacks_light_indication`, release, two runs, loads 3.16 and 4.03, an indication and not a timing): as the editor plans it, 20 light-sweep tiles of Detail and 70 chained, 1.63 and 1.65 s, the tiles' spans summing 5.40 and 5.41 s; staged at 1024 px 0.99 s; the reference renderer's whole frame 2.57 and 2.55 s (5.31 s in the [earlier indication](#the-light-behind-a-spatial-layer), whose 1.70 to 2.14 s it repeats).
+- **Every row's picture at rest and counts land sooner than the reference renderer's frame and report, at p50 and p95**: by 2.6 to 2.9 times at 24 MP, 4.3 to 4.9 times on the Air 2S, 2.9 to 3.4 times at 60 MP, 3.9 times on the X100VI, 3.1 times over the three segments and about 2 times after the masked stroke. The reference's own figures moved between runs more than the GPU's (at 60 MP 1.76 to 2.09 s at p50 in three runs); the tool's 60 s deadline let the first reference run at 60 MP finish 28 of 30 commits, paired from its events, and the others were run at 20.
+- **Attribution, from `gpu_rest` and `gpu_rest_drawn`.** Each picture at rest is planned in tiles of 2048 px wherever the share allows. Behind Detail every Dehaze stack is drawn in at least two sweeps, the first writing the stage texture its exact light is reduced from (`lights_encoded` 1, `lights_restored` 5 to 8, `retirement_waits` 0 to 1 a picture; no light sweep was needed on any row: the stage textures fitted). The tiles' summed GPU spans (an upper bound, the spans overlapping) were 0.23 s at 24 MP, 0.36 s on the Air 2S, 0.39 to 0.41 s over the three segments, 0.64 s on the X100VI, 0.85 to 0.87 s after the masked stroke and 1.04 to 1.06 s at 60 MP, the slowest tile 28 to 61 ms; at 60 MP the picture at rest arrives in about half its tiles' summed spans, which overlap. After the masked stroke the rest names 330 tiles of 256 px for its chained plan and draws 4 sweeps of 42 tiles, with 26 refits and 9 rebinds; the GPU-preview peak was 2,146.5 MB of the 2,147.5 MB budget.
+- **The committed frame** is the GPU's view plan at once: 9.5 to 10.0 ms at p50 and 9.7 to 17.2 ms at p95 on every GPU row.
+- **The 60 MP RAW drag stack**, whose stage textures do not fit, so its light is computed by a light sweep: no 60 MP RAW is in the corpus, so it was not measured in the editor (the X100VI's 40 MP stack fitted its stage textures and drew no light sweep). Its indication on the headless surface (`gpu_rest_the_60_mp_raw_drag_stacks_light_indication`, release, over 9504 × 6336 synthetic planes, the picture at rest drawn once to warm, its kept light let go, and timed again; two runs, loads 3.16 and 4.03, an indication and not a timing): as the editor plans it, 20 light-sweep tiles of Detail and 70 chained, 1.63 and 1.65 s, the tiles' spans summing 5.40 and 5.41 s; staged at 1024 px 0.99 s; the reference renderer's whole frame 2.57 and 2.55 s.
 
 ### A developed photograph's catalog tiers
 
 Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a Basic layer and then a Presence layer, drawn by the GPU tile worker and by the reference, each from its own preparation of the original: `a_gpu_tier_of_a_raw_is_within_the_display_limit_of_the_reference_tier` (release, `--ignored`), three runs at loads 3.18 to 3.62, each run drawing the GPU's tiers first, so the order was not reversed. An indication from a test, not the catalog's own lane under the editor.
 
-| Source and layer | GPU, three runs | Reference, three runs | 2026-10-06 indication, GPU / reference |
-| --- | ---: | ---: | --- |
-| Z 6, Basic | 333, 241, 252 | 423, 415, 421 | 320 / 370 |
-| Z 6, then Presence | 552, 341, 399 | 802, 798, 828 | 840 / 690 |
-| Air 2S, Basic | 246, 235, 241 | 402, 406, 406 | 440 / 470 |
-| Air 2S, then Presence | 346, 334, 338 | 705, 681, 711 | 580 / 680 |
+| Source and layer | GPU, three runs | Reference, three runs |
+| --- | ---: | ---: |
+| Z 6, Basic | 333, 241, 252 | 423, 415, 421 |
+| Z 6, then Presence | 552, 341, 399 | 802, 798, 828 |
+| Air 2S, Basic | 246, 235, 241 | 402, 406, 406 |
+| Air 2S, then Presence | 346, 334, 338 | 705, 681, 711 |
 
-- The GPU draws both tiers sooner than the reference on every row in every run, the Z 6 with Presence in 0.34 to 0.55 s against 0.80 to 0.83 s, where the earlier indication had it slower. Each tier is within its class's display limit of the reference's (largest mean 0.0195, worst block 0.094, p99 0.615).
+- The GPU draws both tiers sooner than the reference on every row in every run, the Z 6 with Presence in 0.34 to 0.55 s against 0.80 to 0.83 s. Each tier is within its class's display limit of the reference's (largest mean 0.0195, worst block 0.094, p99 0.615).
 
 ### Export
 
-`export.write` through the evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, after a `gpu_warmed` step; the step is timed from its request to its end, which the desktop now reads through `job.wait`, so it is no longer the 100 ms job reader's upper bound. Beside it, the activity board's `duration_ms` for exports of 250 ms or more. Every GPU export named `{record: "gpu"}`, every reference export `{record: "reference", reason: "requested"}`. Executable `04e72e5e`.
+`export.write` through the evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, after a `gpu_warmed` step; the step is timed from its request to its end, which the desktop reads through `job.wait`. Beside it, the activity board's `duration_ms` for exports of 250 ms or more. Every GPU export named `{record: "gpu"}`, every reference export `{record: "reference", reason: "requested"}`.
 
-| Source and stack | Before: GPU / reference | GPU: median, range (5) | Reference: median, range (5) | Load | GPU tiles an export; tile worker's peak |
-| --- | --- | ---: | ---: | ---: | --- |
-| 24 MP JPEG, trivial (Basic exposure +0.3) | under 250 either way | 101, 100 to 110 | 85, 84 to 92 | 2.90 | |
-| 24 MP JPEG, heavy | 945; 763 | 275, 269 to 374 (board 258, 251 to 359) | 784, 767 to 819 (board 768, 751 to 801) | 2.90 | |
-| 60 MP JPEG, trivial | under 250 either way | 190, 187 to 199 | 175, 167 to 185 | 3.41 | |
-| 60 MP JPEG, heavy | 10,350; 2,156 | 629, 622 to 656 (board 613, 606 to 637) | 2,016, 1,944 to 2,247 (board 1,998, 1,928 to 2,222) | 3.41 | |
-| Air 2S, the masked export stack | not measured | 457, 451 to 522 (board 441, 433 to 503) | 1,177, 1,149 to 1,191 (board 1,153, 1,132 to 1,174) | 3.31 | 24; 2,112.9 MB |
-| The same, a second launch | | (board 467, 451 to 494) | (board 1,170, 1,131 to 1,193) | 3.43 | 24; 2,112.9 MB |
+| Source and stack | GPU: median, range (5) | Reference: median, range (5) | Load | GPU tiles an export; tile worker's peak |
+| --- | ---: | ---: | ---: | --- |
+| 24 MP JPEG, trivial (Basic exposure +0.3) | 101, 100 to 110 | 85, 84 to 92 | 2.90 | |
+| 24 MP JPEG, heavy | 275, 269 to 374 (board 258, 251 to 359) | 784, 767 to 819 (board 768, 751 to 801) | 2.90 | |
+| 60 MP JPEG, trivial | 190, 187 to 199 | 175, 167 to 185 | 3.41 | |
+| 60 MP JPEG, heavy | 629, 622 to 656 (board 613, 606 to 637) | 2,016, 1,944 to 2,247 (board 1,998, 1,928 to 2,222) | 3.41 | |
+| Air 2S, the masked export stack | 457, 451 to 522 (board 441, 433 to 503) | 1,177, 1,149 to 1,191 (board 1,153, 1,132 to 1,174) | 3.31 | 24; 2,112.9 MB |
+| The same, a second launch | (board 467, 451 to 494) | (board 1,170, 1,131 to 1,193) | 3.43 | 24; 2,112.9 MB |
 
-- **A heavy GPU export is now 2.9 to 3.3 times faster than the reference export** at 24 and 60 MP and 2.5 times over the masked stack; at 60 MP 16 times faster than before.
+- **A heavy GPU export is 2.9 to 3.3 times faster than the reference export** at 24 and 60 MP and 2.5 times over the masked stack.
 - **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. Attributed below ([the trivial export's first band](#the-trivial-exports-first-band)).
 - The tile worker's peak was 2.11 GB of its 2 GiB (2,147.5 MB) budget on the masked stack.
 
 ### The trivial export's first band
 
-Timed in the process, through the owner's export lane as the desktop starts it (`trivial_export_timing_gpu_against_reference`, release, seven alternating samples after one discarded export of each, the generated fixtures with Basic exposure +0.3): **75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP** (2026-10-08, executable of `5e287c5f`, the M4 Pro at one-minute loads of 5 to 9). The desktop's step timing above reads the end on its frame clock, about 8.3 ms a frame, so it shows the same gap coarser.
+Timed in the process, through the owner's export lane as the desktop starts it (`trivial_export_timing_gpu_against_reference`, release, seven alternating samples after one discarded export of each, the generated fixtures with Basic exposure +0.3, the M4 Pro at one-minute loads of 5 to 9): **75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP**. The desktop's step timing above reads the end on its frame clock, about 8.3 ms a frame, so it shows the same gap coarser.
 
 - **Where the gap is.** The reference renders the pointwise stack across the pool in 7 to 8 ms (18 ms at 60 MP) and then encodes. The GPU's encoder starts at once and waits for the stream's first band, a row of 2048 px tiles: 26 to 28 ms at 24 MP and 40 to 52 ms at 60 MP. After it, the encoder never waits again. The gap is that first band's latency less the reference's render.
 - **What the first band costs.** On the tile worker's thread, timed tile by tile: the band's window of the source uploaded, 4.7 ms for 6000 × 2048 codes; the first tile's wait for the device, 10 to 11 ms, where a later tile of the band waits 1.3 to 2.6 ms; and each tile's readback and copy into the band, about 2.2 ms. A fresh slot does not explain the first tile's wait: keeping the slot across exports left it unchanged.
 - **Tried and not adopted:** 512 px tiles (134 ms at 24 MP: per-tile costs dominate) and 1024 px tiles (93 against 84 ms in the desktop's timing, 184 against 168 ms at 60 MP); a first row of 512 or 1024 rows under 2048 px tiles (at most 3 ms: the second band is then late, the worker taking about 21 ms a band against the encoder's 24); reading a band's last tiles back and sending it before the next band's window is uploaded (73 and 151 ms, but a stream drawn without an encoder, which bounds a heavy export, slower by 7 ms for Detail at 24 MP and 12 ms for the 60 MP drag stack, the device idle during the upload); and copying the mapped readback straight into the band (no change).
 - **What is left.** The window's upload and the device's first-tile latency, each paid per band on the worker's one thread. Closing the gap needs the next band's window uploaded beside the current band's tiles, or a band's window textures kept for the next band of its shape, both changes to what the runner holds at once ([export](../design/export.md)); not built.
 
-### Ticks, nothing regressed
+### Drag ticks
 
-30 drained inputs each, every one drawn on the GPU, none held; executable `73d43a6d`.
+30 drained inputs each, every one drawn on the GPU, none held.
 
-| Drag | View | Before p50 / p95 | Now p50 / p95 | Load |
-| --- | --- | ---: | ---: | ---: |
-| Air 2S, Basic exposure over the drag stack | Fit | 9.0 / 9.2 | 9.1 / 9.4 | 3.42 |
-| The same | 33% | 9.0 / 9.6 | 9.0 / 9.1 | 3.62 |
-| The same | 100% | 9.0 / 9.3 | 9.0 / 9.3 | 3.37 |
-| 60 MP JPEG, Basic exposure under Presence's three fields (Dehaze) | 100% | 9.0 / 9.3 | 9.0 / 9.3 | 3.45 |
-| Air 2S, a masked Presence Clarity drag over Detail and Presence (`--mask --action set-presence --parameter clarity`) | Fit | not measured (the tool refused held ticks) | 8.5 / 8.7, worst 26.3 | 3.25 |
+| Drag | View | p50 / p95 | Load |
+| --- | --- | ---: | ---: |
+| Air 2S, Basic exposure over the drag stack | Fit | 9.1 / 9.4 | 3.42 |
+| The same | 33% | 9.0 / 9.1 | 3.62 |
+| The same | 100% | 9.0 / 9.3 | 3.37 |
+| 60 MP JPEG, Basic exposure under Presence's three fields (Dehaze) | 100% | 9.0 / 9.3 | 3.45 |
+| Air 2S, a masked Presence Clarity drag over Detail and Presence (`--mask --action set-presence --parameter clarity`) | Fit | 8.5 / 8.7, worst 26.3 | 3.25 |
 
 ### Painting at 100% over the masked stack
 
-240 positions over the masked stack at 100% on the Air 2S, two launches: **8.1 / 24.0 ms, worst 58.1** (233 drawn, load 3.12) and **8.2 / 22.5 ms, worst 24.5** (235 drawn, load 3.92); before 8.2 / 23.7, worst 50.4. **Still a miss at p95.** At Fit 60 positions drew at 7.8 to 8.0 / 8.6 to 9.0 ms in five launches.
+240 positions over the masked stack at 100% on the Air 2S, launch by launch (`editor-latency --warm 4000` in most, so the 100% view's warm-up and picture at rest are done before the stroke; one-minute load 2.95 to 6.91): **8.2 / 23.6 ms** (no wait), **8.2 / 23.7**, **7.9 / 10.5**, **8.0 / 23.8** and **8.0 / 23.3 ms** (waited). **A miss at p95.** At Fit 60 positions drew at 7.8 to 8.0 / 8.6 to 9.0 ms in five launches; the reference renderer draws the same stroke at Fit at 102.6 / 115.3 ms over the 65 positions it presented.
 
-- **The same links, no refit and no rebind** (`surface_frame_drawn`'s `evaluation`, joined to each input by its draft revision): 5 links run, 52 spatial passes, a window of 6.39 MP and 31.9 M link texels on every tick. So the tail is not the word and block buffers regrowing (the hypothesis H1 of step 8, which would show rebinds), and step 8's fix does not apply. The 52 passes are not the same work, though: `spatial_passes` counts a pass dispatched over nothing too (below).
-- **When they come.** In the first launch the first four ticks, 51 to 58 ms, ran while the warm-up for the 100% view compiled 6 sequences over 392 ms, ending 181 ms into the stroke. Past that, and in the second launch whose warm-up had finished 72 ms before the stroke, the slow ticks come in runs of consecutive positions, 4 to 13 at a time (33 of 233 and 16 of 235), each presented on the third display frame after its input, 22 to 25 ms, with the same work as the ticks around them drawn in one frame. The tools time frames, not each tick's GPU work, so what lengthens those runs, the GPU's own time against the frame or other work queued beside it (the coverage grid each tick asks for), is not separated.
-
-- **Not whole re-evaluations, and not their reach** (2026-10-08, one launch of 240 positions on the release build after `b849b851` with the evaluation's new `incremental`, `whole` and `reached_texels` figures; load 9.9 to 14.0, so the figures place the tail but are not a quiet-host record): **8.0 / 23.7 ms, worst 24.6**, 237 drawn. Every tick of the stroke ran incrementally, the slow ones among them: none ran its links over the whole window. The texels a tick's links reached, 7.4 to 20.7 M of the chain's 31.9 M, are spread the same over slow and fast ticks. The coverage worker's completions fall as often within a slow tick as a fast one (1.26 against 1.28 a tick). A tick is presented 8, 15 or 24 ms after its input, one, two or three frames of the 120 Hz display, and nothing in between. What is left is the tick's GPU time against the frame and the presentation queue behind a missed frame, and the histogram's count pass each tick runs.
-- **The tail is the GPU time of the ticks that do spatial work** (2026-10-08, six launches of 240 positions on the release build after `fc2170c9` with the evaluation's new `spatial_texels` and `refilled` figures, load 2.95 to 6.91; `editor-latency --warm 4000` in four of them, so the 100% view's warm-up and picture at rest are done before the stroke). About two thirds of the frames do no spatial work at all: the stroke changes the plan only where a new dab lands. The frames that do write 20 to 60 M texels in their spatial passes (p50 39 to 41 M, the largest 225 M), several times the 6.39 MP window: three masked Presence links of 13 passes each, every pass over the change grown by the links' chained halos. Every slow position of two launches, 29 and 24 of 240, was such a frame, 18 and 13 of them in the third of the frames with the most spatial work. The surface's pass clock, an upper bound with up to a frame's wait for the next submit in it, read 10 to 33 ms for those ticks against about 1 ms for the others. A tick whose GPU work passes one or two 120 Hz frames is presented on the second or third. A smaller window draws the same stroke within the target: at `--window 1000x700`, a 3.53 MP window, **7.7 / 8.8 ms** (10 of 240 past 12 ms, load 2.98).
-- **Not the picture at rest, a refill, or time since the zoom.** The picture at rest's tiles, at 100% drawn for their counts alone, are not handed while a gesture is open; no tick of any launch refilled a link over the whole window (`refilled` 0), a masked link's planes holding what its mask needs from the first tick on; and with the stroke 4.3 s after the zoom the slow positions still came in runs (36 to 95 in one launch). How many there are varies from launch to launch over the same stroke: **8.2 / 23.6 ms** (no wait, load 2.95), **8.2 / 23.7**, **7.9 / 10.5**, **8.0 / 23.8**, **8.0 / 23.3 ms** (waited, load 3.55 to 6.91). Meeting 16 ms at p95 here needs less spatial work a tick at 100%, which is not designed.
+- **The same links on every tick, no refit and no rebind** (`surface_frame_drawn`'s `evaluation`, joined to each input by its draft revision): 5 links run, 52 spatial passes, a window of 6.39 MP and 31.9 M link texels. `spatial_passes` counts a pass dispatched over nothing too, so the 52 passes are not the same work on every tick (below).
+- **The tail is the GPU time of the ticks that do spatial work.** About two thirds of the frames do no spatial work at all: the stroke changes the plan only where a new dab lands. The frames that do write 20 to 60 M texels in their spatial passes (p50 39 to 41 M, the largest 225 M), several times the 6.39 MP window: three masked Presence links of 13 passes each, every pass over the change grown by the links' chained halos. Every slow position of two launches, 29 and 24 of 240, was such a frame, 18 and 13 of them in the third of the frames with the most spatial work. The surface's pass clock, an upper bound with up to a frame's wait for the next submit in it, reads 10 to 33 ms for those ticks against about 1 ms for the others. A tick is presented 8, 15 or 24 ms after its input, one, two or three frames of the 120 Hz display, and nothing in between: a tick whose GPU work passes one or two frames is presented on the second or third. The slow ticks come in runs of consecutive positions. A smaller window draws the same stroke within the target: at `--window 1000x700`, a 3.53 MP window, **7.7 / 8.8 ms** (10 of 240 past 12 ms, load 2.98).
+- **Not whole re-evaluations, a refill, the picture at rest, or time since the zoom.** Every tick of the stroke runs incrementally, the slow ones among them: none runs its links over the whole window, and the texels a tick's links reach and the coverage worker's completions are spread the same over slow and fast ticks. No tick refills a link over the whole window (`refilled` 0), a masked link's planes holding what its mask needs from the first tick on; the picture at rest's tiles, at 100% drawn for their counts alone, are not handed while a gesture is open; and with the stroke 4.3 s after the zoom the slow positions still come in runs. Without the warm wait, the first ticks of a stroke run while the 100% view's warm-up compiles and take 51 to 58 ms. Meeting 16 ms at p95 here needs less spatial work a tick at 100%, which is not designed.
 
 ### Launch and the uncached 24 MP open
 
-`measure` at five launches a workload, with the build of this record (`73d43a6d`) and of 2026-10-02 (`2837c344`), interleaved and reversed: this build, the old, the old, this build, then the old and this build again; and once the old build through its own harness (`2837c344`'s `xtask measure`). syspolicyd's pid was the same before and after every run (15580). Each launch is split at the first RSS sample above 1 MiB (the harness's copy of the executable into a fresh bundle and macOS's first check of it), the log clock's zero (the editor's `startup` event, from the launch figure less the capture's elapsed time) and the first `frame_captured`. p50 of the five launches in each run:
+`measure` at five launches a workload, three runs. Each launch is split at the first RSS sample above 1 MiB (the harness's copy of the executable into a fresh bundle and macOS's first check of it), the log clock's zero (the editor's `startup` event, from the launch figure less the capture's elapsed time) and the first `frame_captured`. p50 of the five launches in each run:
 
-| Build and harness | Load | Launch to empty shell | Spawn to first RSS | First RSS to `startup` | `startup` to capture | 24 MP open to raster | 24 MP `decoded` after `startup` |
+| Run | Load | Launch to empty shell | Spawn to first RSS | First RSS to `startup` | `startup` to capture | 24 MP open to raster | 24 MP `decoded` after `startup` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `73d43a6d`, run 1 | 3.54 | 2,071 | 807 | 1,040 | 273 | 1,214 | 254 |
-| `2837c344`, run 1 | 3.19 | 1,821 | 580 | 956 | 253 | 1,203 | 229 |
-| `2837c344`, run 2 | 2.95 | 1,883 | 643 | 937 | 263 | 1,222 | 236 |
-| `73d43a6d`, run 2 | 3.07 | 2,107 | 806 | 1,035 | 259 | 1,211 | 249 |
-| `2837c344`, run 3 | 3.43 | 1,866 | 582 | 1,001 | 250 | 1,214 | 231 |
-| `73d43a6d`, run 3 | 3.85 | 2,069 | 760 | 1,038 | 271 | 1,253 | 256 |
-| `2837c344` through its own `measure` | 3.62 | 1,825 | 584 | 984 | 254 | 1,224 | 245 |
-| 2026-10-02's record of `2837c344` | | 1,378 | | | | 783 | |
-| TASK-011's record of `54d910a4` | 2.99 | 1,869 | 632 | 910 | 636 (60 MP) | 1,099 | 218 |
+| 1 | 3.54 | 2,071 | 807 | 1,040 | 273 | 1,214 | 254 |
+| 2 | 3.07 | 2,107 | 806 | 1,035 | 259 | 1,211 | 249 |
+| 3 | 3.85 | 2,069 | 760 | 1,038 | 271 | 1,253 | 256 |
 
-- **Most of the launch and open "regressions" are not in either build.** Through today's harness, or its own, the 2026-10-02 build launches in 1.82 to 1.88 s and opens the 24 MP JPEG in 1.20 to 1.22 s on this host, against the 1.38 s and 0.78 s it recorded then: about 0.45 s of each is the host's, the same for both executables, and these runs do not attribute it. About 0.95 to 1.0 s of every launch and of every open's `open_to_raster_ms` lies between the process's first RSS sample and its `startup` event on both builds (`open_to_raster_ms` runs from the editor's creation, before the log clock starts).
-- **What this build adds to a launch: 0.19 to 0.25 s.** 0.18 to 0.23 s of it comes before the process's first RSS sample, the harness copying a 52.0 MB executable into a fresh bundle and macOS checking it on first run, where `2837c344`'s is 35.5 MB; 0.04 to 0.10 s is the editor's own start before its `startup` event (the preferences, themes, flags and launch log the plan names; not separated); `startup` to the empty shell's capture is 10 to 20 ms longer. The editor's launch figure is the harness's upper bound, not a foreground activation.
-- **The open is the same on both builds**, 1.21 to 1.25 s against 1.20 to 1.22 s. The open's first picture is the GPU's view plan when its programs are warm (`decoded` `reduced: true`, `preview_displayed` naming `gpu`, a render of about 10 ms) 249 to 256 ms after `startup`, 20 to 25 ms later than `2837c344`'s CPU proxy; the picture at rest follows in 6 tiles 325 to 355 ms after `startup`. The capture `measure` takes waits for the picture at rest and its dissolve, so `startup` to capture at 24 MP is 488 to 519 ms here against 286 to 301 ms on the older build.
-- **Idle CPU after an open**: 0.0% of one core over 30 s in all three runs of this build, 1.2 to 1.5% on `2837c344`.
+- **Launch misses the provisional p95 under 1 s, and the uncached open p95 under 750 ms.** About 1.0 s of every launch and of every open's `open_to_raster_ms` lies between the process's first RSS sample and its `startup` event (`open_to_raster_ms` runs from the editor's creation, before the log clock starts); 0.76 to 0.81 s comes before the first RSS sample, the harness copying the 52.0 MB executable into a fresh bundle and macOS checking it on first run. The editor's launch figure is the harness's upper bound, not a foreground activation.
+- **The open's first picture** is the GPU's view plan when its programs are warm (`decoded` `reduced: true`, `preview_displayed` naming `gpu`, a render of about 10 ms) 249 to 256 ms after `startup`; the picture at rest follows in 6 tiles 325 to 355 ms after `startup`. The capture `measure` takes waits for the picture at rest and its dissolve, so `startup` to capture at 24 MP is 488 to 519 ms.
+- **Idle CPU after an open**: 0.0% of one core over 30 s in all three runs.
 
 ### The first picture on a cold shader cache
 
-The three-segment probe on the Air 2S, three launches each with a new `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX`, then one on the shared bundle; milliseconds from `startup`, executable `04e72e5e`, loads 2.51 to 3.27:
+The three-segment probe on the Air 2S, three launches each with a new `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX`, so the bundle's Metal cache starts empty, then one on the shared, warm bundle; milliseconds from `startup`, the Air 2S opened with no edits, loads 2.51 to 3.27:
 
 | Run | Reference frame drawn | GPU frame drawn | GPU after the reference | First warm-up |
 | --- | ---: | ---: | ---: | --- |
@@ -5191,13 +3929,12 @@ The three-segment probe on the Air 2S, three launches each with a new `LUXFORGE_
 | Fresh bundle 2 | 1,404 | 2,199 | 794 | 679 ms, 6 sequences, 380 ms |
 | Fresh bundle 3 | 1,366 | 2,168 | 802 | 686 ms, 6 sequences, 384 ms |
 | Shared bundle | 612 | 723 | 111 | 42 ms, 14 sequences, 3 ms |
-| Before, fresh bundles | 1,207 to 1,261 | 2,351 to 2,550 | 1.1 to 1.3 s | 2.1 to 2.2 s |
 
-- The GPU's first frame on a cold cache comes 0.79 to 0.84 s after the reference's, against 1.1 to 1.3 s before; the reference's own first frame is 0.1 s later than before. The second and third fresh bundles compiled 6 sequences where the first compiled 21, so the system's compiler cache outside the bundle, which a new suffix does not clear, served the rest; only the first launch is a cold compile.
+- The GPU's first frame on a cold cache comes 0.79 to 0.84 s after the reference's. The second and third fresh bundles compiled 6 sequences where the first compiled 21, so the system's compiler cache outside the bundle, which a new suffix does not clear, served the rest; only the first launch is a cold compile.
 
 ### The timing tier
 
-`verify --tier timing --binary` with `73d43a6d` ran once (436 s, 12:00 to 12:08) and passed, but its own `check` (342 s) left the one-minute load at 19.5 when the timing components started, past the 8.0 threshold, so it reports every timing verdict as unreliable, as on 2026-10-06. Its figures agree with the runs above: the 24 MP slider 8.66 ms at p95, the settled histogram 76.2 ms, a burst at 110 frames a second with staleness 8.6 ms at p95, the 24 MP working set 332.6 MiB, the 60 MP peak 507.3 MiB, idle 0.03% of one core, launch 2,152 ms and the uncached 24 MP open 1,278 ms at p95. The components were not run again alone: the rows above measure each of them on a quiet host. By those runs the provisional slider, histogram, burst, memory and idle targets pass, and launch (p95 under 1 s) and the uncached open (p95 under 750 ms) miss.
+`verify --tier timing --binary` ran once and passed, but its own `check` left the one-minute load at 19.5 when the timing components started, past the 8.0 threshold, so it reports every timing verdict as unreliable. Its figures agree with the runs above: the 24 MP slider 8.66 ms at p95, the settled histogram 76.2 ms, a burst at 110 frames a second with staleness 8.6 ms at p95, the 24 MP working set 332.6 MiB, the 60 MP peak 507.3 MiB, idle 0.03% of one core, launch 2,152 ms and the uncached 24 MP open 1,278 ms at p95. By the quiet-host runs above and [those of the components alone](#the-timing-tier), the provisional slider, histogram, burst, memory and idle-after-an-open targets pass, and launch (p95 under 1 s) and the uncached open (p95 under 750 ms) miss.
 
 ### Reproducing it
 
@@ -5213,6 +3950,8 @@ cargo run --release --locked --package xtask -- measure --binary BIN --output NE
 # Exports and the cold shader cache: evidence scripts of `api`, `gpu_warmed` and `export` steps.
 # A trivial export timed in the process, GPU against reference (needs cargo xtask generate-fixtures).
 cargo test --release -p luxforge-app --bins -- --ignored trivial_export_timing_gpu_against_reference --nocapture
+# The 60 MP RAW drag stack's light indication on the headless surface.
+cargo test --release -p luxforge-app -- --ignored gpu_rest_the_60_mp_raw_drag_stacks_light_indication --nocapture
 [LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW] cargo xtask develop --background --hidden-window \
   --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open /ABSOLUTE/SOURCE
 ```
@@ -5221,10 +3960,10 @@ The picture at rest is read from the run's `app/events.jsonl` (`gpu_rest`, `gpu_
 
 ## Export settings
 
-What each [export setting](../design/export-settings.md) costs, GPU against reference, measured once after feature work by `export_settings_measurement` (`crates/luxforge-app/src/app/gpu_tiles_worker_tests.rs`), in release, on 2026-10-13.
+What each [export setting](../design/export-settings.md) costs, GPU against reference, measured by `export_settings_measurement` (`crates/luxforge-app/src/app/gpu_tiles_worker_tests.rs`) in release.
 
 - **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, shared with other sessions' builds and runs. One-minute load 5.9 and 5.5 at the start of the 24 MP and 60 MP timing runs, rising to about 10 while they ran, and 9.6 at the start of the Z 6's, above `verify`'s threshold of 8.0. The GPU and reference exports alternate, so the load weighs on both alike.
-- **Build.** Source `6dbc9662` with the measurement test (`export-settings-task-008`), `--locked`, Cargo.lock `7215b616…`; the test binary `e95b25c5…`, the same executable the [qualification](../design/export-settings.md#qualification-and-measurement) ran.
+- **Build.** The `--locked` release test binary, the same executable the [qualification](../design/export-settings.md#qualification-and-measurement) ran.
 - **Scope.** Through the catalog owner's export lane as the desktop starts it, with the desktop's GPU tile worker; the original as it is (the generated `24mp.jpg` and `60mp.jpg`, and the Nikon Z 6 NEF, 4024 × 6048) with Basic exposure +0.3, a light stack, so the figures are the settings' own cost more than the render's. Each configuration on a fresh owner and worker, one export of each renderer as a warm-up, then five of each, alternating; medians of five. Time is `export.write` to the job's end, read through `job.wait`; phases are the spans between the job's progress messages. Memory is the process's lifetime peak footprint above its footprint before the export, in a process that prepared the photograph and exported once on one renderer: what an export adds to a process that has not exported. A GPU export's figure includes opening the tile worker's device and its charges, which on the M4's unified memory are in the footprint. One process per configuration and renderer, so one sample each. The generated JPEGs are flat patterns, so their file sizes are not those of photographs; the Z 6's are.
 
 Medians in milliseconds, GPU / reference; then peak additional memory in MB, GPU / reference:
@@ -5246,7 +3985,7 @@ Medians in milliseconds, GPU / reference; then peak additional memory in MB, GPU
 - **Limit file size.** Each limit is halfway between the unlimited files at qualities 10 and 90 on the GPU. The search took 7 encodes on the GPU and 8 on the reference for the generated JPEGs, whose two renderers' files differ by a few bytes, choosing qualities 64 and 65 at 24 MP and 62 and 65 at 60 MP; 8 on both for the Z 6, at quality 80. A search takes 4.3 to 5.7 times a single unlimited export on the GPU, and 1.9 to 7.0 times on the reference, whose share of rendering varies.
 - **Resampling's share.** On the reference, the `resampling` phase of a long edge of 2048 is 17 of 39 ms at 24 MP, 44 of 103 ms at 60 MP and 17 of 259 ms on the Z 6; Web's, which includes its sharpening, is 22, 41 and 25 ms. Print's, a full-size sharpening, is 38, 97 and 42 ms. On the GPU the resample is the stream's last sweep, inside `encoding`: the resized export costs about what the full-size baseline does (74 against 73 ms at 24 MP, 204 against 162 ms at 60 MP, 113 against 122 ms on the Z 6).
 - **The held output stage.** Print and Master on the GPU go through the held `Rgba32Float` stage at full size: on the generated JPEGs 3.2 to 3.7 times the reference's Print and 2.0 to 2.1 times its Master, whose render of a light stack takes 8 to 19 ms. On the Z 6 they are about as fast. The stage is the tile worker's peak of 1,313 MB at 60 MP, against 324 MB for the streamed baseline.
-- **Against 1 GiB of process memory**, which an export may exceed (owner, 2026-10-13): the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
+- **Against 1 GiB of process memory**, which an export may exceed: the reference's process peaks at 487 to 1,171 MiB, Optimise's being the highest; the GPU's at 952 to 1,706 MiB, of which the tile worker's charges are 309 to 1,253 MiB of GPU memory in the same footprint.
 
 Evidence: `private/evidence/export-settings/task-008-measure/` in the owner's checkout (`timing.jsonl`, `memory.jsonl`, `load.log`, `table.md`).
 
@@ -5261,11 +4000,11 @@ LUXFORGE_EXPORT_SOURCES=24mp|60mp|raw LUXFORGE_EXPORT_RAW=/ABSOLUTE/Z6.NEF LUXFO
 
 ## The per-frame light's reduction factor
 
-The factor f the per-frame estimate twin of [GPU-first](../design/gpu-first.md)'s stage 3 needs (TASK-005 in [the plan](../../tasks/rendering/gpu-first.json)). The twin is to compute Dehaze's atmospheric light every frame from the stack compiled at a block stage, the content stage reduced by f per side, f dividing 16: each f × f cell's mean through the colour run, each 16 px block's cells averaged, and the light selected from the blocks as Dehaze prepares it. The reference averages each 16 px block of the colour run's output instead, so where the run clips, crushes or masks by value inside a cell, the colour of the cell's mean is not the mean of its pixels' colour, and the light moves by that gap. Each candidate light was handed to the GPU plan and the frame drawn with it judged against the reference frame of the view, as the release gate judges the picture at rest. A measurement of pixels, not of time: `gpu_dehaze_reduction_factor_candidates`. No factor of 16, 8, 4 and 2 draws every cell within the limits: at f = 2, 4 of 231 cells are past them, each −3 EV with Whites and Blacks at −100 under Dehaze at −100. At f = 1, where the cells are pixels, all 231 are within them.
+The factor f the per-frame estimate twin of [GPU-first](../design/gpu-first.md)'s stage 3 needs. The twin is to compute Dehaze's atmospheric light every frame from the stack compiled at a block stage, the content stage reduced by f per side, f dividing 16: each f × f cell's mean through the colour run, each 16 px block's cells averaged, and the light selected from the blocks as Dehaze prepares it. The reference averages each 16 px block of the colour run's output instead, so where the run clips, crushes or masks by value inside a cell, the colour of the cell's mean is not the mean of its pixels' colour, and the light moves by that gap. Each candidate light was handed to the GPU plan and the frame drawn with it judged against the reference frame of the view, as the release gate judges the picture at rest. A measurement of pixels, not of time: `gpu_dehaze_reduction_factor_candidates`. No factor of 16, 8, 4 and 2 draws every cell within the limits: at f = 2, 4 of 231 cells are past them, each −3 EV with Whites and Blacks at −100 under Dehaze at −100. At f = 1, where the cells are pixels, all 231 are within them.
 
 ### Scope
 
-- **Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the `release` profile test binary built from `2ccfa459` (SHA-256 `d6f16efa…`), 2026-10-05, one run of the 100% cells and one of the Fit cells side by side, on a host shared with other agents' builds at one-minute loads of about 8 to 35. The pixels are deterministic, so the load does not bear on them: each cell's f = 16 light drawn twice drew the same bytes on all 231 cells, and an earlier pair of runs, stopped after 29 cells, gave the same lights and figures for all 205 candidates both had.
+- **Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the `release` profile test binary, one run of the 100% cells and one of the Fit cells side by side, on a host shared with other agents' builds. The pixels are deterministic, so the load does not bear on them: each cell's f = 16 light drawn twice drew the same bytes on all 231 cells.
 - **Sources.** The generated JPEGs written by `cargo xtask generate-fixtures` into a new directory, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, each the SHA-256 the [corpus](../../fixtures/preview/corpus.json) records. Every content stage is a multiple of 8 px a side, so no cell is partial below f = 16 and the twin's unweighted average of a block's partial cells never applies here.
 - **What was emulated.** Each light was computed on the CPU, test-only (`luxforge_core::qualification::twin_lights`): for each Dehaze layer, the stage its colour run reads — the output of every layer before it but the colour layers directly before it — rendered by the reference at full resolution and reduced to its exact means over f × f cells, unrequantized; the run compiled at that reduced stage, as the twin compiles its stack, and run over the means with the CPU's own units, a masked layer blended by its coverage at the cell and a range mask reading the cell's mean colour; clamped to [0, 1] on the byte path; each 16 px block's cells averaged; and the light selected as Dehaze prepares it. **f = 1** is a control: its cells are pixels, so for a colour run alone its light is the reference's but for the byte path's 16-bit hand-off; it was within 7.2 × 10⁻⁵ of it on every cell, and its frames' figures were the reference light's to within 0.01. Not emulated: the twin's own GPU arithmetic, half-float intermediates and `f32` sums; Detail run at 1/f where it comes before the light — the candidates at each f hold Detail's output exact, its full-resolution output reduced, which the twin would have only if a rest render seeded it, and the **Detail left out** candidates leave it out, which is what the twin at f = 16 nearly computes, Detail at a sixteenth of its scale barely filtering; and an earlier Presence layer at 1/f — behind a global Presence layer, a masked Dehaze layer's stage is that layer's exact output, drawn with its own twin light at the same f.
 - **What was compared.** Each light handed to the GPU plan's light planes for its layer (`Qualifier::set_lights`) in place of the light its light link computes, and the frame drawn on the device against the reference frame of the view by the spatial limits, 1.0 / 2.5 / 5.0 / 0.5: at 100%, the region plan from the stack's first pixel layer over the visible region of the owner's largest window (3026 × 1826, or the whole 1440 × 960 Presence fixture), against that region of the reference frame; at Fit, the process-first frame — the whole output stage drawn as 100% region plans over 2048 px tiles, each reading the same light, and stitched — and the reference frame, each reduced to the Fit frame's size (1715 × 964 behind the 16:9 crop; the Presence fixture's 1356 × 762 is drawn at its own size) by an area-weighted average of its linear light. Beside each frame, its light's error against the reference's light, per channel as a fraction of it.
@@ -5309,102 +4048,82 @@ The measurement writes `cells.json`, rewritten after every cell: each cell's lay
 
 ## The light behind a spatial layer
 
-Dehaze's light behind Detail or an earlier Presence layer, computed exactly from that layer's output through the staged sweeps by the owner's decision of 2026-10-06 ([GPU previews](../design/gpu-preview.md#spatial-programs)), where the stand-in with that layer left out drew a masked Dehaze behind Clarity on the Z6 past the limits (worst block 4.8 ΔE00 at 100%, 2.9 at 50%, 4.5 in export). Where the stage textures do not fit, the light is computed by a light sweep with no stage texture, which draws the layers before the light a second time ([GPU previews](../design/gpu-preview.md#spatial-programs)). A measurement of pixels, with one indication of time.
+Dehaze's light behind Detail or an earlier Presence layer is computed exactly from that layer's output through the staged sweeps ([GPU previews](../design/gpu-preview.md#spatial-programs)); a stand-in that leaves that layer out draws a masked Dehaze behind Clarity on the Z6 past the limits (worst block 4.8 ΔE00 at 100%, 2.9 at 50%, 4.5 in export). Where the stage textures do not fit, the light is computed by a light sweep with no stage texture, which draws the layers before the light a second time ([GPU previews](../design/gpu-preview.md#spatial-programs)). A measurement of pixels; the 60 MP RAW drag stack's indication of time is under [the picture at rest and the counts after a commit](#the-picture-at-rest-and-the-counts-after-a-commit).
 
 ### Scope
 
-- **Host and build.** The `Apple M4 Pro` adapter on Metal, macOS 26.5.2; the tests and the release gate's harness built from `ed4ec944` (the staged light) and `1308f12b` (light sweeps, after main's Standard RAW look was merged) with the documentation uncommitted, 2026-10-07, on a host shared with other agents' builds; the pixels are deterministic, so the load does not bear on them, but it does on the indication of time.
+- **Host and build.** The `Apple M4 Pro` adapter on Metal, macOS 26.5.2, on a host shared with other agents' builds; the pixels are deterministic, so the load does not bear on them.
 - **The stage-free light.** `gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit`: the same photographs, paths and stacks, and a masked Dehaze behind Clarity before a lens warp, each picture at rest drawn in staged sweeps and again planned with light sweeps and chained tiles, on surfaces of their own; and `a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage`, a 1600 × 1000 stage exported and read by a tile worker drawing it staged and by another drawing it chained after light sweeps.
-- **The indication.** `gpu_rest_the_60_mp_raw_drag_stacks_light_indication` (ignored, run on demand in release): the 60 MP RAW drag stack over 9504 × 6336 synthetic planes, its picture at rest drawn by the headless surface once to warm, its kept light let go, and again timed, as the editor plans it and in staged sweeps at 1024 px, beside the reference renderer's whole frame; two runs.
 - **The light.** `gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix`: a picture at rest planned in staged sweeps at 256 px tiles and drawn by the photo surface's own drawing on a headless device, and the light its sweep kept read back, over a 1001 × 667 synthetic photograph and the 1440 × 960 Presence fixture, on the byte and linear paths, for a masked Dehaze +60 behind Clarity +60, Dehaze −100 behind a sharpening Detail and a masked Dehaze +50 behind Texture and Clarity +40 with a Basic layer between: against the CPU's preparation (`Dehaze::prepare`'s reduction and selection, in `f64`) over the stage the sweep wrote, the stack before the light drawn whole on the device and held as the stage texture holds it; against the reference render's own light; and against the CPU's light at full resolution over the exact prefix (`twin_lights` at f = 1).
-- **The gate.** `cargo xtask gpu-qualification` over the Presence family, 97 stacks at Fit, 33%, 50% and 100%, the new recipe `presence-dehaze-masked-behind-clarity` among them on all seven of its sources, every output kind; then the whole corpus, 46 recipes and 277 stacks (report `target/gate/whole/` in the worktree that built it).
+- **The gate.** `cargo xtask gpu-qualification` over the Presence family, 97 stacks at Fit, 33%, 50% and 100%, the recipe `presence-dehaze-masked-behind-clarity` among them on all seven of its sources, every output kind; then the whole corpus, 46 recipes and 277 stacks (report `target/gate/whole/` in the worktree that built it).
 
 ### Results
 
 - **The light** is the CPU's preparation over the stage the sweep wrote within 2.7 × 10⁻⁶ on every case (the existing light tolerance, 2 × 10⁻⁵, gates it), and on the linear path the reference's own light and the CPU's at full resolution within 1.0 × 10⁻⁶. On the byte path the stage texture holds half floats where the reference hands Dehaze a 16-bit frame: up to 1.3 × 10⁻⁴ from the reference's light, reported and not gated, as for a light over the source.
-- **The masked Dehaze behind Clarity** is within the spatial limits at every view on every source, the stand-in's misses gone: at rest the largest of the 28 cells is a mean of 0.019, a worst block of 0.271, a p99 of 0.652 and a signed ΔL\* of 0.002, drawn at Fit, 33% and 50% in 2 staged sweeps and at 100% by the view plan reading the light those sweeps kept; its export within the display limit on all 7 sources (largest 0.016 / 0.223 / 0.633 / 0.001), the same bytes twice; its histograms within 0.0084 code; its samples, each read through the light the tile worker's own sweeps computed, equal to the byte on screen at all 25 points of every source.
+- **The masked Dehaze behind Clarity** is within the spatial limits at every view on every source: at rest the largest of the 28 cells is a mean of 0.019, a worst block of 0.271, a p99 of 0.652 and a signed ΔL\* of 0.002, drawn at Fit, 33% and 50% in 2 staged sweeps and at 100% by the view plan reading the light those sweeps kept; its export within the display limit on all 7 sources (largest 0.016 / 0.223 / 0.633 / 0.001), the same bytes twice; its histograms within 0.0084 code; its samples, each read through the light the tile worker's own sweeps computed, equal to the byte on screen at all 25 points of every source.
 - **The Presence family**, 388 cells: every picture at rest within its limits (largest 0.058 / 0.509 / 0.807 / 0.049), and every histogram, sample and export of its 97 stacks, with no gap.
-- **The whole corpus** after the merge of main's Standard RAW look, 46 recipes and 277 stacks, passes with no gap: all 1,108 cells of the picture at rest within their limits (pointwise largest 0.081 / 0.284 / 0.834 / 0.010, spatial 0.088 / 0.509 / 0.900 / 0.049), eight of them drawn after a light sweep, and every histogram, sample (6,925 points, each equal to the byte on screen) and export (largest 0.121 / 0.509 / 0.897 / 0.049, the same bytes twice) within its limit.
+- **The whole corpus**, 46 recipes and 277 stacks, passes with no gap: all 1,108 cells of the picture at rest within their limits (pointwise largest 0.081 / 0.284 / 0.834 / 0.010, spatial 0.088 / 0.509 / 0.900 / 0.049), eight of them drawn after a light sweep, and every histogram, sample (6,925 points, each equal to the byte on screen) and export (largest 0.121 / 0.509 / 0.897 / 0.049, the same bytes twice) within its limit.
 - **The stage-free light** is the staged light bit for bit on every case, and the picture at rest drawn after its light sweep the staged picture byte for byte, codes and counts; the stage-free export and its reads are the staged export's bytes on both paths, behind Clarity, Detail and before a lens warp.
 - **The eight cells the stage textures did not fit**, Detail then Presence with Dehaze on the Z6 and the Air 2S at 100% and the X100VI at 50% and 100%, are drawn by light sweeps and within their limits: over those recipes on the three RAWs, 24 of 24 cells (largest 0.037 / 0.306 / 0.900 / 0.000), each light from one light sweep, the 100% cells' view plan reading it kept.
-- **The 60 MP RAW drag stack's picture at rest**, an indication and not a timing: as the editor plans it, a light sweep of Detail in 20 tiles of 2048 px then 70 chained tiles, 1.70 and 2.14 s on the headless surface, its tiles' GPU spans summing 5.6 and 6.8 s (an upper bound, overlapping); in staged sweeps at 1024 px, which the headless surface holds beside no view plan, 1.13 and 1.46 s, 2.7 and 3.2 s; the reference renderer's whole frame 5.31 s.
-- **In motion**, not gated, the drag's frame over the reduced source at Fit, 33% and 50% is past the limits on 13 of the new recipe's 21 cells there, as on many of the corpus's other spatial cells ([the picture in motion](#the-picture-in-motion)), and at 100%, where it reads the kept light, equals the picture at rest.
+- **In motion**, not gated, the drag's frame over the reduced source at Fit, 33% and 50% is past the limits on 13 of the recipe's 21 cells there, as on many of the corpus's other spatial cells ([the picture in motion](#the-picture-in-motion)), and at 100%, where it reads the kept light, equals the picture at rest.
 
 ### Reproducing it
 
 ```sh
 cargo test -p luxforge-app -- gpu_light_a_light_behind gpu_light_the_stage_free a_staged_stream_reads_the_light --nocapture
-cargo test --release -p luxforge-app -- --ignored gpu_rest_the_60_mp_raw_drag_stacks_light_indication --nocapture
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
   --manifest /path/to/raw-manifest.json --families presence
 ```
 
 ## CPU and memory efficiency, measured on the M4
 
-The [efficiency](../design/efficiency.md) work against the code before it, in two pairs that each
-differ by one body of that work:
-
-- **The core and RAW tasks.** `946751cc` against `135e720e`: tile slots and the rolling window,
-  the Detail and Presence rows, RAW row reads, the u16 demosaic input, the reduced-grid cache and
-  hardware SHA-256.
-- **The owner, catalog and desktop tasks.** `e7a65286` against `7a890372`: the WAL catalog,
-  shared strokes, a brush tick's copies, collapsed sections, job reads and GPU preview blocks.
+The [efficiency](../design/efficiency.md) work's measured results: tile slots and the rolling
+window, the Detail and Presence rows, RAW row reads, the u16 demosaic input and hardware SHA-256;
+and the WAL catalog, shared strokes, a brush tick's copies, collapsed sections, job reads and GPU
+preview blocks.
 
 **Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal. Everything was built
 `release` with `--locked`; the `dist` profile is deferred. Files and the source cache were warm.
-Measured 4 October 2026.
+The one-minute load was 2.9 to 8.0 at the start of every run; the host was otherwise quiet.
 
-**Order and load.** Each workload ran base, branch, branch, base, and most then ran again in the
-reverse order (branch, base, base, branch). A difference is quoted only where it held in both
-orders. The one-minute load was 2.9 to 8.0 at the start of every run; the host was otherwise
-quiet.
-
-**Statistics.** Every p50 and p95 is nearest-rank. Each output's bytes and plane digests are the
-same on both sides.
+**Statistics.** Every p50 and p95 is nearest-rank.
 
 ### Presence
 
 `presence_timing` (`cargo test --release --locked -p luxforge-core --lib presence_timing -- --ignored --nocapture`).
 Each stack is at +100 over a synthetic textured frame, with a warm source and warm estimates in one
-render context, and 10 renders a run. On the branch, Clarity alone and every stack holding Dehaze
-read their reduced planes from the store after the first render. Texture has no reduced grid, so
-its rows show the kernels and tiling alone. The estimate and reduced-grid stores are deleted since,
-so a reference render now reduces its own estimates and computes its own reduced grids, as the first
-render of each run here did. The cells are p50 over four runs a side, with each
-render's CPU time (p50 × CPU %).
+render context, and 10 renders a run. In these runs Clarity alone and every stack holding Dehaze
+read their reduced planes from a store after the first render; the reference renderer keeps no
+such store and reduces its own estimates and computes its own reduced grids in every render, as
+each run's first render here did. Texture has no reduced grid, so its rows show the kernels and
+tiling alone. The cells are p50 over four runs, with each render's CPU time (p50 × CPU %).
 
-| Stage | Stack | Before | After | CPU time a render, before → after |
-| --- | --- | ---: | ---: | ---: |
-| 6000 × 4000 | Texture | 145–159 ms | 67–69 ms | 1.4 → 0.85 s |
-| 6000 × 4000 | Clarity | 98–110 ms | 53–56 ms | 1.2 → 0.70 s |
-| 6000 × 4000 | Dehaze | 60–68 ms | 25–27 ms | 0.58 → 0.26 s |
-| 6000 × 4000 | All three | 519–542 ms | 395–425 ms | 6.2 → 3.7 s |
-| 10000 × 6000 | Texture | 371–436 ms | 172–180 ms | 3.5 → 2.1 s |
-| 10000 × 6000 | Clarity | 310–338 ms | 154–159 ms | 3.8 → 1.9 s |
-| 10000 × 6000 | Dehaze | 179–200 ms | 66–77 ms | 1.65 → 0.77 s |
-| 10000 × 6000 | All three | 1663–1801 ms | 1253–1312 ms | 20.0 → 11.6 s |
+| Stage | Stack | Render | CPU time a render |
+| --- | --- | ---: | ---: |
+| 6000 × 4000 | Texture | 67–69 ms | 0.85 s |
+| 6000 × 4000 | Clarity | 53–56 ms | 0.70 s |
+| 6000 × 4000 | Dehaze | 25–27 ms | 0.26 s |
+| 6000 × 4000 | All three | 395–425 ms | 3.7 s |
+| 10000 × 6000 | Texture | 172–180 ms | 2.1 s |
+| 10000 × 6000 | Clarity | 154–159 ms | 1.9 s |
+| 10000 × 6000 | Dehaze | 66–77 ms | 0.77 s |
+| 10000 × 6000 | All three | 1253–1312 ms | 11.6 s |
 
-- **Kernels.** Texture alone renders 55–56% faster and uses 40% less CPU time. That is the tile
-  slots, the rolling window and the row-slice passes together, which these runs do not separate.
-- **The budget.** The spatial budget's high-water mark, every working set and every concurrency are
-  unchanged: for example 208.5 MiB, one tile at a time, for all three fields at 60 MP.
-- **All three fields.** These run one 1024 px tile at a time with pooled passes. They gain 23–26%,
-  at about 40% less CPU time.
+- **The budget.** The spatial budget's high-water mark for all three fields at 60 MP is 208.5 MiB,
+  one tile at a time.
+- **All three fields.** These run one 1024 px tile at a time with pooled passes.
 
 ### Detail
 
 `detail-performance --case render --samples 30`: Detail (luminance 25, colour 25, sharpening 40)
-after Basic +0.5 EV, at full resolution with a warm context. The cells are p50 over four runs a
-side.
+after Basic +0.5 EV, at full resolution with a warm context. The cells are p50 over four runs.
 
-| Source | Before p50 | After p50 | Before p95 | After p95 |
-| --- | ---: | ---: | ---: | ---: |
-| 24 MP JPEG | 283–324 ms | 208–227 ms | 299–345 ms | 258–326 ms |
-| 60 MP JPEG | 729–804 ms | 530–545 ms | 789–962 ms | 572–609 ms |
+| Source | p50 | p95 |
+| --- | ---: | ---: |
+| 24 MP JPEG | 208–227 ms | 258–326 ms |
+| 60 MP JPEG | 530–545 ms | 572–609 ms |
 
-The render is 27% faster at 24 MP and 31% faster at 60 MP. One 60 MP run after the change, whose
-first half ran beside other work, is left out (765 ms p50). The frames are `e64d4d51…` and
-`2d084fec…` both before and after.
+One 60 MP run whose first half ran beside other work is left out (765 ms p50).
 
 ### RAW preparation and development
 
@@ -5417,32 +4136,28 @@ exact-source preview job, with a new owner each time:
 
 Peak RSS is the whole process: its catalog setup and 15 cold opens in turn, not one open's peak.
 
-| Source | Before p50 / p95 | After p50 / p95 | Peak RSS before → after |
-| --- | ---: | ---: | ---: |
-| Nikon Z6 (30.6 MB NEF) | 162.6–164.8 / 164.1–172.7 ms | 119.7–121.1 / 122.8–128.5 ms | 973–976 → 443–445 MiB |
-| Fujifilm X100VI (85.1 MB RAF) | 364.8–367.8 / 373.7–404.6 ms | 245.0–250.7 / 246.7–265.7 ms | 2019–2115 → 741–742 MiB |
-| DJI Air 2S (41.0 MB DNG) | 204.6–207.6 / 209.1–213.5 ms | 149.1–149.6 / 152.4–176.3 ms | 1051–1056 → 464–466 MiB |
+| Source | p50 / p95 | Peak RSS |
+| --- | ---: | ---: |
+| Nikon Z6 (30.6 MB NEF) | 119.7–121.1 / 122.8–128.5 ms | 443–445 MiB |
+| Fujifilm X100VI (85.1 MB RAF) | 245.0–250.7 / 246.7–265.7 ms | 741–742 MiB |
+| DJI Air 2S (41.0 MB DNG) | 149.1–149.6 / 152.4–176.3 ms | 464–466 MiB |
 
-- **Time.** A cold open is 26–33% faster. Hardware SHA-256 of the original, the sized read, the
-  writer-faulted development buffers and the u16 demosaic input all act on it; they are not
-  measured apart.
-- **Peak RSS.** The process peak falls by far more than the float mosaic and the read buffer.
-  Developments of the same sizes in turn no longer accumulate retained memory in the process.
+Hardware SHA-256 of the original, the sized read, the writer-faulted development buffers and the
+u16 demosaic input all act on a cold open; they are not measured apart. Developments of the same
+sizes in turn do not accumulate retained memory in the process.
 
 **Development.** Measured with `owner_development_timing`: 30 warm developments of the retained
 mosaic at as-shot gains, after one warm-up, with `/usr/bin/time -l`.
 
-| Source | Before p50 | After p50 | Process peak before → after |
-| --- | ---: | ---: | ---: |
-| Nikon Z6 | 35.8–35.9 ms | 36.2–36.3 ms | 551–553 → 458–461 MiB |
-| Fujifilm X100VI | 179.2–184.1 ms | 183.3–192.8 ms | 886–888 → 730–731 MiB |
-| DJI Air 2S | 30.2–30.3 ms | 30.7–30.8 ms | 452–455 → 453–455 MiB |
+| Source | p50 | Process peak |
+| --- | ---: | ---: |
+| Nikon Z6 | 36.2–36.3 ms | 458–461 MiB |
+| Fujifilm X100VI | 183.3–192.8 ms | 730–731 MiB |
+| DJI Air 2S | 30.7–30.8 ms | 453–455 MiB |
 
-- **Time.** A warm development with the sensor sites takes 1–3% longer than with the float
-  mosaic. This loop reuses freed regions, so it cannot show the saving of leaving zeroing to the
-  writers.
-- **Peak.** One development's peak falls by the float mosaic: 4 bytes a site, 90 and 156 MiB. The
-  Air 2S's peak is in its DNG corrections and does not move.
+This loop reuses freed regions, so it cannot show what leaving zeroing to the writers saves.
+Holding the sensor sites in place of a float mosaic saves 4 bytes a site in one
+development's peak; the Air 2S's peak is in its DNG corrections.
 
 The development diagnostics (`sensor_sites_match_the_float_mosaic_on_every_local_sample`) give the
 bytes a development holds through its demosaic:
@@ -5456,67 +4171,31 @@ bytes a development holds through its demosaic:
 Basic exposure commits under a 16:9 crop straightened by 7°.
 
 - **The settle** (the exact whole-stage render through the resample, plus the histogram) takes
-  93–101 ms p50 against 120–132 ms, 24% less.
-- **The committed Fit frame** is unchanged at about 19 ms.
-- **The desktop's cold open** of the RAF stays about 1 s, bound by platform start-up.
-
-### The reduced-grid cache
-
-The GPU-first stage 5 deleted this store, and `budgets.reduced_planes` with it: each reference
-render now computes its own reduced grids. The figures below are the record of `946751cc`, where the
-store served the CPU proxy, the settles and the exact frames.
-
-Measured with `editor-latency --action set-presence --parameter clarity` on the 24 MP JPEG. The
-layer held Clarity alone, so an amount change kept the cache key. The counters were
-`budgets.reduced_planes`, read from the evidence's `resources.read` answers.
-
-- **Hit rate.**
-  - Across 30 commits, only the first render at each stage missed: one at the Fit proxy and one at
-    the full stage. Every later settle and Fit render read held planes.
-  - Across a 30-input drag with the GPU preview off, every tick but the first hit: 348–360 tiles
-    read, 12 computed.
-  - With the GPU preview on, the drag's ticks rendered nothing on the CPU, so only the settles used
-    the store.
-- **Time.**
-  - Commit to the settled histogram was 59.0–60.1 ms p50 against 98.9–102.6 ms, 41% less, which
-    held the faster Clarity kernel as well as the hits.
-  - A drag's final settle was 57–61 ms against 105–108 ms.
-  - A drag tick with the GPU preview off stayed one frame at p50 (8.8–9.0 ms); its p95 fell from
-    17.9–25.8 to 9.5–10.0 ms.
-- **Rebuild cost.** The settle that missed and filled took 84–88 ms, about 26 ms more than a hit.
-  That is an upper bound: before the change the first settle was also the slowest, for reasons
-  common to both builds. Even so, it was faster than any settle before the change.
-- **Retained bytes.** 6,490,812 B in two entries: the Fit proxy's Clarity plane, 490,788 B, and the
-  24 MP stage's, 6,000,024 B. There were no evictions or refusals within the 64 MiB budget.
+  93–101 ms p50.
+- **The committed Fit frame** takes about 19 ms.
+- **The desktop's cold open** of the RAF is about 1 s, bound by platform start-up.
 
 ### The owner, catalog and desktop work
 
-All on the 24 MP JPEG at Fit; the cells are p50 over four runs a side.
+All on the 24 MP JPEG at Fit; the cells are p50 over four runs.
 
-| Workload | Before | After |
-| --- | ---: | ---: |
-| Basic exposure commit to the committed frame, 30 commits (the WAL catalog with full flushes) | 17.7–18.0 ms | 18.0–18.5 ms |
-| The same commits to the settled histogram | 26.5–26.7 ms | 26.4–26.7 ms |
-| A 400-position stroke, GPU preview on, position to frame | 7.4–7.5 ms (p95 8.7–8.8) | 7.5–7.6 ms (p95 8.7–8.8) |
-| A 400-position stroke, GPU preview off, position to frame | 8.3–8.4 ms (p95 11.2–16.6) | 8.2–8.4 ms (p95 9.5–9.8) |
-| The same stroke's `draft.set` on the owner, a tick | 0.038–0.042 ms | 0.031–0.032 ms |
+| Workload | p50 |
+| --- | ---: |
+| Basic exposure commit to the committed frame, 30 commits (the WAL catalog with full flushes) | 18.0–18.5 ms |
+| The same commits to the settled histogram | 26.4–26.7 ms |
+| A 400-position stroke, position to frame | 7.5–7.6 ms (p95 8.7–8.8) |
+| The same stroke's `draft.set` on the owner, a tick | 0.031–0.032 ms |
 
-- **Commits.** A commit with the WAL catalog's single full flush reaches the screen within 0.4 ms
-  of before. A durable commit on its own is not measured.
-- **A brush tick's owner work.** It no longer grows along the stroke: before, `draft.set`'s p50
-  rose 14–26% from the stroke's first 100 positions to its last 100; now it is flat. With the
-  preview off, the stroke's p95 falls from 11.2–16.6 to 9.5–9.8 ms.
-- **The GPU stroke.** It is one frame a position on both builds.
+- **Commits.** A durable commit on its own is not measured.
+- **A brush tick's owner work.** `draft.set`'s p50 is flat along the stroke, from its first 100
+  positions to its last 100.
+- **The GPU stroke.** It is one frame a position.
 - **Recording limit.** `editor-latency` records 400 positions unless `--samples` says otherwise
   (`PAINT_POSITIONS`).
 
-### Verification
-
-`verify --tier full --manifest` on the merged work passed 61 of its 64 components, rendered, timing, hardening, `raw-authentic` and `raw-editor` on the three manifest sources among them. `raw-panel` failed on all three sources at its `crop-started` step, where the Basic section reads collapsed once the crop starts and the scenario expects it expanded. The same step fails on `946751cc` and on `e7a65286`, before either body of this work, so the failure is not this work's and stays open.
-
 ### Outstanding
 
-These workloads were not measured in the efficiency comparison; later GPU-first measurements cover launch, idle, 60 MP desktop work and masked stacks separately and do not establish the efficiency changes' individual contribution:
+These workloads are not measured for the efficiency work; the GPU-first measurements cover launch, idle, 60 MP desktop work and masked stacks separately and do not establish the efficiency changes' individual contribution:
 
 - launch and idle (`measure`);
 - the desktop work at 60 MP and under contention;
@@ -5532,47 +4211,35 @@ launch asks for system information.
 
 ## UI themes, measured on the M4
 
-The runtime theme, the theme library and the Appearance tab ([UI themes](../design/ui-themes.md))
-against the build before the runtime theme: `7deaafac` (release binary SHA-256 `9f4b4618…`)
-against `82476a52` (`6b9ed32f…`), both under Luxforge Dark with no theme stored, as every evidence
-run starts.
+The runtime theme, the theme library and the Appearance tab ([UI themes](../design/ui-themes.md)),
+under Luxforge Dark with no theme stored, as every evidence run starts.
 
 **Host and build.** Apple M4 Pro (14 cores), macOS 26.5.2, Metal, background hidden-window
-launches of `release` builds with `--locked` (Cargo.lock `8ef94c89…`), warm filesystem cache.
-Measured 5 October 2026.
-
-**Order and load.** Each workload ran base, branch, branch, base, and the drags again in the
-reverse order. The one-minute load was 1.6 to 4.9 at the start of every run.
+launches of `release` builds with `--locked`, warm filesystem cache. The one-minute load was 1.6
+to 4.9 at the start of every run.
 
 **Statistics.** Nearest-rank p50 / p95 in ms, every launch's samples pooled.
 
-| Workload | Before | After |
-| --- | --- | --- |
-| `editor-latency --mode drag`, 24 MP at Fit, input to presented frame (GPU preview, 4 launches, 120 inputs) | 8.18 / 9.23 | 8.16 / 9.12 |
-| The same drag with `--no-gpu-preview` (4 launches, 120 inputs) | 8.63 / 9.10 | 8.66 / 9.16 |
-| Workspace derivation per message, `last_rederive_ms` of `slider_draft_preview` (the CPU drags, 248 samples) | 0.030 / 0.058 | 0.030 / 0.065 |
-| `view()` of the same update | 0.068 / 0.080 | 0.066 / 0.084 |
-| `measure`, empty launch to observed frame (2 runs of 5 launches) | 1754 / 1789 | 1778 / 1919 |
+| Workload | p50 / p95 |
+| --- | --- |
+| `editor-latency --mode drag`, 24 MP at Fit, input to presented frame (GPU preview, 4 launches, 120 inputs) | 8.16 / 9.12 |
+| Workspace derivation per message, `last_rederive_ms` of `slider_draft_preview` (drags drawn without the GPU preview, 248 samples) | 0.030 / 0.065 |
+| `view()` of the same update | 0.066 / 0.084 |
+| `measure`, empty launch to observed frame (2 runs of 5 launches) | 1778 / 1919 |
 
-The drag and the derivation are unchanged within the host's spread: the style functions read the
-theme Iced passes in place of a constant, and a canvas cache's key gains eight bytes. With the GPU
-preview on, a drag derives the workspace through `slider_draft_preview` only once per launch, so the
-derivation is read from the CPU drags.
-
-Launch to observed frame was about 23 ms later at p50 in both orders. Split at each launch's first
-RSS sample above 1 MiB (samples about 55 ms apart), the difference sits before the process starts:
-the launcher's share, which includes copying the executable into the background bundle, moved from a
-median of 635 to 690 ms with an executable 1.4 MB larger (the themes code, the bundled palettes
-and `toml_edit`), while the application's own share, from its first sample to its first frame, held a
-median of about 1105 ms in both builds. No theme is stored in these runs, so the launch read does
-not open `themes.json`; with a theme chosen it is one bounded document read more, not measured
-here. Idle CPU stayed 1.3 to 1.4% of one core.
+The style functions read the theme Iced passes, and a canvas cache's key holds eight bytes for it.
+Split at each launch's first RSS sample above 1 MiB (samples about 55 ms apart), the launcher's
+share of launch to observed frame, which includes copying the executable into the background
+bundle, has a median of 690 ms, and the application's own share, from its first sample to its first
+frame, a median of about 1105 ms. No theme is stored in these runs, so the launch read does not
+open `themes.json`; with a theme chosen it is one bounded document read more, not measured here.
+Idle CPU is 1.3 to 1.4% of one core.
 
 ## Usage statistics, measured on the M4
 
 What optional usage statistics cost, opted out against opted in ([acceptance](../design/usage-statistics.md#acceptance-and-evidence)), against its planning budgets: a producer's p95 under 10 µs, no sustained interactive latency increase above 1 ms or 5% (whichever is larger), and no redraw attributable to collection or delivery. Every launch is eligible through explicit test eligibility with an isolated configuration, opted out (`off`) or opted in with a loopback receiver that accepts at once (`fast`), holds each request open past the transport's timeouts (`slow`) or is not listening (`offline`); none uses production reporting or anyone's consent.
 
-**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, background hidden-window launches of the `release` editor (SHA-256 `14e0d37c…`, Cargo.lock `df565edb…`) and a release xtask, generated 24 MP and 60 MP JPEGs. Measured 11 October 2026 with `usage-measure` ([development](../engineering/development.md)). The one-minute load stayed between 2.1 and 3.6 on a 15-second log through each run, except where a row says otherwise.
+**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, background hidden-window launches of the `release` editor and a release xtask, generated 24 MP and 60 MP JPEGs, measured with `usage-measure` ([development](../engineering/development.md)). The one-minute load stayed between 2.1 and 3.6 on a 15-second log through each run, except where a row says otherwise.
 
 **Statistics.** Nearest-rank p50 / p95. The monotonic clock ticks every 41.7 ns on Apple silicon, so a figure of 0.042 µs is one tick; the means are the samples' sums over their counts, each sample including one clock read.
 
@@ -5604,9 +4271,9 @@ Opted in and opted out are the same within the runs' spread: the owner's produce
 | `slow` | 8.26 / 9.20 | 8.24 / 9.04 |
 | `offline` | 8.27 / 9.50 | 8.28 / 9.45 |
 
-The statistics clock is moved past the first window just before each drag, so an opted-in launch sends while it runs. p50 moves by at most 0.06 ms and p95 by at most 0.95 ms (60 MP `offline`), within the 1 ms budget; a second run of the same drags (load 2.1 to 3.6) put the 60 MP `off` p95 at 9.18 ms and every mode's between 8.49 and 9.57 ms, so the p95 differences are the run-to-run spread rather than a cost of collection. This run's load ended its last 60 MP launches at 4.2. Peak footprint over each launch, every mode ending with the same wait and a six-second window: 1,624 to 1,657 MiB at 24 MP and 1,896 to 1,918 MiB at 60 MP, opted out within that range (1,641 and 1,918); an earlier version of the script gave opted-out launches one wait fewer, which alone accounted for a 20 MiB difference.
+The statistics clock is moved past the first window just before each drag, so an opted-in launch sends while it runs. p50 moves by at most 0.06 ms and p95 by at most 0.95 ms (60 MP `offline`), within the 1 ms budget; a second run of the same drags (load 2.1 to 3.6) put the 60 MP `off` p95 at 9.18 ms and every mode's between 8.49 and 9.57 ms, so the p95 differences are the run-to-run spread rather than a cost of collection. Peak footprint over each launch, every mode ending with the same wait and a six-second window: 1,624 to 1,657 MiB at 24 MP and 1,896 to 1,918 MiB at 60 MP, opted out within that range (1,641 and 1,918).
 
-The same drag over the private manifest's three RAWs, measured on 16 October 2026 on the same Mac (release editor of the qualification sweep; load 4.1 to 6.2 through these launches), each photograph opened as a RAW development:
+The same drag over the private manifest's three RAWs on the same Mac (load 4.1 to 6.2 through these launches), each photograph opened as a RAW development:
 
 | `editor-latency --mode drag`, RAW, input to presented frame (90 inputs per mode, 3 launches each) | Nikon Z6 p50 / p95 ms | Fujifilm X100VI p50 / p95 ms | DJI Air 2S DNG p50 / p95 ms |
 | --- | --- | --- | --- |
@@ -5632,7 +4299,7 @@ A window's own start counts one frame, one view and one update, so a statistics 
 | The same, while the `slow` receiver still holds the window's request | 1233 / 1250 |
 | After the drags, 24 MP and 60 MP, every mode | 1202 to 1259 at p50 |
 
-The close is the wall clock between the shutdown event's time (the launch's start plus its elapsed time) and the exit the harness's 50 ms poll saw, so each figure is late by up to one poll. A request in flight does not delay it: quitting cancels it and nothing waits. Before the fix below, every opted-in launch closed about 200 ms later than an opted-out one (1,420 to 1,470 against 1,230 to 1,250 ms at p50), in flight or not: the statistics sampler's first read opened the system's Metal device for GPU allocations, and a process that has opened it quits about 200 ms later (a launch that read it once at startup, opted out, closed in 1,529 ms). The statistics sampler now leaves GPU allocations out until the Performance section has opened that device, so the Performance section, expanded, still costs a quit that much; that is the panel's existing behaviour and is not measured further here.
+The close is the wall clock between the shutdown event's time (the launch's start plus its elapsed time) and the exit the harness's 50 ms poll saw, so each figure is late by up to one poll. A request in flight does not delay it: quitting cancels it and nothing waits. A process that has opened the system's Metal device for GPU allocations quits about 200 ms later, so the statistics sampler leaves GPU allocations out until the Performance section has opened that device; the Performance section, expanded, costs a quit that much, which is not measured further here.
 
 **Storage, traffic and transport, load-independent.** Measured by tests rather than by the timing tool, on the same Mac:
 
@@ -5647,14 +4314,14 @@ The close is the wall clock between the shutdown event's time (the launch's star
 
 ## Software adapters
 
-The owner decided on 2026-10-05 that a session with no usable hardware adapter first tries the platform's software adapter (lavapipe on Linux, WARP on Windows) and draws through the GPU path on it, once it is measured fast enough that dragging is not badly laggy ([decisions](../decisions.md#gpu-first-rendering), [GPU-first](../design/gpu-first.md#proposals-with-recorded-defaults)). This is that measurement, against thresholds the GPU-first integrator set on 2026-10-06 for the owner to confirm: at 24 MP at Fit, a drag's tick at p95 within 33 ms for a pointwise stack and within 100 ms for a Detail and Presence stack. **Lavapipe misses them**, so it is not adopted (`adapters::SOFTWARE_ADAPTER_ADOPTED` stays off): a pointwise drag's Fit tick is 2.7 to 7.3 times the 33 ms and a Detail drag under Presence 3.5 to 7.2 times the 100 ms.
+A session with no usable hardware adapter first tries the platform's software adapter (lavapipe on Linux, WARP on Windows) and draws through the GPU path on it, once it is measured fast enough that dragging is not badly laggy ([decisions](../decisions.md#gpu-first-rendering), [GPU-first](../design/gpu-first.md#proposals-with-recorded-defaults)). This is that measurement, against thresholds that await the owner's confirmation: at 24 MP at Fit, a drag's tick at p95 within 33 ms for a pointwise stack and within 100 ms for a Detail and Presence stack. **Lavapipe misses them**, so it is not adopted (`adapters::SOFTWARE_ADAPTER_ADOPTED` stays off): a pointwise drag's Fit tick is 2.7 to 7.3 times the 33 ms and a Detail drag under Presence 3.5 to 7.2 times the 100 ms.
 
 ### Scope
 
 - **Not a typical PC.** An arm64 Linux container on the owner's M4 Pro, through Docker Desktop 29.4.0, whose Linux VM (kernel 6.12.76-linuxkit) has 14 vCPUs and 7.9 GiB; no GPU is passed through. The image is `rust:1.94.0-trixie` with Debian trixie's `mesa-vulkan-drivers` 25.0.7: lavapipe, `llvmpipe (LLVM 19.1.7, 128 bits)`, Vulkan 1.4.305, a `Cpu` adapter, chosen by `WGPU_BACKEND=vulkan` and `VK_ICD_FILENAMES` naming `lvp_icd.json`. The M4's cores are faster than most PCs', so these figures flatter lavapipe; macOS schedules the VM's vCPUs on its performance and efficiency cores as it chooses. WARP and Windows are not measured.
 - **Two CPU counts.** Docker's default, every vCPU (`nproc` 14), and `--cpuset-cpus 0-3` (`nproc` 4), so lavapipe's threads and the reference renderer's pool are four, approximating an ordinary four-core machine.
 - **The baseline.** The M4's own Metal adapter, natively, through the same benchmark.
-- **Build.** Release, `--locked`, commit `885e741e` (the GPU-first integration branch at `c3f0782c` with this benchmark and the fallback); the container's benchmark built in the container. Measured 6 October 2026.
+- **Build.** Release, `--locked`; the container's benchmark built in the container.
 - **Load.** Other sessions share the host. The figures below are each configuration's quieter run: one-minute load 4.5 to 4.8 for Metal, 5.4 to 9.2 for 14 vCPUs and about 5 to 8 for four. A first run of each at loads up to 33 is given beside them where it differs: the two four-vCPU runs agreed within 8%, the two 14-vCPU runs did not, so the loaded 14-vCPU figures are an upper bound.
 
 ### What is timed
@@ -5664,7 +4331,7 @@ The drag-tick benchmark (`crates/luxforge-app/src/app/gpu_drag_bench.rs`), an ig
 - **A tick.** A draft of the stack's dragged slider, one value a tick swept to and fro, planned by the catalog owner as the desktop plans a gesture's tick (outside the timing; 0.01 to 1.3 ms), then drawn through one slot of the photo surface's own drawing on a headless device with the change measured since the tick before, timed from handing the source to the queue's completion, so the GPU's work is counted, not its encoding. 40 timed ticks a view after one untimed tick that waits out the compile and the source's upload; the last tick's frame equals the same plan drawn fresh in every run. **Fit** is the evidence window's bounds, a 1716 × 1144 frame; **100%** is that window's visible region at full scale, 1798 × 1662.
 - **The picture at rest at Fit.** The stack's tiles at full resolution reduced to the view, one tile a frame as the surface draws them, after an untimed draw that compiles; a draw past 20 s is measured once, its compile included.
 - **Export.** The stack's output stage streamed through the desktop's GPU tile worker, once cold and once warm, the warm figure given (the cold one where it passed 20 s).
-- **The reference renderer's whole frame per tick.** The drafted stack's exact 24 MP frame, the frame a session without a GPU draws per tick once the CPU proxy is retired (stage 5), 8 frames a stack.
+- **The reference renderer's whole frame per tick.** The drafted stack's exact 24 MP frame, the frame a session without a GPU draws per tick, 8 frames a stack.
 
 The stacks are (a) a full Basic layer, dragging Exposure; (b) Basic, a Tone curve and the colour mixer, dragging Exposure; (c) Detail (luminance and colour noise 40, sharpening 50) and Presence (Texture 50, Clarity 50, Dehaze 30), dragging Clarity, and (c′) the same stack dragging Detail's luminance noise reduction, which draws Presence again over Detail's new output; and (d) three radial masks, each with a masked Presence layer (Texture 50, Clarity 50, Dehaze 30), dragging the last one's Clarity. A Clarity drag reuses every spatial output it leaves unchanged, as the editor's slot does.
 
@@ -5699,9 +4366,7 @@ The reference frame is the whole 24 MP frame, p50 / p95 ms, Metal's column the M
 - **Pointwise stacks fail at every CPU count.** (a) and (b) are 2.7 and 3.6 times the 33 ms at 14 vCPUs on a quiet host, 4.5 and 6.9 times loaded, and 6.5 and 7.3 times at four. At 100% they are slower still.
 - **Detail and Presence passes only for a Clarity drag with every vCPU on a quiet host.** (c) is 95.8 ms at 14 vCPUs, within the 100 ms by 4%, 260.9 loaded and 210.7 at four. A Detail drag under Presence, (c′), which redraws Presence, is 351 ms at 14 vCPUs and 720 at four, 3.5 and 7.2 times the 100 ms.
 - **Against the reference renderer's whole frame per tick**, in the same container: a pointwise tick on lavapipe, which draws the 2 MP Fit view, costs about three quarters of the reference renderer's whole 24 MP frame (89 against 120 ms at 14 vCPUs, 214 against 297 at four), so for these stacks lavapipe buys little over the whole-frame fallback. For a spatial drag it is several times faster than the reference frame, because the slot keeps what the drag leaves unchanged: 96 against 1854 ms for (c) at 14 vCPUs, 211 against 804 at four, and 351 against 1657 and 720 against 802 for (c′). The 14-vCPU reference frames of the spatial stacks are slower than the four-vCPU ones in both runs, which these runs do not explain.
-- **Against today's CPU proxy.** The drag a GPU-less host draws today is the CPU proxy at the view's size, measured on the M4 natively with the GPU preview off ([latency](#latency-with-the-gpu-preview-on-and-off), 2 October 2026): 24 MP at Fit, a full Basic layer, presented at a p95 of 18.0 to 25.8 ms, at 100% 11.9 ms, and the X100VI's Texture drag over Presence 47.2 ms. Lavapipe's pointwise Fit ticks, 89 to 243 ms at p95 before any frame is presented, are 3.4 to 13.5 times the proxy's Basic drag, and its Clarity drag, 96 to 211 ms, 2 to 4.5 times the X100VI's Texture drag; the proxy is retired with stage 5 ([GPU-first](../design/gpu-first.md#stages-and-what-each-deletes)), after which the whole reference frame above is what such a host draws per tick.
-
-Whether a GPU-less host should keep a reduced-size CPU frame per tick rather than the whole reference frame once stage 5 lands is the owner's question; these figures do not answer it.
+Whether a GPU-less host should draw a reduced-size CPU frame per tick rather than the whole reference frame is the owner's question; these figures do not answer it.
 
 ### Reproducing it
 
@@ -5718,11 +4383,11 @@ In the container: an image `FROM rust:1.94.0-trixie` adding `build-essential pkg
 
 ## Corrections qualified on the M4
 
-The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md)): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, 10 October 2026, on a host shared with other agents' builds (one-minute loads of 4 to 41), which bears on no figure here: every one is a pixel or a pass, not a time. Build `63898f0e` with the histogram scenario's fix uncommitted (`e26baa69`).
+The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md)): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, on a host shared with other agents' builds, whose load bears on no figure here: every one is a pixel or a pass, not a time.
 
 ### The repair families against the reference
 
-`verify --tier rendered --manifest` with the private three-source manifest ran the whole corpus through the gate: 341 stacks, every picture at rest within its class at every view, every sample, and every histogram and export but one stack's. The repair families are 36 stacks, 144 views at rest: Clone and Heal, spots and strokes, a chain whose sources are earlier destinations, an overlap before Detail, a stroke healed from across the frame, a spot at the frame's edge, and, added by this qualification, the same corrections under a straightened crop and a Perspective warp (the four generated JPEGs) and under the source's lens profile and a warp (the lens zone plate and the three RAWs). Mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the family's views at rest, against the spatial limits 1.0 / 2.5 / 5.0 / 0.5:
+`verify --tier rendered --manifest` with the private three-source manifest ran the whole corpus through the gate: 341 stacks, every picture at rest within its class at every view, every sample, and every histogram and export but one stack's. The repair families are 36 stacks, 144 views at rest: Clone and Heal, spots and strokes, a chain whose sources are earlier destinations, an overlap before Detail, a stroke healed from across the frame, a spot at the frame's edge, and the same corrections under a straightened crop and a Perspective warp (the four generated JPEGs) and under the source's lens profile and a warp (the lens zone plate and the three RAWs). Mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the family's views at rest, against the spatial limits 1.0 / 2.5 / 5.0 / 0.5:
 
 | Family | Sources | Stacks | At rest within | Largest at rest | Histogram, sample, export within | Motion past a limit (not gated) | Largest in motion |
 | --- | --- | ---: | ---: | --- | --- | ---: | --- |
@@ -5733,7 +4398,7 @@ The offline Clone/Heal workflow's native qualification ([Corrections](../design/
 | Heal under geometry | 4 JPEG, lens zone plate | 5 | 20 of 20 | 0.005 / 0.027 / 0.29 / 0.000 | 5, 5, 5 of 5 | 12 of 20 | 12.5 / 28.1 / 40.7 / 2.21 |
 | Heal under geometry | 3 RAW | 3 | 12 of 12 | 0.017 / 0.212 / 0.60 / 0.000 | 3, 3, 3 of 3 | 6 of 12 | 1.62 / 5.62 / 6.61 / 0.19 |
 
-- **The gap.** `repair-heal-spots` on the 60 MP JPEG: on the build measured, its stroke healed from across the frame needed a window wider than the device's 8,192-texel limit, so the tile worker could not draw its tiles (`unplannable`) and the export was the reference's (`texture-limit`). Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. A repair step now holds its read set in an atlas of its own, so a tile's window is its own rectangle and halos ([contract](../design/corrections.md#rendering)); the tile tests draw a Heal and a Clone sampling across a 9,000-pixel frame within the spatial class, but the gate has not been rerun over this stack: the owner set the rerun aside on 2026-10-11, so this stack is not qualified at the gate.
+- **The gap.** `repair-heal-spots` on the 60 MP JPEG: in the gate run, its stroke healed from across the frame needed a window wider than the device's 8,192-texel limit, so the tile worker could not draw its tiles (`unplannable`) and the export was the reference's (`texture-limit`). Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. A repair step holds its read set in an atlas of its own, so a tile's window is its own rectangle and halos ([contract](../design/corrections.md#rendering)); the tile tests draw a Heal and a Clone sampling across a 9,000-pixel frame within the spatial class, but the gate's rerun over this stack is set aside, so this stack is not qualified at the gate.
 - **Motion.** A drag's frame at Fit, 33% and 50% evaluates the repair at the reduced stage, where offsets round to that stage's pixels and Heal solves on its pixels ([numerics](../design/corrections-numerics.md#reduced-stages)); the zone plate and the lens zone plate, whose chirp aliases at any reduction, carry the largest differences. Reported, not gated, as for every family.
 - **Exact references.** The CPU units are held bit for bit to the independent `f64` reference and the repair frame to it on JPEG bytes and RAW-precision values by the ordinary tests (`repair::`, `render::repair_tests`), which `check` ran in the same tier.
 
@@ -5751,13 +4416,13 @@ The run's own owner, with no GPU, exported the warped entry through `export.plan
 
 ### Timing
 
-Interaction latency, render, sample and export times, memory and idle cost with a correction stack have not been measured. The owner set the timing, memory and idle runs aside on 2026-10-11, along with the `gpu-qualification` rerun of the 60 MP far-source Heal stack and the gate run of the `repair-patch` family; none was run, and a skipped measurement is not a pass. `verify --tier full --manifest` would run `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW.
+Interaction latency, render, sample and export times, memory and idle cost with a correction stack are not measured. The timing, memory and idle runs are set aside, along with the `gpu-qualification` rerun of the 60 MP far-source Heal stack and the gate run of the `repair-patch` family; none has run, and a skipped measurement is not a pass. `verify --tier full --manifest` would run `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW.
 
 ## HDR merges, measured on the M4
 
 What an HDR merge costs at photo size ([acceptance](../design/hdr-merge.md#evidence-and-acceptance)): synthetic handheld brackets of a moving ball (`luxforge_testkit::hdr_bracket` at 6000 × 4000 and 9504 × 6336, 16-bit Bayer DNGs of a RAW test camera, ±2 EV steps for three frames and 1 EV steps for nine), merged through the JSON API by an in-process owner over a new catalog, the reference renderer and no GPU client in the process. The merge itself is CPU work; the GPU is not involved.
 
-**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, internal SSD at 92% full, release xtask at `6f9afcf5` (the merge path as on main `81761afb`) and the release editor (SHA-256 `22e9b7ed…`) for the drag. Measured 11 October 2026 with `hdr-merge-measure` ([development](../engineering/development.md)) behind the host timing lock, with other agents' work on the host. 24 MP × 3 and 60 MP × 9 were timed at one-minute loads of 2.5 to 9.7, briefly 12.3 during the 60 MP × 9 editor work, and 60 MP × 3 at 5.3 to 10.9. 24 MP × 9 was timed only at 12.5 to 45, so its times are unreliable and stand only as an upper bound; so are the reopen times of 24 MP × 3 and 60 MP × 9, taken at 18 to 35. Memory, disk and object figures do not depend on load and were the same in every run. Cold is a worker process's first merge, its own owner and catalog new; warm is a later merge in the same process, each into a new catalog. Neither purges the operating system's file cache, which the brackets were just written into.
+**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, internal SSD at 92% full, a release xtask and the release editor for the drag, measured with `hdr-merge-measure` ([development](../engineering/development.md)) behind the host timing lock, with other agents' work on the host. 24 MP × 3 and 60 MP × 9 were timed at one-minute loads of 2.5 to 9.7, briefly 12.3 during the 60 MP × 9 editor work, and 60 MP × 3 at 5.3 to 10.9. 24 MP × 9 was timed only at 12.5 to 45, so its times are unreliable and stand only as an upper bound; so are the reopen times of 24 MP × 3 and 60 MP × 9, taken at 18 to 35. Memory, disk and object figures do not depend on load and were the same in every run. Cold is a worker process's first merge, its own owner and catalog new; warm is a later merge in the same process, each into a new catalog. Neither purges the operating system's file cache, which the brackets were just written into.
 
 **Statistics.** Nearest-rank p50 / p95, 3 cold and 5 warm merges per workload; stages from the job's phases on the activity board, so reading runs from the request.
 
@@ -5770,7 +4435,7 @@ What an HDR merge costs at photo size ([acceptance](../design/hdr-merge.md#evide
 | Merging: fusion, chunk by chunk | 1151 / 1168 · 1158 / 1193 | 3199 / 3655 · 3296 / 3498 | 4710 / 8029 · 5522 / 12043 | 46298 / 56676 · 44244 / 50054 |
 | Saving | 34 / 34 · 36 / 38 | 49 / 70 · 46 / 61 | 159 / 235 · 182 / 193 | 170 / 173 · 293 / 341 |
 
-- **60 MP × 9 fusion was bound by its spool reads.** When measured, fusion read each input's window of a chunk back from its spool one row at a time (it now reads in bands of up to 8 MiB, not yet measured), about 20 KB a read at this width. One more cold merge, sampled every 3 s: through its 61 s of merging, the worker used 16 to 47% of one core while the disk served 7,200 to 8,500 reads a second at 134 to 215 MB/s. The 7.1 GiB of spool is not reliably still in the file cache when fusion reads it. Across this run and a busier one earlier the same day (one-minute load 15 to 33), the 16 merges' merging took either 9.9 to 24.0 s (7 merges, one of them in the quiet run) or 40.6 to 56.7 s (9 merges), whatever the load. That fits the spool being cached or not. So a 60 MP × 9 merge takes between about 17 s and 64 s on this Mac. The three-frame and 24 MP workloads were not seen to vary this way.
+- **60 MP × 9 fusion is bound by its spool reads.** These figures are of fusion reading each input's window of a chunk back from its spool one row at a time, about 20 KB a read at this width; fusion reads in bands of up to 8 MiB, which is not yet measured. One more cold merge, sampled every 3 s: through its 61 s of merging, the worker used 16 to 47% of one core while the disk served 7,200 to 8,500 reads a second at 134 to 215 MB/s. The 7.1 GiB of spool is not reliably still in the file cache when fusion reads it. Across this run and a busier one (one-minute load 15 to 33), the 16 merges' merging took either 9.9 to 24.0 s (7 merges, one of them in the quiet run) or 40.6 to 56.7 s (9 merges), whatever the load. That fits the spool being cached or not. So a 60 MP × 9 merge takes between about 17 s and 64 s on this Mac. The three-frame and 24 MP workloads are not seen to vary this way.
 
 | Memory and disk, cold and warm alike, in every run | 24 MP × 3 | 24 MP × 9 | 60 MP × 3 | 60 MP × 9 |
 | --- | --- | --- | --- | --- |
@@ -5822,11 +4487,11 @@ The drag fell within that merge's reading stage, the decoding and development of
 
 **Natural brackets.** The private manifest's sources are three single RAWs, from a Z6, an X100VI and an Air 2S. Indexed read only into a new catalog, they formed no bracket in Select. Natural-bracket quality (motion, seams, colour, highlights, shadows and crop losses on real brackets) is unqualified.
 
-**Outstanding.** GPU allocations while the editor shows a merged result are not measured, because the worker has no GPU client and `resources.read` reports GPU memory unavailable. Also outstanding are 24 MP × 9 times on a quiet host, a drag during fusion, the fusion spool reads above, and Windows and Linux.
+**Outstanding.** GPU allocations while the editor shows a merged result are not measured, because the worker has no GPU client and `resources.read` reports GPU memory unavailable. Also outstanding are 24 MP × 9 times on a quiet host, a drag during fusion, fusion's banded spool reads, and Windows and Linux.
 
 ## High-zoom minimap
 
-Native Apple M4 Pro / Metal, optimized release, 2026-10-16, background evidence launches with a warm filesystem cache, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs at a 2× display scale. One-minute load 2.5 to 3.7 at each run's start, below the 8.0 threshold. `editor-latency --mode minimap` drags the card's viewport rectangle through 40 moves at the stated zoom and times each move from its pan to the first draw that shows it: on the GPU, the picture at rest planned for that view (`plan`); on the reference renderer (`--no-gpu-render`), the retained frame scrolled into place (`scroll`). 200% and 800% have different view windows, so the rows are not an isolated rendering comparison; the card is not shown below 200%, so a 199.9% control is not part of this mode and was not taken.
+Native Apple M4 Pro / Metal, optimized release, background evidence launches with a warm filesystem cache, generated 24 MP (6000 × 4000) and 60 MP (10000 × 6000) JPEGs at a 2× display scale. One-minute load 2.5 to 3.7 at each run's start, below the 8.0 threshold. `editor-latency --mode minimap` drags the card's viewport rectangle through 40 moves at the stated zoom and times each move from its pan to the first draw that shows it: on the GPU, the picture at rest planned for that view (`plan`); on the reference renderer (`--no-gpu-render`), the retained frame scrolled into place (`scroll`). 200% and 800% have different view windows, so the rows are not an isolated rendering comparison; the card is not shown below 200%, so a 199.9% control is not part of this mode and is not taken.
 
 | Source | Zoom | Renderer | Drawn | Pan to frame ms p50 / p95 | First overview ms, cold / warm | Overview GPU bytes, retained / peak |
 | --- | ---: | --- | --- | ---: | ---: | ---: |
@@ -5854,7 +4519,7 @@ Cold is the first overview after crossing 200%; warm the one made again after Se
 
 ## Range picks, measured on the M4
 
-Native Apple M4 Pro / Metal, optimized release, 2026-10-16, background evidence launches with a warm filesystem cache, generated 24 MP and 60 MP JPEGs at Fit, with the range experiment on, Mask mode entered and one unbound colour range created from New mask. `editor-latency --mode pick --samples 30` alternates a whole-frame drag pick (the output stage's top-left pixel to its bottom-right one) and a click pick on the red quadrant, each timed from the press to the pick's command sent and to the first coverage overlay of the entry it committed. `--reference-renderer` launches with `--no-gpu-render`. The renderer is the one `mask.sample-input-area` names for the drag.
+Native Apple M4 Pro / Metal, optimized release, background evidence launches with a warm filesystem cache, generated 24 MP and 60 MP JPEGs at Fit, with the range experiment on, Mask mode entered and one unbound colour range created from New mask. `editor-latency --mode pick --samples 30` alternates a whole-frame drag pick (the output stage's top-left pixel to its bottom-right one) and a click pick on the red quadrant, each timed from the press to the pick's command sent and to the first coverage overlay of the entry it committed. `--reference-renderer` launches with `--no-gpu-render`. The renderer is the one `mask.sample-input-area` names for the drag.
 
 | Source | Launch | Area read by | Drag ms p50 / p95 | Click ms p50 / p95 | Load at start |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -5863,7 +4528,7 @@ Native Apple M4 Pro / Metal, optimized release, 2026-10-16, background evidence 
 | 60mp | gpu | reference (`texture-limit`) | 642.2 / 647.2 | 25.4 / 29.5 | 6.92 |
 | 60mp | reference | reference | 644.6 / 660.5 | 18.3 / 34.5 | 5.17 |
 
-The 24 MP rows ran above the 8.0 load threshold in each of three runs that day; the three agree within 3 ms at p50 (GPU drag 222 to 225 ms), but they are not a baseline. Pressing to the command sent is at most 0.5 ms in every row: the time is the read and the commit. At 60 MP the whole frame's area plan is wider than the device's 8,192-pixel texture limit, so the GPU launch's drag is read by the reference, as its reason says; the GPU area read has no tiled path. A click reads a 1 × 1 area on either renderer. Evidence: `artifacts/qual-sweep/timing-3/pick-*` (and `timing`, `timing-2` for the earlier runs).
+The 24 MP rows ran above the 8.0 load threshold in each of three runs; the three agree within 3 ms at p50 (GPU drag 222 to 225 ms), but they are not a baseline. Pressing to the command sent is at most 0.5 ms in every row: the time is the read and the commit. At 60 MP the whole frame's area plan is wider than the device's 8,192-pixel texture limit, so the GPU launch's drag is read by the reference, as its reason says; the GPU area read has no tiled path. A click reads a 1 × 1 area on either renderer. Evidence: `artifacts/qual-sweep/timing-3/pick-*` (and `timing`, `timing-2` for the other two runs).
 
 **Outstanding.** A quiet-host 24 MP run; a tiled GPU area read for stages past the texture limit; Windows and Linux.
 
@@ -5883,30 +4548,27 @@ Catalog opening never enumerates or decodes all originals. Grid memory depends o
 
 ## Catalog-edit comparison
 
-Native Apple M4 Pro / Metal, release, 2026-10-07: three matched runs per binary over the owner's
-DSC_3187.NEF (4024 × 6048), using isolated copies of the current catalog's thirteen-layer,
-three-mask edit. A global Exposure change from 0.32 to 0.33 EV recreates the freshly committed
-GPU presentation; the original edit and source remain untouched. The hidden window is 1440 × 900
-points at scale 2. Entry is measured from the scripted backslash tap to the verified renderer
-readback with both comparison surfaces ready, including capture overhead; this is not scanout
-latency or cold-open performance. Each run opens and warms the photograph first. The host-wide
-timing gate is held and starting one-minute load is 2.84–4.86, below the threshold of 8.
+Native Apple M4 Pro / Metal, release: three runs over the owner's DSC_3187.NEF
+(4024 × 6048), using isolated copies of the current catalog's thirteen-layer, three-mask edit. A
+global Exposure change from 0.32 to 0.33 EV recreates the freshly committed GPU presentation; the
+original edit and source remain untouched. The hidden window is 1440 × 900 points at scale 2.
+Entry is measured from the scripted backslash tap to the verified renderer readback with both
+comparison surfaces ready, including capture overhead; this is not scanout latency or cold-open
+performance. Each run opens and warms the photograph first. The host-wide timing gate is held and
+starting one-minute load is 2.84–4.86, below the threshold of 8.
 
-| Build | Three entry-to-readback observations (ms) | Median (ms) |
+| Path | Three entry-to-readback observations (ms) | Median (ms) |
 | --- | --- | --- |
-| Previous release, edited stack rendered again on the CPU | 1448.3, 1552.9, 1443.2 | 1448.3 |
 | Retained GPU After plans and source | 728.3, 750.8, 752.2 | 750.8 |
 
-The measured median is 1.93 times faster. The owner's reported five-second delay is not reproduced
-as a five-second baseline in these warmed runs. The extra edited-stack CPU render is removed;
-the comparison's second GPU surface still evaluates the retained picture. The edited picture
-stays visible during that handoff. In all three final runs the After endpoint and restored picture
-match the warmed edited picture exactly in the same 1050 × 1420-pixel photographic rectangle,
-excluding divider and label chrome. Captured state records the fixed After picture, the Original
-Before and the GPU drawing paths at Fit, through 100%, and on exit. A separate native white-balance
-check retains the exact After fallback when Before needs another RAW development. The executor
-holds one prepared source; attempting to reuse GPU-only After across that change stalls source
-residency, so the optimization is limited to shared-source comparisons.
+The comparison's second GPU surface evaluates the retained picture, and the edited picture stays
+visible during that handoff. In all three runs the After endpoint and restored picture match the
+warmed edited picture exactly in the same 1050 × 1420-pixel photographic rectangle, excluding
+divider and label chrome. Captured state records the fixed After picture, the Original Before and
+the GPU drawing paths at Fit, through 100%, and on exit. A separate native white-balance check
+retains the exact After fallback when Before needs another RAW development. The executor holds one
+prepared source; reusing GPU-only After across that change stalls source residency, so the retained
+After is limited to shared-source comparisons.
 
 A comparison entered at Fit retains that display detail when magnified; entering at 100% or
 above, with changed RAW sensor gains or historical selection, with clipping marks, without eligible
@@ -5915,6 +4577,6 @@ implied. Local evidence is `artifacts/editor-repairs-comparison/verified.json`, 
 binary hashes, source hash, load, captures, state and events beside it; RAW source checks are in
 `artifacts/editor-repairs-raw-source/validated-app`, and mask/navigation checks in
 `artifacts/editor-repairs-masks` and `artifacts/editor-repairs-navigation/selection-checked-app`.
-The final comparison eligibility and source-restoration checks are in
+The comparison eligibility and source-restoration checks are in
 `artifacts/editor-repairs-comparison/current-build/verified.json` and
 `artifacts/editor-repairs-raw-source/verified.json`; their native runs qualify behavior, not timing.

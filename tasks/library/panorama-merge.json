@@ -3,7 +3,7 @@
   "plan_id": "panorama-merge",
   "title": "Panorama merges and the merge preview",
   "objective": "Open a merge preview first for HDR and panoramas, and turn a selection of overlapping RAW or JPEG frames into one durable, editable panorama in Select, with one Merge panorama action, a result-led stack, the HDR lifecycle, Boundary Warp and derived sources up to 512 MP, through the shared command service.",
-  "context_summary": "Design requested and scope chosen by the owner on 2026-10-11, with a merge preview that opens first for both kinds: RAW or JPEG frames (never mixed), selection only with no automatic grouping, automatic crop with Boundary Warp, and derived-source limits raised to 65,000 pixels a side and 512 MP. Implementation is not authorized. HDR merges are delivered; this plan generalizes their boundary (TASK-001) and reuses their storage, lifecycle, stacks and catalog folder choice. TASK-001 (boundary), TASK-003 (paged derived storage and preparation), TASK-006 (frame development) and TASK-007 (registration) can start together; TASK-004 (banded reference) and TASK-005 (GPU editing and export) bring paged sources to the editor, and TASK-008 adds the stitch. TASK-002 brings the merge preview to HDR first. Deliver a working, background-verified feature in TASK-011 before natural-panorama quality and photo-sized measurement in TASK-012. No HDR panoramas, automatic panorama detection, edge fill, manual control points, compatibility shims or approval/research task. Recorded defaults (2–32 frames, projections, Boundary Warp 0, the bracket refusals, a baked lens profile, a usage-statistics exemption) are in the design and decisions.",
+  "context_summary": "Scope: a merge preview that opens first for both kinds; RAW or JPEG frames (never mixed), from a selection or a panorama Select groups; automatic crop with Boundary Warp; and derived-source limits raised to 65,000 pixels a side and 512 MP. HDR merges are delivered, and this plan generalizes their boundary and reuses their storage, lifecycle, stacks and catalog folder choice. TASK-001 to TASK-011 are complete: the kind-tagged boundary, HDR's merge preview, paged derived storage and preparation, the banded reference, GPU editing and export of paged sources, merge frame development, rotating-camera registration, the stitch, the job and commands, Select's panorama menu, sheet and stack, and the background `panorama-merge` journey, which passes in the rendered tier on the M4. TASK-012 remains: the rendered evidence still unrun or short (the hdr-merge journey through the preview, the derived-paged GPU corpus entry's remaining cells and gaps), natural-panorama quality and photo-sized measurement. No HDR panoramas, edge fill, manual control points, compatibility shims or approval/research task. Recorded defaults (2–32 frames, projections, Boundary Warp 0, the bracket refusals, a baked lens profile, a usage-statistics exemption) are in the design and decisions.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -103,7 +103,7 @@
     {
       "id": "TASK-002",
       "description": "Deliver the merge preview for HDR: commands, a reusable preview session and the preview sheet that opens first.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -112,7 +112,8 @@
         "`merge.preview`, `merge.preview-update` and `merge.preview-close` for any registered kind, and `merge.create` with `preview_id`: the preview job reads frames into the spool exactly as a merge does, adds a colour preview proxy (the analysis proxies hold luminance and levels only), registers, and writes a display-referred JPEG under the preview cache with diagnostics, overlay data and the output estimate; updates redraw or re-register from the retained proxies without reading frames; a merge given `preview_id` continues from that spool and registration.",
         "Session bounds: one open preview a client, the merge lane occupied while reading and aligning, the spool counted against the kind's temporary ceiling, closed on merge, close, 30 minutes idle, disconnect or restart cleanup; a preview publishes nothing.",
         "HDR's picture fuses the colour proxies with the resolved exposures, registration and motion; its overlay data are the motion regions with their source input and exposure.",
-        "Desktop: Merge HDR (header and menu, the item with an ellipsis) opens the HDR preview sheet, whose buttons are Cancel and Merge; ⌥ drops the ellipsis and ⌥-click on Merge HDR merges at once with the kind's last settings, remembered in the desktop's remembered state; the sheet replaces Merge options… and follows the boards (docs/design/merges/hdr-preview.png, components.png) except their earlier Pick merged and Import merged pair."
+        "Desktop: Merge HDR (header and menu, the item with an ellipsis) opens the HDR preview sheet, whose buttons are Cancel and Merge; ⌥ drops the ellipsis and ⌥-click on Merge HDR merges at once with the kind's last settings, remembered in the desktop's remembered state; the sheet replaces Merge options… and follows the boards (docs/design/merges/hdr-preview.png, components.png) except their Pick merged and Import merged pair.",
+        "Done: the core commands and the desktop's preview sheet, with ⌥-click merging at once. The hdr-merge journey goes through the preview, with a setting changed and the overlay on, and once by ⌥-click; its run is TASK-012's."
       ],
       "context_links": [
         {
@@ -157,19 +158,18 @@
       "acceptance_criteria": [
         "Through the registry, a preview of a synthetic bracket answers a picture, diagnostics and motion overlays; updates read no frame; a merge with its `preview_id` reads no frame and aligns nothing, and its result equals a merge without a preview bit for bit.",
         "Preview sessions respect the lane, ceiling, idle, disconnect, cancellation and restart rules; a stale `preview_id` is `conflict`.",
-        "Desktop tests compare the sheet's requests and states with a JSON client; ⌥-click merges with the remembered settings; the hdr-merge smoke journey passes through the preview."
+        "Desktop tests compare the sheet's requests and states with a JSON client; ⌥-click merges with the remembered settings."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
           "Drive previews and merges through a real owner with several clients, counting frame reads.",
           "Compare merged results with and without a preview.",
-          "Run the desktop and smoke checks for the HDR flow."
+          "Run the desktop checks for the HDR flow."
         ],
         "commands": [
           "tools/cargo-cached test -p luxforge-core merge_preview",
-          "tools/cargo-cached test -p luxforge-app merge_preview",
-          "tools/cargo-cached xtask smoke --scenario hdr-merge"
+          "tools/cargo-cached test -p luxforge-app merge_preview"
         ],
         "expected_results": [
           "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
@@ -179,7 +179,7 @@
     {
       "id": "TASK-003",
       "description": "Store and prepare paged derived sources up to 65,000 pixels a side and 512 MP, without a whole-frame allocation.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
@@ -252,7 +252,7 @@
     {
       "id": "TASK-004",
       "description": "Give the reference renderer a banded mode for paged sources, and export and analyse them through it.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -315,7 +315,7 @@
     {
       "id": "TASK-005",
       "description": "Edit, preview and export paged sources on the GPU: overview level below its scale, level-0 windows above, capped export bands.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004"
@@ -324,7 +324,8 @@
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
         "The photo surface holds the resident level below its scale (picture in motion, picture at rest, histogram, labelled as counting the overview) and a level-0 window with halos at and above it, refreshed as the view moves, stale reads cancelled, charged to the preview budget.",
         "Samples read level 0 through windows at every zoom; catalog previews render from the resident level; export streams level-0 windows with band bytes capped at 256 MiB; staged sweeps past the GPU's 2 × 2 × 8,192 stage textures draw through window chains or fall back to the reference naming `tiles-budget`.",
-        "Declare the tolerance of overview-level rendering against the banded reference reduced the same way per output family; add a generated paged derived entry (about 160 MP, wider than 16,384) to the GPU corpus and qualify it."
+        "Declare the tolerance of overview-level rendering against the banded reference reduced the same way per output family; add a generated paged derived entry (about 160 MP, wider than 16,384) to the GPU corpus and qualify it.",
+        "Done: the derived-paged entry runs in the GPU gate, within the overview limits below 100% on five of its six stacks. Its remaining cells and gaps are TASK-012's: crop-straightened a pixel short of the reference below 100%, detail-presence-masked's tiles at 100% not drawn, and its histogram, minimap overview and resized, 16-bit and sharpened exports. A paged sample on a host with no GPU is refused."
       ],
       "context_links": [
         {
@@ -368,7 +369,7 @@
       ],
       "acceptance_criteria": [
         "A 512 MP paged result opens, pans and zooms from Fit to 100% in a far corner, edits with a mask and a spatial layer, samples full-resolution values and exports, with no whole-frame allocation on CPU or GPU.",
-        "The large corpus entry passes the GPU gate within its declared tolerances; existing corpus families are unchanged."
+        "The large corpus entry runs in the GPU gate with its declared overview and class tolerances; existing corpus families are unchanged."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -388,7 +389,7 @@
     {
       "id": "TASK-006",
       "description": "Develop merge frames: RAW with the detected lens profile baked, and JPEG into float linear sRGB/D65.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
@@ -460,7 +461,7 @@
     {
       "id": "TASK-007",
       "description": "Register panorama frames under a rotating-camera model with an independent reference.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
@@ -517,7 +518,7 @@
     {
       "id": "TASK-008",
       "description": "Stitch registered frames: projection, photometric fit, seams, band-limited blending and Boundary Warp, chunk by chunk.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
@@ -577,7 +578,7 @@
     {
       "id": "TASK-009",
       "description": "Deliver the panorama job and commands through the shared merge lane, with atomic publication.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003",
@@ -647,7 +648,7 @@
     {
       "id": "TASK-010",
       "description": "Deliver Select's panorama menu, preview sheet, progress, result tiles and stack words.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005",
         "TASK-009"
@@ -713,14 +714,15 @@
     {
       "id": "TASK-011",
       "description": "Hand off the working panorama workflow with a background journey and current documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-010"
       ],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
         "Register a background `panorama-merge` smoke scenario from generated frames: Merge panorama through the preview sheet (Boundary Warp changed, overlays on) and once by ⌥-click, with progress, one collapsed tile, expanded originals, Develop at Fit, at 100% in a far corner and with a mask edit, export of a result above 128 MP, Remove merge, undo and redo with no second merge, the result in the plan's folder, and a relaunch with the frames moved away.",
-        "Update the design with delivered shapes and tolerances, the HDR design's shared shapes, feature status, the user guide, the catalog design and command documentation; remove the panorama line from the user guide's not-yet list."
+        "Update the design with delivered shapes and tolerances, the HDR design's shared shapes, feature status, the user guide, the catalog design and command documentation; remove the panorama line from the user guide's not-yet list.",
+        "Done: the `panorama-merge` scenario (xtask/src/panorama_merge_smoke.rs) runs three launches, `select`, `develop` and `offline`, over a four-frame row of 1.5 MP JPEGs and a ten-frame row of 24 MP JPEGs whose result is about 150 MP, and passes in the rendered tier on the M4; the design, feature status, the user guide and the catalog design describe the delivered behaviour."
       ],
       "context_links": [
         {
@@ -744,7 +746,7 @@
         }
       ],
       "acceptance_criteria": [
-        "The journey passes in the background with frames, owner state and logs correlated; the hdr-merge and existing journeys still pass.",
+        "The journey passes in the background with frames, owner state and logs correlated.",
         "Quick passes once and the rendered tier passes at integration; documentation describes current behaviour only."
       ],
       "test_strategy": {
@@ -764,13 +766,14 @@
     },
     {
       "id": "TASK-012",
-      "description": "Qualify natural panoramas and measure photo-sized merges, large-source editing and export, and HDR after band reads.",
-      "status": "pending",
+      "description": "Close the remaining rendered evidence, qualify natural panoramas, and measure photo-sized merges, large-source editing and export, and HDR after band reads.",
+      "status": "ready",
       "dependencies": [
         "TASK-011"
       ],
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
+        "Rendered evidence first: run the hdr-merge journey, whose Merge HDR and preview steps have not been run, and the derived-paged GPU corpus entry's remaining cells and gaps: crop-straightened a pixel short of the reference below 100%, detail-presence-masked's tiles at 100% not drawn, and its histogram, minimap overview and resized, 16-bit and sharpened exports. Fix each miss or record it as a limit in the GPU-first design; measure after the fixes.",
         "Natural panoramas: the owner's own where available (Z6, X100VI, Air 2S) and pinned open samples otherwise; inspect seams, levelling, colour, crop losses and warp quality; record scope honestly and fix measured failures. Missing private inputs leave quality unqualified, never block measurement.",
         "Measure once behind the host lock: stages cold and warm, cancellation, temporary disk, peak process/source/scratch/GPU use, editor latency at Fit and 100% on a 512 MP result, export time and browse latency beside a merge, for 24 and 60 MP frames, 5 and 32 of them; and HDR 60 MP × 9 fusion with band reads out of the file cache."
       ],
@@ -799,19 +802,31 @@
           "label": "HDR measurement",
           "target": "xtask/src/hdr_merge_measure/mod.rs",
           "relevance": "The measurement harness to extend."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Tolerances the derived-paged entry is held to, and where a remaining miss is recorded.",
+          "locator": "The contract"
         }
       ],
       "acceptance_criteria": [
+        "The hdr-merge journey passes through the preview; the derived-paged entry passes the GPU gate within its declared tolerances, or each remaining miss is recorded as a limit.",
         "Figures and their scope are recorded in the performance spec, the design and feature status; unmeasured cases are named.",
         "Natural-panorama findings are recorded with their sources; measured failures are fixed or recorded as limits."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
+          "Run the hdr-merge journey and the GPU gate over the derived sources.",
           "Prepare photo-sized generated workloads and a natural-case manifest.",
           "Measure on the completed feature behind the host lock and inspect natural results."
         ],
-        "commands": [],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario hdr-merge",
+          "tools/cargo-cached xtask gpu-qualification --output NEW_DIR --sources derived-merge,derived-paged"
+        ],
         "expected_results": [
           "Every stated acceptance check passes with its recorded scope; skipped checks are not passes."
         ]

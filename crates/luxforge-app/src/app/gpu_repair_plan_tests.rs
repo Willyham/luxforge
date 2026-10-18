@@ -1,4 +1,4 @@
-//! The repair program on the GPU (`docs/design/corrections.md`, "Rendering (TASK-003)"), held to
+//! The repair program on the GPU (`docs/design/corrections.md`, "Rendering"), held to
 //! the CPU reference on this host's device: Clone and Heal over overlapping, far and edge-clipped
 //! sources, tiny and long strokes, hard and soft edges, on the byte and the linear path, alone and
 //! before colour and Detail, each plan's frame judged by the spatial class's limits against the

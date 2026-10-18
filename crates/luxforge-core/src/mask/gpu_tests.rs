@@ -1,7 +1,7 @@
 //! Each component kind's GPU coverage program as data: the words every kind describes are the terms
 //! its CPU field compiles, narrowed to `f32` once and computed here again from the payload; two
-//! compilations of one payload describe themselves identically; every program ships enabled, as its
-//! qualification on the M4 decided; and the constants a program restates are the CPU's `f32` values,
+//! compilations of one payload describe themselves identically; every program ships enabled,
+//! qualified on the M4; and the constants a program restates are the CPU's `f32` values,
 //! bit for bit.
 //!
 //! The programs' arithmetic is qualified on a device against the CPU fields by the desktop's

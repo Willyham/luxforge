@@ -2,7 +2,7 @@
 
 Every operation Luxforge ships, mapped to the usage event it records or to the reason it records none. The events, their fields and the consent and delivery rules are the [design's](../design/usage-statistics.md); the wire shape is the [wire format](../design/usage-statistics-wire.md). Nothing here is recorded while collection is off: every producer first reads the collector's gate, one atomic load, and stops there.
 
-A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory`) reads the [registered commands](#registered-commands) table and fails when a command the method table, a module, a mask command or a task registers is missing from it, or when the table names a command that no longer exists. A new command is added here, with its event or its exemption, in the change that registers it.
+A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory`) reads the [registered commands](#registered-commands) table and fails when a command the method table, a module, a mask command or a task registers is missing from it, or when the table names a command that is not registered. A new command is added here, with its event or its exemption, in the change that registers it.
 
 ## Rules
 

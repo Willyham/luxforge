@@ -342,13 +342,13 @@ fn double_click_before_the_commit_answers(
     entry(asset, current.sequence + 1, Some(&current.id))
 }
 
-/// The double-click race that lost every RAW white balance reset. The first press's commit is
-/// still answering when the second press arrives — for a RAW temperature or tint for as long as
-/// the mosaic takes to redevelop, a second or more — and a reset sent then names the revision
-/// that commit is replacing, which the core refuses as stale. The reset now waits for the
-/// commit's answer and is sent once, against the revision it produced. Exposure and the RAW
-/// variants of Temperature and Tint take the same path; what is sent is the field's own reset: As
-/// shot for a RAW photo's Temperature and Tint, the declared default for Exposure.
+/// A double-click reset races the first press's commit. That commit is still answering when the
+/// second press arrives — for a RAW temperature or tint for as long as the mosaic takes to
+/// redevelop, a second or more — and a reset sent then would name the revision that commit is
+/// replacing, which the core refuses as stale. The reset waits for the commit's answer and is sent
+/// once, against the revision it produced. Exposure and the RAW variants of Temperature and Tint
+/// take the same path; what is sent is the field's own reset: As shot for a RAW photo's
+/// Temperature and Tint, the declared default for Exposure.
 #[test]
 fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produced() {
     let as_shot = json!({"white-balance": "as-shot"});

@@ -4016,7 +4016,7 @@ mod tests {
         ]
     }
 
-    /// What drawing the whole widget produced: the render pass's viewport at its full bounds and
+    /// What drawing the whole widget gives: the render pass's viewport at its full bounds and
     /// the picture placed inside them, in physical pixels.
     fn whole_widget(
         placement: Placement,
@@ -4049,9 +4049,9 @@ mod tests {
     }
 
     /// At Fit, and at any zoom whose box fits the window, the whole widget is visible: it is drawn
-    /// with its own bounds as before, and the picture lands on exactly the physical pixels it
-    /// landed on when the whole widget was handed over. The only difference allowed is float
-    /// rounding in the last bit, which never moves a snapped corner.
+    /// with its own bounds, and the picture lands on exactly the physical pixels drawing the whole
+    /// widget gives it. The only difference allowed is float rounding in the last bit, which never
+    /// moves a snapped corner.
     #[test]
     fn a_fully_visible_widget_draws_where_the_whole_widget_did() {
         let window = Rectangle::new(Point::ORIGIN, Size::new(1440.0, 900.0));
@@ -4179,7 +4179,7 @@ mod tests {
             raster.1 as f32 * zoom / scale,
         );
         let bounds = Rectangle::new(region.position(), size);
-        // What the toolkit's shader widget would have handed over: every one of these fails
+        // What the toolkit's shader widget would hand over: every one of these fails
         // wgpu's viewport validation.
         assert!(bounds.width * scale > limit && bounds.height * scale > limit);
         let far = Vector::new(size.width - region.width, size.height - region.height);

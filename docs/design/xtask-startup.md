@@ -4,15 +4,15 @@
 
 `cargo xtask` uses a small `xtask-cli` package for repository validation, formatting,
 Clippy, tests, builds and dependency audits. It has no image, native codec or workspace
-library dependency. These commands call the existing validators and parallel test
+library dependency. These commands call the shared validators and parallel test
 runner. The full `xtask` package depends on that shared tooling library, so checks
 and advisory policy have one implementation and their tests run once.
 
-Photo, evidence, packaging and verification commands delegate to the existing `xtask`
+Photo, evidence, packaging and verification commands delegate to the full `xtask`
 package through Cargo. Arguments remain OS strings, the debug/release profile is
 preserved and the child's exit status reaches the caller. Explicit
 `cargo run --release --locked --package xtask -- ...` commands remain available.
-The whole workspace's Clippy and test commands still include both packages and all
+The whole workspace's Clippy and test commands include both packages and all
 acceptance tests; no feature flag removes tests from ordinary verification.
 
 ## Constraints and acceptance
@@ -29,7 +29,7 @@ acceptance tests; no feature flag removes tests from ordinary verification.
   quick tier. Update the development guide, architecture, feature status and user guide.
 
 There are no open product decisions. Release profiles, test scheduling, editor behavior
-and renderer settings are outside this change.
+and renderer settings are outside this design.
 
 ## Measured startup scope
 
@@ -42,8 +42,8 @@ and sccache bypassed:
 | Full photo/evidence `xtask` | 72.44 s |
 | Lightweight `xtask-cli` | 4.06 s |
 
-The local entry-point build was about 18 times faster (94% less wall time). External
-locked dependency versions and checks are unchanged. This is a diagnostic sample of
+The lightweight entry point builds about 18 times faster locally (94% less wall time),
+with the same locked dependency versions and checks. This is a diagnostic sample of
 tooling compilation, not a full-suite, image-processing or hosted CI speed claim;
 whole-workspace checks still compile and test the photo and evidence tools. Hosted
 startup and warm-cache savings remain unmeasured.

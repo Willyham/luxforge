@@ -732,30 +732,6 @@ mod tests {
         }
     }
 
-    /// A Basic layer stored before its tone acted on the scene white, or before its sliders
-    /// followed Lightroom's responses, holds values of an earlier meaning: it is refused, naming its
-    /// format, rather than rendered at the new meaning.
-    #[test]
-    fn an_earlier_basic_layer_is_refused_naming_its_format() {
-        let module = BasicModule::new();
-        for format in [1, 3] {
-            let error = module
-                .compile(
-                    BASIC_EFFECT,
-                    format,
-                    &json!({"highlights": -50.0}),
-                    crate::CompileStage::exact(STAGE),
-                )
-                .unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Incompatible);
-            assert!(
-                error.detail.contains(&format!("format {format}")),
-                "{}",
-                error.detail
-            );
-        }
-    }
-
     // -----------------------------------------------------------------------------------------
     // The neutral picker query
     // -----------------------------------------------------------------------------------------

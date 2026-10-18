@@ -710,10 +710,10 @@ mod tests {
         }
     }
 
-    /// The counting arithmetic as it was before the class table: one `add_pixel` per pixel into
-    /// `u64` counters, a separate counter for every channel endpoint, and `clip_class` for the any
-    /// and both counters. It is frozen here as the independent reference the production reducer is
-    /// compared with, so it must not be edited to follow the production code.
+    /// A naive per-pixel reference for the counting: one `add_pixel` per pixel into `u64`
+    /// counters, a separate counter for every channel endpoint, and `clip_class` for the any and
+    /// both counters. It is the independent reference the production reducer is compared with, so
+    /// it must not be edited to follow the production code.
     struct ReferenceBins {
         r: [u64; 256],
         g: [u64; 256],
@@ -760,7 +760,7 @@ mod tests {
         }
     }
 
-    /// The report the frozen pre-change arithmetic gives for `rgba`, one pixel at a time.
+    /// The report the per-pixel reference gives for `rgba`, one pixel at a time.
     fn reference_report(rgba: &[u8], width: u32, height: u32) -> Report {
         let mut bins = ReferenceBins {
             r: [0; 256],
@@ -803,7 +803,7 @@ mod tests {
     }
 
     /// Reduce `rgba` through both the serial and the forced-parallel path and require each whole
-    /// [`Report`] to equal the frozen reference's.
+    /// [`Report`] to equal the per-pixel reference's.
     fn assert_matches_reference(rgba: &[u8], width: u32, height: u32, label: &str) {
         let reference = reference_report(rgba, width, height);
         for (path, threshold) in [("serial", u64::MAX), ("parallel", 0)] {
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     #[slow]
-    fn every_rgb_triple_reduces_exactly_as_the_frozen_reference() {
+    fn every_rgb_triple_reduces_exactly_as_the_per_pixel_reference() {
         // The whole 8-bit RGB domain, one pixel per (r, g, b) triple: 2^24 pixels, 4096 x 4096,
         // 256 worker chunks in the parallel path. Alpha varies and is never consulted. The whole
         // `Report` is compared, so a one-count difference in any bin or counter fails.
@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_edges_and_clip_heavy_noise_reduce_exactly_as_the_frozen_reference() {
+    fn chunk_edges_and_clip_heavy_noise_reduce_exactly_as_the_per_pixel_reference() {
         // Buffers whose length straddles the worker chunk (one pixel, one short of a chunk, a
         // chunk, one over, and two chunks and a remainder), each uniform at an endpoint pair and
         // then a seeded noise buffer with a quarter of its channel bytes at 0 and a quarter at 255.

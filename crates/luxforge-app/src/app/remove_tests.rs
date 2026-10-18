@@ -706,7 +706,7 @@ fn before_the_flags_are_read_remove_is_not_offered() {
 }
 
 /// A painted selection and Generate send the tier's fill request, the one Copy as JSON copies; the
-/// ring shows while it runs and its one candidate (owner, 2026-10-11) fills the strip, chosen and
+/// ring shows while it runs and its one candidate fills the strip, chosen and
 /// previewed on the canvas. An independent client sending the same request gets the same pixels.
 #[test]
 #[slow]

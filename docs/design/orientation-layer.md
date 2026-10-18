@@ -4,17 +4,17 @@ Status: implemented and verified on the M4 Mac. The contract is in the [history 
 
 ## Problem
 
-Each exact transform appends its own layer. Four Rotate right actions leave four layers whose composition is the identity. The history entries are right, since four actions happened, but the recipe should describe the resulting orientation, not the gestures that reached it.
+If each exact transform appended its own layer, four Rotate right actions would leave four layers whose composition is the identity. The history entries would be right, since four actions happened, but the recipe should describe the resulting orientation, not the gestures that reached it.
 
 ## Decision
 
-Quarter-turns and reflections are one **orientation** layer holding the composed exact state, and it always sits ahead of the crop. The crop effect declares a later order within the geometry stage than the orientation, so the host places an orientation layer before the crop, and a transform composes into the orientation layer just before that position, keeping its identity. A transform made after a crop is re-expressed as the same transform ahead of it: the crop is carried through it in the same action, so the picture is the old one turned or reflected, and the crop's input stage, which is what a crop draft shows and what the crop's coordinates address, includes every transform. This is the Lightroom model: rotating a cropped photograph rotates the crop with it, and the crop tool always frames the turned photograph.
+Quarter-turns and reflections are one **orientation** layer holding the composed exact state, and it always sits ahead of the crop. The crop effect declares a later order within the geometry stage than the orientation, so the host places an orientation layer before the crop, and a transform composes into the orientation layer just before that position, keeping its identity. A transform made after a crop is re-expressed as the same transform ahead of it: the crop is carried through it in the same action, so the picture is the previous one turned or reflected, and the crop's input stage, which is what a crop draft shows and what the crop's coordinates address, includes every transform. This is the Lightroom model: rotating a cropped photograph rotates the crop with it, and the crop tool always frames the turned photograph.
 
 ### Payload
 
 Effect `luxforge.geometry.orientation`, format 1, geometry stage, payload `{"mirror": bool, "turns": 0..3}`. Its mapping is: mirror horizontally when `mirror` is true, then rotate clockwise by `turns` quarter-turns. Every one of the eight exact orientations has exactly one such payload; `{"mirror": false, "turns": 0}` is the neutral orientation with an identity mapping and unchanged stage.
 
-Crop, transform, straighten (`luxforge.crop`) owns the orientation and crop effects together. Its four transform buttons lead the Ratio and Angle controls; the separate Transforms module is removed. The four actions keep their durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) and their generated controls and API. Applying an action to a payload `(m, k)`:
+Crop, transform, straighten (`luxforge.crop`) owns the orientation and crop effects together. Its four transform buttons lead the Ratio and Angle controls. The four actions have durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) and their generated controls and API. Applying an action to a payload `(m, k)`:
 
 | Action | Result |
 | --- | --- |
@@ -23,7 +23,7 @@ Crop, transform, straighten (`luxforge.crop`) owns the orientation and crop effe
 | Mirror horizontal | `(not m, 4 − k mod 4)` |
 | Flip vertical | `(not m, 2 − k mod 4)` |
 
-These follow from `M ∘ R^k = R^(−k) ∘ M` and flip vertical being `R^2 ∘ M`. The mapping is compiled by composing the existing exact geometries of the mirror and of `turns` clockwise quarter-turns, so integer exactness is unchanged.
+These follow from `M ∘ R^k = R^(−k) ∘ M` and flip vertical being `R^2 ∘ M`. The mapping is compiled by composing the exact geometries of the mirror and of `turns` clockwise quarter-turns, so integer exactness holds.
 
 ### Planning rule
 
@@ -38,17 +38,15 @@ These follow from `M ∘ R^k = R^(−k) ∘ M` and flip vertical being `R^2 ∘ 
 
 The crop module answers the `carry` hook with this rule (`CropPayload::carried`).
 
-The rotated box turns and reflects with its input, and a reflection reverses the straightening angle, so a crop is carried by mapping its whole-pixel output rectangle through the orientation in box space. A quarter turn keeps the angle and swaps the box; a reflection negates the angle. At angle zero the box is the input stage, every edge stays on whole pixels and the carry is exact: the new render is byte-identical to the old one turned, and the inverse orientation carries the payload back. At any other angle the box extents are not whole pixels, so an edge measured from the far side of the box lands between pixels. The extents are kept and the origin moves to the nearest whole box pixel at which they are still covered, at most half a box pixel away; only a rectangle touching the rotated source on opposite sides has no such position and is fitted instead, which trims it by at most a pixel on an axis. The render is then the old one turned up to that sub-pixel resample, not byte-identical. The payload format and its output rounding are unchanged.
-
-The previous `luxforge.geometry.transform` effect is removed. Stacks holding it are refused explicitly as an unavailable effect, never rewritten; use a new catalog. This follows the current-shapes rule.
+The rotated box turns and reflects with its input, and a reflection reverses the straightening angle, so a crop is carried by mapping its whole-pixel output rectangle through the orientation in box space. A quarter turn keeps the angle and swaps the box; a reflection negates the angle. At angle zero the box is the input stage, every edge stays on whole pixels and the carry is exact: the new render is byte-identical to the old one turned, and the inverse orientation carries the payload back. At any other angle the box extents are not whole pixels, so an edge measured from the far side of the box lands between pixels. The extents are kept and the origin moves to the nearest whole box pixel at which they are still covered, at most half a box pixel away; only a rectangle touching the rotated source on opposite sides has no such position and is fitted instead, which trims it by at most a pixel on an axis. The render is then the old one turned up to that sub-pixel resample, not byte-identical.
 
 ### Consequences
 
 - A stack holds one orientation layer, ahead of the crop, however many transforms were made before or after cropping.
 - The crop's parameters (`edit.crop`, `crop-fit`'s `original` ratio, `recipe.describe` values) address the turned stage, the one the person sees.
 - A crop draft left open while a transform commits is marked conflicted, as for any other commit. Reapply carries the draft through the change in orientation ahead of the crop by the same rule, so the frame keeps selecting what it did, and a locked ratio turns with a quarter turn.
-- History, undo, restore, versions and lineage are unchanged: each action is still one entry with its complete resulting stack.
-- The desktop shows four transform controls in the combined crop section, and the API keeps `edit.transform` with its `transform` parameter. The header reset remains Reset crop, keeping orientation.
+- History, undo, restore, versions and lineage need nothing of their own: each action is one entry with its complete resulting stack.
+- The desktop shows four transform controls in the combined crop section, and the API has `edit.transform` with its `transform` parameter. The header reset is Reset crop, keeping orientation.
 
 ## Acceptance
 
@@ -61,4 +59,4 @@ The previous `luxforge.geometry.transform` effect is removed. Stacks holding it 
 
 ## Performance review
 
-The combined module reuses the exact transform and crop request paths. Source preparation still uses the signature-verified cache; no new reads, hashing, decoding, full-frame allocations, frame copies, timers, polls, subscriptions or caches are introduced. Planning, validation and no-op checks remain metadata and geometry work on the owner, with no rasterization. A transform button uses the existing narrow mutation completion: state and displayed recipe refresh, one preview job and its necessary upload, without fetching the history page. Existing exact-buffer tests cover composed orientations, four-turn identity, undo, and carrying a crop through each transform; they now exercise the combined provider. No performance distribution was collected for this descriptor and control consolidation, and no performance improvement is claimed.
+The combined module uses the exact transform and crop request paths. Source preparation uses the signature-verified cache; the module adds no reads, hashing, decoding, full-frame allocations, frame copies, timers, polls, subscriptions or caches. Planning, validation and no-op checks are metadata and geometry work on the owner, with no rasterization. A transform button uses the narrow mutation completion: state and displayed recipe refresh, one preview job and its necessary upload, without fetching the history page. Exact-buffer tests cover composed orientations, four-turn identity, undo, and carrying a crop through each transform on the combined provider. No performance distribution is collected for the combined module, and no performance improvement is claimed.

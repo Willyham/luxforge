@@ -1,5 +1,5 @@
 //! The repair primitive a repair-stage module compiles its layer into ([`crate::Processing::Repair`],
-//! `docs/design/corrections.md`, "Rendering (TASK-003)").
+//! `docs/design/corrections.md`, "Rendering").
 //!
 //! A repair layer holds an ordered list of operations, each reading a region of its own input that
 //! may lie anywhere in the stage: Clone copies a source region over a destination, Heal adapts the
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 pub(crate) use crate::repair::RepairKind;
 
-/// The most rows one repair table holds: the owner's 100 corrections per photograph (2026-10-09).
+/// The most rows one repair table holds: 100 corrections per photograph.
 /// A repair effect is single and admission keeps its layer in the leading run, so this is also the
 /// limit per photograph. A table past it is refused with `resource-limit`, never truncated.
 pub const MAX_REPAIR_OPERATIONS: usize = 100;

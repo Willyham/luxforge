@@ -4,7 +4,7 @@ Status: frozen and implemented by the `luxforge.presence` module, which is check
 
 No formula below claims Lightroom or darktable numeric equivalence. The [Lightroom detail research](../research/lightroom/detail-and-local-contrast.md) and [darktable detail research](../research/darktable/detail-and-local-contrast.md) are context and candidate mechanisms only, as their own documents say.
 
-The CPU reference's JPEG frame hand-offs use the shared RGB16 encoded-sRGB boundary when a spatial output feeds colour or another spatial operation, and when a colour segment feeds a spatial operation. Terminal and resample boundaries remain 8-bit. The [Detail precision contract](detail.md#the-16-bit-hand-off-on-the-byte-path) owns the exact tables and width selection; the equations and independent linear-light oracle here are unchanged. The quantization ramp below ends directly at the terminal, so it retains its original 8-bit boundary. Native mixed-stack qualification and current GPU costs are recorded in [performance](../specs/performance.md); outstanding limits remain in the [Detail design](detail.md).
+The CPU reference's JPEG frame hand-offs use the shared RGB16 encoded-sRGB boundary when a spatial output feeds colour or another spatial operation, and when a colour segment feeds a spatial operation. Terminal and resample boundaries remain 8-bit. The [Detail precision contract](detail.md#the-16-bit-hand-off-on-the-byte-path) owns the exact tables and width selection; the equations and independent linear-light oracle here do not depend on it. The quantization ramp below ends directly at the terminal, so it keeps an 8-bit boundary. Native mixed-stack qualification and current GPU costs are recorded in [performance](../specs/performance.md); outstanding limits remain in the [Detail design](detail.md).
 
 ## Working domains
 
@@ -87,7 +87,7 @@ scaled_radius(r_6000, S) = max(1, round(r_6000 * min(S, 10000) / 6000))
 
 **The band-nondegeneracy rule** on `r_coarse` matters: without it, both Texture radii round to 1 below a long side of about 750 px, the two smoothers become identical, the band is identically zero and Texture becomes a silent no-op that is neither the identity nor an effect. Forcing `r_coarse >= r_fine + 1` keeps the unit's behaviour continuous in image size.
 
-**Clarity's base is 1.6% of the long side, not the 2% the design sketched.** 2% would make the summed halo 528 px at 60 MP, past the bound. 1.6% is the largest round value that leaves margin (448 px of 512), and the difference between a 96 px and a 120 px base at 24 MP is not a visible distinction in a broad local-contrast base.
+**Clarity's base is 1.6% of the long side.** 2% would make the summed halo 528 px at 60 MP, past the bound. 1.6% is the largest round value that leaves margin (448 px of 512), and the difference between a 96 px and a 120 px base at 24 MP is not a visible distinction in a broad local-contrast base.
 
 **Halos**, as explicit functions of the long side `S`:
 
@@ -228,7 +228,7 @@ For `amount > 0` the deviation from `A` is `(I - A)/t` with `t` decreasing in th
 
 ## Unit order
 
-**Dehaze, then Texture, then Clarity** — the design's default, adopted unchanged.
+**Dehaze, then Texture, then Clarity**, the design's default.
 
 1. **Dehaze first** because it is a physical inversion of a degradation: it should see the recorded scene, not a scene whose local contrast two other units have already amplified. Running it later would make the dark-channel estimate a function of Texture's and Clarity's settings.
 2. **Texture before Clarity** so Clarity's broad base is computed over a frame whose medium-frequency content is already final; the reverse order would make the band Texture isolates depend on how much broad contrast Clarity had added, coupling two controls that should read as independent.
@@ -253,7 +253,7 @@ Rough figures for one 512 × 512 output tile at a 60 MP stage (long side 10000, 
 | Texture scratch (encoded plane, one base, live filter temporaries over 1166²) | 1166 × 1166 | ≈ 6 | ≈ 31.1 MiB |
 | Clarity scratch (encoded plane over 1166², reduced grid ≈ 290², upsampled base over the tile) | — | ≈ 1 full + 6 reduced + 1 tile | ≈ 8.1 MiB |
 
-**A consequence the production task must resolve, not a figure to admire.** If the units free their scratch between them, the peak is about **57 MiB for a single tile** — essentially the whole 64 MiB process-wide `ScratchBudget`, so at 60 MP no two tiles could be in flight at once and the Rayon streaming the design assumes would serialize. The cause is the ratio, not the absolute size: a 512 × 512 output tile needs a 1408 × 1408 input region, 7.6 times more input than output. Larger tiles amortize the halo far better (a 2048 × 2048 output tile needs 2944² input, 2.1 times more), and tiling each unit separately rather than the operation as a whole reduces each pass's halo to that unit's own. Both options match this reference exactly, because the reference evaluates each unit over an arbitrary output rectangle and the tiled test composes those region evaluations; neither changes a number here. Choosing between them belongs to the host task, with measurements.
+**A consequence for the host.** If the units free their scratch between them, the peak is about **57 MiB for a single tile**, essentially the whole 64 MiB process-wide `ScratchBudget`, so under that budget at 60 MP no two tiles could be in flight at once and Rayon streaming would serialize. The cause is the ratio, not the absolute size: a 512 × 512 output tile needs a 1408 × 1408 input region, 7.6 times more input than output. Larger tiles amortize the halo far better (a 2048 × 2048 output tile needs 2944² input, 2.1 times more), and tiling each unit separately rather than the operation as a whole reduces each pass's halo to that unit's own. Both options match this reference exactly, because the reference evaluates each unit over an arbitrary output rectangle and the tiled test composes those region evaluations; neither changes a number here. The host's tile sizes and its separate spatial budget are in the [design](presence-mixer-vignette.md#presence-the-spatial-primitive).
 
 ## Measured figures
 
@@ -376,13 +376,13 @@ Stated honestly, this is what the three frozen units cannot do.
 - **Neither luminance unit distinguishes noise from texture.** Texture amplifies 0.02-amplitude noise by 1.39, Clarity by 1.99. Noise and real texture overlap in scale; no threshold here separates them, and none is claimed. Detail and noise reduction are delivered by a separate module with its own design.
 - **Above a 60 MP stage the radii stop scaling,** so the effect is finer relative to the frame on a 16384 px panorama than on a 24 MP photograph. The alternative was refusing the operation entirely on such a stage.
 - **Clarity's base is quantised to the 4× reduced grid.** Below a long side of about 1000 px the reduced radius rounds to 1 or 2 and the effective base is broader, relative to the frame, than 1.6% of the long side. The fixtures exercise that path deliberately; the scale-covariance claim is made for stages large enough for the rounding not to dominate.
-- **No visual review on photographs was performed.** Every figure in this study is from synthetic fixtures. The delivered module's native M4 rendered evidence has separate scope in its design and [performance](../specs/performance.md); it does not turn these synthetic probes into controlled photographic quality qualification.
+- **This study includes no visual review on photographs.** Every figure in this study is from synthetic fixtures. The delivered module's native M4 rendered evidence has separate scope in its design and [performance](../specs/performance.md); it does not turn these synthetic probes into controlled photographic quality qualification.
 
 ## Files
 
 - `docs/design/presence-study.md` — this document.
 - [`crates/luxforge-reference/src/presence.rs`](../../crates/luxforge-reference/src/presence.rs) — the literal `f64` transcription of the equations above: the plane/rectangle machinery that makes halo violations fail loudly, the finite-support filters, the reduction and upsample, the compressive gain, the three units, the atmospheric-light estimator and the whole-frame `apply_presence`.
-- [`crates/luxforge-reference/src/lib.rs`](../../crates/luxforge-reference/src/lib.rs) — `pub mod presence;`, unchanged by this study.
+- [`crates/luxforge-reference/src/lib.rs`](../../crates/luxforge-reference/src/lib.rs) — `pub mod presence;`.
 - [`crates/luxforge-reference/tests/studies/presence.rs`](../../crates/luxforge-reference/tests/studies/presence.rs) — the deterministic image specs, the property proofs (exact identity, bit-identical tiled evaluation, halo table, achromatic and hue invariance, the encoded range bound, monotonicity, finiteness), the measurements, the `f32` comparison, the `#[ignore]`d fixture generator and the two reload checks.
 - [`fixtures/presence/cases.json`](../../fixtures/presence/cases.json) — ten oracle cases on 24 × 24 images at two stage sizes, with full `f64` output.
 - [`fixtures/presence/measurements.json`](../../fixtures/presence/measurements.json) — the 76 figures quoted above.
