@@ -1298,10 +1298,14 @@ pub(super) fn behind_spatial() -> Vec<(&'static str, Recipe, usize)> {
     ]
 }
 
-/// The CPU's preparation of the light from the stage the staged sweep writes: the stack before
-/// layer `layer` drawn whole on this device, held as the stage texture holds it — half floats on
-/// the byte path, clamped where the byte path clamps — then the CPU's 16-pixel reduction of it in
-/// `f64` and Dehaze's selection (`qualification::presence::atmosphere`).
+/// The CPU's preparation of the light from the stage the staged sweep writes: the whole stack's
+/// plan cut before layer `layer`'s spatial operation, so its spatial operations run each with the
+/// colour operations after it as the sweep runs them, drawn whole on this device and held as the
+/// stage texture holds it — half floats on the byte path, clamped where the byte path clamps —
+/// then the CPU's 16-pixel reduction of it in `f64` and Dehaze's selection
+/// (`qualification::presence::atmosphere`). The prefix planned as a stack of its own would run
+/// the colour layers after its last spatial layer as its output operations, over that layer's held
+/// output, rounding it to half floats once more than the sweep does.
 fn over_staged_prefix(
     qualifier: &Qualifier,
     registry: &ModuleRegistry,
@@ -1311,10 +1315,24 @@ fn over_staged_prefix(
     photo: &Photo,
     path: Path,
 ) -> [f64; 3] {
-    let prefix = Recipe {
-        layers: recipe.layers[..layer].to_vec(),
-        ..recipe.clone()
+    let mut prefix = match gpu_plan(registry, recipe, request(photo, path)).expect("a stack") {
+        GpuAnswer::Plan(plan) => *plan,
+        GpuAnswer::Fallback(reason) => panic!("{reason}"),
     };
+    let at = prefix
+        .spatial
+        .iter()
+        .position(|operation| operation.layer == layer)
+        .expect("the light's spatial operation");
+    let output = prefix.geometry.output();
+    assert_eq!(
+        (output.width, output.height),
+        (photo.width, photo.height),
+        "a stack with no geometry before its output"
+    );
+    prefix.spatial.truncate(at);
+    prefix.output.clear();
+    prefix.lights.clear();
     let cut = whole_cut(source, 1);
     let bytes = qualifier.derive(source, &cut).expect("the cut");
     let boundary = GpuBoundary::new(
@@ -1325,7 +1343,7 @@ fn over_staged_prefix(
         source.kind().boundary(),
     )
     .expect("the held stage");
-    let plan = reading_plan(registry, &prefix, request(photo, path), boundary);
+    let plan = surface_plan(&prefix, boundary).expect("a runnable plan");
     let values = qualifier.evaluate(&plan).expect("the prefix");
     let len = values.len();
     let mut planes = vec![0f32; 3 * len];
