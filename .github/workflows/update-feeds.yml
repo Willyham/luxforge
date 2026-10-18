@@ -1,8 +1,9 @@
 name: Update feeds
 # Regenerates every target's appcast from the update records of all published releases and
-# publishes them to the API's update store (docs/design/auto-update.md#publishing-the-feeds). It
-# runs after each successful Release builds run, and by hand from main after a withdrawal. It can
-# only read the repository, so a failed publication never alters a release.
+# publishes them over HTTPS to the API's update store
+# (docs/design/auto-update.md#publishing-the-feeds). It runs after each successful Release builds
+# run, and by hand from main after a withdrawal. It can only read the repository, so a failed
+# publication never alters a release.
 on:
   workflow_run:
     workflows: [Release builds]
@@ -54,24 +55,22 @@ jobs:
           path: ${{ runner.temp }}/luxforge-update-feeds.tar
           if-no-files-found: error
           retention-days: 30
-      # Only this step receives the publication key. On the API host the key's forced command is
-      # install-feeds.py, so it can do nothing but install a deploy archive into the update store.
+      # Only this step receives the publication token, which the API's updates Worker accepts for
+      # nothing but installing a deploy archive into the update store. It posts the archive to the
+      # publications route beside the feeds (release/update.json's feed_base_url), keeping the token
+      # off the command line, and the Worker answers `installed feeds-…` or why it refused.
       - name: Publish the feeds to the update store
         env:
-          LUXFORGE_UPDATE_PUBLISH_SSH_KEY: ${{ secrets.LUXFORGE_UPDATE_PUBLISH_SSH_KEY }}
-          PUBLISH_DESTINATION: ${{ vars.LUXFORGE_UPDATE_PUBLISH_DESTINATION }}
-          PUBLISH_KNOWN_HOSTS: ${{ vars.LUXFORGE_UPDATE_PUBLISH_KNOWN_HOSTS }}
+          LUXFORGE_UPDATE_PUBLISH_TOKEN: ${{ secrets.LUXFORGE_UPDATE_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          for name in LUXFORGE_UPDATE_PUBLISH_SSH_KEY PUBLISH_DESTINATION PUBLISH_KNOWN_HOSTS; do
-            if [[ -z "${!name}" ]]; then echo "Missing publication setting: $name" >&2; exit 1; fi
-          done
-          case "$PUBLISH_DESTINATION" in ssh://*) ;; *) echo 'LUXFORGE_UPDATE_PUBLISH_DESTINATION must be ssh://USER@HOST[:PORT]' >&2; exit 1 ;; esac
-          ssh_dir="$RUNNER_TEMP/luxforge-publication"
-          trap 'rm -rf "$ssh_dir"' EXIT
-          (umask 077 && mkdir "$ssh_dir" && printf '%s\n' "$LUXFORGE_UPDATE_PUBLISH_SSH_KEY" > "$ssh_dir/key" && printf '%s\n' "$PUBLISH_KNOWN_HOSTS" > "$ssh_dir/known_hosts")
-          unset LUXFORGE_UPDATE_PUBLISH_SSH_KEY
-          ssh -F /dev/null -i "$ssh_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
-            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-            "$PUBLISH_DESTINATION" < "$RUNNER_TEMP/luxforge-update-feeds.tar"
+          if [[ -z "$LUXFORGE_UPDATE_PUBLISH_TOKEN" ]]; then echo 'Missing publication setting: LUXFORGE_UPDATE_PUBLISH_TOKEN' >&2; exit 1; fi
+          base=$(jq -r .feed_base_url release/update.json)
+          case "$base" in https://*) ;; *) echo "release/update.json's feed_base_url must be https://, not $base" >&2; exit 1 ;; esac
+          header="$RUNNER_TEMP/luxforge-publication-header"
+          trap 'rm -f "$header"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$LUXFORGE_UPDATE_PUBLISH_TOKEN" > "$header")
+          unset LUXFORGE_UPDATE_PUBLISH_TOKEN
+          curl --fail-with-body -sS --proto '=https' --tlsv1.2 --max-time 120 -X POST \
+            -H @"$header" -H 'content-type: application/x-tar' \
+            --data-binary @"$RUNNER_TEMP/luxforge-update-feeds.tar" "${base%/}/publications"

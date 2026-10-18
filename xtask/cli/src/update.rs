@@ -258,9 +258,10 @@ fn ensure_new_deploy(path: &Path) -> Result {
     ensure(!path.exists(), "The deploy archive output must be new")
 }
 
-/// Writes the deploy archive the API's update store installs (`install-feeds.py`): an
-/// uncompressed ustar archive holding exactly `<target>/appcast.xml` for each feed, as regular
-/// files in target order with fixed metadata, so the same feeds write the same bytes.
+/// Writes the deploy archive the API's update store installs (the backend's `luxforge-updates`
+/// Worker, or `install-feeds.py` in the reference stack): an uncompressed ustar archive holding
+/// exactly `<target>/appcast.xml` for each feed, as regular files in target order with fixed
+/// metadata, so the same feeds write the same bytes.
 pub fn deploy(feeds: &Feeds, path: &Path) -> Result {
     ensure_new_deploy(path)?;
     let mut entries = Vec::new();
