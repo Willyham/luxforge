@@ -32,7 +32,7 @@ sha2.workspace = true
 tempfile = "=3.27.0"
 flate2 = "=1.1.10"
 tar = "=0.4.46"
-zip = { version = "=8.2.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 # Decompresses the pinned prebuilt ONNX Runtime archives the source archive carries
 # (`release-source`), with the features `ort-sys`'s build script already builds it with.
 lzma-rust2 = { version = "=0.15.8", default-features = false, features = ["std", "optimization"] }

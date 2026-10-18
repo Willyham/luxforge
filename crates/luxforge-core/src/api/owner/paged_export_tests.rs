@@ -163,9 +163,16 @@ impl Opened {
         response.result.expect("a result")
     }
 
-    /// Read a job until it leaves `queued` and `running`, as a client does.
+    /// Read a job until it leaves `queued` and `running`, as a client does. A job over a photograph
+    /// above 128 megapixels evaluates the whole frame through the reference bands, minutes of CPU
+    /// time on a three-core runner beside the other tests, so its hang bound is four of the usual.
     fn settled(&self, job: &Value) -> Value {
-        luxforge_testbase::wait_for("the job to settle", || {
+        let bound = if u64::from(self.width) * u64::from(self.height) > 128_000_000 {
+            luxforge_testbase::HANG * 4
+        } else {
+            luxforge_testbase::HANG
+        };
+        luxforge_testbase::wait_for_within(bound, "the job to settle", || {
             let read = self.ok("job.read", json!({"job_id": job}));
             (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
         })
