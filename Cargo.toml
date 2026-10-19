@@ -45,7 +45,7 @@ iced = { version = "=0.14.0", default-features = false, features = ["advanced", 
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite
 # job.wait detects socket EOF without polling or a thread per wait; no runtime worker is spawned.
 tokio = { version = "=1.53.1", default-features = false, features = ["time"] }
-rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 rayon = "=1.12.0"
 # An independent EXIF reader and writer for the export metadata tests only. Already in the lockfile
 # through Iced, pinned to that version so the tests add no package.
@@ -114,7 +114,7 @@ objc2-core-services = { version = "=0.3.2", default-features = false, features =
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFString", "CFUUID"] }
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
 # inotify, `poll` and `eventfd` for the folder watcher on Linux, already in the lockfile through the
-# desktop's portal dialogs and pinned to that version. They are safe calls, so the Linux watcher
+# desktop's Wayland and X11 windowing and pinned to that version. They are safe calls, so the Linux watcher
 # writes no `unsafe`.
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "event"] }
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14

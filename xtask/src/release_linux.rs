@@ -201,7 +201,8 @@ are not tested.
   {linked}, from {packages}. build.json records each executable's imports under elf_imports.
 * For opening and choosing files, the XDG desktop portal (xdg-desktop-portal) with a file-chooser
   backend such as xdg-desktop-portal-gnome, xdg-desktop-portal-gtk or xdg-desktop-portal-kde, on a
-  D-Bus session. Without them the file chooser cannot open.
+  D-Bus session, which Luxforge reaches through libdbus-1.so.3 (libdbus-1-3). Without them the
+  file chooser cannot open.
 * Stored secrets are not supported on Linux yet: a module that needs one reports that it is not
   ready, and nothing is stored in plain text.
 
