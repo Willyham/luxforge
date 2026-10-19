@@ -105,8 +105,9 @@ uses two transfer workers per job, deletes downloaded test files, caches only
 build dependencies and retains reports for 14 days. The full run and the qualified-only selection each read
 12.18 GiB per week, because every retained source is qualified. AWS CLI,
 Rust and Actions are pinned. GitHub has the bucket-only reader secrets and
-account variable. The scheduled workflow is on the default branch. No complete hosted run has
-passed yet, so Linux timing and compatibility evidence remain outstanding. No pull-request event receives R2 access.
+account variable. The scheduled workflow is on the default branch. A complete hosted run
+passes all four shards, every retained source on x86-64 Linux with the X-Trans
+ranges above; hosted timing is not measured. No pull-request event receives R2 access.
 
 ## Acceptance
 
