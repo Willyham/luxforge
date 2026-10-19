@@ -14518,7 +14518,13 @@
           "finite": true,
           "min": -0.16807282,
           "max": 1.9515874,
-          "sha256": "dfd174d455f1a45296cb3284ee9ebc14f54651fee6e14fd16251facfc67d5af5"
+          "sha256": "dfd174d455f1a45296cb3284ee9ebc14f54651fee6e14fd16251facfc67d5af5",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16503751,
+              "max": 1.9515874
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -14526,7 +14532,13 @@
           "finite": true,
           "min": -0.218148,
           "max": 2.0491667,
-          "sha256": "fe9e59aae25f739de73b53d9cb6a975110e4a1087e540377f64af94d8439fb01"
+          "sha256": "fe9e59aae25f739de73b53d9cb6a975110e4a1087e540377f64af94d8439fb01",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16675907,
+              "max": 2.0491667
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -14759,7 +14771,13 @@
           "finite": true,
           "min": -0.16919528,
           "max": 1.7139977,
-          "sha256": "42e7543aabb547faa15d50047157af93bf7675bee4ff769596f5939dfad82309"
+          "sha256": "42e7543aabb547faa15d50047157af93bf7675bee4ff769596f5939dfad82309",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16925469,
+              "max": 1.7139977
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -14767,7 +14785,13 @@
           "finite": true,
           "min": -0.22830659,
           "max": 1.7996975,
-          "sha256": "560774b04961d0cfa60e9a8031271f64373090b7275dad680f5076d652b81cbb"
+          "sha256": "560774b04961d0cfa60e9a8031271f64373090b7275dad680f5076d652b81cbb",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16732031,
+              "max": 1.7996975
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -15240,7 +15264,13 @@
           "finite": true,
           "min": -0.14832811,
           "max": 0.7678153,
-          "sha256": "f67c71182e4dc2c25f47294ce52a1844e5cceebab3fa7ea1c4038c8b45850f85"
+          "sha256": "f67c71182e4dc2c25f47294ce52a1844e5cceebab3fa7ea1c4038c8b45850f85",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14438447,
+              "max": 0.7678153
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -15248,7 +15278,13 @@
           "finite": true,
           "min": -0.14876343,
           "max": 0.73042816,
-          "sha256": "25d84914edbf0f3ecd741406e2bd55a6f923db9e32f25dbcd1cfc1f2955cf8bf"
+          "sha256": "25d84914edbf0f3ecd741406e2bd55a6f923db9e32f25dbcd1cfc1f2955cf8bf",
+          "ranges": {
+            "x86_64": {
+              "min": -0.15136455,
+              "max": 0.7288864
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -15481,7 +15517,13 @@
           "finite": true,
           "min": -0.13740332,
           "max": 0.7161019,
-          "sha256": "40e89ef6ab2d4d7b063e28c989e75b626fc59af6ef187f56ec787bbfe3b710cb"
+          "sha256": "40e89ef6ab2d4d7b063e28c989e75b626fc59af6ef187f56ec787bbfe3b710cb",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14023098,
+              "max": 0.7161019
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -15489,7 +15531,13 @@
           "finite": true,
           "min": -0.15346968,
           "max": 0.6802968,
-          "sha256": "69e774d58b25e4550265e77581058472aeafcd197704afd817de62a81889a88d"
+          "sha256": "69e774d58b25e4550265e77581058472aeafcd197704afd817de62a81889a88d",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14710115,
+              "max": 0.6802968
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -15722,7 +15770,13 @@
           "finite": true,
           "min": -0.1398467,
           "max": 0.6457236,
-          "sha256": "eecc56df0fdd06bfa53f33ea777ae99e3c205c9734c17b53859195dff4e4b412"
+          "sha256": "eecc56df0fdd06bfa53f33ea777ae99e3c205c9734c17b53859195dff4e4b412",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14000191,
+              "max": 0.6479722
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -15730,7 +15784,13 @@
           "finite": true,
           "min": -0.15339844,
           "max": 0.61612165,
-          "sha256": "2b101f2fa8e58f15b677bc66814f4cd2df84c7f9ea9285254cc6a8855003b551"
+          "sha256": "2b101f2fa8e58f15b677bc66814f4cd2df84c7f9ea9285254cc6a8855003b551",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14688307,
+              "max": 0.61612165
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -15963,7 +16023,13 @@
           "finite": true,
           "min": -0.16265675,
           "max": 1.1914757,
-          "sha256": "cda4154225317578d46d2adcb21b0d64812c98e31c82c1d89d52235b6e48a502"
+          "sha256": "cda4154225317578d46d2adcb21b0d64812c98e31c82c1d89d52235b6e48a502",
+          "ranges": {
+            "x86_64": {
+              "min": -0.15197702,
+              "max": 1.1914757
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -15971,7 +16037,13 @@
           "finite": true,
           "min": -0.14767484,
           "max": 1.2393051,
-          "sha256": "8e4da049931c6d1a0507c07f8a3d0ffeaae168086dd1ef0839147e6a984ff72f"
+          "sha256": "8e4da049931c6d1a0507c07f8a3d0ffeaae168086dd1ef0839147e6a984ff72f",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14570644,
+              "max": 1.2393051
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -16204,7 +16276,13 @@
           "finite": true,
           "min": -0.13362227,
           "max": 0.7892716,
-          "sha256": "9a81ebc967e5b6655f8b8010221e661894ef8192e8bb3fe946a4a702c004b564"
+          "sha256": "9a81ebc967e5b6655f8b8010221e661894ef8192e8bb3fe946a4a702c004b564",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13173695,
+              "max": 0.7892716
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -16212,7 +16290,13 @@
           "finite": true,
           "min": -0.14078341,
           "max": 0.8188191,
-          "sha256": "4ab7e751d15ef4f9e67a514cf533469467153eddeef3e19cb6195473927a3c6f"
+          "sha256": "4ab7e751d15ef4f9e67a514cf533469467153eddeef3e19cb6195473927a3c6f",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13775957,
+              "max": 0.8188191
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -16686,7 +16770,13 @@
           "finite": true,
           "min": -0.18057169,
           "max": 0.36774647,
-          "sha256": "9f586cadb569c73bb446ea69365b05cb893eeca0514087b97618c8c653403a89"
+          "sha256": "9f586cadb569c73bb446ea69365b05cb893eeca0514087b97618c8c653403a89",
+          "ranges": {
+            "x86_64": {
+              "min": -0.17046241,
+              "max": 0.36774647
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -16694,7 +16784,13 @@
           "finite": true,
           "min": -0.16510148,
           "max": 0.38613382,
-          "sha256": "56a13aa87a485a95aa581877ae3dd554d7301bbb0f9276a9309af8473c0a3d67"
+          "sha256": "56a13aa87a485a95aa581877ae3dd554d7301bbb0f9276a9309af8473c0a3d67",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16410705,
+              "max": 0.38613382
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -17168,7 +17264,13 @@
           "finite": true,
           "min": -0.14468187,
           "max": 2.0841088,
-          "sha256": "61801167a2588c835b3de61e6252b9bb6c6299621703b826c780b2bbe51dddc1"
+          "sha256": "61801167a2588c835b3de61e6252b9bb6c6299621703b826c780b2bbe51dddc1",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14439082,
+              "max": 2.0841088
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -17176,7 +17278,13 @@
           "finite": true,
           "min": -0.14605528,
           "max": 2.1278143,
-          "sha256": "ad268550b096cff9036e5a36db7c10465faaf113c15ab1a979dcf39a0b092b19"
+          "sha256": "ad268550b096cff9036e5a36db7c10465faaf113c15ab1a979dcf39a0b092b19",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14246826,
+              "max": 2.1278143
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -17409,7 +17517,13 @@
           "finite": true,
           "min": -0.12990724,
           "max": 0.337211,
-          "sha256": "f8d6d51659746b29ac3f55ffc9e013ff7942b50c5f776ae9e02a84290c5fa8a4"
+          "sha256": "f8d6d51659746b29ac3f55ffc9e013ff7942b50c5f776ae9e02a84290c5fa8a4",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13154711,
+              "max": 0.337211
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6336,
@@ -17417,7 +17531,13 @@
           "finite": true,
           "min": -0.13262579,
           "max": 0.353259,
-          "sha256": "6cf0d1f466ae8284206ff02e01978f28bc01e681f3edd3316124ee861cec50c6"
+          "sha256": "6cf0d1f466ae8284206ff02e01978f28bc01e681f3edd3316124ee861cec50c6",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13209562,
+              "max": 0.353259
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -17650,7 +17770,13 @@
           "finite": true,
           "min": -0.15870906,
           "max": 2.258384,
-          "sha256": "9a271c891b6af568f40dd84d7786e93b8124eb372476b8cf86f8e56b6514d595"
+          "sha256": "9a271c891b6af568f40dd84d7786e93b8124eb372476b8cf86f8e56b6514d595",
+          "ranges": {
+            "x86_64": {
+              "min": -0.15447262,
+              "max": 2.258384
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -17658,7 +17784,13 @@
           "finite": true,
           "min": -0.1641964,
           "max": 2.3700721,
-          "sha256": "15a51660d3727b02cadfd2e7968e862c163bcfa46c0f4e0da8f904f04688db64"
+          "sha256": "15a51660d3727b02cadfd2e7968e862c163bcfa46c0f4e0da8f904f04688db64",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16197398,
+              "max": 2.3711321
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -17891,7 +18023,13 @@
           "finite": true,
           "min": -0.14293823,
           "max": 0.21397339,
-          "sha256": "96c6dbee12dd2f93bb040705fa3667122d8f2b75e0908663b80f58c0e204be27"
+          "sha256": "96c6dbee12dd2f93bb040705fa3667122d8f2b75e0908663b80f58c0e204be27",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13466339,
+              "max": 0.21397339
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -17899,7 +18037,13 @@
           "finite": true,
           "min": -0.14300841,
           "max": 0.20343003,
-          "sha256": "bf7e6b67520b9cf3d856b8c9e2d66f15a544d42cbc2c86047b496b3749e08890"
+          "sha256": "bf7e6b67520b9cf3d856b8c9e2d66f15a544d42cbc2c86047b496b3749e08890",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14121747,
+              "max": 0.20343003
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -18558,7 +18702,13 @@
           "finite": true,
           "min": -0.14172423,
           "max": 1.9652966,
-          "sha256": "690aa48d9fe346d477de0ed6b7a41b36cc2b5370b966df856b787c5de8bd4e56"
+          "sha256": "690aa48d9fe346d477de0ed6b7a41b36cc2b5370b966df856b787c5de8bd4e56",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13759507,
+              "max": 1.9652966
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -18566,7 +18716,13 @@
           "finite": true,
           "min": -0.1373077,
           "max": 2.0586739,
-          "sha256": "aa5260a81303192529d3181fcb160fdc0d65de1f30c4e2cd90188d910c2c6e37"
+          "sha256": "aa5260a81303192529d3181fcb160fdc0d65de1f30c4e2cd90188d910c2c6e37",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13375004,
+              "max": 2.0586739
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -18799,7 +18955,13 @@
           "finite": true,
           "min": -0.48518676,
           "max": 1.9496369,
-          "sha256": "3b9dc81cef9b6d074df5b01f31404957d22e76d545cb560af77604f9d9d8afce"
+          "sha256": "3b9dc81cef9b6d074df5b01f31404957d22e76d545cb560af77604f9d9d8afce",
+          "ranges": {
+            "x86_64": {
+              "min": -0.27250254,
+              "max": 1.9496739
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6048,
@@ -18807,7 +18969,13 @@
           "finite": true,
           "min": -0.3139144,
           "max": 2.0469878,
-          "sha256": "eb4e3cdb981b9ebf6eb153fd5603f2657c0a43021bb8ebc8981da70d29b35aae"
+          "sha256": "eb4e3cdb981b9ebf6eb153fd5603f2657c0a43021bb8ebc8981da70d29b35aae",
+          "ranges": {
+            "x86_64": {
+              "min": -0.26458856,
+              "max": 2.0469878
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -19040,7 +19208,13 @@
           "finite": true,
           "min": -0.15357938,
           "max": 1.9667596,
-          "sha256": "a3da75ea9474f10e9ed46ce1f9e3284413c9aa6087edf303c240c7e90840f859"
+          "sha256": "a3da75ea9474f10e9ed46ce1f9e3284413c9aa6087edf303c240c7e90840f859",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13383387,
+              "max": 1.9667596
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6160,
@@ -19048,7 +19222,13 @@
           "finite": true,
           "min": -0.16086218,
           "max": 2.0650976,
-          "sha256": "225c9a8a4f6a7fc9a13aaeecf8e5c822db57374a655725984d5714c88e22892a"
+          "sha256": "225c9a8a4f6a7fc9a13aaeecf8e5c822db57374a655725984d5714c88e22892a",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14013752,
+              "max": 2.0650976
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -22361,7 +22541,13 @@
           "finite": true,
           "min": -0.27535054,
           "max": 0.9233987,
-          "sha256": "8e6d6c32441db9c4fac54f2620ee89239cb6625c64f621e94d770056db69d751"
+          "sha256": "8e6d6c32441db9c4fac54f2620ee89239cb6625c64f621e94d770056db69d751",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18656252,
+              "max": 0.9233987
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6336,
@@ -22369,7 +22555,13 @@
           "finite": true,
           "min": -0.1843174,
           "max": 0.96956855,
-          "sha256": "63aeb8be90a47282da6f6b423110d08874f4a3cd6208b1501b3855e30ecc10bb"
+          "sha256": "63aeb8be90a47282da6f6b423110d08874f4a3cd6208b1501b3855e30ecc10bb",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1851018,
+              "max": 0.96956855
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -22602,7 +22794,13 @@
           "finite": true,
           "min": -0.19004312,
           "max": 0.91747147,
-          "sha256": "4b8b4375257dde7b693bd60b8af94b8286113fa992efc0d7ec818b1742b6523b"
+          "sha256": "4b8b4375257dde7b693bd60b8af94b8286113fa992efc0d7ec818b1742b6523b",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18874882,
+              "max": 0.91747147
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6336,
@@ -22610,7 +22808,13 @@
           "finite": true,
           "min": -0.19104517,
           "max": 0.9393813,
-          "sha256": "e28c7d14f6a145251daa832df6302adfc0695d2d9510aaa554ed77c64e0b3724"
+          "sha256": "e28c7d14f6a145251daa832df6302adfc0695d2d9510aaa554ed77c64e0b3724",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18720838,
+              "max": 0.9393813
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -36467,7 +36671,13 @@
           "finite": true,
           "min": -0.25558856,
           "max": 1.4216921,
-          "sha256": "ab610fd03c76ffa6a567d18ad6b6ead7c7b9f683816fdfcb2edebe3eb2a8bf6a"
+          "sha256": "ab610fd03c76ffa6a567d18ad6b6ead7c7b9f683816fdfcb2edebe3eb2a8bf6a",
+          "ranges": {
+            "x86_64": {
+              "min": -0.19535923,
+              "max": 1.4216921
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6160,
@@ -36475,7 +36685,13 @@
           "finite": true,
           "min": -0.2614478,
           "max": 1.4927768,
-          "sha256": "1b1bfbd0fef84628cf4b4dbbf9de3f2920f62ced9c7e4e36b125300e85590a7f"
+          "sha256": "1b1bfbd0fef84628cf4b4dbbf9de3f2920f62ced9c7e4e36b125300e85590a7f",
+          "ranges": {
+            "x86_64": {
+              "min": -0.20196182,
+              "max": 1.4927768
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -36707,7 +36923,13 @@
           "finite": true,
           "min": -0.22090122,
           "max": 0.63948345,
-          "sha256": "88b9553a2d7fe409669a07da7c6596b861b38177b582bb810ad5c79995a01589"
+          "sha256": "88b9553a2d7fe409669a07da7c6596b861b38177b582bb810ad5c79995a01589",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18408448,
+              "max": 0.63948345
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6048,
@@ -36715,7 +36937,13 @@
           "finite": true,
           "min": -0.20782347,
           "max": 0.6340039,
-          "sha256": "e6bfdc39bf1ec49004d9a1404a94fb7ab869e86dfc5b7d06019dfe3e4c14a424"
+          "sha256": "e6bfdc39bf1ec49004d9a1404a94fb7ab869e86dfc5b7d06019dfe3e4c14a424",
+          "ranges": {
+            "x86_64": {
+              "min": -0.19260739,
+              "max": 0.6340039
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -36947,7 +37175,13 @@
           "finite": true,
           "min": -0.13682672,
           "max": 0.36570647,
-          "sha256": "96d0d6efcfc12c1cc5c4c4bf123fb11e5360e648fad05075445f5ecc954d3274"
+          "sha256": "96d0d6efcfc12c1cc5c4c4bf123fb11e5360e648fad05075445f5ecc954d3274",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13413277,
+              "max": 0.36570647
+            }
+          }
         },
         "perturbed_wb": {
           "width": 7872,
@@ -36955,7 +37189,13 @@
           "finite": true,
           "min": -0.14878651,
           "max": 0.34742114,
-          "sha256": "451d4f7d23c4688debf6b606ca3b9a8216848e08893f3640f2483e905d4a16c7"
+          "sha256": "451d4f7d23c4688debf6b606ca3b9a8216848e08893f3640f2483e905d4a16c7",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1407047,
+              "max": 0.34742114
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -37195,7 +37435,13 @@
           "finite": true,
           "min": -0.14210814,
           "max": 0.31852558,
-          "sha256": "1113d685b5cee913fb9c0672d61d03124cc24a2ca7ca26ca6c47aa3f25539cd1"
+          "sha256": "1113d685b5cee913fb9c0672d61d03124cc24a2ca7ca26ca6c47aa3f25539cd1",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13971213,
+              "max": 0.31852558
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -37427,7 +37673,13 @@
           "finite": true,
           "min": -0.13161044,
           "max": 1.8609318,
-          "sha256": "2cf76b122cc33814a9f56b285ae4b04433b27d7a332462085a8023f481d7aaad"
+          "sha256": "2cf76b122cc33814a9f56b285ae4b04433b27d7a332462085a8023f481d7aaad",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1989797,
+              "max": 1.8609273
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -37435,7 +37687,13 @@
           "finite": true,
           "min": -0.20136002,
           "max": 1.9261591,
-          "sha256": "14bee0278cc9cd9fb75351ac248167440b698035090c89e012356d0497403691"
+          "sha256": "14bee0278cc9cd9fb75351ac248167440b698035090c89e012356d0497403691",
+          "ranges": {
+            "x86_64": {
+              "min": -0.196712,
+              "max": 1.9261591
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -37667,7 +37925,13 @@
           "finite": true,
           "min": -0.18512902,
           "max": 1.8642386,
-          "sha256": "ed5d0c57933347a2ec42c354c30b6ea8a49732ce9837334160fec7c554a0dc1d"
+          "sha256": "ed5d0c57933347a2ec42c354c30b6ea8a49732ce9837334160fec7c554a0dc1d",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1854911,
+              "max": 1.8642386
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6384,
@@ -37675,7 +37939,13 @@
           "finite": true,
           "min": -0.25050884,
           "max": 1.9226823,
-          "sha256": "818bba04d4505a912346843ad1a825c51fbad58e20f58145e129711c3525b683"
+          "sha256": "818bba04d4505a912346843ad1a825c51fbad58e20f58145e129711c3525b683",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18254638,
+              "max": 1.9226823
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -37915,7 +38185,13 @@
           "finite": true,
           "min": -0.18720725,
           "max": 0.99602896,
-          "sha256": "e743ec35c755e9325337f929069630ff82089ad23c97896e3c82ad3dd484c92b"
+          "sha256": "e743ec35c755e9325337f929069630ff82089ad23c97896e3c82ad3dd484c92b",
+          "ranges": {
+            "x86_64": {
+              "min": -0.17864354,
+              "max": 0.99602896
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -38387,7 +38663,13 @@
           "finite": true,
           "min": -0.19069715,
           "max": 1.9238411,
-          "sha256": "92bc61b3d0d230a39745862110ed3fa3060489aa85f7c15fe5019dd794f42f05"
+          "sha256": "92bc61b3d0d230a39745862110ed3fa3060489aa85f7c15fe5019dd794f42f05",
+          "ranges": {
+            "x86_64": {
+              "min": -0.148215,
+              "max": 1.9238411
+            }
+          }
         },
         "perturbed_wb": {
           "width": 4992,
@@ -38395,7 +38677,13 @@
           "finite": true,
           "min": -0.30290666,
           "max": 2.0200331,
-          "sha256": "83819b9c8ded9d855c7f990a12a5b7aa53610416b07074a9dbaf365478d69371"
+          "sha256": "83819b9c8ded9d855c7f990a12a5b7aa53610416b07074a9dbaf365478d69371",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1525164,
+              "max": 2.0200331
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -38627,7 +38915,13 @@
           "finite": true,
           "min": -0.15872413,
           "max": 1.9105961,
-          "sha256": "a110e3f759474bfc2a95abdf56239d11923d5f9aaded8fa1dedf40ed04228ae8"
+          "sha256": "a110e3f759474bfc2a95abdf56239d11923d5f9aaded8fa1dedf40ed04228ae8",
+          "ranges": {
+            "x86_64": {
+              "min": -0.17103739,
+              "max": 1.9105961
+            }
+          }
         },
         "perturbed_wb": {
           "width": 4992,
@@ -38635,7 +38929,13 @@
           "finite": true,
           "min": -0.16745691,
           "max": 2.0061257,
-          "sha256": "4e43beaef1ec5646b1ccecb1f0eec6913a4cf96a4738035c1c5bcadbf0552f59"
+          "sha256": "4e43beaef1ec5646b1ccecb1f0eec6913a4cf96a4738035c1c5bcadbf0552f59",
+          "ranges": {
+            "x86_64": {
+              "min": -0.16344692,
+              "max": 2.0061257
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -38867,7 +39167,13 @@
           "finite": true,
           "min": -0.15872407,
           "max": 1.9105957,
-          "sha256": "c801746df62d239f3c4edbb5c8fabb9574054d7b9fd76b84168d4bb0800d2eb7"
+          "sha256": "c801746df62d239f3c4edbb5c8fabb9574054d7b9fd76b84168d4bb0800d2eb7",
+          "ranges": {
+            "x86_64": {
+              "min": -0.17103742,
+              "max": 1.9105957
+            }
+          }
         },
         "perturbed_wb": {
           "width": 4936,
@@ -39110,7 +39416,13 @@
           "finite": true,
           "min": -0.22002548,
           "max": 2.2582867,
-          "sha256": "6e14c399fe256ac133d46e8e02f04dfe6d0ccc91524517c173f198d44422e42f"
+          "sha256": "6e14c399fe256ac133d46e8e02f04dfe6d0ccc91524517c173f198d44422e42f",
+          "ranges": {
+            "x86_64": {
+              "min": -0.2721992,
+              "max": 2.2582867
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -39342,7 +39654,13 @@
           "finite": true,
           "min": -0.21612607,
           "max": 2.0486524,
-          "sha256": "b605efac457452f7c6beaa65eba667bf2c6eab8e1084f1b2e7b176382c25d730"
+          "sha256": "b605efac457452f7c6beaa65eba667bf2c6eab8e1084f1b2e7b176382c25d730",
+          "ranges": {
+            "x86_64": {
+              "min": -0.22428384,
+              "max": 2.0486524
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6160,
@@ -39350,7 +39668,13 @@
           "finite": true,
           "min": -0.22226465,
           "max": 2.1447093,
-          "sha256": "e1f07b211be61a43fab2bc72e62dc00fe36a3028d7c193bab396c2730cecb01c"
+          "sha256": "e1f07b211be61a43fab2bc72e62dc00fe36a3028d7c193bab396c2730cecb01c",
+          "ranges": {
+            "x86_64": {
+              "min": -0.27767065,
+              "max": 2.1447093
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -39870,7 +40194,13 @@
           "finite": true,
           "min": -0.25626782,
           "max": 2.329188,
-          "sha256": "cfee0aeaaf14ef73b60ea58825260b438f3480478170147c57508364d6588c4d"
+          "sha256": "cfee0aeaaf14ef73b60ea58825260b438f3480478170147c57508364d6588c4d",
+          "ranges": {
+            "x86_64": {
+              "min": -0.19019945,
+              "max": 2.329188
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6160,
@@ -39878,7 +40208,13 @@
           "finite": true,
           "min": -0.16400684,
           "max": 2.2127287,
-          "sha256": "9f6fc0321cdec709e4092e97320cb1359d4ca9650c3b554ef4c3190669cca697"
+          "sha256": "9f6fc0321cdec709e4092e97320cb1359d4ca9650c3b554ef4c3190669cca697",
+          "ranges": {
+            "x86_64": {
+              "min": -0.18609479,
+              "max": 2.2127287
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -40110,7 +40446,13 @@
           "finite": true,
           "min": -0.25795197,
           "max": 2.3258255,
-          "sha256": "b55b5093206e4a235e04500d9d46caa2e3beeabbb4c4bca9ad142af3fda8403c"
+          "sha256": "b55b5093206e4a235e04500d9d46caa2e3beeabbb4c4bca9ad142af3fda8403c",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1978604,
+              "max": 2.3258255
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6048,
@@ -40118,7 +40460,13 @@
           "finite": true,
           "min": -0.25406522,
           "max": 2.2095342,
-          "sha256": "618f44364bb9b8d8faad7aedc140636570c56a3508160961e5bfa945cfc384c5"
+          "sha256": "618f44364bb9b8d8faad7aedc140636570c56a3508160961e5bfa945cfc384c5",
+          "ranges": {
+            "x86_64": {
+              "min": -0.19342917,
+              "max": 2.2095342
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -40350,7 +40698,13 @@
           "finite": true,
           "min": -0.17153595,
           "max": 0.21647091,
-          "sha256": "6dddcc204ac0956d5f0cb604271a3743c6779803d7d57d48d0a99d20fb4bccf8"
+          "sha256": "6dddcc204ac0956d5f0cb604271a3743c6779803d7d57d48d0a99d20fb4bccf8",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13521443,
+              "max": 0.21647091
+            }
+          }
         },
         "perturbed_wb": {
           "width": 4992,
@@ -40358,7 +40712,13 @@
           "finite": true,
           "min": -0.14220598,
           "max": 0.20589116,
-          "sha256": "dfceae1e6a3f540130ff4afec9c9d0f0b00f622a0b9058e6315689b2683807fe"
+          "sha256": "dfceae1e6a3f540130ff4afec9c9d0f0b00f622a0b9058e6315689b2683807fe",
+          "ranges": {
+            "x86_64": {
+              "min": -0.14158988,
+              "max": 0.20589116
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -41734,7 +42094,13 @@
           "finite": true,
           "min": -0.12787786,
           "max": 0.9076881,
-          "sha256": "384838d8f2a050770130d272439af1d00a56a7a9c2d26103c159616a6a1a4605"
+          "sha256": "384838d8f2a050770130d272439af1d00a56a7a9c2d26103c159616a6a1a4605",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13339145,
+              "max": 0.9076881
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6336,
@@ -41742,7 +42108,13 @@
           "finite": true,
           "min": -0.1307975,
           "max": 0.9530725,
-          "sha256": "9ab1b6ab56a205b8a59f7a7128e2dc84d7ac237dfa5c93a0d71a703243547cb5"
+          "sha256": "9ab1b6ab56a205b8a59f7a7128e2dc84d7ac237dfa5c93a0d71a703243547cb5",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13087827,
+              "max": 0.9530725
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -41974,7 +42346,13 @@
           "finite": true,
           "min": -0.15829992,
           "max": 1.4093814,
-          "sha256": "b833d906b4852b7ab2e8fa99fe9f886e9401f1035dc505df0e99902c298b2772"
+          "sha256": "b833d906b4852b7ab2e8fa99fe9f886e9401f1035dc505df0e99902c298b2772",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13819161,
+              "max": 1.4093814
+            }
+          }
         },
         "perturbed_wb": {
           "width": 6336,
@@ -41982,7 +42360,13 @@
           "finite": true,
           "min": -0.1550761,
           "max": 1.4695457,
-          "sha256": "114a3b58595d9b46bf0a3b7c7c82da0bf6320b6b00ad14a9133fb99d827d5bd3"
+          "sha256": "114a3b58595d9b46bf0a3b7c7c82da0bf6320b6b00ad14a9133fb99d827d5bd3",
+          "ranges": {
+            "x86_64": {
+              "min": -0.1336425,
+              "max": 1.4695457
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",
@@ -42214,7 +42598,13 @@
           "finite": true,
           "min": -0.14730024,
           "max": 1.9072849,
-          "sha256": "2591e5147f7cc163f8dc0d215172979256682e5a6e3c668707a322d37314235c"
+          "sha256": "2591e5147f7cc163f8dc0d215172979256682e5a6e3c668707a322d37314235c",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13044323,
+              "max": 1.9072849
+            }
+          }
         },
         "perturbed_wb": {
           "width": 4992,
@@ -42222,7 +42612,13 @@
           "finite": true,
           "min": -0.14629085,
           "max": 2.0026488,
-          "sha256": "4e90b8dc75420bce4ba00093deb8b6c9113c16b5f8bd44c105bfc58ec29d1dc2"
+          "sha256": "4e90b8dc75420bce4ba00093deb8b6c9113c16b5f8bd44c105bfc58ec29d1dc2",
+          "ranges": {
+            "x86_64": {
+              "min": -0.13584356,
+              "max": 2.0026488
+            }
+          }
         },
         "metadata": {
           "make": "Fujifilm",

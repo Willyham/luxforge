@@ -184,6 +184,18 @@ class CorpusTests(unittest.TestCase):
         bad["as_shot"]["max"] = 2.0
         self.assertTrue(corpus.compare(s, bad, False)[1])
 
+    def test_an_architectures_own_range_replaces_the_m4_range_on_that_architecture_only(self):
+        s = copy.deepcopy(self.s)
+        s["expectation"]["as_shot"].update(min=-0.17, max=1.0, ranges={"x86_64": {"min": -0.25, "max": 1.0}})
+        x86 = result(s)
+        x86["as_shot"].update(min=-0.25, max=1.0)
+        self.assertFalse(corpus.compare(s, x86, False, "x86_64")[1])
+        self.assertTrue(corpus.compare(s, x86, False, "aarch64")[1])
+        m4 = result(s)
+        m4["as_shot"].update(min=-0.17, max=1.0)
+        self.assertFalse(corpus.compare(s, m4, False, "aarch64")[1])
+        self.assertTrue(corpus.compare(s, m4, False, "x86_64")[1])
+
     def test_clean_removes_selected_tool_files_only(self):
         manifest = self.root / "manifest.json"
         manifest.write_text(json.dumps(self.data))

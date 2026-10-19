@@ -73,7 +73,13 @@ automatic response to changed output.
 Portable checks freeze the integer mosaic, recording mode, sensor/crop geometry,
 correction metadata and colour matrices, plus output dimensions, finiteness and
 min/max ranges for as-shot and perturbed white balance. Metadata floats allow
-`1e-6` absolute/relative error; output ranges allow `1e-5`. On the reference M4,
+`1e-6` absolute/relative error; output ranges allow `1e-5`. The frozen ranges
+are the M4's. An output whose development differs on another architecture also
+records that architecture's own `ranges`, which replace the M4's there: the 35
+X-Trans sources whose x86-64 ranges differ carry them, because librtprocess's
+Markesteijn takes SSE2 paths on x86-64 that are not bit-identical to the scalar
+code arm64 runs, so a few extreme out-of-gamut values differ while the mosaic,
+metadata and dimensions match. On the reference M4,
 `--strict-development` additionally compares both development buffers by hash.
 Monochrome sources must reject changed white balance and repeat the same
 unity-gain grayscale development for their second reference. The field
@@ -99,10 +105,8 @@ uses two transfer workers per job, deletes downloaded test files, caches only
 build dependencies and retains reports for 14 days. The full run and the qualified-only selection each read
 12.18 GiB per week, because every retained source is qualified. AWS CLI,
 Rust and Actions are pinned. GitHub has the bucket-only reader secrets and
-account variable. The scheduled workflow is on the default branch. Its recorded hosted run
-fails all four qualifier shards (12, 8, 7 and 8 failures) and no complete
-hosted run has passed, so Linux timing and compatibility evidence remain
-outstanding. No pull-request event receives R2 access.
+account variable. The scheduled workflow is on the default branch. No complete hosted run has
+passed yet, so Linux timing and compatibility evidence remain outstanding. No pull-request event receives R2 access.
 
 ## Acceptance
 

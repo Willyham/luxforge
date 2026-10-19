@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -26,6 +27,10 @@ DEFAULT_MANIFEST = ROOT / "fixtures/sample-corpus.json"
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MARKER = ".luxforge-sample-cache-v1"
 HASH = re.compile(r"[0-9a-f]{64}")
+# The frozen output ranges are the M4's (aarch64). A qualified output may also record an
+# architecture's own `ranges`, where its development differs: librtprocess's Markesteijn (X-Trans)
+# takes SSE2 paths on x86-64 that are not bit-identical to the scalar code arm64 runs.
+ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
 
 
 class CorpusError(Exception):
@@ -259,7 +264,7 @@ def chunks(samples: list[dict], count: int, byte_limit: int):
         yield chunk
 
 
-def compare(sample: dict, result: dict, strict_development: bool) -> tuple[str, list[str]]:
+def compare(sample: dict, result: dict, strict_development: bool, arch: str = ARCH) -> tuple[str, list[str]]:
     expected = sample["expectation"]
     problems = []
     if result.get("source_sha256") != sample["sha256"] or result.get("source_sha256_after") != sample["sha256"]:
@@ -289,9 +294,10 @@ def compare(sample: dict, result: dict, strict_development: bool) -> tuple[str, 
             reference = expected[name]
             if (actual.get("width"), actual.get("height")) != (reference["width"], reference["height"]):
                 problems.append(f"{name}: output dimensions changed")
+            ranges = reference.get("ranges", {}).get(arch, reference)
             for key in ("min", "max"):
-                if key in reference and (type(actual.get(key)) not in (float, int) or
-                                         not math.isclose(actual[key], reference[key], rel_tol=1e-5, abs_tol=1e-5)):
+                if key in ranges and (type(actual.get(key)) not in (float, int) or
+                                      not math.isclose(actual[key], ranges[key], rel_tol=1e-5, abs_tol=1e-5)):
                     problems.append(f"{name}: frozen output range changed")
             if strict_development and actual.get("sha256") != reference["sha256"]:
                 problems.append(f"{name}: frozen development hash changed")
