@@ -759,14 +759,9 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 );
             }
         }
-        // The brush cursor, over the photograph and away from a pin or handle, while nothing is
-        // held down on one and nothing is open over the canvas.
         if let Some(point) = brush_cursor(cursor, bounds, self.covered)
+            && self.draws_cursor(state, point)
             && let Some((x, y)) = self.placement.content_point(point)
-            && (!shown
-                || state.pressed
-                || matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
-            && (!state.pressed || self.data.painting)
         {
             self.cursor(&mut frame, [x, y], point, state.modifiers);
         }
@@ -796,8 +791,28 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             CanvasHit::Pin(_) => mouse::Interaction::Pointer,
             // The brush draws its own cursor; a refused press says so with the system's.
             CanvasHit::Add if self.data.refused && !state.pressed => mouse::Interaction::NotAllowed,
-            CanvasHit::Add => mouse::Interaction::Hidden,
+            CanvasHit::Add if self.draws_cursor(state, point) => mouse::Interaction::Hidden,
+            CanvasHit::Add => mouse::Interaction::None,
         }
+    }
+}
+
+impl CorrectionsCanvas<'_> {
+    /// Whether the brush draws its own cursor at a canvas point, so the system's is hidden: over
+    /// the photograph and away from a pin or handle, and, while the button is down, only while a
+    /// stroke is being painted — a correction being added or Remove's selection.
+    fn draws_cursor(&self, state: &Interaction, point: Point) -> bool {
+        let painting = self.data.painting
+            || self
+                .data
+                .remove
+                .as_ref()
+                .is_some_and(|remove| remove.live.is_some());
+        self.placement.content_point(point).is_some()
+            && (self.data.hidden
+                || state.pressed
+                || matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
+            && (!state.pressed || painting)
     }
 }
 
@@ -897,6 +912,48 @@ mod tests {
             placement.clone(),
         );
         assert_eq!(hidden.hit_at(pin_2, none), CanvasHit::Add);
+    }
+
+    /// While Remove's selection is painted the brush draws its own cursor, so the system's is
+    /// hidden; a press that paints nothing hides neither.
+    #[test]
+    fn a_remove_stroke_keeps_a_cursor_under_the_pointer() {
+        let placement = placement();
+        let operations: Vec<Listed> = Vec::new();
+        let map = placement.map.clone();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(480.0, 320.0));
+        let at = Point::new(100.0, 100.0);
+        let stroke = [[0.2, 0.3]];
+        let remove = |live| crate::app::remove::RemoveCanvas {
+            selection: None,
+            live,
+            radius: 0.05,
+            progress: None,
+            preview: None,
+        };
+        let pressed = Interaction {
+            pressed: true,
+            ..Interaction::default()
+        };
+        for (live, own) in [(Some(&stroke[..]), true), (None, false)] {
+            let canvas = CorrectionsCanvas::new(
+                CanvasData {
+                    hidden: true,
+                    remove: Some(remove(live)),
+                    ..data(&map, &operations, None)
+                },
+                placement.clone(),
+            );
+            assert_eq!(canvas.draws_cursor(&pressed, at), own);
+            assert_eq!(
+                canvas.mouse_interaction(&pressed, bounds, Cursor::Available(at)),
+                if own {
+                    mouse::Interaction::Hidden
+                } else {
+                    mouse::Interaction::None
+                }
+            );
+        }
     }
 
     /// A press publishes the press with what it caught, moves publish drags, and the release comes
