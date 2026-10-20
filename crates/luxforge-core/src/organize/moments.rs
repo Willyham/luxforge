@@ -6,6 +6,11 @@
 //!   `DCIM/PANORAMA/100_0001`, `PANO0001`), and a person's own `Panoramas` folder says the same.
 //!   Two frames are enough. The folder decides before anything else, so the auto-exposed frames of
 //!   a drone's sweep are neither a burst nor a bracket.
+//! - **Panoramas from file names.** So are consecutive frames of one folder, each at most
+//!   [`FOLDER_PANORAMA_GAP_MS`] from the next, whose file names have `pano` in them and number them
+//!   one after the other ([`numbered`]): DJI names a panorama's frames `PANO0001.DNG`,
+//!   `PANO0002.DNG` …, which say so when its folder is copied without its `PANORAMA` parent. A
+//!   phone's stitched panoramas (`PANO_20240512_101500.jpg`) do not number one after another.
 //! - **Panoramas from previews.** Elsewhere, a chain of consecutive frames each [`pan_linked`] to
 //!   the next (at most [`PANORAMA_GAP_MS`] apart and at least [`PANORAMA_MIN_GAP_MS`], one focal
 //!   length, exposures at most [`PANORAMA_MAX_EV`] apart) asks the [`MomentProbe`] for its pans,
@@ -132,24 +137,42 @@ impl<'a> Finder<'a> {
         self.runs(&frames[from..], offset + from, moments);
     }
 
-    /// The panoramas of `frames` their folders show, in order.
+    /// The panoramas of `frames` their folders or file names show, in order. A panorama whose every
+    /// link its folder makes is from its folder, any other from its file names.
     fn folder_panoramas(&mut self, frames: &[FrameFacts]) -> Vec<(Range<usize>, MomentEvidence)> {
         let mut found = Vec::new();
         let mut start = 0;
+        let mut evidence = MomentEvidence::Folder;
         for at in 1..=frames.len() {
-            let joined = at < frames.len() && {
-                let (a, b) = (&frames[at - 1], &frames[at]);
-                a.folder == b.folder
-                    && !a.merged
-                    && !b.merged
-                    && gap_within(a, b, FOLDER_PANORAMA_GAP_MS)
-                    && self.panorama_folder(a.folder)
-            };
-            if !joined {
-                if at - start >= 2 {
-                    found.push((start..at, MomentEvidence::Folder));
+            let joined = (at < frames.len())
+                .then(|| {
+                    let (a, b) = (&frames[at - 1], &frames[at]);
+                    let near = a.folder == b.folder
+                        && !a.merged
+                        && !b.merged
+                        && gap_within(a, b, FOLDER_PANORAMA_GAP_MS);
+                    if !near {
+                        None
+                    } else if self.panorama_folder(a.folder) {
+                        Some(MomentEvidence::Folder)
+                    } else {
+                        names_panorama_frames(&a.name, &b.name).then_some(MomentEvidence::Names)
+                    }
+                })
+                .flatten();
+            match joined {
+                Some(link) => {
+                    if link == MomentEvidence::Names {
+                        evidence = link;
+                    }
                 }
-                start = at;
+                None => {
+                    if at - start >= 2 {
+                        found.push((start..at, evidence));
+                    }
+                    start = at;
+                    evidence = MomentEvidence::Folder;
+                }
             }
         }
         found
@@ -281,6 +304,12 @@ fn names_panoramas(name: &str) -> bool {
     name.as_bytes()
         .windows(4)
         .any(|window| window.eq_ignore_ascii_case(b"pano"))
+}
+
+/// Whether two file names name consecutive frames of a panorama: `pano` in each, in any case, and
+/// numbered one after the other (`PANO0001.DNG`, `PANO0002.DNG`).
+fn names_panorama_frames(a: &str, b: &str) -> bool {
+    names_panoramas(a) && names_panoramas(b) && numbered(a, b)
 }
 
 /// Appends to `found` each longest stretch of [`PANORAMA_MIN_FRAMES`] or more of a chain's
