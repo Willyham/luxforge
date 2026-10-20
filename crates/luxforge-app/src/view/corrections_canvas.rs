@@ -234,8 +234,8 @@ fn joined(outline: &Outline) -> Path {
     })
 }
 
-/// An outline's loops, each closed, as one path to fill: the loops never cross, so the area they
-/// bound, holes left open, fills once.
+/// A footprint's loops ([`brush_overlay::Figure::footprint`]), each closed, as one path to fill:
+/// the loops never cross, so the area they bound, holes left open, fills once.
 fn filled(loops: &[Outline]) -> Path {
     Path::new(|builder| {
         for outline in loops {
@@ -481,7 +481,14 @@ const RING_WIDTH: f32 = 3.0;
 
 impl CorrectionsCanvas<'_> {
     /// One painted path, filled with the selection's tint and outlined.
-    fn selection(&self, frame: &mut Frame, points: &[[f64; 2]], radius: f64, accent: bool) {
+    fn selection(
+        &self,
+        frame: &mut Frame,
+        points: &[[f64; 2]],
+        radius: f64,
+        accent: bool,
+        traces: &Traces,
+    ) {
         if points.is_empty() {
             return;
         }
@@ -491,23 +498,29 @@ impl CorrectionsCanvas<'_> {
             radius,
             source: None,
         };
-        let loops = brush_overlay::outline_loops(&self.placement, &held);
+        let figure = brush_overlay::figure(&self.placement, &held, traces);
+        let footprint = figure.footprint(&self.placement);
         frame.fill(
-            &filled(&loops),
+            &filled(footprint.as_deref().unwrap_or(&figure.loops)),
             Fill {
                 style: Style::Solid(SELECTION_TINT),
                 rule: fill::Rule::EvenOdd,
             },
         );
         let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
-        let outline = brush_overlay::merged(loops);
+        let outline = brush_overlay::merged(figure.loops);
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
     }
 
     /// Remove's figures: the chosen candidate composited over the region it fills, or the
     /// selection's tint without one, the stroke being painted, and a running generation's ring at
     /// the selection's centre.
-    fn remove(&self, frame: &mut Frame, remove: &crate::app::remove::RemoveCanvas<'_>) {
+    fn remove(
+        &self,
+        frame: &mut Frame,
+        remove: &crate::app::remove::RemoveCanvas<'_>,
+        traces: &Traces,
+    ) {
         let content = self.placement.map.content();
         let (cw, ch) = (f64::from(content.0.max(1)), f64::from(content.1.max(1)));
         let mut previewed = false;
@@ -541,10 +554,10 @@ impl CorrectionsCanvas<'_> {
         if let Some(points) = remove.selection
             && !previewed
         {
-            self.selection(frame, points, remove.radius, false);
+            self.selection(frame, points, remove.radius, false, traces);
         }
         if let Some(points) = remove.live {
-            self.selection(frame, points, remove.radius, true);
+            self.selection(frame, points, remove.radius, true, traces);
         }
         let Some(fraction) = remove.progress else {
             return;
@@ -685,15 +698,16 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         );
         let shown = !self.data.hidden;
         if let Some(remove) = &self.data.remove {
-            self.remove(&mut frame, remove);
+            self.remove(&mut frame, remove, &state.traces);
         }
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
             let figure = brush_overlay::figure(&self.placement, live, &state.traces);
             if self.data.automatic {
+                let footprint = figure.footprint(&self.placement);
                 frame.fill(
-                    &filled(&figure.loops),
+                    &filled(footprint.as_deref().unwrap_or(&figure.loops)),
                     Fill {
                         style: Style::Solid(FOOTPRINT),
                         rule: fill::Rule::EvenOdd,
