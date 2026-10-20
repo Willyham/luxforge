@@ -40,9 +40,44 @@ jobs:
           case "$PUBLISH_UPDATES" in ''|true|false) ;; *) echo 'LUXFORGE_PUBLISH_UPDATES must be true, false, or unset' >&2; exit 1 ;; esac
           cargo xtask release-tag --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-  build:
+  # The same checks the release command runs locally, on each release platform. They run beside
+  # the build rather than before it, and publication needs them both.
+  checks:
     needs: identity
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.identity.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+      - name: Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
+      - name: Native compiler cache identity
+        id: compiler
+        shell: bash
+        run: |
+          { cc --version; c++ --version; if [[ "$RUNNER_OS" == macOS ]]; then xcrun --show-sdk-version; fi; } > "$RUNNER_TEMP/luxforge-compiler.txt"
+          echo "key=$(git hash-object "$RUNNER_TEMP/luxforge-compiler.txt")" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
+        with:
+          key: release-checks-${{ matrix.os }}-${{ steps.compiler.outputs.key }}
+      - name: Quick checks
+        run: cargo xtask check --quick
+      - name: Native watcher delivery and recovery gate
+        run: cargo xtask test --native-watchers
+  # Notarization waits on Apple, up to 30 minutes for each of its two submissions.
+  build:
+    needs: identity
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -72,15 +107,11 @@ jobs:
       - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
         with:
           key: release-${{ matrix.os }}-${{ steps.compiler.outputs.key }}
-      - name: Quick checks
-        run: cargo xtask check --quick
-      - name: Native watcher delivery and recovery gate
-        run: cargo xtask test --native-watchers
       - name: Build versioned package
         env:
           RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: cargo xtask release-build --tag "$RELEASE_TAG" --build-number "$GITHUB_RUN_NUMBER" --output artifacts/release
-      # This step receives Apple secrets only after the credential-free build/checks finish.
+      # This step receives Apple secrets only after the credential-free build finishes.
       # The local Mac's Keychain is never read or exported by this workflow.
       - name: Sign, notarize and staple macOS candidate
         if: runner.os == 'macOS' && vars.LUXFORGE_SIGN_MACOS == 'true'
@@ -160,7 +191,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   publish:
-    needs: [identity, build, source]
+    needs: [identity, checks, build, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
