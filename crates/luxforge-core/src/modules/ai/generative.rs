@@ -41,8 +41,9 @@ fn drawn_seed() -> u64 {
     RandomState::new().hash_one(std::time::SystemTime::now()) & MAX_SEED
 }
 
-/// Run one request: `{tier, model, candidates, seeds, next_seed, rect, prompt}` once every
-/// candidate is published.
+/// Run one request: `{tier, model, candidates, seeds, next_seed, rect, prompt, share_gpu}` once
+/// every candidate is published, `share_gpu` saying whether `ai.generative-gpu-sharing` was on
+/// when the task was requested, so its generations ran in slices.
 pub(crate) fn run(
     request: &FillRequest,
     context: &ModuleContext,
@@ -64,6 +65,7 @@ pub(crate) fn run(
         context.resource_path(encoder.resource)?;
     }
     let prompt = request.prompt.is_some();
+    let share_gpu = context.flag(crate::flags::AI_GENERATIVE_GPU_SHARING);
 
     context.progress(Some(0.0), "reading the photograph");
     let mut reader = context.stage_reader()?;
@@ -113,6 +115,7 @@ pub(crate) fn run(
             conditioning,
             seed,
             steps: model.steps,
+            share_gpu,
         };
         let generated = generator.generate(
             &generation,
@@ -161,5 +164,6 @@ pub(crate) fn run(
         "next_seed": first.wrapping_add(u64::from(count)) & MAX_SEED,
         "rect": [bounds.x0, bounds.y0, bounds.width, bounds.height],
         "prompt": request.prompt.is_some(),
+        "share_gpu": share_gpu,
     }))
 }

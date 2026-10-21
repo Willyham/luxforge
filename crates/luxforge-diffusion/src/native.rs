@@ -13,6 +13,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::Mutex,
+    time::Duration,
 };
 
 #[repr(C)]
@@ -52,6 +53,7 @@ unsafe extern "C" {
     fn lf_sd_set_progress(cb: Option<ProgressC>, user: *mut c_void);
     fn lf_sd_system_info() -> *const c_char;
     fn lf_sd_warm(error: *mut c_char, error_len: usize) -> i32;
+    fn lf_sd_set_gpu_slice_us(slice_us: i64);
     fn lf_sd_open(
         options: *const OpenOptionsC,
         error: *mut c_char,
@@ -142,6 +144,18 @@ pub fn warm() -> Result<(), String> {
     } else {
         Err(message(&error))
     }
+}
+
+/// Run the Metal backend's graphs in slices of about `slice` of GPU time, each waited for before
+/// the next, so other command queues in the process reach the GPU between them; `None` runs them
+/// whole, as upstream does. Process-wide: it applies to every context's next graph. Does nothing
+/// on a CPU build.
+pub fn set_gpu_slice(slice: Option<Duration>) {
+    let micros = slice.map_or(0, |slice| {
+        i64::try_from(slice.as_micros()).unwrap_or(i64::MAX)
+    });
+    // SAFETY: takes a plain integer and stores it.
+    unsafe { lf_sd_set_gpu_slice_us(micros) }
 }
 
 /// A progress callback: the finished step, the step count and the step's seconds.

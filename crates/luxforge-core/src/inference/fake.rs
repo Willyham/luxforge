@@ -60,6 +60,8 @@ pub struct FakeControls {
     opens: AtomicUsize,
     runs: AtomicUsize,
     generations: AtomicUsize,
+    /// How many of those were asked to share the GPU.
+    shared_generations: AtomicUsize,
     live: AtomicUsize,
 }
 
@@ -85,6 +87,12 @@ impl FakeControls {
     /// Make every generation fail at `step` (1-based), or never.
     pub fn fail_at_step(&self, step: Option<u32>) {
         self.fail_at_step.store(step.unwrap_or(0), Ordering::SeqCst);
+    }
+
+    /// How many candidates were generated asked to share the GPU
+    /// ([`GenerateRequest::share_gpu`]), which the fake otherwise ignores.
+    pub fn shared_generations(&self) -> usize {
+        self.shared_generations.load(Ordering::SeqCst)
     }
 
     /// How many models were opened.
@@ -447,6 +455,9 @@ impl Generator for FakeGenerator {
             }
         }
         controls.generations.fetch_add(1, Ordering::SeqCst);
+        if request.share_gpu {
+            controls.shared_generations.fetch_add(1, Ordering::SeqCst);
+        }
         let generated = Generated {
             width: request.width,
             height: request.height,

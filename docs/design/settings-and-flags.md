@@ -39,6 +39,7 @@ The flags:
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
 | `masks.range-selections` | toggle | live | off | always | Luminance and colour range masks: the New mask and Add component menus, their keys and the palette offer the two range kinds, and `mask.create-<kind>` and `mask.add-<kind>` accept them ([gated kinds](#gated-mask-kinds)) |
 | `ai.generative` | toggle | live | off | always | Generative fill: whether `task.fill-generative` is offered, and whether the desktop shows Remove, the AI editing section and the generative models in Settings › Models ([gated generative fill](#gated-generative-fill)); never how an accepted fill renders |
+| `ai.generative-gpu-sharing` | toggle | live | off | always | A generative fill's GPU work runs in short slices, so the editor keeps drawing while it runs ([sharing the GPU](ai-editing.md#sharing-the-gpu)); read as each fill is requested, and never what an accepted fill renders |
 | `updates.prerelease-channel` | toggle | live | off | always | The update check follows the `prerelease` channel as well as the default one, so release candidates are offered ([automatic updates](auto-update.md#the-feed)); off, `update.status` never offers a pre-release |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
@@ -94,7 +95,7 @@ Which tab is open, and whether the sheet is, is this desktop's own view state, l
 - **Original reads and decodes:** none added.
 - **Full-frame allocations:** none. A listing is a few hundred bytes; `preferences.json` is bounded at 16 KiB.
 - **Point queries:** none added.
-- **Owner thread:** `flags.list` and `preferences.read` read one small file; `flags.set` and `preferences.set` are each one locked read-modify-write of it, `flags.set` written only when the value changed. Creating or adding a range component reads it once to check `masks.range-selections`, and a fill task request once to check `ai.generative`; no other request does. No frame work.
+- **Owner thread:** `flags.list` and `preferences.read` read one small file; `flags.set` and `preferences.set` are each one locked read-modify-write of it, `flags.set` written only when the value changed. Creating or adding a range component reads it once to check `masks.range-selections`, and a fill task request once to check `ai.generative` and read `ai.generative-gpu-sharing`; no other request does. No frame work.
 - **Desktop messages:** opening the sheet reads `flags.list` once; each change sends one `flags.set` and adopts its answer. No `asset.state`, `history.list`, preview job or upload is added. A closed sheet derives nothing. The launch reads `flags.list` once, and a `flags.set` event reads it again, with the preferences too while the sheet is open; the desktop's own writes are skipped by the event sync.
 - **Timers, polls and subscriptions:** none added.
 - **Repeated work and caches:** none added; the launch reads its flags once, before the registry is assembled.

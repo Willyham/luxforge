@@ -181,7 +181,7 @@ impl AiModule {
             id: FILL_GENERATIVE.into(),
             title: "Generative fill".into(),
             notes: format!(
-                "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt}}."
+                "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. With ai.generative-gpu-sharing on as it is requested, its generations run their GPU work in short slices so the interface keeps drawing, and result.share_gpu says so. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt}}."
             ),
             asset: true,
             profile: false,
@@ -332,6 +332,7 @@ impl CapabilityModule for AiModule {
         Ok(TaskNeeds {
             uses: Some(request.uses()?),
             flags: vec![GENERATIVE_FLAG],
+            reads_flags: vec![crate::flags::AI_GENERATIVE_GPU_SHARING],
             locks_asset: true,
         })
     }

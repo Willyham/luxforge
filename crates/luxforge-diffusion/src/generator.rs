@@ -30,6 +30,11 @@ const LORA_MULTIPLIER: f32 = 1.0;
 /// One generation at a time in a process: upstream's progress callback and the GPU are shared.
 static GENERATING: Mutex<()> = Mutex::new(());
 
+/// The GPU time one slice of a generation that shares the GPU aims at
+/// ([`GenerateRequest::share_gpu`]): about half a frame at 60 Hz, so the editor's frames reach the
+/// GPU at least once a frame while a fill runs.
+pub const GPU_SLICE: std::time::Duration = std::time::Duration::from_millis(8);
+
 /// Replace's whole prompt for what the person typed.
 pub fn replace_prompt(prompt: &str) -> String {
     format!("{REPLACE_PREFIX}{}", prompt.trim())
@@ -279,6 +284,16 @@ impl Generator for KleinGenerator {
             let _one = GENERATING
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
+            // Sliced for a request that shares the GPU, whole graphs otherwise; reset as the
+            // generation ends, however it ends, while the lock is still held.
+            native::set_gpu_slice(request.share_gpu.then_some(GPU_SLICE));
+            struct WholeGraphs;
+            impl Drop for WholeGraphs {
+                fn drop(&mut self) {
+                    native::set_gpu_slice(None);
+                }
+            }
+            let _whole = WholeGraphs;
             cancel.check()?;
             let mut context = self
                 .context

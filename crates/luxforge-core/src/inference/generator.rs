@@ -34,6 +34,10 @@ pub struct GenerateRequest<'a> {
     pub conditioning: Conditioning<'a>,
     pub seed: u64,
     pub steps: u32,
+    /// Share the GPU with the rest of the process: run the GPU work in short slices and wait for
+    /// each, so the interface's frames run between them. Costs some speed; a generator that does
+    /// not run on a GPU ignores it.
+    pub share_gpu: bool,
 }
 
 impl GenerateRequest<'_> {

@@ -24,6 +24,12 @@ pub const RANGE_MASKS: &str = "masks.range-selections";
 /// patch renders.
 pub const AI_GENERATIVE: &str = "ai.generative";
 
+/// A generative fill shares the GPU: the generator runs its GPU work in short slices and waits
+/// for each, so the interface's frames run between them (`docs/design/ai-editing.md`, "Sharing
+/// the GPU"). Off, a fill holds the GPU for whole denoising steps. It changes how long a fill
+/// takes and how the editor draws meanwhile, never what an accepted patch renders.
+pub const AI_GENERATIVE_GPU_SHARING: &str = "ai.generative-gpu-sharing";
+
 /// The update check follows the `prerelease` channel as well as the default one, so release
 /// candidates are offered: how they are qualified (`docs/design/auto-update.md`). Off, a
 /// pre-release is never offered.
@@ -140,6 +146,13 @@ const FLAGS: &[FlagSpec] = &[
         id: AI_GENERATIVE,
         title: "Generative fill",
         description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+    FlagSpec {
+        id: AI_GENERATIVE_GPU_SHARING,
+        title: "Share the GPU during generative fill",
+        description: "Runs a generative fill's GPU work in short slices so the editor keeps drawing while it runs; a fill may take a little longer.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
     },
@@ -601,7 +614,13 @@ mod tests {
         };
         assert_eq!(
             ids(false),
-            ["developer", RANGE_MASKS, AI_GENERATIVE, PRERELEASE_CHANNEL]
+            [
+                "developer",
+                RANGE_MASKS,
+                AI_GENERATIVE,
+                AI_GENERATIVE_GPU_SHARING,
+                PRERELEASE_CHANNEL
+            ]
         );
         assert_eq!(
             ids(true),
@@ -609,6 +628,7 @@ mod tests {
                 "developer",
                 RANGE_MASKS,
                 AI_GENERATIVE,
+                AI_GENERATIVE_GPU_SHARING,
                 PRERELEASE_CHANNEL,
                 "proof.choice",
                 "proof.number"
@@ -622,7 +642,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][4]["options"][1],
+            text["flags"][5]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -661,7 +681,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][4]["id"], "proof.choice",
+            listed["flags"][5]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -669,7 +689,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][4]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][5]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

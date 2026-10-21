@@ -269,6 +269,7 @@ fn request<'a>(
         conditioning,
         seed,
         steps: 4,
+        share_gpu: false,
     }
 }
 

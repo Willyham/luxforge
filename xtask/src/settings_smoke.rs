@@ -513,6 +513,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                     json!("developer"),
                     json!("masks.range-selections"),
                     json!("ai.generative"),
+                    json!("ai.generative-gpu-sharing"),
                     json!("updates.prerelease-channel"),
                     json!("proof.choice"),
                     json!("proof.number"),
