@@ -234,8 +234,8 @@ fn joined(outline: &Outline) -> Path {
     })
 }
 
-/// An outline's loops, each closed, as one path to fill: the loops never cross, so the area they
-/// bound, holes left open, fills once.
+/// A footprint's loops ([`brush_overlay::Figure::footprint`]), each closed, as one path to fill:
+/// the loops never cross, so the area they bound, holes left open, fills once.
 fn filled(loops: &[Outline]) -> Path {
     Path::new(|builder| {
         for outline in loops {
@@ -481,7 +481,14 @@ const RING_WIDTH: f32 = 3.0;
 
 impl CorrectionsCanvas<'_> {
     /// One painted path, filled with the selection's tint and outlined.
-    fn selection(&self, frame: &mut Frame, points: &[[f64; 2]], radius: f64, accent: bool) {
+    fn selection(
+        &self,
+        frame: &mut Frame,
+        points: &[[f64; 2]],
+        radius: f64,
+        accent: bool,
+        traces: &Traces,
+    ) {
         if points.is_empty() {
             return;
         }
@@ -491,23 +498,29 @@ impl CorrectionsCanvas<'_> {
             radius,
             source: None,
         };
-        let loops = brush_overlay::outline_loops(&self.placement, &held);
+        let figure = brush_overlay::figure(&self.placement, &held, traces);
+        let footprint = figure.footprint(&self.placement);
         frame.fill(
-            &filled(&loops),
+            &filled(footprint.as_deref().unwrap_or(&figure.loops)),
             Fill {
                 style: Style::Solid(SELECTION_TINT),
                 rule: fill::Rule::EvenOdd,
             },
         );
         let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
-        let outline = brush_overlay::merged(loops);
+        let outline = brush_overlay::merged(figure.loops);
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
     }
 
     /// Remove's figures: the chosen candidate composited over the region it fills, or the
     /// selection's tint without one, the stroke being painted, and a running generation's ring at
     /// the selection's centre.
-    fn remove(&self, frame: &mut Frame, remove: &crate::app::remove::RemoveCanvas<'_>) {
+    fn remove(
+        &self,
+        frame: &mut Frame,
+        remove: &crate::app::remove::RemoveCanvas<'_>,
+        traces: &Traces,
+    ) {
         let content = self.placement.map.content();
         let (cw, ch) = (f64::from(content.0.max(1)), f64::from(content.1.max(1)));
         let mut previewed = false;
@@ -541,10 +554,10 @@ impl CorrectionsCanvas<'_> {
         if let Some(points) = remove.selection
             && !previewed
         {
-            self.selection(frame, points, remove.radius, false);
+            self.selection(frame, points, remove.radius, false, traces);
         }
         if let Some(points) = remove.live {
-            self.selection(frame, points, remove.radius, true);
+            self.selection(frame, points, remove.radius, true, traces);
         }
         let Some(fraction) = remove.progress else {
             return;
@@ -685,15 +698,16 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         );
         let shown = !self.data.hidden;
         if let Some(remove) = &self.data.remove {
-            self.remove(&mut frame, remove);
+            self.remove(&mut frame, remove, &state.traces);
         }
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
             let figure = brush_overlay::figure(&self.placement, live, &state.traces);
             if self.data.automatic {
+                let footprint = figure.footprint(&self.placement);
                 frame.fill(
-                    &filled(&figure.loops),
+                    &filled(footprint.as_deref().unwrap_or(&figure.loops)),
                     Fill {
                         style: Style::Solid(FOOTPRINT),
                         rule: fill::Rule::EvenOdd,
@@ -759,14 +773,9 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 );
             }
         }
-        // The brush cursor, over the photograph and away from a pin or handle, while nothing is
-        // held down on one and nothing is open over the canvas.
         if let Some(point) = brush_cursor(cursor, bounds, self.covered)
+            && self.draws_cursor(state, point)
             && let Some((x, y)) = self.placement.content_point(point)
-            && (!shown
-                || state.pressed
-                || matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
-            && (!state.pressed || self.data.painting)
         {
             self.cursor(&mut frame, [x, y], point, state.modifiers);
         }
@@ -796,8 +805,28 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             CanvasHit::Pin(_) => mouse::Interaction::Pointer,
             // The brush draws its own cursor; a refused press says so with the system's.
             CanvasHit::Add if self.data.refused && !state.pressed => mouse::Interaction::NotAllowed,
-            CanvasHit::Add => mouse::Interaction::Hidden,
+            CanvasHit::Add if self.draws_cursor(state, point) => mouse::Interaction::Hidden,
+            CanvasHit::Add => mouse::Interaction::None,
         }
+    }
+}
+
+impl CorrectionsCanvas<'_> {
+    /// Whether the brush draws its own cursor at a canvas point, so the system's is hidden: over
+    /// the photograph and away from a pin or handle, and, while the button is down, only while a
+    /// stroke is being painted — a correction being added or Remove's selection.
+    fn draws_cursor(&self, state: &Interaction, point: Point) -> bool {
+        let painting = self.data.painting
+            || self
+                .data
+                .remove
+                .as_ref()
+                .is_some_and(|remove| remove.live.is_some());
+        self.placement.content_point(point).is_some()
+            && (self.data.hidden
+                || state.pressed
+                || matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
+            && (!state.pressed || painting)
     }
 }
 
@@ -897,6 +926,48 @@ mod tests {
             placement.clone(),
         );
         assert_eq!(hidden.hit_at(pin_2, none), CanvasHit::Add);
+    }
+
+    /// While Remove's selection is painted the brush draws its own cursor, so the system's is
+    /// hidden; a press that paints nothing hides neither.
+    #[test]
+    fn a_remove_stroke_keeps_a_cursor_under_the_pointer() {
+        let placement = placement();
+        let operations: Vec<Listed> = Vec::new();
+        let map = placement.map.clone();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(480.0, 320.0));
+        let at = Point::new(100.0, 100.0);
+        let stroke = [[0.2, 0.3]];
+        let remove = |live| crate::app::remove::RemoveCanvas {
+            selection: None,
+            live,
+            radius: 0.05,
+            progress: None,
+            preview: None,
+        };
+        let pressed = Interaction {
+            pressed: true,
+            ..Interaction::default()
+        };
+        for (live, own) in [(Some(&stroke[..]), true), (None, false)] {
+            let canvas = CorrectionsCanvas::new(
+                CanvasData {
+                    hidden: true,
+                    remove: Some(remove(live)),
+                    ..data(&map, &operations, None)
+                },
+                placement.clone(),
+            );
+            assert_eq!(canvas.draws_cursor(&pressed, at), own);
+            assert_eq!(
+                canvas.mouse_interaction(&pressed, bounds, Cursor::Available(at)),
+                if own {
+                    mouse::Interaction::Hidden
+                } else {
+                    mouse::Interaction::None
+                }
+            );
+        }
     }
 
     /// A press publishes the press with what it caught, moves publish drags, and the release comes

@@ -1050,6 +1050,7 @@ fn evidence_label(evidence: MomentEvidence) -> &'static str {
         MomentEvidence::Metadata => "from metadata",
         MomentEvidence::Previews => "from previews",
         MomentEvidence::Folder => "from its folder",
+        MomentEvidence::Names => "from its file names",
     }
 }
 
@@ -2650,7 +2651,7 @@ pub(crate) fn item_info(
 }
 
 /// Why a moment is one: a burst's frames are close together, a bracket's exposure steps, a
-/// panorama's frames are in a panorama folder or sweep across the scene.
+/// panorama's frames are in a panorama folder, are named as one's or sweep across the scene.
 fn why(moment: &Moment) -> String {
     match (moment.kind, moment.evidence) {
         (MomentKind::Bracket, Some(MomentEvidence::Previews)) => {
@@ -2659,6 +2660,9 @@ fn why(moment: &Moment) -> String {
         (MomentKind::Bracket, _) => "Exposure steps, from the metadata".to_owned(),
         (MomentKind::Panorama, Some(MomentEvidence::Folder)) => {
             "Shot into a panorama folder".to_owned()
+        }
+        (MomentKind::Panorama, Some(MomentEvidence::Names)) => {
+            "Named as a panorama's frames".to_owned()
         }
         (MomentKind::Panorama, _) => "Overlapping views, measured on the previews".to_owned(),
         _ => {

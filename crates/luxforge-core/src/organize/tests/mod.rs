@@ -1215,6 +1215,79 @@ fn organize_a_panorama_folder_is_one_panorama() {
     );
 }
 
+/// A drone's panorama copied without its `PANORAMA` folder: frames named `PANO0001.DNG`,
+/// `PANO0002.DNG` … one after another in one folder, each at most a minute from the next, are one
+/// panorama from its file names, whatever their exposures and pace and without asking the
+/// previews. A skipped number, a minute's gap or another folder splits them; a phone's stitched
+/// panoramas, whose names do not number one after another, and the drone's ordinary frames are
+/// not one.
+#[test]
+fn organize_numbered_panorama_names_are_one_panorama() {
+    let start = midnight(2026, 9, 12) + 10 * HOUR;
+    let drone = body("DJI", "FC3411", None);
+    let mut frames = Frames::default();
+    let mut add = |folder: &str, name: &str, at: i64, time: f32| {
+        frames.add(
+            shot(folder, Some(start + at))
+                .named(name.into())
+                .by(&drone)
+                .exposed(exposure(time, Some(0.0))),
+        );
+    };
+    // 0–5: a sweep in Bali/Drone/101_0139, 2 s a frame, auto-exposed in ⅓ EV steps.
+    for at in 0..6 {
+        add(
+            "/photos/Bali/Drone/101_0139",
+            &format!("PANO{:04}.DNG", at + 1),
+            at * 2000,
+            1.0 / 250.0 * 2f32.powf((at % 3) as f32 / 3.0),
+        );
+    }
+    // 6–7: the drone's ordinary frames beside it, a bracket.
+    add("/photos/Bali/Drone", "DJI_0040.DNG", 20_000, 1.0 / 250.0);
+    add("/photos/Bali/Drone", "DJI_0041.DNG", 20_500, 1.0 / 125.0);
+    // 8–12: the next sweep, PANO0003 missing between 9 and 10 and a minute's gap before 12.
+    for (name, at) in [
+        (1, 30_000),
+        (2, 32_000),
+        (4, 34_000),
+        (5, 36_000),
+        (6, 97_000),
+    ] {
+        add(
+            "/photos/Bali/Drone/101_0140",
+            &format!("pano{name:04}.dng"),
+            at,
+            1.0 / 250.0,
+        );
+    }
+    // 13–15: a phone's stitched panoramas, seconds apart.
+    for (name, at) in [
+        ("101500", 120_000),
+        ("101503", 123_000),
+        ("101506", 126_000),
+    ] {
+        add(
+            "/photos/Bali/Phone",
+            &format!("PANO_20260912_{name}.jpg"),
+            at,
+            1.0 / 250.0,
+        );
+    }
+    let moments = frames.group(&Thresholds::default(), &Unasked).moments;
+    let names = Some(MomentEvidence::Names);
+    assert_eq!(
+        kinds(&moments),
+        [
+            (MomentKind::Panorama, names, 0, 6),
+            (MomentKind::Bracket, Some(MomentEvidence::Metadata), 6, 2),
+            (MomentKind::Panorama, names, 8, 2),
+            (MomentKind::Panorama, names, 10, 2),
+        ]
+    );
+    assert_eq!(moments[0].span_ms, 10_000);
+}
+
 /// Elsewhere, the previews show a sweep: a chain of frames seconds apart at one focal length whose
 /// every link pans on from the last is a panorama, over a burst's pace or a bracket's metadata,
 /// turning a corner as a panorama's rows do but not turning back. Fewer than three frames, a burst

@@ -128,14 +128,15 @@ pub enum MomentKind {
 }
 
 /// Why a run is called a bracket or a panorama: a bracket's recorded exposure steps or its
-/// previews' measured brightness; a panorama's folder (a camera's panorama folder) or its
-/// previews' measured overlap.
+/// previews' measured brightness; a panorama's folder (a camera's panorama folder), its file names
+/// (a camera's numbered panorama frames) or its previews' measured overlap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MomentEvidence {
     Metadata,
     Previews,
     Folder,
+    Names,
 }
 
 /// One burst, bracket or panorama in a view: the frames `start..start + len` of the view's order.
@@ -144,7 +145,8 @@ pub enum MomentEvidence {
 #[serde(deny_unknown_fields)]
 pub struct Moment {
     pub kind: MomentKind,
-    /// Present exactly for a bracket (metadata or previews) and a panorama (folder or previews).
+    /// Present exactly for a bracket (metadata or previews) and a panorama (folder, names or
+    /// previews).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<MomentEvidence>,
     /// A bracket's per-frame exposure in stops relative to its metered frame (the frame with no
