@@ -37,7 +37,7 @@ use iced::{
 use luxforge_ui::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
     DropdownButtonModel, GridField, GroupRuleModel, HelpAlike, HelpRemedy, HelpSheetModel,
-    HelpSheetStep, HintPart, Icon, IconButtonModel, LeadPart, MaskRowMessages, MaskRowModel,
+    HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart, MaskRowMessages, MaskRowModel,
     MenuEntry, MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode,
     OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, RenameMessages,
     SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
@@ -1320,14 +1320,7 @@ pub(crate) fn help_sheet(model: &MasksModel) -> Option<Element<'_, Message>> {
         .map(|step| HelpSheetStep {
             name: step.name.to_owned(),
             body: step.body.to_owned(),
-            hint: step
-                .hint
-                .iter()
-                .map(|part| match part {
-                    crate::range_pick::Hint::Key(key) => HintPart::Key((*key).to_owned()),
-                    crate::range_pick::Hint::Text(words) => HintPart::Text((*words).to_owned()),
-                })
-                .collect(),
+            hint: key_hints(step.hint),
             drawing: match &step.drawing {
                 crate::range_pick::StepDrawing::PickRow => StepDrawing::PickRow {
                     icon: component.icon.and_then(Icon::from_name),
@@ -1407,6 +1400,29 @@ pub(crate) fn help_sheet(model: &MasksModel) -> Option<Element<'_, Message>> {
         },
         close_menu(),
     ))
+}
+
+/// A step's hint line as key hints: each run of keys with the words after it, and words with no
+/// keys before them on their own.
+fn key_hints(hint: &[crate::range_pick::Hint]) -> Vec<KeyHint> {
+    let mut hints = Vec::new();
+    let mut keys = Vec::new();
+    for part in hint {
+        match part {
+            crate::range_pick::Hint::Key(key) => keys.push((*key).to_owned()),
+            crate::range_pick::Hint::Text(words) => hints.push(KeyHint {
+                keys: std::mem::take(&mut keys),
+                action: (*words).to_owned(),
+            }),
+        }
+    }
+    if !keys.is_empty() {
+        hints.push(KeyHint {
+            keys,
+            action: String::new(),
+        });
+    }
+    hints
 }
 
 // ---- the brush -----------------------------------------------------------------------------------
@@ -1529,7 +1545,33 @@ fn brush_slider(field: &DraftField, enabled: bool) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_unit, true_minus};
+    use super::{KeyHint, grid_unit, key_hints, true_minus};
+    use crate::range_pick::Hint;
+
+    #[test]
+    fn a_help_hint_line_groups_each_run_of_keys_with_the_words_after_it() {
+        let hint = |keys: &[&str], action: &str| KeyHint {
+            keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+            action: action.to_owned(),
+        };
+        assert_eq!(
+            key_hints(&[
+                Hint::Text("Pick, on the row"),
+                Hint::Key("Click"),
+                Hint::Text("select"),
+                Hint::Key("Shift"),
+                Hint::Key("Click"),
+                Hint::Text("add"),
+                Hint::Key("Return"),
+            ]),
+            [
+                hint(&[], "Pick, on the row"),
+                hint(&["Click"], "select"),
+                hint(&["Shift", "Click"], "add"),
+                hint(&["Return"], ""),
+            ]
+        );
+    }
 
     #[test]
     fn a_grid_field_shows_the_degree_sign_and_a_true_minus_and_no_other_unit() {

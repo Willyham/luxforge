@@ -5,19 +5,15 @@ use crate::{
     app::message::{Message, capability::CapabilityMessage},
     state::setup_sheet::{FactKind, IntroductionPicture, SetupSheet},
 };
-use iced::{
-    Alignment, Length,
-    widget::{Space, container, opaque},
-};
 use luxforge_ui::{
     Element, FactTone, Icon, KeyHint, SetupFactModel, SetupPicture, SetupSheetModel,
-    SetupStepModel, setup_sheet as sheet, theme,
+    SetupStepModel, setup_sheet as sheet,
 };
 
 /// The sheet and its scrim, while one asks.
 pub(crate) fn setup_sheet(model: Option<&SetupSheet>) -> Option<Element<'_, Message>> {
     let model = model?;
-    let card = sheet(
+    Some(sheet(
         &SetupSheetModel {
             eyebrow: model.eyebrow.clone(),
             title: model.title.clone(),
@@ -33,10 +29,7 @@ pub(crate) fn setup_sheet(model: Option<&SetupSheet>) -> Option<Element<'_, Mess
                     hints: step
                         .hints
                         .iter()
-                        .map(|(key, action)| KeyHint {
-                            key: key.clone(),
-                            action: action.clone(),
-                        })
+                        .map(|(key, action)| KeyHint::new(key.clone(), action.clone()))
                         .collect(),
                 })
                 .collect(),
@@ -67,26 +60,7 @@ pub(crate) fn setup_sheet(model: Option<&SetupSheet>) -> Option<Element<'_, Mess
         },
         Message::Capability(CapabilityMessage::Consent(model.allow.is_some())),
         Message::Capability(CapabilityMessage::Consent(false)),
-    );
-    Some(
-        iced::widget::stack![
-            opaque(
-                container(Space::new())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(theme::scrim_surface)
-            ),
-            container(opaque(card))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(theme::SPACING * 2.0)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into(),
-    )
+    ))
 }
 
 /// The picture the widget draws for one the introduction names.

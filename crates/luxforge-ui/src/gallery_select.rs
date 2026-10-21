@@ -594,10 +594,7 @@ fn region_over_the_loupe() -> Element<'static, ()> {
 }
 
 fn hints() -> Element<'static, ()> {
-    let hint = |key: &str, action: &str| KeyHint {
-        key: key.into(),
-        action: action.into(),
-    };
+    let hint = KeyHint::new;
     key_hints(&[
         hint("\u{2190} \u{2192}", "frames"),
         hint("1\u{2013}6", "jump"),
