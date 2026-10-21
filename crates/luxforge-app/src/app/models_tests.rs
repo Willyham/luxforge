@@ -310,6 +310,48 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
         models.tab().machine.as_deref(),
         Some("This machine has 1 GB of memory. Proof segmenter needs 2 GB, more than it has.")
     );
+    // Its Download asks for consent as on any machine, and the notice says it cannot run here and
+    // offers no Download, so no scripted Allow can be pressed either.
+    models.send(CapabilityMessage::Install {
+        module_id: MODULE.into(),
+        resource: RESOURCE.into(),
+    });
+    models.answer();
+    let [notice] = models.editor.workspace.canvas.notices.as_slice() else {
+        panic!(
+            "the consent notice: {:?}",
+            models.editor.workspace.canvas.notices
+        )
+    };
+    let machine = if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "computer"
+    };
+    assert!(
+        notice.body.ends_with(&format!(
+            "It needs 2 GB of memory, more than this {machine} has."
+        )),
+        "{}",
+        notice.body
+    );
+    assert_eq!(
+        notice.actions,
+        [(
+            "Close".to_owned(),
+            crate::state::canvas::NoticeAction::DenyConsent
+        )]
+    );
+    assert!(
+        models
+            .editor
+            .step_message(
+                MODULE,
+                crate::app::evidence::CapabilityAction::Consent(true)
+            )
+            .is_err()
+    );
+    // A grant given through the API is still refused at the install, by name.
     models.grant();
     let refused = models
         .api(
@@ -322,6 +364,114 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
         "{refused}"
     );
     assert!(models.endpoint.requests().is_empty(), "nothing was fetched");
+}
+
+/// A download that introduces its feature asks through the setup sheet, from the consent the host
+/// answers its install with: what the model needs of the machine against what this machine has,
+/// and a past Not now. On a machine below the model's minimum it says the model cannot run,
+/// offers no Download and only closes, and neither Return nor a scripted Allow downloads.
+#[test]
+fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
+    const AI: &str = "luxforge.ai";
+    const KLEIN: &str = "generative-klein-4b";
+    let machine = if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "computer"
+    };
+    let ask = |models: &mut Models| {
+        models.send(CapabilityMessage::Install {
+            module_id: AI.into(),
+            resource: KLEIN.into(),
+        });
+        models.answer();
+        assert!(
+            models.editor.workspace.canvas.notices.is_empty(),
+            "no notice beside the sheet: {:?}",
+            models.editor.workspace.canvas.notices
+        );
+        models
+            .editor
+            .workspace
+            .setup_sheet
+            .clone()
+            .expect("the setup sheet")
+    };
+
+    let mut models = Models::start(Some(48 << 30));
+    models.editor.select.state.shown = crate::state::select::Shown::Develop;
+    let sheet = ask(&mut models);
+    let memory = sheet.facts.last().expect("the memory fact");
+    assert_eq!(
+        (
+            memory.headline.as_str(),
+            memory.detail.as_str(),
+            memory.kind
+        ),
+        (
+            "Needs 16 GB of memory",
+            &*format!("This {machine} has 48 GB \u{2713}"),
+            crate::state::setup_sheet::FactKind::Memory(Some(true))
+        )
+    );
+    assert_eq!(
+        sheet.notes,
+        [(
+            "You can remove it at any time in Settings \u{203a} Models.".to_owned(),
+            false
+        )]
+    );
+    assert!(
+        sheet
+            .allow
+            .as_deref()
+            .is_some_and(|allow| allow.starts_with("Download ")),
+        "{:?}",
+        sheet.allow
+    );
+    assert_eq!(sheet.dismiss, "Not now");
+    // Not now is remembered, and the next ask says so.
+    models.send(CapabilityMessage::Consent(false));
+    models.answer();
+    assert!(models.editor.workspace.setup_sheet.is_none());
+    let sheet = ask(&mut models);
+    assert_eq!(
+        sheet.notes[0],
+        (
+            "You chose Not now before. Nothing has been downloaded.".to_owned(),
+            false
+        )
+    );
+
+    let mut models = Models::start(Some(8 << 30));
+    models.editor.select.state.shown = crate::state::select::Shown::Develop;
+    let sheet = ask(&mut models);
+    let memory = sheet.facts.last().expect("the memory fact");
+    assert_eq!(
+        (memory.detail.as_str(), memory.kind.unmet()),
+        (&*format!("This {machine} has 8 GB"), true)
+    );
+    assert_eq!(
+        sheet.notes,
+        [(format!("It can't run on this {machine}."), true)]
+    );
+    assert_eq!(
+        (sheet.allow.as_deref(), sheet.dismiss.as_str()),
+        (None, "Close")
+    );
+    assert_eq!(models.editor.key_context().setup_sheet, Some(false));
+    assert!(
+        models
+            .editor
+            .step_message(AI, crate::app::evidence::CapabilityAction::Consent(true))
+            .is_err(),
+        "a scripted Allow is refused where no Download is drawn"
+    );
+    // Over Select the sheet is not drawn, so it holds no key there.
+    models.editor.select.state.shown = crate::state::select::Shown::Select;
+    models.editor.rederive();
+    assert!(models.editor.workspace.setup_sheet.is_none());
+    assert_eq!(models.editor.key_context().setup_sheet, None);
 }
 
 #[test]

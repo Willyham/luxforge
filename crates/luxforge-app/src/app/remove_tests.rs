@@ -666,6 +666,60 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
     );
 }
 
+/// The setup sheet's Download grants exactly the disclosed scope and starts the install, and the
+/// sheet closes: the download's progress is the Remove group's, where Set up was.
+#[test]
+fn the_setup_sheets_download_closes_it_and_starts_the_install() {
+    let mut filling = Filling::opened();
+    let action = filling
+        .model()
+        .unoffered
+        .clone()
+        .and_then(|unoffered| unoffered.setup)
+        .and_then(|line| line.action)
+        .map(|(_, action)| action)
+        .expect("Set up");
+    filling.remove(RemoveMessage::Setup(action));
+    filling.answer_capabilities();
+    let sheet = filling
+        .editor
+        .workspace
+        .setup_sheet
+        .clone()
+        .expect("the setup sheet");
+    assert!(sheet.allow.is_some());
+    // The message the sheet's Download sends.
+    filling.update(Message::Capability(CapabilityMessage::Consent(
+        sheet.allow.is_some(),
+    )));
+    assert!(
+        filling.editor.workspace.setup_sheet.is_none(),
+        "the sheet closes on Download"
+    );
+    assert_eq!(filling.editor.key_context().setup_sheet, None);
+    let sent = filling.answer_capabilities();
+    let methods: Vec<&str> = sent
+        .iter()
+        .filter_map(|request| request["method"].as_str())
+        .collect();
+    let grant = methods
+        .iter()
+        .position(|method| *method == "module.permission.grant")
+        .expect("Download grants the disclosed scope");
+    assert_eq!(
+        methods[grant + 1],
+        "module.resource.install",
+        "then starts the install: {methods:?}"
+    );
+    wait_until("the install ending", || {
+        filling.api("module.resource.list", json!({"module_id": AI}))["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == GENERATOR && row["state"] == "installed")
+    });
+}
+
 /// What the desktop shows of generative fill with `ai.generative` off: nothing. No Remove segment,
 /// no Remove gestures, no AI editing section and no generative model in Settings › Models, its
 /// minimums left off the machine line.

@@ -866,14 +866,38 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
             facts.push(cost(disclosure.cost).into());
             let mut lines = vec![purpose, capitalised(&facts.join(" · "))];
             lines.extend(disclosure.use_restriction.as_deref().map(sentence));
-            (
-                title,
-                lines,
-                vec![
-                    ("Not now".into(), NoticeAction::DenyConsent),
-                    ("Download".into(), NoticeAction::AllowConsent),
-                ],
-            )
+            // A machine below the download's memory minimum is told so, as the host answers it,
+            // and offered no Download: the install would be refused.
+            let minimum = disclosure
+                .requirements
+                .as_ref()
+                .and_then(|requirements| requirements.min_memory_bytes);
+            match minimum.filter(|_| disclosure.fits == Some(false)) {
+                Some(minimum) => {
+                    let machine = if cfg!(target_os = "macos") {
+                        "Mac"
+                    } else {
+                        "computer"
+                    };
+                    lines.push(format!(
+                        "It needs {} of memory, more than this {machine} has.",
+                        crate::state::models::memory_text(minimum)
+                    ));
+                    (
+                        title,
+                        lines,
+                        vec![("Close".into(), NoticeAction::DenyConsent)],
+                    )
+                }
+                None => (
+                    title,
+                    lines,
+                    vec![
+                        ("Not now".into(), NoticeAction::DenyConsent),
+                        ("Download".into(), NoticeAction::AllowConsent),
+                    ],
+                ),
+            }
         }
         GrantKind::RemoteImageRequest => {
             let mut lines = vec![sentence(&disclosure.purpose)];

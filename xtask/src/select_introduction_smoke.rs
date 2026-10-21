@@ -63,8 +63,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     let opened = introduction("opened")?;
     ensure(
-        opened["introducer"] == "evidence"
-            && opened["first"] == "waiting"
+        opened["first"] == "waiting"
             && opened["sheet"].is_null()
             && frame("opened")?.state()["select"]["shown"] == "select",
         format!("The opened frame is not Select without the sheet: {opened}"),

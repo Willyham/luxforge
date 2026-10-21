@@ -4844,6 +4844,33 @@ fn the_brush_in_hand_is_put_down_by_done_and_when_its_component_is_gone() {
     assert_eq!(masking.editor.status.text, "Brush put down");
 }
 
+/// A range row's help sheet is drawn only while its row is: once the component is gone, undone
+/// away here, the sheet is closed, and no key is held behind a sheet that is not drawn.
+#[test]
+fn a_help_sheet_about_a_component_that_is_gone_is_closed() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("colour-range".to_owned()));
+    let component = masking.editor.workspace.masks.components[0]
+        .id
+        .as_str()
+        .to_owned();
+    let _ = masking.editor.update(Message::View(ViewMessage::OpenMenu(
+        MenuTarget::ComponentHelp(component),
+    )));
+    assert!(masking.editor.workspace.masks.help_sheet().is_some());
+    assert!(masking.editor.key_context().help_sheet_open);
+
+    masking.undo();
+    assert!(masking.listing().masks.is_empty());
+    assert!(masking.editor.workspace.masks.help_sheet().is_none());
+    assert!(
+        masking.editor.view_state.menu.is_none(),
+        "the stale menu is closed"
+    );
+    assert!(!masking.editor.key_context().help_sheet_open);
+}
+
 /// A brush that has painted holds a stroke of its own, so a commit elsewhere during it shows the
 /// Changed elsewhere notice with Discard and Reapply, and nothing is rebased behind its back.
 #[test]

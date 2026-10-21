@@ -821,7 +821,7 @@ impl Editor {
             usage_reported_presented: None,
             updates: Default::default(),
             move_question: state::move_to_applications::MoveQuestion::new(asker),
-            introduction: state::select_introduction::Introduction::new(config.introducer),
+            introduction: state::select_introduction::Introduction::new(config.introduces),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -1540,11 +1540,16 @@ impl Editor {
             .then(|| luxforge_core::MASK_MODE.to_owned())
     }
 
-    /// What the keyboard table depends on right now.
+    /// What the keyboard table depends on right now. A modal sheet takes the keyboard only while
+    /// it is drawn: the Select introduction over Select, and the setup and range help sheets over
+    /// Develop's workspace.
     fn key_context(&self) -> keymap::KeyContext {
+        let gallery = self.gallery_page().is_some();
+        let select_drawn = !gallery && self.select_shown();
+        let workspace_drawn = !gallery && !self.select_shown();
         keymap::KeyContext {
             usage_notice: self.workspace.usage_notice.is_some(),
-            introduction: self.introduction.open(),
+            introduction: select_drawn && self.workspace.select_introduction.is_some(),
             gallery_open: self.gallery_page().is_some(),
             comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some()
@@ -1559,10 +1564,11 @@ impl Editor {
                 .workspace
                 .setup_sheet
                 .as_ref()
+                .filter(|_| workspace_drawn)
                 .map(|sheet| sheet.allow.is_some()),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             export_sheet_open: self.export.sheet.is_some(),
-            help_sheet_open: matches!(self.view_state.menu, Some(MenuTarget::ComponentHelp(_))),
+            help_sheet_open: workspace_drawn && self.workspace.masks.help_sheet().is_some(),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(
