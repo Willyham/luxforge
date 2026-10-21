@@ -955,6 +955,7 @@ impl Editor {
         if self.select.state.shown == Shown::Select {
             self.usage_workspace(luxforge_core::usage::Workspace::Develop);
         }
+        self.introduction_left();
         self.select.state.shown = Shown::Develop;
         self.select.previews.release();
         self.loupe_leave()

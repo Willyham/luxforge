@@ -705,7 +705,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 &call.origin,
             )
         },
-        "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued: consent-required comes first on any machine, its disclosure carrying machine_memory_bytes and fits for a resource that declares a memory minimum, and with a grant held a machine below that minimum is refused resource-limit with data.requirements; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
         retries: Owner,
     ),
     owner!(

@@ -12,6 +12,7 @@ use crate::state::{
     Inputs,
     capabilities::{cost, hosts, human_bytes, introduced, sentence},
     host_commands::glyphs,
+    models::memory_text,
 };
 use luxforge_core::Chord;
 // The pictures the module names, which the view draws through this model.
@@ -145,22 +146,17 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
         .requirements
         .as_ref()
         .and_then(|requirements| requirements.min_memory_bytes);
-    let has = inputs
-        .capabilities
-        .modules
-        .get(&consent.module_id)
-        .and_then(|module| module.status.as_ref())
-        .and_then(|status| status.machine.as_ref())
-        .and_then(|machine| machine.memory_bytes);
-    let met = needed.and_then(|needed| has.map(|has| has >= needed));
+    // Whether this machine fits is the host's answer, carried in the disclosure with the memory it
+    // was measured against.
+    let met = disclosure.fits;
     let unmet = met == Some(false);
     if let Some(needed) = needed {
         facts.push(SetupFact {
             kind: FactKind::Memory(met),
-            headline: format!("Needs {} of memory", memory(needed)),
-            detail: match has {
-                Some(has) if unmet => format!("This {machine} has {}", memory(has)),
-                Some(has) => format!("This {machine} has {} \u{2713}", memory(has)),
+            headline: format!("Needs {} of memory", memory_text(needed)),
+            detail: match disclosure.machine_memory_bytes {
+                Some(has) if unmet => format!("This {machine} has {}", memory_text(has)),
+                Some(has) => format!("This {machine} has {} \u{2713}", memory_text(has)),
                 None => format!("This {machine}'s memory is unknown"),
             },
         });
@@ -215,9 +211,4 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
         }),
         dismiss: if unmet { "Close" } else { "Not now" }.into(),
     })
-}
-
-/// A memory size as the sheet states it, in whole gigabytes: `16 GB`.
-fn memory(bytes: u64) -> String {
-    format!("{:.0} GB", bytes as f64 / (1u64 << 30) as f64)
 }

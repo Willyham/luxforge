@@ -57,8 +57,8 @@ impl Editor {
         }
     }
 
-    /// Drop view state that names a row the listing no longer holds: a rename or a drag of a mask or
-    /// component that was undone away or deleted elsewhere.
+    /// Drop view state that names a row the listing no longer holds: a rename, a drag or a help
+    /// sheet of a mask or component that was undone away or deleted elsewhere.
     pub(crate) fn drop_stale_panel_state(&mut self) {
         let listing = self.document.masks.as_ref();
         let has_mask = |id: &str| {
@@ -89,6 +89,12 @@ impl Editor {
         }
         if stale_drag {
             self.mask_panel.drag = None;
+        }
+        // A help sheet about a component that is gone is closed, so it holds no keys undrawn.
+        if let Some(MenuTarget::ComponentHelp(id)) = self.view_state.menu.as_ref()
+            && !has_component(id)
+        {
+            self.view_state.menu = None;
         }
     }
 

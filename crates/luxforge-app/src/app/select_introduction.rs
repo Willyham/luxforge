@@ -100,6 +100,23 @@ impl Editor {
         }
     }
 
+    /// Leaving Select takes the sheet down with it, as it is drawn only over Select: Develop N's
+    /// photographs landing or a photograph opened from elsewhere can switch to Develop while it is
+    /// up. A first showing taken down this way was not closed by the person, so it stores nothing
+    /// and is shown again the next time Select is shown in this launch; one the ? brought back is
+    /// simply gone.
+    pub(crate) fn introduction_left(&mut self) {
+        if !self.introduction.open() {
+            return;
+        }
+        let first = self.introduction.first == First::Shown;
+        if first {
+            self.introduction.first = First::Waiting;
+        }
+        self.introduction.reopened = false;
+        self.event("select_introduction_left", || json!({"first": first}));
+    }
+
     /// What delays the first showing: a native dialog, a module's consent notice or the Settings
     /// sheet, or one of Select's own sheets and confirmations.
     fn introduction_delayed(&self) -> bool {
@@ -117,12 +134,11 @@ impl Editor {
         self.introduction.holds_notices(self.select_shown())
     }
 
-    /// What a captured frame records of the Select introduction: who it is shown to, where its
-    /// first showing is and how it closed, whether the ? showed it again, and the sheet as drawn.
+    /// What a captured frame records of the Select introduction: where its first showing is and
+    /// how it closed or why it is not shown, whether the ? showed it again, and the sheet as drawn.
     pub(crate) fn introduction_summary(&self) -> Value {
         let introduction = &self.introduction;
         json!({
-            "introducer": introduction.introducer.name(),
             "first": introduction.first.name(),
             "closed": match introduction.first {
                 First::Closed(how) => Some(how.name()),

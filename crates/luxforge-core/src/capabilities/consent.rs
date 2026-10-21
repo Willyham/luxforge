@@ -61,6 +61,16 @@ pub struct Disclosure {
     /// What a download's capability says of the feature it sets up, when it declares it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduction: Option<Introduction>,
+    /// This machine's memory, for a download that declares a memory minimum, when the host can
+    /// tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_memory_bytes: Option<u64>,
+    /// Whether this machine meets the download's memory minimum, as `module.resource.list`'s
+    /// `fits` says: absent when it declares none or the host cannot tell. A machine that does not
+    /// fit is still asked, so a client can say why, and its install is refused `resource-limit`
+    /// once it is allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fits: Option<bool>,
 }
 
 impl Disclosure {
@@ -80,6 +90,8 @@ impl Disclosure {
             use_restriction: None,
             requirements: None,
             introduction: None,
+            machine_memory_bytes: None,
+            fits: None,
         }
     }
 }
