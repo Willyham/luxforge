@@ -1364,6 +1364,32 @@ impl CandidatePin {
         writer.write(&bytes, self.patch_meta(), &self.module_id)
     }
 
+    /// [`Self::publish`] of the patch a candidate draft already read and verified ([`Self::prepare`]):
+    /// `patch` is written as it is, without reading the stored patch again, when it is this
+    /// candidate's (its identity the stored hash, its length and description the stored patch's);
+    /// otherwise the stored patch is published as [`Self::publish`] publishes it. The writer hashes
+    /// the bytes again before it writes them. Worker-side.
+    pub(crate) fn publish_prepared(
+        &self,
+        writer: &ArtifactWriter,
+        patch: &Arc<PreparedArtifact>,
+        cancel: &AtomicBool,
+    ) -> Result<(ArtifactRecord, Arc<PreparedArtifact>), Error> {
+        let meta = self.patch_meta();
+        let ours = super::ArtifactId::for_hash(&self.sha256).is_ok_and(|id| id == patch.id)
+            && patch.bytes.len() as u64 == self.patch_bytes
+            && patch.kind == meta.kind
+            && (patch.width, patch.height) == (meta.width, meta.height)
+            && patch.colour == meta.colour;
+        if !ours {
+            return self.publish(writer, cancel);
+        }
+        if cancelled(cancel) {
+            return Err(Error::cancelled("the accept was cancelled"));
+        }
+        writer.write_prepared(patch, &self.module_id)
+    }
+
     /// The stored patch, read and verified as [`Self::publish`] reads it, held in memory as the
     /// prepared artifact publishing would make of it, under the same identity (`artifact-` of its
     /// SHA-256) and description, and written nowhere: what a candidate draft shows
