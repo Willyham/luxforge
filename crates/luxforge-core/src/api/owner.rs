@@ -2427,8 +2427,12 @@ impl Owner {
         if let Some(refusal) = action.and_then(|action| self.experiment_refusal(action)) {
             return Err(refusal);
         }
-        // A candidate draft's set prepares the candidate it names, and its commit is the accept
-        // ([`candidate_draft`]).
+        // A later change of a client's draft supersedes its set still waiting for a candidate's
+        // patch; a candidate draft's set prepares the candidate it names, and its commit is the
+        // accept ([`candidate_draft`]).
+        if candidate_draft::supersedes(request) {
+            self.supersede_draft_patches(client);
+        }
         if candidate_draft::handles(self, client, request) {
             let call = Call {
                 client,

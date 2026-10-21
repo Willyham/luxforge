@@ -52,11 +52,11 @@ use std::{collections::BTreeSet, sync::Arc};
 pub(crate) const READ_CANDIDATE: &str = "job.read-candidate";
 /// `edit.accept-correction-patch`, which commits one candidate as a frozen patch.
 pub(crate) const ACCEPT: &str = "edit.accept-correction-patch";
-/// The Corrections module's candidate-accepting action, which a candidate draft drafts.
+/// The Corrections module's candidate-accepting action, which a candidate draft drafts: [`ACCEPT`]
+/// without its `edit.` prefix.
+pub(crate) const ACCEPT_ACTION: &str = ACCEPT.split_at("edit.".len()).1;
 /// What the status bar says once a candidate is accepted.
 const ACCEPTED: &str = "Accepted \u{b7} \u{2318}Z undoes it";
-
-pub(crate) const ACCEPT_ACTION: &str = "accept-correction-patch";
 /// The most candidate previews held decoded: the strip's.
 const HELD: usize = crate::state::remove::STRIP_MAX;
 /// Seeds are drawn below this, so a selection's Regenerates stay inside the request's seed range.

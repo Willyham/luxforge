@@ -198,6 +198,43 @@ impl ArtifactWriter {
         meta: ArtifactMeta,
         module_id: &str,
     ) -> Result<(ArtifactRecord, Arc<PreparedArtifact>), Error> {
+        let record = self.publish(bytes, meta, module_id, None)?;
+        let prepared = Arc::new(PreparedArtifact::new(
+            record.id.clone(),
+            &record.meta,
+            Arc::from(bytes),
+        ));
+        Ok((record, prepared))
+    }
+
+    /// [`Self::write`] of bytes already held as a prepared artifact: the same object and record,
+    /// and `prepared` itself handed back rather than a copy. The bytes are hashed again before
+    /// anything is written, and bytes whose hash is not `prepared`'s identity are refused
+    /// `internal`, writing nothing.
+    pub(crate) fn write_prepared(
+        &self,
+        prepared: &Arc<PreparedArtifact>,
+        module_id: &str,
+    ) -> Result<(ArtifactRecord, Arc<PreparedArtifact>), Error> {
+        let meta = ArtifactMeta {
+            kind: prepared.kind.clone(),
+            width: prepared.width,
+            height: prepared.height,
+            colour: prepared.colour.clone(),
+        };
+        let record = self.publish(&prepared.bytes, meta, module_id, Some(&prepared.id))?;
+        Ok((record, prepared.clone()))
+    }
+
+    /// Stage, sync and publish `bytes` as the object of their hash, and the record of it. With
+    /// `expected`, bytes of another identity are refused before anything is staged.
+    fn publish(
+        &self,
+        bytes: &[u8],
+        meta: ArtifactMeta,
+        module_id: &str,
+        expected: Option<&ArtifactId>,
+    ) -> Result<ArtifactRecord, Error> {
         let length = bytes.len() as u64;
         if length > MAX_ARTIFACT_BYTES {
             return Err(Error::resource_limit(format!(
@@ -212,6 +249,13 @@ impl ArtifactWriter {
         }
         let sha256 = format!("{:x}", Sha256::digest(bytes));
         let id = ArtifactId::for_hash(&sha256)?;
+        if let Some(expected) = expected
+            && *expected != id
+        {
+            return Err(Error::internal(format!(
+                "the prepared bytes are not artifact {expected}"
+            )));
+        }
         self.prepare_root()?;
         // The expensive write and sync happen before the lock, so a collection waits only for the
         // decision below.
@@ -231,18 +275,14 @@ impl ArtifactWriter {
         // there is nothing left to remove.
         let _ = fs::remove_file(&staged);
         decided?;
-        let prepared = Arc::new(PreparedArtifact::new(id.clone(), &meta, Arc::from(bytes)));
-        Ok((
-            ArtifactRecord {
-                id,
-                sha256,
-                bytes: length,
-                meta,
-                module_id: module_id.to_owned(),
-                created_ms: now_ms(),
-            },
-            prepared,
-        ))
+        Ok(ArtifactRecord {
+            id,
+            sha256,
+            bytes: length,
+            meta,
+            module_id: module_id.to_owned(),
+            created_ms: now_ms(),
+        })
     }
 
     /// The artifact root this writer publishes into.

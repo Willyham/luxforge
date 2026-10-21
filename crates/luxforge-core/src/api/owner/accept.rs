@@ -67,11 +67,13 @@ pub(super) struct ParkedAccept {
     pub(super) request: AcceptRequest,
 }
 
-/// What the source worker runs for an accept: the pinned candidate and where to publish it.
+/// What the source worker runs for an accept: the pinned candidate, where to publish it and, for
+/// a candidate draft's commit, the patch the draft already read and verified.
 pub(super) struct AcceptWork {
     pub(super) asset_id: AssetId,
     pub(super) pin: CandidatePin,
     pub(super) writer: ArtifactWriter,
+    pub(super) patch: Option<Arc<PreparedArtifact>>,
 }
 
 /// What it hands back: the pin, still held, and the published artifact.
@@ -82,9 +84,14 @@ pub(super) struct Published {
 }
 
 impl AcceptWork {
-    /// Publish the candidate's stored patch through the catalog's artifact writer. Worker-side.
+    /// Publish the candidate's patch through the catalog's artifact writer: the draft's verified
+    /// bytes when they are the pinned candidate's, and otherwise the stored patch, read and
+    /// verified. Worker-side.
     pub(super) fn run(self, cancel: &std::sync::atomic::AtomicBool) -> Result<Published, Error> {
-        let (record, prepared) = self.pin.publish(&self.writer, cancel)?;
+        let (record, prepared) = match &self.patch {
+            Some(patch) => self.pin.publish_prepared(&self.writer, patch, cancel)?,
+            None => self.pin.publish(&self.writer, cancel)?,
+        };
         Ok(Published {
             pin: self.pin,
             record,
@@ -111,10 +118,13 @@ pub(super) fn begin(
 }
 
 /// The candidate draft an accept commits ([`super::candidate_draft`]): it closes once the entry
-/// commits, and the commit's answer is recorded under its own request-table key.
+/// commits, and the commit's answer is recorded under its own request-table key. `patch` is the
+/// candidate's patch the draft holds, read and verified, which the accept publishes instead of
+/// reading the stored one again.
 pub(super) struct DraftClose {
     pub(super) draft_id: DraftId,
     pub(super) key: Option<RequestKey>,
+    pub(super) patch: Option<Arc<PreparedArtifact>>,
 }
 
 /// [`begin`] with the request's parameters in hand, envelope included: an accept's own, or a
@@ -125,7 +135,7 @@ pub(super) fn start(
     action_id: &str,
     mut parameters: Map<String, Value>,
     parks: bool,
-    closes: Option<DraftClose>,
+    mut closes: Option<DraftClose>,
 ) -> Result<Value, Error> {
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     let mutation: Mutation = params::take(&mut parameters, "mutation")?;
@@ -176,6 +186,7 @@ pub(super) fn start(
     let read = pin.candidate().clone();
     candidate_draft::of_this_input(owner, &read, &asset_id, &job_id)?;
     let writer = owner.service.artifact_writer()?;
+    let patch = closes.as_mut().and_then(|closes| closes.patch.take());
     let job = owner.sources.submit(
         &mut owner.jobs,
         call.client,
@@ -190,6 +201,7 @@ pub(super) fn start(
             asset_id: asset_id.clone(),
             pin,
             writer,
+            patch,
         })),
         Vec::new(),
         None,

@@ -12,10 +12,14 @@
 //!   [`super::PIXEL_READ_REQUIRED`], having changed nothing.
 //! - **Held in the draft.** The prepared patch lives in the session's one draft
 //!   ([`crate::DraftCandidate`]), so a session holds at most one; it goes when the draft names
-//!   another candidate, is cancelled or closes. A newer `draft.set` of the same client supersedes
-//!   one still waiting for its preparation.
+//!   another candidate, is cancelled or closes.
+//! - **Superseded.** A later `draft.set`, `draft.commit` or `draft.cancel` of the same client,
+//!   whether it parks or is answered at once, supersedes a `draft.set` still waiting for its
+//!   preparation: that one is answered `cancelled` and its read stopped, so it never runs again
+//!   over the later call's draft.
 //! - **`draft.commit`** is the accept ([`super::accept`]), with the draft's request at its base
-//!   revision; the draft closes when the entry commits and stays when the accept is refused.
+//!   revision, publishing the patch the draft holds rather than reading the candidate again; the
+//!   draft closes when the entry commits and stays when the accept is refused.
 //! - **The lock.** A fill's lock on the photograph refuses neither the draft's begin nor its
 //!   reapply, since a candidate draft commits nothing; its commit is refused as an accept is.
 use super::{
@@ -34,7 +38,7 @@ use crate::{
         candidates::{CandidatePin, CandidateRead},
     },
     draft::named_candidate,
-    jobs::JobKind,
+    jobs::{JobKind, Release},
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -52,8 +56,7 @@ pub(super) struct PreparedPatch {
     job_id: JobId,
     candidate: u8,
     artifact: Arc<PreparedArtifact>,
-    #[allow(dead_code)]
-    pin: CandidatePin,
+    _pin: CandidatePin,
 }
 
 impl PrepareWork {
@@ -64,7 +67,7 @@ impl PrepareWork {
             job_id: self.pin.job_id().clone(),
             candidate: self.pin.candidate().candidate,
             artifact,
-            pin: self.pin,
+            _pin: self.pin,
         })
     }
 
@@ -276,23 +279,18 @@ pub(super) fn commit(
 ) -> Result<Value, Error> {
     let p: DraftCommit = params::parse(&call.request.params)?;
     let session = owner.sessions.entry(call.client).or_default();
-    methods::refresh_conflict(&owner.service, session)?;
-    let draft = session.held_draft(&p.draft_id)?;
-    if draft.conflicted {
-        return Err(Error::conflict(
-            "the asset changed under this draft; discard it or reapply it",
-        ));
-    }
-    if p.mutation.expected_revision != draft.base_revision {
-        return Err(Error::conflict(format!(
-            "stale revision {}; this draft is based on revision {}",
-            p.mutation.expected_revision, draft.base_revision
-        )));
-    }
+    let draft = methods::committable(&owner.service, session, &p)?;
     let action = draft.action.clone();
     let mut parameters = draft.request();
     parameters.insert("asset_id".into(), json!(draft.asset_id));
     parameters.insert("mutation".into(), methods::value(&p.mutation)?);
+    // The patch the draft shows was read and verified when it was drafted: the accept publishes
+    // those bytes rather than reading the candidate again.
+    let patch = draft
+        .candidate
+        .as_ref()
+        .filter(|held| held.names(&draft.fields))
+        .map(|held| held.artifact.clone());
     accept::start(
         owner,
         call,
@@ -302,30 +300,49 @@ pub(super) fn commit(
         Some(accept::DraftClose {
             draft_id: p.draft_id,
             key,
+            patch,
         }),
     )
 }
 
+/// Whether `request` changes or ends its client's draft, and so supersedes a `draft.set` of that
+/// client still waiting for its candidate's patch ([`Owner::supersede_draft_patches`]).
+pub(super) fn supersedes(request: &ApiRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        "draft.set" | "draft.commit" | "draft.cancel"
+    )
+}
+
 impl Owner {
-    /// Park the `draft.set` that [`prepare`] left a job for, until the job completes. One still
-    /// parked for the same client is superseded: it is answered `cancelled` at once, and its
-    /// patch dropped when its job ends.
+    /// Park the `draft.set` that [`prepare`] left a job for, until the job completes. The call
+    /// that parked it already superseded any other of its client's.
     pub(super) fn park_draft_patch(&mut self, call: OwnerCall, job: JobId) {
+        self.parked_draft_patches.insert(job, call);
+    }
+
+    /// `client` sent a later `draft.set`, `draft.commit` or `draft.cancel` ([`supersedes`]): a
+    /// `draft.set` of its still waiting for its candidate's patch is answered `cancelled` now, so
+    /// it never runs again over what the later call left, and its job is stopped, so the read ends
+    /// and leaves the source queue.
+    pub(super) fn supersede_draft_patches(&mut self, client: ClientId) {
         let superseded: Vec<JobId> = self
             .parked_draft_patches
             .iter()
-            .filter(|(_, parked)| parked.client == call.client)
+            .filter(|(_, parked)| parked.client == client)
             .map(|(job, _)| job.clone())
             .collect();
         for job in superseded {
             if let Some(parked) = self.parked_draft_patches.remove(&job) {
                 self.refuse(
                     parked,
-                    Error::cancelled("superseded: this client set its draft again"),
+                    Error::cancelled("superseded: this client changed its draft again"),
                 );
             }
+            if self.jobs.release(&job, client).ok() == Some(Release::Stopped) {
+                self.stop(&job, JobKind::Artifacts);
+            }
         }
-        self.parked_draft_patches.insert(job, call);
     }
 
     /// Drop every `draft.set` `client` parked: it left, and its jobs are stopped with it.
