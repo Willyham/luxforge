@@ -25,6 +25,9 @@
 #ifdef GGML_USE_METAL
 #include "ggml-backend.h"
 #include "ggml-metal.h"
+
+// Defined by the staged ggml-metal-context.m (native/build.rs, THIRD_PARTY.md "Local change").
+extern "C" void luxforge_ggml_metal_set_slice_us(int64_t slice_us);
 #endif
 
 extern "C" {
@@ -333,6 +336,17 @@ int32_t lf_sd_warm(char* error, size_t error_len) {
     (void)error_len;
 #endif
     return 0;
+}
+
+// Run Metal graphs in slices of about `slice_us` microseconds of GPU time, each waited for before
+// the next, or whole as upstream does for 0 or less. Process-wide, as the Metal backend's queue is;
+// nothing on a CPU build.
+void lf_sd_set_gpu_slice_us(int64_t slice_us) {
+#ifdef GGML_USE_METAL
+    luxforge_ggml_metal_set_slice_us(slice_us);
+#else
+    (void)slice_us;
+#endif
 }
 
 // The sampler and scheduler a context denoises with by default, as upstream names them.

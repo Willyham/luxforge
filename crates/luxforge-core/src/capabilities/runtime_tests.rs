@@ -198,6 +198,7 @@ impl CapabilityModule for RuntimeModule {
                     conditioning: Conditioning::None,
                     seed,
                     steps: 2,
+                    share_gpu: false,
                 };
                 let generated = generator.generate(
                     &request,

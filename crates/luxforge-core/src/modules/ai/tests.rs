@@ -462,6 +462,28 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     assert_eq!(fixture.controls().generations(), 7);
 }
 
+/// `ai.generative-gpu-sharing` is read as each fill is requested, reaches every generation of
+/// its job, and is recorded in the job's result.
+#[test]
+#[slow]
+fn the_gpu_sharing_flag_reaches_each_generation_of_the_requests_made_while_it_is_on() {
+    let fixture = Fixture::new("gpu-sharing");
+    let [asset, _] = fixture.assets.clone();
+    let owner = fixture.ready();
+    let whole = owner.generate(with(selection(&asset), json!({"seed": 1})));
+    assert_eq!(whole["result"]["result"]["share_gpu"], false, "{whole}");
+    assert_eq!(fixture.controls().shared_generations(), 0);
+
+    owner.ok(
+        "flags.set",
+        json!({"flag": crate::flags::AI_GENERATIVE_GPU_SHARING, "value": true}),
+    );
+    let sliced = owner.generate(with(selection(&asset), json!({"seed": 2, "candidates": 2})));
+    assert_eq!(sliced["result"]["result"]["share_gpu"], true, "{sliced}");
+    assert_eq!(fixture.controls().generations(), 3);
+    assert_eq!(fixture.controls().shared_generations(), 2);
+}
+
 #[test]
 #[slow]
 fn a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {

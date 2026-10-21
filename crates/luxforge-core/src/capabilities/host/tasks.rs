@@ -250,15 +250,31 @@ impl CapabilityHost {
         // Every unmet requirement, listed together before anything else is asked.
         let mut missing = Vec::new();
         // The flags the task declares, which a client reads to offer it, then any its module
-        // names for this request, each once.
+        // names for this request, each once, and those it reads, from one read of the store.
         let mut flags: Vec<&str> = task.flags.iter().map(String::as_str).collect();
         for flag in &needs.flags {
             if !flags.contains(flag) {
                 flags.push(flag);
             }
         }
+        let stored = (!flags.is_empty() || !needs.reads_flags.is_empty())
+            .then(|| {
+                self.preferences
+                    .read()
+                    .ok()
+                    .map(|preferences| preferences.flags)
+            })
+            .flatten();
+        let read_flags: Vec<(&'static str, bool)> = needs
+            .reads_flags
+            .iter()
+            .map(|flag| {
+                let on = crate::flags::live_toggle_in(stored.as_ref(), self.launch_flags(), flag);
+                (*flag, on)
+            })
+            .collect();
         for flag in flags {
-            if !crate::flags::live_toggle(&self.preferences, self.launch_flags(), flag) {
+            if !crate::flags::live_toggle_in(stored.as_ref(), self.launch_flags(), flag) {
                 missing.push(Requirement {
                     kind: RequirementKind::Flag,
                     id: (*flag).to_owned(),
@@ -451,6 +467,9 @@ impl CapabilityHost {
         }
         for (resource, path) in resources {
             context = context.with_resource(&resource, path);
+        }
+        for (flag, on) in read_flags {
+            context = context.with_flag(flag, on);
         }
         for (capability, load) in runtimes {
             context =

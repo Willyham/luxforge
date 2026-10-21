@@ -38,7 +38,7 @@ mod native;
 mod tests;
 
 pub use generator::{
-    KleinGenerator, LORA_PROMPT, MAX_SIDE, REPLACE_PREFIX, outlined, replace_prompt,
+    GPU_SLICE, KleinGenerator, LORA_PROMPT, MAX_SIDE, REPLACE_PREFIX, outlined, replace_prompt,
 };
 
 /// The runtime's name in provenance.

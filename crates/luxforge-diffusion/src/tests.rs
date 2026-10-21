@@ -215,6 +215,7 @@ fn request<'a>(
         conditioning,
         seed: 1,
         steps: 4,
+        share_gpu: false,
     }
 }
 
@@ -495,6 +496,7 @@ mod native {
                     conditioning: Conditioning::None,
                     seed,
                     steps: 4,
+                    share_gpu: false,
                 },
                 &mut |progress: StepProgress| steps.push((progress.step, progress.steps)),
                 &Cancel::new(),
@@ -523,6 +525,61 @@ mod native {
         let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
     }
 
+    /// A generation that shares the GPU makes the whole-graph generation's candidate byte for
+    /// byte: its slices encode upstream's kernels, only in more command buffers. Reports both
+    /// times, which are the slices' cost, not a measurement of record.
+    #[test]
+    #[ignore = "needs the pinned klein files"]
+    fn a_generation_that_shares_the_gpu_makes_the_whole_graph_candidate() {
+        let (dir, model) = installed("share-gpu");
+        let generator = open(&model);
+        let side = 512u32;
+        let pixels = (side * side) as usize;
+        let image: Vec<f32> = (0..pixels * 3)
+            .map(|i| ((i * 37) % 251) as f32 / 250.0)
+            .collect();
+        let mut mask = vec![0f32; pixels];
+        for row in side as usize / 3..side as usize * 2 / 3 {
+            let at = row * side as usize;
+            mask[at + side as usize / 3..at + side as usize * 2 / 3].fill(1.0);
+        }
+        let generate = |share_gpu: bool| {
+            let started = Instant::now();
+            let generated = generator
+                .generate(
+                    &GenerateRequest {
+                        width: side,
+                        height: side,
+                        image: &image,
+                        mask: &mask,
+                        conditioning: Conditioning::None,
+                        seed: 11,
+                        steps: 4,
+                        share_gpu,
+                    },
+                    &mut |_: StepProgress| {},
+                    &Cancel::new(),
+                )
+                .unwrap();
+            (generated.image, started.elapsed())
+        };
+        let (whole, whole_time) = generate(false);
+        let (sliced, sliced_time) = generate(true);
+        eprintln!(
+            "whole graphs {:.1} s, {} ms slices {:.1} s at {side} px",
+            whole_time.as_secs_f64(),
+            crate::GPU_SLICE.as_millis(),
+            sliced_time.as_secs_f64()
+        );
+        let differing = whole
+            .iter()
+            .zip(&sliced)
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(differing, 0, "{differing} of {} values differ", whole.len());
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+    }
+
     /// A cancel during a step answers cancelled at the next step boundary, with no candidate.
     #[test]
     #[ignore = "needs the pinned klein files"]
@@ -548,6 +605,7 @@ mod native {
                 conditioning: Conditioning::None,
                 seed: 3,
                 steps: 4,
+                share_gpu: false,
             },
             &mut |_: StepProgress| {
                 seen.lock().unwrap().get_or_insert_with(Instant::now);

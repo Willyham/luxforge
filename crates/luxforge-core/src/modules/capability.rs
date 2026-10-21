@@ -25,6 +25,10 @@ pub struct TaskNeeds {
     pub uses: Option<Vec<String>>,
     /// Toggle flags ([`crate::flags`]) that must be on: one that is off is an unmet requirement.
     pub flags: Vec<&'static str>,
+    /// Toggle flags the task reads without requiring them: each is resolved as the request is
+    /// made and handed to the task ([`crate::capabilities::context::ModuleContext::flag`]), so a
+    /// change applies from the next request.
+    pub reads_flags: Vec<&'static str>,
     /// The task holds its asset locked while it runs: the host refuses every edit of that asset,
     /// and another locking task on it, until the job ends, however it ends.
     pub locks_asset: bool,

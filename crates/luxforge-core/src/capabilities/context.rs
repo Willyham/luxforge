@@ -118,6 +118,9 @@ pub struct ModuleContext {
     runtimes: BTreeMap<String, RuntimeGrant>,
     /// The stage a task that declares `reads` reads, as the owner planned it.
     read: Option<GrantedRead>,
+    /// The flags the task reads ([`crate::modules::capability::TaskNeeds::reads_flags`]), as
+    /// they were when it was requested.
+    flags: BTreeMap<&'static str, bool>,
     control: Arc<JobControl>,
 }
 
@@ -134,6 +137,7 @@ impl std::fmt::Debug for ModuleContext {
             .field("candidates", &self.candidates.is_some())
             .field("runtimes", &self.runtimes.keys().collect::<Vec<_>>())
             .field("reads", &self.read.as_ref().map(|read| read.plan.boundary))
+            .field("flags", &self.flags)
             .finish_non_exhaustive()
     }
 }
@@ -159,6 +163,7 @@ impl ModuleContext {
             candidates: None,
             runtimes: BTreeMap::new(),
             read: None,
+            flags: BTreeMap::new(),
             control,
         }
     }
@@ -188,6 +193,18 @@ impl ModuleContext {
     pub(crate) fn with_read(mut self, read: GrantedRead) -> Self {
         self.read = Some(read);
         self
+    }
+
+    /// A flag the task reads, as it was when the task was requested.
+    pub(crate) fn with_flag(mut self, flag: &'static str, on: bool) -> Self {
+        self.flags.insert(flag, on);
+        self
+    }
+
+    /// Whether a flag the task reads was on when it was requested; `false` for one it did not
+    /// name in its needs.
+    pub(crate) fn flag(&self, flag: &str) -> bool {
+        self.flags.get(flag).copied().unwrap_or(false)
     }
 
     /// The module-level values and the secret fields the module declares.
