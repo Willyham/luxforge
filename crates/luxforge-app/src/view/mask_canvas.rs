@@ -50,6 +50,12 @@ impl Placement {
         let (ox, oy) = self.map.to_output(x, y)?;
         Some(self.view.canvas_point(ox, oy))
     }
+    /// [`Self::canvas_point`] for a content position the output stage may not show: where it would
+    /// be drawn, off the photograph or not ([`ContentMap::to_output_unbounded`]).
+    pub(crate) fn canvas_point_unbounded(&self, x: f64, y: f64) -> Option<Point> {
+        let (ox, oy) = self.map.to_output_unbounded(x, y)?;
+        Some(self.view.canvas_point(ox, oy))
+    }
     pub(crate) fn content_point(&self, point: Point) -> Option<(f64, f64)> {
         let (ox, oy) = self.view.stage_point(point);
         self.map.to_content(ox, oy)

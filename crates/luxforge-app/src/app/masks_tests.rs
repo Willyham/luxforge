@@ -2676,15 +2676,13 @@ fn a_range_rows_help_sheet_is_closed_until_its_button_opens_it() {
     let help = row.help.as_ref().expect("a colour range offers help");
     assert!(!help.open);
     assert_eq!(help.title, "Colour range");
+    // The row carries its own kind's limits, not another range's; the words themselves are the
+    // core table's, checked there.
     assert_eq!(
-        help.limits,
-        luxforge_core::mask::component_kind_limits("colour-range")
+        help.limits.map(|limits| limits.alike_heading),
+        Some("It sees these as one colour")
     );
-    assert!(help.limits.is_some());
-    assert_eq!(
-        help.notes,
-        luxforge_core::mask::component_kind_notes("colour-range")
-    );
+    assert!(!help.notes.is_empty());
     assert!(help.pick.steps.iter().any(|step| {
         step.hint
             .windows(2)

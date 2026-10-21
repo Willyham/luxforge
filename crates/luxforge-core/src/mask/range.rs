@@ -695,7 +695,7 @@ pub(super) const PICK_SPREAD_PERCENTILE: f64 = 90.0;
 /// What a pick read at the mask's input site, in linear sRGB: the one pixel a click holds, or the
 /// reduced points of a dragged area in reading order.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Picked<'a> {
+pub enum Picked<'a> {
     Point([f64; 3]),
     Area(&'a [[f64; 3]]),
 }
