@@ -33,7 +33,7 @@ use crate::{
 use iced::keyboard::{Key, Modifiers as Keys, key::Named};
 use luxforge_core::{
     AssetId, ClientId, HostConfig, ModuleDescriptor, OwnerHandle,
-    capabilities::secrets::MemorySecretStore,
+    capabilities::{descriptor::IntroductionPicture, secrets::MemorySecretStore},
     inference::{
         CompositeInference, InferenceRuntime,
         fake::{FAKE_BACKEND, FAKE_HOST_BACKEND, FakeInference},
@@ -540,15 +540,76 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
         )]
     );
     filling.answer_capabilities();
-    let notice = &filling.editor.workspace.canvas.notices[0];
-    assert!(notice.title.contains("download"), "{}", notice.title);
-    assert!(
-        notice.body.starts_with(
-            "Set up AI editing: download the model that removes and fills, which runs on this \
-             computer"
+    // The download introduces the feature, so it asks through the setup sheet, not a notice: the
+    // feature in its own words and three pictured steps, then the download's facts; the model's
+    // name, files and storage are left to Settings › Models.
+    assert!(filling.editor.workspace.canvas.notices.is_empty());
+    let sheet = filling
+        .editor
+        .workspace
+        .setup_sheet
+        .clone()
+        .expect("the setup sheet");
+    assert_eq!(
+        (
+            sheet.eyebrow.as_str(),
+            sheet.title.as_str(),
+            sheet.promise.as_str()
         ),
-        "{}",
-        notice.body
+        (
+            "AI editing",
+            "Remove anything, fill it in naturally",
+            "Your photos stay on this computer."
+        )
+    );
+    assert_eq!(sheet.hero, None);
+    assert_eq!(
+        sheet
+            .steps
+            .iter()
+            .map(|step| (step.title.as_str(), step.picture))
+            .collect::<Vec<_>>(),
+        [
+            ("Paint over it", IntroductionPicture::PaintOver),
+            ("Generate", IntroductionPicture::Candidates),
+            ("Accept", IntroductionPicture::History),
+        ]
+    );
+    assert_eq!(
+        sheet.steps[2].hints,
+        [("\u{2318}Z".to_owned(), "undoes it".to_owned())],
+        "a step's keys are the keymap's"
+    );
+    assert_eq!(sheet.facts_label.as_deref(), Some("Before it can start"));
+    assert_eq!(
+        sheet
+            .facts
+            .iter()
+            .map(|fact| (fact.headline.as_str(), fact.detail.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("46 B download", "Once, then it works offline"),
+            (
+                "From developer.luxforge.invalid",
+                "Free \u{b7} GPL-3.0-or-later"
+            ),
+        ],
+        "the fake generator declares no minimum memory, so no memory fact"
+    );
+    assert_eq!(
+        sheet.notes,
+        [(
+            "You can remove it at any time in Settings \u{203a} Models.".to_owned(),
+            false
+        )]
+    );
+    assert_eq!(
+        (sheet.allow.as_deref(), sheet.dismiss.as_str()),
+        (Some("Download 46 B"), "Not now")
+    );
+    assert!(
+        filling.editor.workspace.covers_canvas(),
+        "a press on the photograph does not paint behind the sheet"
     );
 
     filling.install(GENERATOR);

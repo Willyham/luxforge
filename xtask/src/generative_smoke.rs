@@ -2,20 +2,20 @@
 //! (`docs/design/ai-editing.md#desktop-surface`), on the real editor, background-only, with
 //! correlated state, log and capture.
 //!
-//! One developer launch on the four-quadrant fixture. With the experiment on, the tools panel's AI
-//! editing section is expanded and captured with its setup card before anything is installed, and
-//! the experiment is turned off again. With the `ai.generative` experiment off the
-//! Corrections band has no Remove; a second client turns it on, Remove is offered and chosen, and
-//! shows AI editing's setup with Set up; the fake generator's grant and install go through the API
-//! as any client's would. A stroke across the boundary of two quadrants is the selection; Generate is captured
-//! while it runs (the ring and the status bar's progress), Escape cancels it, Generate runs to its
-//! one candidate, Regenerate adds one more, and the first is chosen again and
-//! previewed on the canvas. A second client accepts the desktop's newest job's candidate. A prompt makes the action
-//! Replace and offers the Replace add-on, whose Add goes through the consent notice; Replace
-//! then runs and Accept commits it. Last, the second client turns the experiment off while Remove
-//! is chosen, and the band is back on Heal with no Remove. The fill of a flat-coloured context is that context's mean, so
-//! a fill across two quadrants is legible in the capture: the left quadrant's colour inside the
-//! selection becomes a mix of both.
+//! One developer launch on the four-quadrant fixture. With the experiment on, the tools panel has
+//! no AI editing section (its setup is the Corrections band's), and the experiment is turned off
+//! again. With the `ai.generative` experiment off the Corrections band has no Remove; a second
+//! client turns it on, Remove is offered and chosen, and shows AI editing's setup with Set up,
+//! which asks through the setup sheet before the fake generator installs. A stroke across the
+//! boundary of two quadrants is the selection; Generate is captured while it runs (the ring and the
+//! status bar's progress), Escape cancels it, Generate runs to its one candidate, Regenerate adds
+//! one more, and the first is chosen again and previewed on the canvas. A second client accepts the
+//! desktop's newest job's candidate. A prompt makes the action Replace and offers the Replace
+//! add-on, whose Add asks through the setup sheet in the feature's words; Replace then runs and
+//! Accept commits it. Last, the second client turns the experiment off while Remove is chosen, and
+//! the band is back on Heal with no Remove. The fill of a flat-coloured context is that context's
+//! mean, so a fill across two quadrants is legible in the capture: the left quadrant's colour
+//! inside the selection becomes a mix of both.
 use crate::{
     corrections_smoke::{MODULE, NEAR, PATCH_HALF, SIZE, correction, field, key},
     scenario::{Checked, Checks, Frame, Plan, Step, Tolerance, plan::only},
@@ -27,12 +27,11 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "generative";
-pub const ABOUT: &str = "AI editing's setup card in the tools panel, and Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, AI editing's setup, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the Replace add-on's consented download, Accept, and Remove gone again with the experiment off";
+pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, AI editing's setup sheet and its consented download, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the Replace add-on's setup sheet and download, Accept, and Remove gone again with the experiment off";
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
 const GENERATOR: &str = "fake-generator";
-const ORIGIN: &str = "https://developer.luxforge.invalid";
 const PROMPT: &str = "a red bicycle";
 const FLAG: &str = "ai.generative";
 
@@ -57,9 +56,6 @@ fn ai(action: CapabilityAction) -> CapabilityStep {
 
 /// Every frame, in order.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    let api = |name: &str, method: &str, params: Value| {
-        Step::new(name, script::Step::call(method, params)).commits(0)
-    };
     // A second client's flag change, which the step waits for the desktop to read.
     let flag = |name: &str, on: bool| {
         Step::new(
@@ -70,28 +66,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     };
     Plan::new(vec![
         Step::opened("opened").no_draft(),
-        // The AI editing section with the experiment on and nothing installed: the setup card,
-        // with the sections above it collapsed and the panel scrolled to its end.
+        // The tools panel with the experiment on and nothing installed: no AI editing section,
+        // since its setup is the Corrections band's.
         flag("panel-flag", true),
-        Step::new(
-            "basic-collapsed",
-            script::Step::section("luxforge.basic", false),
-        )
-        .commits(0)
-        .collapsed("luxforge.basic"),
-        Step::new(
-            "crop-collapsed",
-            script::Step::section("luxforge.crop", false),
-        )
-        .commits(0)
-        .collapsed("luxforge.crop"),
-        Step::new("ai-expanded", script::Step::section(AI, true))
-            .commits(0)
-            .expanded(AI),
-        Step::new("ai-scrolled", script::Step::tools_scroll(1.0))
-            .commits(0)
-            .expanded(AI),
-        Step::new("setup-card", ai(CapabilityAction::Settle)).commits(0),
         flag("panel-flag-off", false),
         // The experiment off, as by default: the band has no Remove.
         Step::new("mode", key("q")).commits(0).mode(MODULE),
@@ -103,19 +80,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(0)
         .status_starts("Set up AI editing first"),
-        // The fake generator's download granted and installed through the API.
-        api(
-            "allowed",
-            "module.permission.grant",
-            json!({"module_id": AI, "capability": format!("download-{GENERATOR}"),
-                   "scope": {"resource": GENERATOR, "version": "1", "origin": ORIGIN}}),
-        ),
-        api(
-            "installing",
-            "module.resource.install",
-            json!({"module_id": AI, "resource_id": GENERATOR}),
-        ),
-        Step::new("installed", ai(CapabilityAction::Settle))
+        // Set up asks first, through the setup sheet in the feature's words rather than a notice,
+        // and the fake generator installs once allowed.
+        Step::new("generator-asked", remove(RemoveStep::Setup))
+            .commits(0)
+            .no_notices(),
+        Step::new("installed", ai(CapabilityAction::Consent(true)))
             .commits(0)
             .status_starts("Paint over what to remove"),
         Step::new("size", field("radius", SIZE)).commits(0),
@@ -167,7 +137,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("prompt", remove(RemoveStep::Prompt(PROMPT.into()))).commits(0),
         Step::new("encoder-asked", remove(RemoveStep::Setup))
             .commits(0)
-            .notice("Allow AI editing to download a resource?"),
+            .no_notices(),
         Step::new("encoder-installed", ai(CapabilityAction::Consent(true))).commits(0),
         Step::new("replaced", remove(RemoveStep::Generate(RemoveUntil::Done)))
             .commits(0)
@@ -206,15 +176,14 @@ fn apart(one: [f64; 3], two: [f64; 3]) -> f64 {
 pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
-    // The AI editing section's setup card names the feature and offers Set up.
-    let card = launch.at("setup-card")?;
-    let setup = &card.state()["capabilities"][AI]["setup"];
+    // With the experiment on, the tools panel lists Basic but no AI editing section; the setup
+    // is still recorded, for the Corrections band.
+    let panel = launch.at("panel-flag")?;
+    let expanded = &panel.state()["expanded"];
+    let setup = &panel.state()["capabilities"][AI]["setup"];
     ensure(
-        setup["heading"] == json!("Set up AI editing")
-            && setup["main"]["action"] == json!("Set up")
-            && setup["main"]["resource"] == json!(GENERATOR)
-            && setup["addon"].is_null(),
-        format!("The AI editing section's setup: {setup}"),
+        !expanded["luxforge.basic"].is_null() && expanded[AI].is_null() && setup.is_object(),
+        format!("The tools panel's sections {expanded} and AI editing's setup {setup}"),
     )?;
     // With the experiment off there is no Remove, and with it on Remove is offered, not chosen.
     let off = launch.at("mode")?;
@@ -236,6 +205,37 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
             && band(missing)["unoffered"]["setup"]["resource"] == json!(GENERATOR),
         format!("Remove without the model: {}", band(missing)),
     )?;
+    // Set up and Add each ask through the setup sheet, in its feature's words: Remove in three
+    // steps over the download's facts, Replace in one picture; once answered, neither stays.
+    let asked = &launch.at("generator-asked")?.state()["setup_sheet"];
+    ensure(
+        asked["title"] == json!("Remove anything, fill it in naturally")
+            && asked["steps"].as_array().map(Vec::len) == Some(3)
+            && asked["steps"][0]["picture"] == json!("paint-over")
+            && asked["facts"][0]["headline"]
+                .as_str()
+                .is_some_and(|fact| fact.ends_with(" download"))
+            && asked["allow"]
+                .as_str()
+                .is_some_and(|allow| allow.starts_with("Download "))
+            && asked["dismiss"] == json!("Not now"),
+        format!("Remove's setup sheet: {asked}"),
+    )?;
+    let encoder = &launch.at("encoder-asked")?.state()["setup_sheet"];
+    ensure(
+        encoder["title"] == json!("Fill it with what you describe")
+            && encoder["hero"] == json!("describe")
+            && encoder["steps"] == json!([])
+            && encoder["promise"] == json!("Your photos and what you type stay on this computer."),
+        format!("Replace's setup sheet: {encoder}"),
+    )?;
+    for answered in ["installed", "encoder-installed"] {
+        let sheet = &launch.at(answered)?.state()["setup_sheet"];
+        ensure(
+            sheet.is_null(),
+            format!("The setup sheet after {answered}: {sheet}"),
+        )?;
+    }
     let installed = launch.at("installed")?;
     ensure(
         band(installed)["tiers"] == json!(["generative"])
