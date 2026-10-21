@@ -55,6 +55,22 @@ fn check_mask_artifacts(connection: &Connection, recipe: &Recipe) -> Result<(), 
     Ok(())
 }
 
+/// Whether a stack binding `entries` artifacts of `total` bytes fits the prepared cache at once:
+/// otherwise a `resource-limit` with `data: {limit: "artifacts", artifact_bytes, budget}`.
+fn within_budget(total: u64, entries: usize) -> Result<(), Error> {
+    if total > PREPARED_ARTIFACT_BYTES || entries > PREPARED_ARTIFACT_ENTRIES {
+        return Err(Error::resource_limit(format!(
+            "the stack binds {entries} artifacts of {total} bytes, more than the {PREPARED_ARTIFACT_ENTRIES} artifacts or {PREPARED_ARTIFACT_BYTES} bytes that can be held ready"
+        ))
+        .with_data(json!({
+            "limit": "artifacts",
+            "artifact_bytes": total,
+            "budget": PREPARED_ARTIFACT_BYTES,
+        })));
+    }
+    Ok(())
+}
+
 /// The object file of one recorded artifact, by stat alone: a missing file is
 /// `source-unavailable: artifact <id> is missing`, another length is
 /// `source-unavailable: artifact <id> is corrupt`, and the signature of a present one keys the
@@ -281,9 +297,10 @@ impl EditorService {
 
     /// [`Self::bind_artifacts`] for a drafted stack that may reference `held`, the patch a
     /// candidate draft holds in memory ([`crate::DraftCandidate`]): that artifact is bound from
-    /// the draft, without a catalog row or an object file, and every other one as before. The
-    /// candidate's admission already checked its patch binds with the stack's artifacts within the
-    /// prepared-artifact budget.
+    /// the draft, without a catalog row or an object file, and every other one as before. The held
+    /// patch counts against the prepared-artifact budget as one more artifact of its length, as
+    /// the committed entry's would, so a draft is refused `resource-limit` exactly when its commit
+    /// would bind past the budget.
     pub(crate) fn bind_artifacts_holding(
         &self,
         recipe: &mut Recipe,
@@ -294,14 +311,18 @@ impl EditorService {
         if let Some(artifact) = held {
             ids.retain(|id| id != &artifact.id);
         }
+        let held_bytes = held.map_or(0, |artifact| artifact.bytes.len() as u64);
         if ids.is_empty() {
+            if held.is_some() {
+                within_budget(held_bytes, 1)?;
+            }
             recipe.artifacts = held.cloned().into_iter().collect();
             return Ok(());
         }
         let mut bound = Vec::with_capacity(ids.len() + 1);
         bound.extend(held.cloned());
         let mut unprepared = false;
-        for binding in self.bind(&ids)? {
+        for binding in self.bind_with(&ids, held_bytes, usize::from(held.is_some()))? {
             match binding {
                 Binding::Ready(artifact) => bound.push(artifact),
                 Binding::Unprepared(_) => unprepared = true,
@@ -440,6 +461,17 @@ impl EditorService {
     /// evaluation binds must fit the prepared cache at once, or it could never all be ready; more
     /// is a `resource-limit` rather than a preparation that never ends.
     fn bind(&self, ids: &[ArtifactId]) -> Result<Vec<Binding>, Error> {
+        self.bind_with(ids, 0, 0)
+    }
+
+    /// [`Self::bind`] beside `held_entries` artifacts of `held_bytes` the stack binds from
+    /// elsewhere (a candidate draft's patch), which count against the same budget.
+    fn bind_with(
+        &self,
+        ids: &[ArtifactId],
+        held_bytes: u64,
+        held_entries: usize,
+    ) -> Result<Vec<Binding>, Error> {
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
             let row = artifact_row(&self.connection, id)?.ok_or_else(|| {
@@ -448,17 +480,7 @@ impl EditorService {
             rows.push((id, row));
         }
         let total: u64 = rows.iter().map(|(_, (bytes, _))| bytes).sum();
-        if total > PREPARED_ARTIFACT_BYTES || rows.len() > PREPARED_ARTIFACT_ENTRIES {
-            return Err(Error::resource_limit(format!(
-                "the stack binds {} artifacts of {total} bytes, more than the {PREPARED_ARTIFACT_ENTRIES} artifacts or {PREPARED_ARTIFACT_BYTES} bytes that can be held ready",
-                rows.len()
-            ))
-            .with_data(json!({
-                "limit": "artifacts",
-                "artifact_bytes": total,
-                "budget": PREPARED_ARTIFACT_BYTES,
-            })));
-        }
+        within_budget(total + held_bytes, rows.len() + held_entries)?;
         self.check_root()?;
         let mut cache = self.prepared_artifacts.borrow_mut();
         rows.into_iter()

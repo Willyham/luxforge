@@ -3092,11 +3092,15 @@ fn draft_cancel(
     Ok(json!({"cancelled": true}))
 }
 
-fn draft_commit(
-    service: &mut EditorService,
-    session: &mut ClientSession,
-    p: DraftCommit,
-) -> Result<Mutated, Error> {
+/// The held draft `p` commits, once its conflict state is recomputed: refused when the asset moved
+/// under it or when the commit's expected revision is not the draft's base revision. Every
+/// `draft.commit` makes these checks first, a candidate draft's included
+/// (`owner::candidate_draft`), so their refusals are one.
+pub(super) fn committable<'s>(
+    service: &EditorService,
+    session: &'s mut ClientSession,
+    p: &DraftCommit,
+) -> Result<&'s crate::Draft, Error> {
     refresh_conflict(service, session)?;
     let draft = session.held_draft(&p.draft_id)?;
     if draft.conflicted {
@@ -3110,6 +3114,15 @@ fn draft_commit(
             p.mutation.expected_revision, draft.base_revision
         )));
     }
+    Ok(draft)
+}
+
+fn draft_commit(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    p: DraftCommit,
+) -> Result<Mutated, Error> {
+    let draft = committable(service, session, &p)?;
     let asset_id = draft.asset_id.clone();
     let action = draft.action.clone();
     // The drafted fields with the target's over them: exactly the request an independent client
