@@ -806,3 +806,63 @@ fn a_stack_that_cannot_be_held_ready_at_once_is_a_resource_limit() {
     drop(service);
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn a_held_patch_counts_against_the_budget_its_committed_entry_binds_within() {
+    use crate::artifacts::{PREPARED_ARTIFACT_BYTES, PreparedArtifact};
+    let directory = directory("held-budget");
+    let service = open(&directory.join("catalog.sqlite"));
+    // A row recorded 8 bytes short of the budget; the check reads rows only, so no file is needed.
+    let recorded = ArtifactId::for_hash(&"1".repeat(64)).unwrap();
+    service
+        .connection
+        .execute(
+            "INSERT INTO artifacts VALUES (?1,?2,?3,'luxforge.capabilities.tint',NULL,NULL,NULL,'luxforge.capabilities',0)",
+            params![
+                recorded.as_str(),
+                recorded.sha256(),
+                (PREPARED_ARTIFACT_BYTES - 8) as i64
+            ],
+        )
+        .unwrap();
+    let held = Arc::new(PreparedArtifact::of_bytes(
+        "repair-patch",
+        Some(1),
+        Some(2),
+        Arc::from(vec![0_u8; 16]),
+    ));
+    let recipe = |artifacts: Vec<ArtifactId>| Recipe {
+        format: crate::RECIPE_FORMAT,
+        layers: vec![Layer {
+            id: LayerId::new(),
+            effect_id: PROOF_EFFECT.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload: json!({}),
+            artifacts,
+            mask: None,
+        }],
+        masks: Vec::new(),
+        strokes: Default::default(),
+        artifacts: Default::default(),
+        scene_white: None,
+    };
+    // The recorded artifact alone is within the budget: binding goes on to its object file.
+    let alone = service
+        .bind_artifacts_holding(&mut recipe(vec![recorded.clone()]), Some(&held))
+        .unwrap_err();
+    assert_ne!(alone.kind, ErrorKind::ResourceLimit, "{alone}");
+    // With the held patch's 16 bytes it is not, as the committed entry's row would not be.
+    let error = service
+        .bind_artifacts_holding(&mut recipe(vec![recorded, held.id.clone()]), Some(&held))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::ResourceLimit, "{error}");
+    assert!(
+        error.detail.starts_with(&format!(
+            "the stack binds 2 artifacts of {} bytes",
+            PREPARED_ARTIFACT_BYTES + 8
+        )),
+        "{error}"
+    );
+    drop(service);
+    fs::remove_dir_all(directory).unwrap();
+}

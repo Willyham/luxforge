@@ -9,14 +9,17 @@ use super::{
     accept_tests::{ACCEPT, Harness},
 };
 use crate::{
-    BASIC_EFFECT, DraftId, ErrorKind, api::ApiFailure, api::ApiRequest,
-    artifacts::PreparedArtifact, editor::mutation_json, modules::CORRECTIONS_EFFECT,
+    BASIC_EFFECT, DraftId, ErrorKind,
+    api::{ApiFailure, ApiRequest, ApiResponse},
+    artifacts::PreparedArtifact,
+    editor::mutation_json,
+    modules::CORRECTIONS_EFFECT,
 };
 use luxforge_testbase::wait_for;
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Weak},
-    thread,
+    thread::{self, JoinHandle},
 };
 
 /// The Corrections module's candidate-accepting action.
@@ -104,6 +107,52 @@ fn draft_read(harness: &Harness, draft: &Value) -> Value {
     harness.ok("draft.read", json!({"draft_id": draft}))
 }
 
+/// Send a `draft.set` of `fields` on another thread, where it may park.
+fn set_on_thread(harness: &Harness, draft: &Value, fields: Value) -> JoinHandle<ApiResponse> {
+    let (owner, client) = (harness.owner.clone(), harness.client);
+    let params = json!({"draft_id": draft, "fields": fields});
+    thread::spawn(move || {
+        owner
+            .call(
+                client,
+                ApiRequest {
+                    id: "held-set".into(),
+                    method: "draft.set".into(),
+                    params,
+                    token: None,
+                },
+            )
+            .expect("the owner answered")
+    })
+}
+
+/// The job of the candidate read the source worker holds at the gate.
+fn held_read(harness: &Harness) -> Value {
+    let job = wait_for("the patch to be read on the source worker", || {
+        let list = harness.ok("activity.list", json!({}));
+        list["active"].as_array().and_then(|active| {
+            active
+                .iter()
+                .find(|entry| {
+                    entry["kind"] == "artifacts.read" && entry["label"] == "Reading candidate"
+                })
+                .map(|entry| entry["job_id"].clone())
+        })
+    });
+    wait_for("the read to wait at the gate", || {
+        Some(()).filter(|_| harness.gate.holding())
+    });
+    job
+}
+
+/// The status `job` ends with.
+fn ended(harness: &Harness, job: &Value) -> Value {
+    wait_for("the job to end", || {
+        let read = harness.ok("job.read", json!({"job_id": job}));
+        (read["status"] != "queued" && read["status"] != "running").then(|| read["status"].clone())
+    })
+}
+
 #[test]
 fn a_candidate_draft_renders_exactly_the_entry_its_accept_commits() {
     let harness = Harness::new("draft-exact");
@@ -144,16 +193,26 @@ fn a_candidate_draft_renders_exactly_the_entry_its_accept_commits() {
     );
     assert_eq!(history["entries"][0]["label"], "Add Patch 1");
     assert!(harness.ok("session.state", json!({}))["draft"].is_null());
-    assert!(
-        held.upgrade().is_none(),
-        "the closed draft let its patch go"
-    );
     // Buffer for buffer, the committed entry is the drafted one, its patch under Basic.
     assert_eq!(frame(&harness, None).unwrap(), drafted);
     let current = harness
         .owner
         .preview_job(PreviewRequest::new(harness.client, harness.asset.clone()))
         .unwrap();
+    // The accept published the bytes the draft held rather than reading the candidate again: the
+    // committed entry binds that very patch.
+    let committed_patch = current
+        .evaluation
+        .recipe()
+        .artifacts
+        .iter()
+        .next()
+        .expect("the committed patch")
+        .clone();
+    assert!(Arc::ptr_eq(
+        &held.upgrade().expect("the published patch"),
+        &committed_patch
+    ));
     let effects: Vec<&str> = current
         .evaluation
         .recipe()
@@ -189,42 +248,15 @@ fn a_candidate_draft_set_parks_while_its_patch_is_read_and_holds_one_patch() {
     assert_eq!(unparked.data, Some(json!({"reason": PIXEL_READ_REQUIRED})));
     // The set waits while the source worker reads the patch, and the draft stays as it was.
     harness.hold();
-    let call = {
-        let (owner, client) = (harness.owner.clone(), harness.client);
-        let params = json!({"draft_id": draft, "fields": {"job_id": job, "candidate": 0}});
-        thread::spawn(move || {
-            owner.call(
-                client,
-                ApiRequest {
-                    id: "held-set".into(),
-                    method: "draft.set".into(),
-                    params,
-                    token: None,
-                },
-            )
-        })
-    };
-    wait_for("the patch to be read on the source worker", || {
-        let list = harness.ok("activity.list", json!({}));
-        list["active"]
-            .as_array()
-            .and_then(|active| {
-                active.iter().find(|entry| {
-                    entry["kind"] == "artifacts.read" && entry["label"] == "Reading candidate"
-                })
-            })
-            .map(drop)
-    });
-    wait_for("the read to wait at the gate", || {
-        Some(()).filter(|_| harness.gate.holding())
-    });
+    let call = set_on_thread(&harness, &draft, json!({"job_id": job, "candidate": 0}));
+    held_read(&harness);
     let waiting = draft_read(&harness, &draft);
     assert_eq!(
         (waiting["draft_revision"].clone(), waiting["fields"].clone()),
         (json!(0), json!({}))
     );
     harness.gate.open();
-    let answered = call.join().unwrap().unwrap();
+    let answered = call.join().unwrap();
     assert!(answered.error.is_none(), "{:?}", answered.error);
     assert_eq!(answered.result.unwrap()["draft_revision"], 1);
     prepared(&harness);
@@ -243,6 +275,71 @@ fn a_candidate_draft_set_parks_while_its_patch_is_read_and_holds_one_patch() {
         second.upgrade().is_none(),
         "a cancelled draft holds nothing"
     );
+}
+
+#[test]
+fn a_set_answered_at_once_supersedes_one_waiting_for_its_patch() {
+    let harness = Harness::new("draft-superseded-at-once");
+    let job = harness.generate(3, 9);
+    let draft = begin(&harness);
+    set(&harness, &draft, json!({"job_id": job, "candidate": 1})).unwrap();
+    prepared(&harness);
+    let first = Arc::downgrade(&drafted_patch(&harness, &draft));
+    // Candidate 2 waits for its read; candidate 1 again, which the draft holds, is answered at
+    // once and supersedes it.
+    harness.hold();
+    let waiting = set_on_thread(&harness, &draft, json!({"candidate": 2}));
+    let read = held_read(&harness);
+    let again = set(&harness, &draft, json!({"candidate": 1})).unwrap();
+    assert_eq!(again["fields"]["candidate"], 1);
+    let superseded = waiting.join().unwrap().error.expect("superseded");
+    assert_eq!(superseded.code, "cancelled", "{superseded:?}");
+    // Its read is stopped, and nothing of it reaches the draft.
+    harness.gate.open();
+    assert_eq!(ended(&harness, &read), "cancelled");
+    let read = draft_read(&harness, &draft);
+    assert_eq!(read["fields"]["candidate"], 1, "{read}");
+    assert!(Arc::ptr_eq(
+        &first.upgrade().expect("the draft keeps its patch"),
+        &drafted_patch(&harness, &draft)
+    ));
+    // So the commit accepts candidate 1.
+    let committed = harness.ok(
+        "draft.commit",
+        json!({"draft_id": draft, "mutation": mutation_json(harness.revision(), "commit")}),
+    );
+    assert_eq!(committed["outcome"], "applied", "{committed}");
+    assert_eq!(harness.states(&job), ["live", "accepted", "live"]);
+}
+
+#[test]
+fn a_set_that_parks_supersedes_one_waiting_for_its_patch_and_a_cancel_ends_it() {
+    let harness = Harness::new("draft-superseded-parked");
+    let job = harness.generate(3, 10);
+    let draft = begin(&harness);
+    harness.hold();
+    let earlier = set_on_thread(&harness, &draft, json!({"job_id": job, "candidate": 0}));
+    let earlier_read = held_read(&harness);
+    let later = set_on_thread(&harness, &draft, json!({"job_id": job, "candidate": 1}));
+    // The later set's arrival answers the earlier one, whose read is stopped.
+    let superseded = earlier.join().unwrap().error.expect("superseded");
+    assert_eq!(superseded.code, "cancelled", "{superseded:?}");
+    harness.gate.open();
+    assert_eq!(ended(&harness, &earlier_read), "cancelled");
+    let answered = later.join().unwrap();
+    assert!(answered.error.is_none(), "{:?}", answered.error);
+    assert_eq!(answered.result.unwrap()["fields"]["candidate"], 1);
+    assert_eq!(draft_read(&harness, &draft)["fields"]["candidate"], 1);
+    // A cancel of the draft ends a set still waiting, as a later set does.
+    harness.hold();
+    let waiting = set_on_thread(&harness, &draft, json!({"candidate": 2}));
+    let read = held_read(&harness);
+    harness.ok("draft.cancel", json!({"draft_id": draft}));
+    let cancelled = waiting.join().unwrap().error.expect("superseded");
+    assert_eq!(cancelled.code, "cancelled", "{cancelled:?}");
+    harness.gate.open();
+    assert_eq!(ended(&harness, &read), "cancelled");
+    assert!(harness.ok("session.state", json!({}))["draft"].is_null());
 }
 
 #[test]
