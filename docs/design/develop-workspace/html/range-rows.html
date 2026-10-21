@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Range rows</title>
+<style>
+  @font-face { font-family: "Inter"; font-weight: 400; src: local("Inter Regular"), local("Inter"), url("../../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-Regular.ttf"); }
+  @font-face { font-family: "Inter"; font-weight: 600; src: local("Inter SemiBold"), url("../../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-SemiBold.ttf"); }
+  :root {
+    --surround: #19191b; --panel: #202023; --bar: #232326; --control: #2c2c31;
+    --text: #e8e8ea; --text2: #a8a8ae; --text3: #77777f; --label: #b8b8bd;
+    --accent: #e2b46a; --accent-tint: rgba(226,180,106,.14); --row-sel: #37322c;
+    --rail: #3a3a40; --thumb: #ececee; --border: rgba(255,255,255,.06); --rule: #313134;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f10; color: var(--text); font: 12px/1.4 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 32px; }
+  h1.board { font-size: 13px; font-weight: 600; color: var(--text2); margin: 0 0 12px; }
+  .note { color: var(--text3); font-size: 11px; margin: 10px 0 0; max-width: 300px; }
+  .note b { color: var(--text2); font-weight: 600; }
+  .boards { display: flex; gap: 40px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 40px; }
+  .grow { flex: 1; }
+
+  /* the tools panel's slice: 300 pt, its rows inset 12 pt */
+  .panel { width: 300px; background: var(--panel); border-radius: 8px; border: 1px solid #000; padding: 10px 12px 12px; }
+  .crow { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px 0 8px; border-radius: 5px; color: var(--text); }
+  .crow.sel { background: var(--row-sel); }
+  .grip { width: 6px; height: 10px; background: radial-gradient(circle, #55555c 1px, transparent 1.2px) 0 0/3px 3.3px; opacity: .8; }
+  .kico { width: 12px; height: 12px; border: 1.4px solid var(--text2); border-radius: 50%; position: relative; }
+  .kico.drop { border-radius: 50% 50% 50% 0; transform: rotate(-45deg); }
+  .kico.sun::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--text2); }
+  .ib { width: 20px; height: 20px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; color: var(--text2); font-size: 12px; }
+  .mode { height: 18px; min-width: 20px; padding: 0 5px; border-radius: 4px; background: var(--control); color: var(--text2); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
+  .mode small { font-size: 8px; color: var(--text3); }
+
+  .detail { padding: 6px 0 2px 26px; display: flex; flex-direction: column; gap: 8px; }
+  .line { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+  .lab { color: var(--label); }
+  .val { color: var(--text); min-width: 24px; text-align: right; font-variant-numeric: tabular-nums; }
+  .val.edit { padding: 0 3px; border-radius: 3px; }
+  .val.edit:hover { background: var(--control); }
+  .sep { color: var(--text3); }
+
+  .pick { height: 22px; padding: 0 9px; border-radius: 5px; background: var(--control); border: 1px solid var(--border); display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text); }
+  .info { width: 15px; height: 15px; border-radius: 50%; border: 1.3px solid var(--text3); color: var(--text3); font-size: 9px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-style: normal; }
+  .strip { height: 26px; border-radius: 5px; background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(226,180,106,.45); display: flex; align-items: center; gap: 7px; padding: 0 3px 0 9px; color: var(--text2); font-size: 11px; }
+  .strip .dropper { color: var(--accent); }
+  .strip .done { height: 20px; padding: 0 9px; border-radius: 4px; background: var(--accent); color: #1a1408; font-weight: 600; display: inline-flex; align-items: center; font-size: 11px; }
+
+  /* the band: a black-to-white rail, the band in the accent with its shoulders fading out */
+  .rail { position: relative; height: 12px; }
+  .rail .track { position: absolute; left: 0; right: 0; top: 4px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #0b0b0c, #f2f2f2); opacity: .55; }
+  .rail .band { position: absolute; top: 4px; height: 4px; background: var(--accent); }
+  .rail .sh { position: absolute; top: 4px; height: 4px; }
+  .rail .th { position: absolute; top: 0; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--thumb); box-shadow: 0 0 0 1.5px #111113; }
+  .rail.plain .track { background: var(--rail); opacity: 1; }
+
+  .swatches { display: flex; gap: 5px; align-items: center; }
+  .sw { width: 22px; height: 16px; border-radius: 3px; box-shadow: inset 0 0 0 1px #4a4a50; }
+  .sw.f { box-shadow: none; }
+  .sw.on { box-shadow: 0 0 0 1.5px var(--accent); }
+  .muted { color: var(--text3); font-size: 11px; }
+
+  .addrow { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule); color: var(--text2); font-size: 11.5px; }
+
+  .changes { max-width: 980px; color: var(--text2); font-size: 12px; }
+  .changes h2 { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+  .changes ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+  .changes b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="boards">
+  <div>
+    <h1 class="board">1 · Luminance range, at rest</h1>
+    <div class="panel">
+      <div class="crow sel"><i class="grip"></i><i class="kico sun"></i>Luminance range 1<span class="grow"></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="detail">
+        <div class="line"><span class="pick">✎ Pick</span><span class="grow"></span><i class="info">i</i></div>
+        <div class="line"><span class="lab">Range</span><span class="grow"></span><span class="val edit">44</span><span class="sep">–</span><span class="val edit">51</span></div>
+        <div class="rail">
+          <i class="track"></i>
+          <i class="sh" style="left:40%;width:4%;background:linear-gradient(90deg,transparent,var(--accent))"></i>
+          <i class="band" style="left:44%;width:7%"></i>
+          <i class="sh" style="left:51%;width:4%;background:linear-gradient(90deg,var(--accent),transparent)"></i>
+          <i class="th" style="left:44%"></i><i class="th" style="left:51%"></i>
+        </div>
+        <div class="line"><span class="lab">Feather</span><span class="grow"></span><span class="val edit">4</span><span class="sep">·</span><span class="val edit">4</span></div>
+      </div>
+      <div class="addrow">＋ Add component ▾<span class="grow"></span><span class="muted">as</span><span class="mode">∩ <small>▾</small></span></div>
+    </div>
+    <p class="note">Three lines under the row, each label left and value right as every slider is. <b>Range</b>’s two numbers are the band’s edges and are typed in place; <b>Feather</b>’s are its two shoulders. </p>
+  </div>
+
+  <div>
+    <h1 class="board">2 · Luminance range, picking</h1>
+    <div class="panel">
+      <div class="crow sel"><i class="grip"></i><i class="kico sun"></i>Luminance range 1<span class="grow"></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="detail">
+        <div class="line"><div class="strip grow"><span class="dropper">✎</span>Click or drag on the photo<span class="grow"></span><span class="done">Done</span></div><i class="info">i</i></div>
+        <div class="line"><span class="lab">Range</span><span class="grow"></span><span class="val edit">0</span><span class="sep">–</span><span class="val edit">100</span></div>
+        <div class="rail">
+          <i class="track"></i>
+          <i class="band" style="left:0;width:100%"></i>
+          <i class="th" style="left:0%"></i><i class="th" style="left:100%"></i>
+        </div>
+        <div class="line"><span class="lab">Feather</span><span class="grow"></span><span class="val edit">5</span><span class="sep">·</span><span class="val edit">5</span></div>
+      </div>
+    </div>
+    <p class="note">Pick and the pick bar are one line in one place: armed, the Pick line <b>becomes</b> the bar, so nothing under it moves. Done ends it, as Return does.</p>
+  </div>
+
+  <div>
+    <h1 class="board">3 · Colour range, at rest</h1>
+    <div class="panel">
+      <div class="crow sel"><i class="grip"></i><i class="kico drop"></i>Colour range 1<span class="grow"></span><span class="mode">∩ <small>▾</small></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="detail">
+        <div class="line"><span class="pick">✎ Pick</span><span class="grow"></span><i class="info">i</i></div>
+        <div class="line swatches"><i class="sw f" style="background:#8a8a88"></i><i class="sw f" style="background:#d68330"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="grow"></span><span class="muted">2 of 5</span></div>
+        <div class="line"><span class="lab">Refine</span><span class="grow"></span><span class="val edit">50</span></div>
+        <div class="rail plain">
+          <i class="track"></i>
+          <i class="th" style="left:50%"></i>
+        </div>
+      </div>
+    </div>
+    <p class="note">The colours, then <b>Refine</b> as a slider like every other, capitalised. The count sits at the end of the swatches it counts. A swatch’s menu (Remove, Copy) is unchanged.</p>
+  </div>
+
+  <div>
+    <h1 class="board">4 · Colour range, new and picking</h1>
+    <div class="panel">
+      <div class="crow sel"><i class="grip"></i><i class="kico drop"></i>Colour range 1<span class="grow"></span><span class="mode">∩ <small>▾</small></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="detail">
+        <div class="line"><div class="strip grow"><span class="dropper">✎</span>Click or drag · Shift adds<span class="grow"></span><span class="done">Done</span></div><i class="info">i</i></div>
+        <div class="line swatches"><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="grow"></span><span class="muted">No colour yet</span></div>
+        <div class="line"><span class="lab">Refine</span><span class="grow"></span><span class="val edit">50</span></div>
+        <div class="rail plain">
+          <i class="track"></i>
+          <i class="th" style="left:50%"></i>
+        </div>
+      </div>
+    </div>
+    <p class="note">The empty state is said where the colours go.</p>
+  </div>
+
+  <div>
+    <h1 class="board">5 · The row’s mode, one chip</h1>
+    <div class="panel">
+      <div class="crow"><i class="grip"></i><i class="kico sun"></i>Luminance range 1<span class="grow"></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="crow"><i class="grip"></i><span style="width:12px;color:var(--text2)">⟋</span>Linear 1<span class="grow"></span><span class="mode">∩ <small>▾</small></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div class="crow sel"><i class="grip"></i><i class="kico drop"></i>Colour range 1<span class="grow"></span><span class="mode">− <small>▾</small></span><span class="ib">◑</span><span class="ib">⋯</span></div>
+      <div style="margin:6px 0 0 120px;width:150px;background:#2a2a2e;border:1px solid #3f3f43;border-radius:6px;padding:4px;box-shadow:0 8px 20px rgba(0,0,0,.4)">
+        <div style="padding:4px 8px;color:var(--text2)">＋ Add</div>
+        <div style="padding:4px 8px;border-radius:4px;background:#37373b">− Subtract</div>
+        <div style="padding:4px 8px;color:var(--text2)">∩ Intersect</div>
+      </div>
+    </div>
+    <p class="note">Each row shows its own mode as one chip and opens the three on a press. The first row, which is always Add, shows none. The same chip ends the Add component line.</p>
+  </div>
+</div>
+
+<div class="changes">
+  <h2>The open rows</h2>
+  <ol>
+    <li><b>One pick line.</b> The first line under an open range row: Pick at rest, the accent bar with Done while the eyedropper is armed, in the same place, so arming moves nothing under it. The help button ends it in both states.</li>
+    <li><b>Luminance in three lines.</b> Range with its two edges typed in place, the band, and Feather with its two shoulders typed in place.</li>
+    <li><b>Colour: swatches, then Refine.</b> The swatch line ends with how many it holds or <code>No colour yet</code>; Refine is a slider, as the kind table declares it a setting rather than geometry.</li>
+    <li><b>Mode as one chip,</b> on every kind's row: the row's own mode, opening a menu of the three. The first row, always Add, shows none; the Add row ends with the same chip.</li>
+  </ol>
+</div>
+
+</body>
+</html>

@@ -2,7 +2,8 @@
 //! shoulder grip outside each for the width the band fades over.
 //!
 //! The row is two lines, as a slider's is: the label with the band's readout right-aligned, then
-//! the rail line. The rail is plain or a colour rail (a luminance band's runs black to white); the
+//! the rail line. A caller that types the band's numbers in place draws its own label lines around
+//! the rail alone ([`range_rail`]). The rail is plain or a colour rail (a luminance band's runs black to white); the
 //! band between the thumbs is filled, and each shoulder is drawn as a fade from the band outwards
 //! to its grip, as mask-panels.png draws the luminance range.
 //!
@@ -112,15 +113,27 @@ pub fn range_slider<'a, M: Clone + 'a>(
     .spacing(theme::SPACING)
     .align_y(Alignment::Center)
     .width(Length::Fill);
-    let rail = iced::widget::canvas(RangeCanvas {
+    let rail = range_rail(model, on_change, on_release, on_reset);
+    column![header, rail].spacing(theme::SLIDER_GAP).into()
+}
+
+/// A range's rail line alone, without its label line: the same grips publishing the same messages
+/// as [`range_slider`]'s. The model's label and readout are not drawn.
+pub fn range_rail<'a, M: Clone + 'a>(
+    model: &RangeSliderModel,
+    on_change: impl Fn(RangeGrip, f64) -> M + 'a,
+    on_release: impl Fn(RangeGrip) -> M + 'a,
+    on_reset: impl Fn(RangeGrip) -> M + 'a,
+) -> Element<'a, M> {
+    iced::widget::canvas(RangeCanvas {
         model: model.clone(),
         on_change: Rc::new(on_change),
         on_release: Rc::new(on_release),
         on_reset: Rc::new(on_reset),
     })
     .width(Length::Fill)
-    .height(theme::SLIDER_RAIL_HEIGHT);
-    column![header, rail].spacing(theme::SLIDER_GAP).into()
+    .height(theme::SLIDER_RAIL_HEIGHT)
+    .into()
 }
 
 // ---- geometry ----------------------------------------------------------------------------------

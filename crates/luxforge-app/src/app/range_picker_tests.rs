@@ -162,7 +162,10 @@ fn a_typed_create_arms_the_picker_over_tint_and_escape_puts_it_down() {
     assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
     let summary = &masking.editor.workspace.masks.summary()["picker"];
     assert_eq!(summary["hint"], json!(COLOUR_HINT));
-    assert_eq!(summary["count"], json!("0 of 5"));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["components"][0]["sample_caption"],
+        json!("No colour yet")
+    );
     assert_eq!(summary["mapped"], json!(false));
     assert!(
         masking.editor.range_pick_canvas().is_none(),
@@ -300,7 +303,7 @@ fn a_click_replaces_a_shift_click_adds_and_a_drag_sends_its_bounding_box() {
     assert_eq!(params["add"], json!(true), "Shift-click adds");
     assert_eq!(samples(&masking, 0), 2);
     assert_eq!(
-        masking.editor.workspace.masks.summary()["picker"]["count"],
+        masking.editor.workspace.masks.summary()["components"][0]["sample_caption"],
         json!("2 of 5")
     );
 
@@ -569,7 +572,7 @@ fn the_luminance_rows_pick_sends_a_tone_pick_and_copies_it() {
         json!(TONE_HINT)
     );
     assert_eq!(
-        masking.editor.workspace.masks.summary()["picker"]["count"],
+        masking.editor.workspace.masks.summary()["components"][0]["sample_caption"],
         Value::Null
     );
     masking.message(MaskMessage::Pick);

@@ -1956,6 +1956,14 @@ fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
         component: second.clone(),
         mode: ComponentMode::Intersect.as_str().to_owned(),
     };
+    // The row's mode chip opens its menu of the three modes, and choosing one puts it away.
+    let _ = masking.editor.update(Message::View(ViewMessage::OpenMenu(
+        MenuTarget::ComponentMode(second.clone()),
+    )));
+    assert_eq!(
+        masking.editor.workspace.masks.summary()["menu"],
+        json!({"component_mode": second})
+    );
     // What Copy as JSON request would copy, built before the gesture runs, from the same builder.
     let copied = masking.request_for(&edit);
     let result = masking.run(MaskMessage::Row(edit));
@@ -1963,6 +1971,10 @@ fn each_component_row_carries_its_own_mode_invert_order_and_delete() {
         masking.sent(),
         Some(copied),
         "the copied request is not the request that was sent"
+    );
+    assert_eq!(
+        masking.editor.view_state.menu, None,
+        "choosing a mode puts the menu away"
     );
     assert!(
         result["label"]
@@ -2630,19 +2642,19 @@ fn a_typed_range_create_shows_tint_unless_off_was_chosen() {
     assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
 }
 
-/// A colour range with no sample says what to do under its swatches, and the note goes with the
-/// first sample.
+/// A colour range's swatch line says it holds no colour yet, then how many it holds of the most it
+/// can.
 #[test]
-fn an_empty_colour_range_says_to_pick_a_colour() {
+fn a_colour_ranges_swatch_line_counts_its_colours() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.run(MaskMessage::New("colour-range".to_owned()));
     let row = &masking.editor.workspace.masks.components[0];
     assert!(row.selected && row.samples.is_empty());
-    assert_eq!(row.sample_note, Some("Pick a colour to select"));
+    assert_eq!(row.sample_caption.as_deref(), Some("No colour yet"));
     assert_eq!(
-        masking.editor.workspace.masks.summary()["components"][0]["sample_note"],
-        json!("Pick a colour to select")
+        masking.editor.workspace.masks.summary()["components"][0]["sample_caption"],
+        json!("No colour yet")
     );
 
     let mask = masking.listing().masks[0].id.clone();
@@ -2659,7 +2671,7 @@ fn an_empty_colour_range_says_to_pick_a_colour() {
     masking.refresh();
     let row = &masking.editor.workspace.masks.components[0];
     assert_eq!(row.samples.len(), 1);
-    assert_eq!(row.sample_note, None);
+    assert_eq!(row.sample_caption.as_deref(), Some("1 of 5"));
 }
 
 /// A range row keeps how it works behind its help button: closed until pressed, then a modal sheet

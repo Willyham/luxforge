@@ -1,16 +1,16 @@
 //! Small colour chips pressed to choose or remove a colour: the overlay's two tint swatches, and a
-//! colour range's held swatches with their empty slots and its Pick button, as the mask-panels
-//! board draws `.sw2` and the range-masks board the colour range's swatch row.
+//! colour range's held swatches with their empty slots and how many it holds, as the mask-panels
+//! board draws `.sw2` and the range-rows board the colour range's swatch line.
 //!
 //! Every chip is drawn inside a [`theme::OVERLAY_SWATCH_RING`] margin whether or not it is chosen,
 //! so choosing one draws its accent ring without moving its neighbours; the rows' spacing takes
 //! the two margins off the board's gap.
 
-use super::pick_bar::{PickButtonModel, pick_button};
 use crate::theme;
-use crate::{Element, Theme};
-use iced::widget::{Row, Space, button, canvas, row};
-use iced::{Alignment, Color, Length, Padding, Point, Rectangle, Renderer, Size};
+use crate::{Element, Theme, Token};
+use iced::widget::text::Wrapping;
+use iced::widget::{Row, Space, button, canvas, row, text};
+use iced::{Alignment, Color, Length, Point, Rectangle, Renderer, Size};
 
 /// One chip: a colour, or an empty dashed slot when `fill` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,7 +124,7 @@ pub(crate) const fn chip_spacing(gap: f32) -> f32 {
 }
 
 /// Plain data for a colour range's swatches: the held colours, the empty slots up to the limit,
-/// and the Pick button that adds one.
+/// and the caption at the line's end.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SwatchSlotsModel {
     /// The held swatches, in order.
@@ -133,12 +133,8 @@ pub struct SwatchSlotsModel {
     pub limit: usize,
     /// A held swatch drawn chosen, such as the one a menu is open on.
     pub selected: Option<usize>,
-    /// The picker is armed: the Pick button is drawn lit.
-    pub picking: bool,
-    /// The Pick button's label.
-    pub pick_label: String,
-    /// Pick is refused, such as on a historical preview; the button is disabled.
-    pub pick_enabled: bool,
+    /// What the line says at its end: how many it holds (`2 of 5`), or that it holds none yet.
+    pub caption: Option<String>,
     pub enabled: bool,
 }
 
@@ -147,12 +143,11 @@ pub(crate) fn empty_slots(held: usize, limit: usize) -> usize {
     limit.saturating_sub(held)
 }
 
-/// Renders a colour range's swatch row, inset under its component row. A press on a held swatch
-/// publishes `on_swatch` with its index; a press on Pick publishes `on_pick`.
+/// Renders a colour range's swatch line, inset under its component row. A press on a held swatch
+/// publishes `on_swatch` with its index.
 pub fn swatch_slots<'a, M: Clone + 'a>(
     model: &SwatchSlotsModel,
     on_swatch: impl Fn(usize) -> M + 'a,
-    on_pick: M,
 ) -> Element<'a, M> {
     let size = Size::new(theme::SWATCH_SLOT_WIDTH, theme::SWATCH_SLOT_HEIGHT);
     let chip = |fill, ring| Chip {
@@ -179,19 +174,19 @@ pub fn swatch_slots<'a, M: Clone + 'a>(
     for _ in 0..empty_slots(model.swatches.len(), model.limit) {
         slots = slots.push(chip(None, false).element());
     }
-    let pick = pick_button(
-        &PickButtonModel {
-            label: model.pick_label.clone(),
-            armed: model.picking,
-            enabled: model.enabled && model.pick_enabled,
-        },
-        on_pick,
-    );
-    let content = row![slots, Space::new().width(Length::Fill), pick]
+    let mut content = row![slots, Space::new().width(Length::Fill)]
         .align_y(Alignment::Center)
         .width(Length::Fill);
+    if let Some(caption) = &model.caption {
+        content = content.push(
+            text(caption.clone())
+                .size(theme::SIZE_SMALL_CAPTION)
+                .wrapping(Wrapping::None)
+                .style(theme::ink(Token::TextTertiary)),
+        );
+    }
     iced::widget::container(content)
-        .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
+        .padding(theme::SWATCH_LINE_PADDING)
         .width(Length::Fill)
         .into()
 }
@@ -219,23 +214,20 @@ mod tests {
 
     #[test]
     fn every_state_builds() {
-        for (picking, pick_enabled, enabled) in [
-            (false, true, true),
-            (true, true, true),
-            (false, false, false),
+        for (caption, enabled) in [
+            (Some("3 of 5".to_owned()), true),
+            (None, true),
+            (Some("No colour yet".to_owned()), false),
         ] {
             let _: Element<'_, usize> = swatch_slots(
                 &SwatchSlotsModel {
                     swatches: vec![[111, 155, 209], [93, 139, 196], [143, 179, 224]],
                     limit: 5,
                     selected: Some(1),
-                    picking,
-                    pick_label: "Pick".into(),
-                    pick_enabled,
+                    caption,
                     enabled,
                 },
                 |index| index,
-                usize::MAX,
             );
         }
     }

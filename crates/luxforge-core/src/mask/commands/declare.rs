@@ -8,7 +8,7 @@ use super::{
 use crate::mask::{
     POSITION_MAX, POSITION_MIN, REFINE_DEFAULT, REFINE_MAX, REFINE_MIN, component_band_control,
     component_parameters, component_sample_limit, component_sample_parameters,
-    declared_geometry_kinds, picking_kinds, rules, sampling_kinds,
+    component_slider_parameters, declared_geometry_kinds, picking_kinds, rules, sampling_kinds,
 };
 use crate::{
     ActionDescriptor, CanvasInteraction, ChoiceStyle, Control, Mask, ModuleDescriptor, NumberStyle,
@@ -854,13 +854,15 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
         controls.extend(geometry_controls(
             action,
             component_parameters(kind, false).expect("a kind from the host's own table"),
+            component_slider_parameters(kind),
         ));
     }
     controls
 });
 
 /// The number fields one kind's patch method `action` gets from its declared `parameters`: one per
-/// parameter whose declared kind is a number, and none for any other.
+/// parameter whose declared kind is a number, and none for any other. A parameter named in
+/// `sliders` is a setting rather than geometry, and its control is a slider instead of a field.
 ///
 /// A number field is the one widget this path generates, so it is bound only where it can edit what
 /// the parameter declares. A geometry parameter of another kind — a polygon's `points` vertex list
@@ -869,13 +871,19 @@ static CONTROLS: LazyLock<Vec<Control>> = LazyLock::new(|| {
 pub(super) fn geometry_controls(
     action: &'static str,
     parameters: Vec<ParameterDescriptor>,
+    sliders: &'static [&'static str],
 ) -> impl Iterator<Item = Control> {
     parameters
         .into_iter()
         .filter(|parameter| matches!(parameter.kind, ParameterKind::Number { .. }))
         .map(move |parameter| {
+            let style = if sliders.contains(&parameter.name.as_str()) {
+                NumberStyle::Slider
+            } else {
+                NumberStyle::Field
+            };
             Control::number(action, &parameter.name, control_label(&parameter.name))
-                .number_style(NumberStyle::Field)
+                .number_style(style)
                 .into()
         })
 }

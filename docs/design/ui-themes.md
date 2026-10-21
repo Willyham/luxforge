@@ -120,7 +120,7 @@ The token names are the API's, and the widget crate's palette has a field of the
 | `text_current_row` | `#f2f2f4` | The current history row's label |
 | `chip_label` | `#b0b0b6` | An unselected chip's label |
 | `strip_icon` | `#b9b9bf` | A mode-strip tool's icon at rest |
-| `mode_fixed_ink` | `#99999c` | A fixed mode control's glyph |
+| `mode_fixed_ink` | `#99999c` | Nothing draws it since a mask's first component shows no mode; kept so a stored theme that sets it still loads |
 | `border` | `#ffffff0f` | Outlines |
 | `scrim` | `#00000059` | Behind a modal sheet |
 | `rule` | `#313134` | A group header's rule |

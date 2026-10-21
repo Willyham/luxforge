@@ -193,9 +193,10 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "Mask rows · resting, open, hidden and neutral",
             "Mask rows · menu open, renamed in place, disabled",
             "Coverage thumbnails · grid, sampled down, pending",
-            "Component rows · fixed Add, inverted, Subtract, Intersect, each kind",
+            "Component rows · the first with no mode, inverted, Subtract, Intersect, each kind",
             "Component rows · selected, hovered, menu open, disabled, a refusal",
-            "Mode control · each mode, fixed, disabled",
+            "Mode chip · each mode, open, disabled",
+            "Mode chip · its menu with Subtract current",
             "Overlay · tint, selection on black, off",
         ],
     ),
@@ -208,8 +209,8 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "Component fields · a radial's six in two columns",
             "Component fields · typing and refused",
             "Toggle rows · with hints, plain, disabled",
-            "Colour range swatches · three of five, picking, full",
-            "Range picker · tone bar, lit Pick, colour bar with its count, Pick at rest and refused",
+            "Colour range swatches · three of five, one chosen, no colour yet, full",
+            "Range picker · Pick with its help, the tone bar, the colour bar, Pick refused",
             "Brush strokes · deletable and refused",
         ],
     ),
@@ -348,7 +349,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 137);
+        assert_eq!(next - 1, 138);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }
