@@ -346,13 +346,13 @@ fn a_patch_changes_only_its_opacity_and_moves_like_any_correction() {
     let layer = repair_layer(&session);
     assert!(layer.artifacts.is_empty());
     assert_eq!(RepairPayload::parse(&layer.payload).unwrap().next, 4);
-    // An accept is never drafted: without a pinned candidate its plan is refused.
+    // An accept planned with neither a pinned nor a drafted candidate is refused.
     let error = session.refused(
         "accept-correction-patch",
         json!({"job_id": crate::JobId::new(), "candidate": 0}),
     );
     assert!(
-        error.detail.contains("cannot be drafted"),
+        error.detail.contains("a candidate the catalog owner holds"),
         "{}",
         error.detail
     );

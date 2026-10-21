@@ -1140,9 +1140,12 @@ impl Editor {
             }
             return Task::none();
         }
+        // The candidate Remove shows gives way; the frame read back after its cancel is the
+        // photograph as committed, and what it asks for next runs unless this start replaces it.
+        let yielded = self.yield_candidate();
         if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
             self.status.text = reason;
-            return Task::none();
+            return yielded;
         }
         // A request of this desktop's in flight other than an open would read back into the
         // document this move replaces.

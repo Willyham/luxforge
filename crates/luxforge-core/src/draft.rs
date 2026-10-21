@@ -2,12 +2,12 @@
 //! it commits or cancels. A draft writes nothing, emits no event and appears in no history; its
 //! effective recipe is computed on demand from the current snapshot and never persisted.
 use crate::{
-    ActionDescriptor, AssetId, DraftId, Error, IdentityKind, ParameterDescriptor, ParameterKind,
-    check_value,
+    AcceptedCandidate, ActionDescriptor, AssetId, DraftId, Error, IdentityKind, JobId,
+    ParameterDescriptor, ParameterKind, artifacts::PreparedArtifact, check_value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The objects a gesture edits, fixed when it begins: each identity parameter the action declares
 /// that the gesture names, by parameter name, with the identity it names — `mask` and `component`
@@ -65,6 +65,50 @@ pub struct Draft {
     /// Derived: the asset moved under this draft. Recomputed wherever the draft is read, set,
     /// committed or reported, so no notification path is needed.
     pub conflicted: bool,
+    /// A candidate draft's patch, held in memory ([`DraftCandidate`]): set only by the catalog
+    /// owner, once it has read and verified the candidate the drafted fields name. Never
+    /// serialized: a client reads the fields that name it.
+    #[serde(skip)]
+    pub candidate: Option<Arc<DraftCandidate>>,
+}
+
+/// The live candidate a candidate draft of a candidate-accepting action shows
+/// (`docs/design/ai-editing.md`, "Candidate drafts"): its job and number, what its accept would
+/// commit, and its patch as the prepared artifact publishing will make of it, under the same
+/// identity. The draft's plan reads it as an accept's reads the published candidate
+/// ([`crate::StageQuestions::accepting`]), and its renders bind the patch from here rather than
+/// from the catalog's artifact store.
+#[derive(Clone, Debug)]
+pub struct DraftCandidate {
+    pub(crate) job_id: JobId,
+    pub(crate) candidate: u8,
+    pub(crate) accepted: Arc<AcceptedCandidate>,
+    pub(crate) artifact: Arc<PreparedArtifact>,
+}
+
+impl DraftCandidate {
+    /// Whether `fields` name this candidate: its job and number.
+    pub(crate) fn names(&self, fields: &Map<String, Value>) -> bool {
+        named_candidate(fields)
+            .is_some_and(|(job_id, candidate)| job_id == self.job_id && candidate == self.candidate)
+    }
+}
+
+/// Two drafts hold the same candidate when they name the same one and hold the same bytes.
+impl PartialEq for DraftCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.job_id == other.job_id
+            && self.candidate == other.candidate
+            && self.artifact.id == other.artifact.id
+    }
+}
+
+/// The candidate drafted fields name, `job_id` and `candidate`, when both are there and well
+/// formed.
+pub(crate) fn named_candidate(fields: &Map<String, Value>) -> Option<(JobId, u8)> {
+    let job_id = serde_json::from_value(fields.get("job_id")?.clone()).ok()?;
+    let candidate = u8::try_from(fields.get("candidate")?.as_u64()?).ok()?;
+    Some((job_id, candidate))
 }
 
 impl Draft {
@@ -78,6 +122,7 @@ impl Draft {
             fields: Map::new(),
             target: DraftTarget::new(),
             conflicted: false,
+            candidate: None,
         }
     }
 
@@ -134,6 +179,7 @@ impl Draft {
             fields: held,
             target,
             conflicted,
+            candidate,
         } = self;
         let mut next = Self {
             draft_id: draft_id.clone(),
@@ -148,6 +194,7 @@ impl Draft {
                 .collect(),
             target: target.clone(),
             conflicted: *conflicted,
+            candidate: candidate.clone(),
         };
         next.merge(fields);
         next

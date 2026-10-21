@@ -3,17 +3,24 @@
 //! preview reads that follow them.
 //!
 //! Every control is one request an API client sends: Generate and Regenerate are the fill tier's
-//! `task.fill-…`, Cancel is `job.cancel`, the strip reads each candidate's preview with
-//! `job.read-candidate` and Accept is `edit.accept-correction-patch`. Each is built once, by the
-//! builder the Copy as JSON menu reads too, so what is copied is what is sent. The selection, the
-//! seed it starts from, the chosen candidate and the prompt as typed are this window's own view
-//! state. A job is followed by its own event-driven reader (`job.wait`); each preview is read and
-//! decoded off the update loop and turned into one image handle, held until its candidate leaves
-//! the strip, so the renderer uploads it once.
+//! `task.fill-…`, Cancel is `job.cancel` and the strip reads each candidate's preview with
+//! `job.read-candidate`. Each is built once, by the builder the Copy as JSON menu reads too, so
+//! what is copied is what is sent. The selection, the seed it starts from, the chosen candidate and
+//! the prompt as typed are this window's own view state. A job is followed by its own event-driven
+//! reader (`job.wait`); each preview is read and decoded off the update loop and turned into one
+//! image handle, held until its candidate leaves the strip, so the renderer uploads it once.
+//!
+//! The chosen candidate is shown in the photograph itself, as a candidate draft of the
+//! candidate-accepting action ([`super::gesture::Kind::Candidate`], `docs/design/ai-editing.md`,
+//! "Candidate drafts"): the photo surface renders it through the whole stack as it renders any
+//! draft. The draft follows the choice after every message ([`after_message`]), and Accept commits
+//! it with `draft.commit`, which is the accept; Copy as JSON copies the
+//! `edit.accept-correction-patch` that commit runs.
 use super::{
     Before, Editor,
     decoded_handles::image_handle,
-    gesture::Starting,
+    draft::Event,
+    gesture::{CandidateGesture, Kind, Starting},
     job_reads::{self, Pass, Reader, Watch},
     message::{
         Message,
@@ -45,6 +52,11 @@ use std::{collections::BTreeSet, sync::Arc};
 pub(crate) const READ_CANDIDATE: &str = "job.read-candidate";
 /// `edit.accept-correction-patch`, which commits one candidate as a frozen patch.
 pub(crate) const ACCEPT: &str = "edit.accept-correction-patch";
+/// The Corrections module's candidate-accepting action, which a candidate draft drafts.
+/// What the status bar says once a candidate is accepted.
+const ACCEPTED: &str = "Accepted \u{b7} \u{2318}Z undoes it";
+
+pub(crate) const ACCEPT_ACTION: &str = "accept-correction-patch";
 /// The most candidate previews held decoded: the strip's.
 const HELD: usize = crate::state::remove::STRIP_MAX;
 /// Seeds are drawn below this, so a selection's Regenerates stay inside the request's seed range.
@@ -100,6 +112,16 @@ pub(crate) struct Remove {
     pub(crate) wait: Option<RemoveWait>,
     /// The progress or reason last said on the status bar.
     said: Option<String>,
+    /// The candidate whose draft the owner refused, at the photograph's revision then: it is not
+    /// drafted again until it is chosen anew or the photograph moves.
+    pub(crate) unshown: Option<(CandidateKey, u64)>,
+    /// The candidate draft gave way to a new photograph, the Select workspace or another mode,
+    /// whose answer is still to come: nothing is shown until Remove is left or a candidate is
+    /// chosen again.
+    yielded: bool,
+    /// The photograph's revision a candidate was accepted into: the status bar says so until the
+    /// photograph moves or a new selection is painted.
+    accepted: Option<u64>,
 }
 
 /// The candidate previews the strip and the canvas draw, borrowed so each handle keeps its id and
@@ -119,8 +141,9 @@ impl<'a> RemoveImages<'a> {
     }
 }
 
-/// What the canvas draws of Remove: the selection, the stroke being painted, a running
-/// generation's ring and the chosen candidate over the region it fills.
+/// What the canvas draws of Remove: the selection, the stroke being painted and a running
+/// generation's ring. The chosen candidate is no figure of the canvas: it is the photograph's own
+/// draft, which the photo surface draws.
 #[derive(Clone, Copy)]
 pub(crate) struct RemoveCanvas<'a> {
     pub(crate) selection: Option<&'a [[f64; 2]]>,
@@ -128,8 +151,8 @@ pub(crate) struct RemoveCanvas<'a> {
     pub(crate) radius: f64,
     /// A generation runs: its fraction, when it reports one.
     pub(crate) progress: Option<Option<f64>>,
-    /// The chosen candidate's preview and the content pixels it covers.
-    pub(crate) preview: Option<(&'a Handle, [u32; 4])>,
+    /// A candidate is shown in the photograph, so the selection is neither tinted nor outlined.
+    pub(crate) shown: bool,
 }
 
 /// A standard base64 string (with padding) as its bytes.
@@ -534,6 +557,7 @@ impl Editor {
                 }
                 self.view_state.menu = None;
                 self.remove.chosen = true;
+                self.remove_reads.yielded = false;
                 self.correction_reads.line = None;
                 self.corrections.selected = None;
                 return self.remove_refresh_tiers();
@@ -554,8 +578,12 @@ impl Editor {
             RemoveMessage::Candidate { job_id, candidate } => {
                 self.remove.candidate = Some((job_id.clone(), candidate));
                 let key = (job_id, candidate);
-                // A preview that left the held set is read again when it is chosen.
+                // A preview that left the held set is read again when it is chosen, and a
+                // candidate whose draft was refused is drafted again when it is chosen anew.
                 self.remove_reads.failed.remove(&key);
+                self.remove_reads.unshown = None;
+                self.remove_reads.yielded = false;
+                self.remove.notice = None;
             }
             RemoveMessage::Accept => return self.remove_accept(),
             RemoveMessage::Setup(action) => {
@@ -645,7 +673,7 @@ impl Editor {
             return Task::none();
         }
         if let Some(reason) = self
-            .gesture_refusal(Starting::Action)
+            .gesture_refusal(Starting::Fill)
             .or_else(|| self.generation_lock())
         {
             self.status.text = reason;
@@ -770,12 +798,11 @@ impl Editor {
         )
     }
 
-    /// Accept the chosen candidate: one edit, through the same command path every edit takes.
+    /// Accept the chosen candidate: commit the candidate draft that shows it, at the revision on
+    /// screen. Its commit is the accept, so the photograph keeps the fill until the committed
+    /// entry's frame replaces the draft's.
     fn remove_accept(&mut self) -> Task<Message> {
-        if let Some(reason) = self
-            .gesture_refusal(Starting::Action)
-            .or_else(|| self.generation_lock())
-        {
+        if let Some(reason) = self.generation_lock() {
             self.status.text = reason;
             return Task::none();
         }
@@ -786,13 +813,202 @@ impl Editor {
                 return Task::none();
             }
         };
+        if self.remove.accepting.is_some() {
+            self.status.text = crate::state::IN_FLIGHT.into();
+            return Task::none();
+        }
+        if self.shown_candidate().map(|(shown, _)| shown) != Some(key.clone()) {
+            self.status.text = match &self.remove.notice {
+                Some(notice) => notice.text.clone(),
+                None => "The candidate is not shown yet".into(),
+            };
+            return Task::none();
+        }
+        if let Some(reason) = self.release_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
         self.event(
             "remove_accept",
             || json!({"method": method, "params": params}),
         );
         self.remove.accepting = Some((key.0, key.1, revision));
-        self.remove_reads.last_request = Some((method.clone(), params.clone()));
-        self.command(method, params)
+        self.remove_reads.last_request = Some((method, params));
+        self.release()
+    }
+
+    /// The candidate the open candidate draft shows, by its job and number, and whether its
+    /// commit is out.
+    pub(crate) fn shown_candidate(&self) -> Option<(CandidateKey, bool)> {
+        let gesture = self.core_gesture()?;
+        let candidate = gesture.candidate()?;
+        Some((
+            (candidate.job_id.clone(), candidate.candidate),
+            gesture.draft.released(),
+        ))
+    }
+
+    /// The candidate Remove shows in the photograph now: the chosen one, while Remove is on screen
+    /// over the current state of the photograph it was generated on, it is live and its draft was
+    /// not refused at this revision.
+    pub(crate) fn wanted_candidate(&self) -> Option<CandidateKey> {
+        // A stroke being painted is the next selection's.
+        if !self.remove_active()
+            || self.remove_reads.painting.is_some()
+            || self.remove_reads.yielded
+        {
+            return None;
+        }
+        let state = self.document.state.as_ref()?;
+        if !crate::state::at_current(Some(state), &self.session) {
+            return None;
+        }
+        let (job, row) = self.remove.chosen_on(&state.asset.id)?;
+        let key = (job.job_id.clone(), row.candidate);
+        (row.state == CandidateState::Live
+            && self.remove_reads.unshown.as_ref() != Some(&(key.clone(), state.revision)))
+        .then_some(key)
+    }
+
+    /// The candidate draft follows what Remove wants shown: it opens on the chosen candidate, is
+    /// set to each new choice, and is cancelled once nothing is wanted — a new stroke, Escape,
+    /// another kind or mode, or another photograph. A draft whose commit is out is left to it.
+    fn reconcile_candidate(&mut self) -> Task<Message> {
+        let wanted = self.wanted_candidate();
+        let open = self
+            .core_gesture()
+            .map(|gesture| (gesture.candidate().cloned(), gesture.asset.clone()));
+        match (open, wanted) {
+            (None, Some((job_id, candidate))) => {
+                if self.remove.accepting.is_some() {
+                    return Task::none();
+                }
+                let gesture = CandidateGesture { job_id, candidate };
+                let fields = gesture.fields();
+                self.event(
+                    "candidate_draft_open",
+                    || json!({"job_id": gesture.job_id, "candidate": gesture.candidate}),
+                );
+                let id = self.next_gesture();
+                let task = self.open_core(id, Kind::Candidate(gesture.clone()), Some(fields));
+                if self.core_gesture().is_none() {
+                    // A refused begin opens nothing and says why; it is not asked again at this
+                    // revision.
+                    let revision = self
+                        .document
+                        .state
+                        .as_ref()
+                        .map_or(0, |state| state.revision);
+                    self.remove_reads.unshown =
+                        Some(((gesture.job_id, gesture.candidate), revision));
+                }
+                task
+            }
+            (Some((Some(shown), asset)), wanted) => {
+                if self.shown_candidate().is_some_and(|(_, released)| released) {
+                    return Task::none();
+                }
+                let current = self.document.state.as_ref().map(|state| &state.asset.id);
+                match wanted {
+                    Some(key) if key == (shown.job_id.clone(), shown.candidate) => Task::none(),
+                    Some((job_id, candidate)) if current == Some(&asset) => {
+                        let next = CandidateGesture { job_id, candidate };
+                        let fields = next.fields();
+                        if let Some(gesture) = self.core_gesture_mut() {
+                            gesture.kind = Kind::Candidate(next);
+                        }
+                        self.drive(Event::Offer(fields))
+                    }
+                    _ => self.cancel_candidate(),
+                }
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Cancel the candidate draft. What ended it — a new stroke, Escape, another kind, mode or
+    /// photograph — has said so on the status bar, and the committed frame read back after the
+    /// cancel does not say otherwise.
+    fn cancel_candidate(&mut self) -> Task<Message> {
+        let said = std::mem::take(&mut self.status.text);
+        let task = self.discard();
+        self.status.text = said;
+        task
+    }
+
+    /// Before a new photograph, the Select workspace or another mode: the candidate draft gives
+    /// way, as leaving Remove does.
+    pub(crate) fn yield_candidate(&mut self) -> Task<Message> {
+        match self.shown_candidate() {
+            Some((_, false)) => {
+                self.remove_reads.yielded = true;
+                self.cancel_candidate()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// The owner refused the candidate draft — its set, its rebase or its begin — in the accept's
+    /// own words: the photograph is left unfilled, the band and the status bar name the refusal,
+    /// and the candidate is not drafted again at this revision. `answer` is the refused answer,
+    /// fed to the draft after its cancel, so a commit asked for meanwhile is never sent with
+    /// another candidate's fields.
+    pub(crate) fn candidate_refused(&mut self, error: &str, answer: Event) -> Task<Message> {
+        let Some((key, _)) = self.shown_candidate() else {
+            return self.drive(answer);
+        };
+        let revision = self
+            .document
+            .state
+            .as_ref()
+            .map_or(0, |state| state.revision);
+        let (code, text) = error.split_once(": ").unwrap_or(("refused", error));
+        let (code, text) = (code.to_owned(), text.to_owned());
+        self.event(
+            "candidate_draft_refused",
+            || json!({"job_id": key.0, "candidate": key.1, "code": code, "message": text}),
+        );
+        self.remove_reads.unshown = Some((key, revision));
+        self.remove.accepting = None;
+        let cancel = self.drive(Event::Cancel);
+        let task = self.drive(answer);
+        self.status.text = format!("{text} \u{b7} {code}");
+        self.remove.notice = Some(RemoveNotice { text, code });
+        Task::batch([cancel, task])
+    }
+
+    /// The candidate draft's commit was refused: the draft is kept, as any refused commit's is.
+    /// One refused because the photograph moved under it is rebased at once, as a shown candidate
+    /// always is, so a candidate the new stack cannot take is refused in its turn.
+    pub(crate) fn candidate_commit_refused(&mut self, error: &str) -> Task<Message> {
+        self.remove.accepting = None;
+        if self.gesture_conflicted() {
+            return self.drive(Event::Reapply);
+        }
+        let (code, text) = error.split_once(": ").unwrap_or(("refused", error));
+        self.remove.notice = Some(RemoveNotice {
+            text: text.to_owned(),
+            code: code.to_owned(),
+        });
+        Task::none()
+    }
+
+    /// The candidate draft committed: the accepted entry is on screen in place of the draft, and
+    /// the selection and strip are cleared.
+    pub(crate) fn candidate_committed(
+        &mut self,
+        outcome: Option<super::tasks::Refresh>,
+    ) -> Task<Message> {
+        self.remove.accepting = None;
+        let Some(refresh) = outcome else {
+            // An accept always commits an entry; a no-op leaves the photograph as committed.
+            return self.reseed_committed().unwrap_or_else(Task::none);
+        };
+        self.accept(refresh);
+        self.remove.clear_draft();
+        self.remove_reads.accepted = self.document.state.as_ref().map(|state| state.revision);
+        self.status.text = ACCEPTED.into();
+        Task::none()
     }
 
     /// One read of a fill job: its status, progress, candidates and result.
@@ -847,6 +1063,7 @@ impl Editor {
             && self.remove.selection_on(&asset).map(|s| s.serial) == Some(serial)
         {
             self.remove.candidate = Some((job_id.to_owned(), candidate));
+            self.remove_reads.yielded = false;
         }
         match status {
             JobStatus::Ready => {
@@ -890,9 +1107,11 @@ impl Editor {
             self.status.text = reason;
             return Task::none();
         }
+        // A new stroke starts a new selection: the candidate shown over the last one goes.
+        let yielded = self.yield_candidate();
         if let Some(reason) = self.gesture_refusal(Starting::Correction) {
             self.status.text = reason;
-            return Task::none();
+            return yielded;
         }
         let modifiers = Modifiers {
             shift: modifiers.shift,
@@ -901,7 +1120,7 @@ impl Editor {
         let press = BrushGesture::press(view, content, modifiers, self.remove_reads.last_end);
         let points = self.remove_points(press.path());
         self.remove_reads.painting = Some((press, points));
-        Task::none()
+        yielded
     }
 
     /// The stroke at the brush's radius as posted, or nothing when it cannot be.
@@ -1032,6 +1251,14 @@ impl Editor {
         if !self.remove_active() {
             return None;
         }
+        let accepted = self.document.state.as_ref().is_some_and(|state| {
+            self.remove_reads.accepted == Some(state.revision)
+                && self.remove_reads.painting.is_none()
+                && self.remove.selection_on(&state.asset.id).is_none()
+        });
+        if accepted {
+            return Some(ACCEPTED.into());
+        }
         self.workspace
             .corrections
             .remove
@@ -1046,10 +1273,9 @@ impl Editor {
         }
         let asset = &self.document.state.as_ref()?.asset.id;
         let selection = self.remove.selection_on(asset);
-        let preview = self.remove.chosen_on(asset).and_then(|(job, row)| {
-            let handle = self.remove_images().image(&job.job_id, row.candidate)?;
-            Some((handle, row.rect))
-        });
+        let shown = self
+            .core_gesture()
+            .is_some_and(|gesture| gesture.candidate().is_some() && gesture.draft.drafted());
         Some(RemoveCanvas {
             selection: selection.map(|selection| selection.points.as_slice()),
             live: self
@@ -1059,7 +1285,7 @@ impl Editor {
                 .map(|(_, points)| points.as_slice()),
             radius: selection.map_or_else(|| self.remove_radius(), |selection| selection.radius),
             progress: self.remove.running_on(asset).map(|job| job.fraction),
-            preview,
+            shown,
         })
     }
 
@@ -1083,6 +1309,21 @@ impl Editor {
             || reading_tiers
         {
             return false;
+        }
+        // The candidate Remove wants shown is drafted and its newest frame is on screen.
+        if let Some(wanted) = self.wanted_candidate() {
+            let shown = self.core_gesture().is_some_and(|gesture| {
+                let revision = gesture.draft.draft_revision;
+                gesture.candidate().is_some_and(|candidate| {
+                    (candidate.job_id.clone(), candidate.candidate) == wanted
+                }) && gesture.draft.drained()
+                    && gesture.draft.drafted()
+                    && (self.presentation.displayed_draft_revision == Some(revision)
+                        || self.gpu_shows_revision(revision))
+            });
+            if !shown {
+                return false;
+            }
         }
         let Some(asset) = self.document.state.as_ref().map(|state| &state.asset.id) else {
             return true;
@@ -1123,6 +1364,8 @@ impl Editor {
             })).collect::<Vec<_>>(),
             "selection": self.remove.selection.as_ref().map(|selection| json!({"points": selection.points.len(), "radius": selection.radius, "seed": selection.seed})),
             "candidate": self.remove.candidate,
+            "shown": self.shown_candidate().map(|(key, _)| key),
+            "unshown": self.remove_reads.unshown.as_ref().map(|(key, _)| key),
             "previews": self.remove_reads.previews.iter().map(|(key, _)| json!(key)).collect::<Vec<_>>(),
             "painting": self.remove_reads.painting.is_some(),
             "lock": self.generation_lock(),
@@ -1132,7 +1375,8 @@ impl Editor {
 }
 
 /// After every message: in Remove, read each strip candidate's preview once, drop the previews
-/// that left it, read the tiers on entering, and finish an accept once its command has answered.
+/// that left it, read the tiers on entering, and keep the candidate draft on the candidate Remove
+/// wants shown.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let mut tasks = Vec::new();
     let active = editor.remove_active();
@@ -1142,23 +1386,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     } else if !active {
         editor.remove_reads.asked_tiers = false;
         editor.remove_reads.painting = None;
+        editor.remove_reads.yielded = false;
     }
-    // An accept finishes with its command: a new revision is the committed entry, which clears the
-    // selection and the strip; anything else left the strip as it was, the status bar saying why.
-    if let Some((_, _, revision)) = editor.remove.accepting
-        && !editor.busy
-    {
-        editor.remove.accepting = None;
-        let committed = editor
-            .document
-            .state
-            .as_ref()
-            .is_some_and(|state| state.revision > revision);
-        if committed {
-            editor.remove.clear_draft();
-            editor.status.text = "Accepted \u{b7} \u{2318}Z undoes it".into();
-        }
-    }
+    tasks.push(editor.reconcile_candidate());
     let Some((asset, revision)) = editor
         .document
         .state

@@ -1357,13 +1357,42 @@ impl CandidatePin {
         writer: &ArtifactWriter,
         cancel: &AtomicBool,
     ) -> Result<(ArtifactRecord, Arc<PreparedArtifact>), Error> {
-        let cancelled = || {
-            cancel
-                .load(Ordering::Relaxed)
-                .then(|| Error::cancelled("the accept was cancelled"))
-        };
-        if let Some(error) = cancelled() {
-            return Err(error);
+        let bytes = self.verified_patch(cancel)?;
+        if cancelled(cancel) {
+            return Err(Error::cancelled("the accept was cancelled"));
+        }
+        writer.write(&bytes, self.patch_meta(), &self.module_id)
+    }
+
+    /// The stored patch, read and verified as [`Self::publish`] reads it, held in memory as the
+    /// prepared artifact publishing would make of it, under the same identity (`artifact-` of its
+    /// SHA-256) and description, and written nowhere: what a candidate draft shows
+    /// ([`crate::DraftCandidate`]). Worker-side.
+    pub(crate) fn prepare(&self, cancel: &AtomicBool) -> Result<Arc<PreparedArtifact>, Error> {
+        let bytes = self.verified_patch(cancel)?;
+        let id = super::ArtifactId::for_hash(&self.sha256)?;
+        Ok(Arc::new(PreparedArtifact::new(
+            id,
+            &self.patch_meta(),
+            Arc::from(bytes),
+        )))
+    }
+
+    /// How an accepted patch's artifact describes it.
+    fn patch_meta(&self) -> ArtifactMeta {
+        ArtifactMeta {
+            kind: PATCH_KIND.into(),
+            width: Some(self.read.width),
+            height: Some(self.read.height),
+            colour: Some(PATCH_COLOUR.into()),
+        }
+    }
+
+    /// The stored patch read whole (at most 64 MiB), its length and hash checked against what was
+    /// stored. Worker-side.
+    fn verified_patch(&self, cancel: &AtomicBool) -> Result<Vec<u8>, Error> {
+        if cancelled(cancel) {
+            return Err(Error::cancelled("the read was cancelled"));
         }
         let mut file = self.open(CandidatePart::Patch)?;
         let mut bytes = Vec::with_capacity(self.patch_bytes as usize);
@@ -1390,19 +1419,7 @@ impl CandidatePin {
                 self.index, self.job_id
             )));
         }
-        if let Some(error) = cancelled() {
-            return Err(error);
-        }
-        writer.write(
-            &bytes,
-            ArtifactMeta {
-                kind: PATCH_KIND.into(),
-                width: Some(self.read.width),
-                height: Some(self.read.height),
-                colour: Some(PATCH_COLOUR.into()),
-            },
-            &self.module_id,
-        )
+        Ok(bytes)
     }
 
     /// The commit that references the published patch holds: the candidate is `accepted`, its
@@ -1424,6 +1441,11 @@ impl Drop for CandidatePin {
             self.store.unpin(&self.job_id, self.index, self.kind, false);
         }
     }
+}
+
+/// Whether the worker was asked to stop.
+fn cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
 }
 
 /// Standard base64 with padding, which `job.read-candidate` answers its chunks in.

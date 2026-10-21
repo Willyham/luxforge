@@ -339,11 +339,12 @@ impl Filling {
 
     /// The request the last control sent, taken.
     fn sent(&mut self) -> (String, Value) {
+        let status = self.editor.status.text.clone();
         self.editor
             .remove_reads
             .last_request
             .take()
-            .expect("a request was sent")
+            .unwrap_or_else(|| panic!("no request was sent: {status}"))
     }
 
     /// Copy one request as JSON: what the menu line copies.
@@ -398,7 +399,8 @@ impl Filling {
         }
     }
 
-    /// Generate (or Regenerate) to its end, its candidates' previews read: its job.
+    /// Generate (or Regenerate) to its end, its candidates' previews read and the chosen one
+    /// shown: its job.
     fn generate(&mut self, regenerate: bool) -> String {
         self.remove(if regenerate {
             RemoveMessage::Regenerate
@@ -410,23 +412,56 @@ impl Filling {
         assert_eq!(record["status"], "ready", "{record}");
         self.poll(&job);
         self.read_previews();
+        self.show();
         job
     }
 
-    /// Run the accept command the band sent, as its task would.
+    /// Run the candidate draft's sets and rebases that wait for the owner to read a patch, as the
+    /// blocking pool would, until none is left.
+    fn show(&mut self) {
+        for _ in 0..8 {
+            let sets = std::mem::take(&mut self.editor.reads_waiting.sets);
+            let reapplies = std::mem::take(&mut self.editor.reads_waiting.reapplies);
+            if sets.is_empty() && reapplies.is_empty() {
+                return;
+            }
+            for set in sets {
+                let answer = set.run();
+                self.update(answer);
+            }
+            for reapply in reapplies {
+                let answer = reapply.run();
+                self.update(answer);
+            }
+        }
+        panic!("the candidate draft kept reading");
+    }
+
+    /// The candidate the open candidate draft shows, once its set has been answered.
+    fn shown(&self) -> Option<(String, u8)> {
+        let gesture = self.editor.core_gesture()?;
+        let candidate = gesture.candidate()?;
+        if !gesture.draft.drafted() {
+            return None;
+        }
+        let session = self.editor.session.draft.as_ref()?;
+        assert_eq!(session.action, "accept-correction-patch");
+        assert_eq!(session.fields["job_id"], json!(candidate.job_id));
+        assert_eq!(session.fields["candidate"], json!(candidate.candidate));
+        gesture
+            .draft
+            .drafted()
+            .then(|| (candidate.job_id.clone(), candidate.candidate))
+    }
+
+    /// Run the candidate draft's commit Accept sent, as its task would.
     fn run_accept(&mut self) {
-        let (method, params) = self.sent();
-        let refreshed = tasks::command_now(
-            &self.owner(),
-            self.editor.client,
-            self.asset.clone(),
-            &method,
-            params,
-            None,
+        assert!(
+            testing::run_commit(&mut self.editor),
+            "Accept commits the candidate draft: {}",
+            self.editor.status.text
         );
-        self.update(Message::Sync(SyncMessage::Refreshed(
-            refreshed.map(Box::new),
-        )));
+        answer_reads(&mut self.editor);
     }
 
     /// Run the cancel the band (or Escape) sent, as its task would.
@@ -780,7 +815,7 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
     assert!(model.hint.starts_with("Generate fills the selection"));
     let canvas = filling.editor.remove_canvas().expect("Remove draws");
     assert!(canvas.selection.is_some_and(|points| points.len() >= 2));
-    assert!(canvas.preview.is_none(), "a draft selection is tinted");
+    assert!(!canvas.shown, "a draft selection is tinted");
 
     let copied = filling.copy(RemoveRequest::Generate);
     assert_eq!(
@@ -821,6 +856,14 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
     assert_eq!(filling.finished(&job)["status"], "ready");
     filling.poll(&job);
     filling.read_previews();
+    // The chosen candidate's draft reads its patch off the owner before it answers.
+    assert_eq!(filling.editor.reads_waiting.sets.len(), 1);
+    assert!(
+        filling.shown().is_none(),
+        "not shown before its patch is read"
+    );
+    let generation = filling.editor.presentation.preview_generation;
+    filling.show();
 
     let model = filling.model();
     assert_eq!(model.running, None);
@@ -843,7 +886,29 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
             "each preview is held as one handle"
         );
     }
-    assert!(filling.editor.remove_canvas().unwrap().preview.is_some());
+    // The chosen candidate is the photograph's own draft, which the photo surface renders; the
+    // canvas draws no candidate image and no tint over it.
+    assert_eq!(filling.shown(), Some((job.clone(), 0)));
+    assert!(filling.editor.remove_canvas().unwrap().shown);
+    // Its frame leaves the status bar to what Remove said of it.
+    let current = filling
+        .editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    assert_eq!(
+        filling.editor.displayed_status(&current),
+        "1 candidate \u{b7} Accept it, or Regenerate for another"
+    );
+    assert!(
+        filling.editor.presentation.preview_generation > generation
+            || filling.editor.drag_frame_waiting(),
+        "the drafted frame is asked for, or held for the surface to draw"
+    );
 
     // Parity: the same request from an independent client makes the same candidates.
     let mut params = sent.1.clone();
@@ -893,28 +958,36 @@ fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
     assert_eq!(model.strip.len(), 2, "{:?}", model.strip);
     assert_eq!(model.strip[1].job_id, second);
 
-    // Choose the first job's candidate, then the second's: the canvas previews it.
+    // The new job's first candidate was chosen and drafted, in the same draft the first job's
+    // was. Choose the first job's candidate, then the second's: the draft follows each choice.
+    filling.show();
+    assert_eq!(filling.shown(), Some((second.clone(), 0)));
+    let draft = filling
+        .editor
+        .session
+        .draft
+        .as_ref()
+        .unwrap()
+        .draft_id
+        .clone();
     filling.remove(RemoveMessage::Candidate {
         job_id: first.clone(),
         candidate: 0,
     });
     assert!(filling.model().strip[0].chosen);
+    filling.show();
+    assert_eq!(filling.shown(), Some((first.clone(), 0)));
     filling.remove(RemoveMessage::Candidate {
         job_id: second.clone(),
         candidate: 0,
     });
     assert!(filling.model().strip[1].chosen);
-    let chosen = filling
-        .editor
-        .remove_images()
-        .image(&second, 0)
-        .unwrap()
-        .id();
-    let (preview, _) = filling.editor.remove_canvas().unwrap().preview.unwrap();
+    filling.show();
+    assert_eq!(filling.shown(), Some((second.clone(), 0)));
     assert_eq!(
-        preview.id(),
-        chosen,
-        "the chosen candidate's own handle is drawn"
+        filling.editor.session.draft.as_ref().unwrap().draft_id,
+        draft,
+        "one candidate draft follows the choice"
     );
     let copied = filling.copy(RemoveRequest::Preview);
     assert_eq!(
@@ -924,6 +997,7 @@ fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
 
     let before = filling.history().len();
     let copied = filling.copy(RemoveRequest::Accept);
+    let generation = filling.editor.presentation.preview_generation;
     filling.remove(RemoveMessage::Accept);
     let sent = filling.editor.remove_reads.last_request.clone().unwrap();
     same_request(copied, &sent);
@@ -931,6 +1005,15 @@ fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
     assert_eq!(sent.1["job_id"], second);
     assert_eq!(sent.1["candidate"], 0);
     assert!(filling.model().accepting);
+    // The commit is out: the draft's frame stays on screen until the committed entry's.
+    assert_eq!(
+        testing::core_draft(&filling.editor).unwrap().in_flight(),
+        Some(super::draft::Round::Commit)
+    );
+    assert_eq!(
+        filling.editor.presentation.preview_generation, generation,
+        "no frame of the unfilled photograph is asked for"
+    );
     filling.run_accept();
     let history = filling.history();
     assert_eq!(history.len(), before + 1, "{history:?}");
@@ -941,7 +1024,22 @@ fn regenerate_adds_one_and_accept_commits_the_chosen_candidate_as_one_entry() {
         filling.editor.status.text,
         "Accepted \u{b7} \u{2318}Z undoes it"
     );
-    assert!(filling.editor.remove_canvas().unwrap().preview.is_none());
+    // The committed entry's frame says so too, until a new selection is painted.
+    let current = filling
+        .editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    assert_eq!(
+        filling.editor.displayed_status(&current),
+        "Accepted \u{b7} \u{2318}Z undoes it"
+    );
+    assert!(filling.editor.core_gesture().is_none() && filling.editor.session.draft.is_none());
+    assert!(!filling.editor.remove_canvas().unwrap().shown);
     // The candidate accepted is the one the agent reads as accepted.
     let record = filling.api("job.read", json!({"job_id": second}));
     assert_eq!(record["candidates"][0]["state"], "accepted", "{record}");
@@ -999,6 +1097,7 @@ fn a_prompt_replaces_and_without_the_addon_generates_nothing() {
     assert_eq!(filling.finished(&job)["status"], "ready");
     filling.poll(&job);
     filling.read_previews();
+    filling.show();
     assert_eq!(filling.model().strip[0].label, "Replace \"a red bicycle\"");
     filling.remove(RemoveMessage::Accept);
     filling.run_accept();
@@ -1114,4 +1213,145 @@ fn a_running_generation_locks_its_photograph_and_escape_cancels_it_then_clears()
             .any(|label| label.contains("Generative")),
         "a cancelled generation commits nothing"
     );
+}
+
+/// The candidate draft holds this client's one draft only while Remove wants a candidate shown: a
+/// new stroke, Escape, another kind of the band, leaving the mode and opening another photograph
+/// each cancel it at the owner, and nothing of it is left in the session.
+#[test]
+#[slow]
+fn a_new_stroke_escape_leaving_remove_and_another_photograph_cancel_the_candidate_draft() {
+    let mut filling = Filling::opened();
+    filling.ready();
+    let gone = |filling: &Filling, what: &str| {
+        assert!(filling.editor.core_gesture().is_none(), "{what}");
+        assert!(filling.editor.session.draft.is_none(), "{what}");
+        let (session, _) = call(
+            &filling.owner(),
+            filling.editor.client,
+            "session.state",
+            json!({}),
+        )
+        .unwrap();
+        assert!(session["draft"].is_null(), "{what}: {session}");
+        assert!(
+            !filling
+                .editor
+                .remove_canvas()
+                .is_some_and(|canvas| canvas.shown)
+        );
+    };
+    let shown = |filling: &mut Filling| {
+        filling.paint();
+        let job = filling.generate(false);
+        assert_eq!(filling.shown(), Some((job, 0)));
+    };
+
+    // A new stroke: the press cancels the draft, and its release is the next selection.
+    shown(&mut filling);
+    filling.content_press([0.2, 0.2]);
+    gone(&filling, "a new stroke");
+    filling.update(Message::Corrections(CorrectionMessage::Release {
+        view: (200.0, 200.0),
+        content: [0.2, 0.2],
+    }));
+    assert!(filling.model().selection);
+    let job = filling.generate(false);
+    assert_eq!(filling.shown(), Some((job, 0)));
+    // Escape after a generation clears the selection and strip, and the draft with them.
+    filling.key(Key::Named(Named::Escape), Keys::empty());
+    assert_eq!(filling.editor.status.text, "Selection cleared");
+    gone(&filling, "Escape");
+    // Another kind of the band.
+    shown(&mut filling);
+    filling.update(Message::Corrections(CorrectionMessage::Kind("heal".into())));
+    gone(&filling, "Heal chosen");
+    // Leaving the mode. Choosing Remove again shows the candidate still chosen, until the
+    // next stroke.
+    filling.choose();
+    filling.show();
+    assert!(filling.shown().is_some());
+    shown(&mut filling);
+    filling.key(Key::Character("q".into()), Keys::empty());
+    gone(&filling, "the mode left");
+    // Another photograph.
+    filling.enter();
+    filling.choose();
+    filling.show();
+    shown(&mut filling);
+    let _ = filling
+        .editor
+        .open_queued(fixture("jpeg-scan-444-interleaved.jpg"), None);
+    gone(&filling, "another photograph");
+}
+
+/// A candidate the owner will not draft — here released by an API client after the strip read it
+/// live — leaves the photograph unfilled: the draft is cancelled, the band and the status bar name
+/// the owner's refusal, Accept sends nothing, and choosing a live candidate shows it again. A
+/// Regenerate runs with the chosen candidate still shown.
+#[test]
+#[slow]
+fn a_candidate_the_owner_refuses_leaves_the_photograph_unfilled_and_says_why() {
+    let mut filling = Filling::opened();
+    filling.ready();
+    filling.paint();
+    let first = filling.generate(false);
+    assert_eq!(filling.shown(), Some((first.clone(), 0)));
+    filling.remove(RemoveMessage::Regenerate);
+    assert!(
+        filling.editor.core_gesture().is_some(),
+        "the shown candidate stays while the next generation runs: {}",
+        filling.editor.status.text
+    );
+    let second = filling.start();
+    assert_eq!(filling.finished(&second)["status"], "ready");
+    filling.poll(&second);
+    filling.read_previews();
+    filling.show();
+    assert_eq!(filling.shown(), Some((second.clone(), 0)));
+
+    filling.api(
+        "job.release-candidates",
+        json!({"job_id": first, "candidates": [0], "mutation": request()}),
+    );
+    filling.remove(RemoveMessage::Candidate {
+        job_id: first.clone(),
+        candidate: 0,
+    });
+    filling.show();
+    assert!(filling.editor.core_gesture().is_none(), "nothing is shown");
+    assert!(filling.editor.session.draft.is_none());
+    let notice = filling
+        .model()
+        .notice
+        .clone()
+        .expect("the refusal is named");
+    assert_eq!(notice.code, "conflict", "{notice:?}");
+    assert!(
+        filling.editor.status.text.starts_with(&notice.text),
+        "{}",
+        filling.editor.status.text
+    );
+    assert!(!filling.editor.remove_canvas().unwrap().shown);
+    assert_eq!(
+        filling
+            .editor
+            .remove_reads
+            .unshown
+            .as_ref()
+            .map(|(key, _)| key),
+        Some(&(first.clone(), 0))
+    );
+    // Accept has nothing shown to commit.
+    filling.remove(RemoveMessage::Accept);
+    assert!(filling.editor.remove_reads.last_request.is_none());
+    assert_eq!(filling.editor.status.text, notice.text);
+    // A live candidate is shown again.
+    filling.remove(RemoveMessage::Candidate {
+        job_id: second.clone(),
+        candidate: 0,
+    });
+    filling.show();
+    assert_eq!(filling.shown(), Some((second, 0)));
+    assert_eq!(filling.model().notice, None);
 }

@@ -8,9 +8,9 @@ use super::{EditorService, SourceSignature, source_signature, write};
 use crate::{
     Error, HistoryEntry, Recipe,
     artifacts::{
-        self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactTable,
-        ArtifactWriter, Collection, LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES,
-        PREPARED_ARTIFACT_ENTRIES, PreparedArtifact, RootState, VerifiedArtifact,
+        self, ArtifactId, ArtifactMeta, ArtifactRead, ArtifactRecord, ArtifactWriter, Collection,
+        LiveArtifacts, MANIFEST, PREPARED_ARTIFACT_BYTES, PREPARED_ARTIFACT_ENTRIES,
+        PreparedArtifact, RootState, VerifiedArtifact,
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -276,12 +276,30 @@ impl EditorService {
     /// The table is replaced by exactly what the stack lists, and only when all of it is bound; a
     /// stack without artifacts costs one walk of its layers and allocates nothing.
     pub(crate) fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
-        let ids = referenced(recipe);
+        self.bind_artifacts_holding(recipe, None)
+    }
+
+    /// [`Self::bind_artifacts`] for a drafted stack that may reference `held`, the patch a
+    /// candidate draft holds in memory ([`crate::DraftCandidate`]): that artifact is bound from
+    /// the draft, without a catalog row or an object file, and every other one as before. The
+    /// candidate's admission already checked its patch binds with the stack's artifacts within the
+    /// prepared-artifact budget.
+    pub(crate) fn bind_artifacts_holding(
+        &self,
+        recipe: &mut Recipe,
+        held: Option<&Arc<PreparedArtifact>>,
+    ) -> Result<(), Error> {
+        let mut ids = referenced(recipe);
+        let held = held.filter(|artifact| ids.contains(&artifact.id));
+        if let Some(artifact) = held {
+            ids.retain(|id| id != &artifact.id);
+        }
         if ids.is_empty() {
-            recipe.artifacts = ArtifactTable::default();
+            recipe.artifacts = held.cloned().into_iter().collect();
             return Ok(());
         }
-        let mut bound = Vec::with_capacity(ids.len());
+        let mut bound = Vec::with_capacity(ids.len() + 1);
+        bound.extend(held.cloned());
         let mut unprepared = false;
         for binding in self.bind(&ids)? {
             match binding {
@@ -290,6 +308,11 @@ impl EditorService {
             }
         }
         if unprepared {
+            // The held patch stays in the table, so the preparation this refusal asks for reads
+            // only what the catalog holds ([`Self::unprepared_artifacts`]).
+            if let Some(artifact) = held {
+                recipe.artifacts = std::iter::once(artifact.clone()).collect();
+            }
             return Err(Error::preparation_required("artifact preparation required"));
         }
         recipe.artifacts = bound.into_iter().collect();
@@ -316,11 +339,17 @@ impl EditorService {
     }
 
     /// The artifacts a stack references that are not kept ready: what a source job must read and
-    /// verify before the stack can be bound. Fails like [`Self::bind_artifacts`] when one cannot
-    /// be prepared at all.
+    /// verify before the stack can be bound. A candidate draft's patch, which the recipe's own
+    /// table holds and the catalog does not yet, needs nothing ([`Self::bind_artifacts_holding`]).
+    /// Fails like [`Self::bind_artifacts`] when one cannot be prepared at all.
     pub(super) fn unprepared_artifacts(&self, recipe: &Recipe) -> Result<Vec<ArtifactId>, Error> {
+        let mut ids = referenced(recipe);
+        ids.retain(|id| {
+            recipe.artifacts.get(id).is_none()
+                || !matches!(artifact_row(&self.connection, id), Ok(None))
+        });
         Ok(self
-            .artifact_reads(&referenced(recipe))?
+            .artifact_reads(&ids)?
             .into_iter()
             .map(|read| read.id)
             .collect())

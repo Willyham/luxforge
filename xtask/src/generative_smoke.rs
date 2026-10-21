@@ -6,16 +6,19 @@
 //! no AI editing section (its setup is the Corrections band's), and the experiment is turned off
 //! again. With the `ai.generative` experiment off the Corrections band has no Remove; a second
 //! client turns it on, Remove is offered and chosen, and shows AI editing's setup with Set up,
-//! which asks through the setup sheet before the fake generator installs. A stroke across the
-//! boundary of two quadrants is the selection; Generate is captured while it runs (the ring and the
-//! status bar's progress), Escape cancels it, Generate runs to its one candidate, Regenerate adds
-//! one more, and the first is chosen again and previewed on the canvas. A second client accepts the
-//! desktop's newest job's candidate. A prompt makes the action Replace and offers the Replace
-//! add-on, whose Add asks through the setup sheet in the feature's words; Replace then runs and
-//! Accept commits it. Last, the second client turns the experiment off while Remove is chosen, and
-//! the band is back on Heal with no Remove. The fill of a flat-coloured context is that context's
-//! mean, so a fill across two quadrants is legible in the capture: the left quadrant's colour
-//! inside the selection becomes a mix of both.
+//! which asks through the setup sheet before the fake generator installs. The photograph is given a
+//! global Basic edit, and a stroke across the boundary of two quadrants is the selection; Generate
+//! is captured while it runs (the ring and the status bar's progress), Escape cancels it, Generate
+//! runs to its one candidate, Regenerate adds one more, and the first is chosen again: each chosen
+//! candidate is shown in the photograph as a candidate draft, through the Basic edit above it. A
+//! second client accepts the desktop's newest job's candidate, after which the shown one, generated
+//! against the photograph without it, is refused and the photograph is left unfilled. A prompt
+//! makes the action Replace and offers the Replace add-on, whose Add asks through the setup sheet
+//! in the feature's words; Replace then runs, its candidate is shown, and Accept commits it: the
+//! accepted frame is the shown one. Last, the second client turns the experiment off while Remove
+//! is chosen, and the band is back on Heal with no Remove. The fill of a flat-coloured context is
+//! that context's mean, so a fill across two quadrants is legible in the capture: the left
+//! quadrant's colour inside the selection becomes a mix of both.
 use crate::{
     corrections_smoke::{MODULE, NEAR, PATCH_HALF, SIZE, correction, field, key},
     scenario::{Checked, Checks, Frame, Plan, Step, Tolerance, plan::only},
@@ -27,7 +30,7 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "generative";
-pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, AI editing's setup sheet and its consented download, a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate's preview, a second client's accept, a prompt's Replace with the Replace add-on's setup sheet and download, Accept, and Remove gone again with the experiment off";
+pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, AI editing's setup sheet and its consented download, a Basic edit and a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate shown in the photograph as a candidate draft, a second client's accept refusing it, a prompt's Replace with the Replace add-on's setup sheet and download, its candidate shown and accepted as shown, and Remove gone again with the experiment off";
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
@@ -45,6 +48,11 @@ const OUTSIDE: [f64; 2] = [0.25, 0.20];
 /// How far the draft selection's translucent tint moves a patch, at least, per channel in 8-bit
 /// codes: it is drawn over the photograph, not instead of it.
 const TINTED: f64 = 8.0;
+/// How far a shown candidate's frame and its accepted frame may be apart, per channel of a patch
+/// mean in 8-bit codes: the same stack drawn twice, within the GPU's tolerance of the reference.
+const MATCHED: f64 = 4.0;
+/// The global Basic edit the candidates are shown and accepted under.
+const DEVELOPED: [(&str, f64); 2] = [("exposure", 0.4), ("contrast", 20.0)];
 
 fn remove(step: RemoveStep) -> script::Step {
     correction(CorrectionStep::Remove(step))
@@ -89,6 +97,19 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(0)
             .status_starts("Paint over what to remove"),
         Step::new("size", field("radius", SIZE)).commits(0),
+        Step::new(
+            "developed",
+            script::Step::call(
+                "edit.set-basic",
+                Value::Object(
+                    DEVELOPED
+                        .iter()
+                        .map(|(name, value)| ((*name).to_owned(), json!(value)))
+                        .collect(),
+                ),
+            ),
+        )
+        .commits(1),
         Step::new(
             "painted",
             correction(CorrectionStep::Press(PressStep {
@@ -163,6 +184,23 @@ fn record(frame: &Frame) -> &Value {
 
 fn rgb(frame: &Frame, at: [f64; 2]) -> Result<[f64; 3]> {
     frame.rgb_at(at, PATCH_HALF)
+}
+
+/// The frame shows `cell`'s candidate in the photograph: its candidate draft is the session's
+/// draft, holding that candidate, and the photograph on screen was drawn from it.
+fn shows(frame: &Frame, cell: &Value) -> Result {
+    let draft = frame.draft();
+    ensure(
+        record(frame)["shown"] == json!([cell["job_id"], cell["candidate"]])
+            && draft["action"] == json!("accept-correction-patch")
+            && draft["fields"]["job_id"] == cell["job_id"]
+            && draft["fields"]["candidate"] == cell["candidate"],
+        format!(
+            "The chosen candidate {cell} shown as a candidate draft: {draft} {}",
+            record(frame)
+        ),
+    )?;
+    frame.displays_draft()
 }
 
 /// The largest per-channel difference between two patches.
@@ -243,8 +281,8 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
             && band(installed)["action"] == json!("Generate"),
         format!("The Generative tier once installed: {}", band(installed)),
     )?;
-    // The draft selection is tinted on the canvas.
-    let opened = launch.at("opened")?;
+    // The draft selection is tinted on the canvas, over the developed photograph.
+    let developed = launch.at("developed")?;
     let painted = launch.at("painted")?;
     ensure(
         band(painted)["selection"] == json!(true),
@@ -253,7 +291,7 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     checks.compare(
         painted,
         "the selection's tint, against the photograph",
-        apart(rgb(painted, INSIDE)?, rgb(opened, INSIDE)?),
+        apart(rgb(painted, INSIDE)?, rgb(developed, INSIDE)?),
         0.0,
         Tolerance::Above(TINTED),
     )?;
@@ -288,24 +326,27 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         record(generated)["previews"].as_array().map(Vec::len) == Some(1),
         format!("Each preview read once: {}", record(generated)),
     )?;
-    // The chosen candidate is previewed on the canvas: inside the selection the left quadrant's
-    // colour becomes a mix of both quadrants', and outside it nothing changes.
+    shows(generated, &strip[0])?;
+    // The chosen candidate is shown in the photograph through the Basic edit above it: inside the
+    // selection the left quadrant's colour becomes a mix of both quadrants', and outside it
+    // nothing changes.
     let chosen = launch.at("chosen")?;
     ensure(
         band(chosen)["strip"][0]["chosen"] == json!(true),
         format!("The first candidate chosen again: {}", band(chosen)),
     )?;
+    shows(chosen, &band(chosen)["strip"][0])?;
     checks.compare(
         chosen,
-        "the chosen candidate over the selection, against the photograph",
-        apart(rgb(chosen, INSIDE)?, rgb(opened, INSIDE)?),
+        "the chosen candidate over the selection, against the developed photograph",
+        apart(rgb(chosen, INSIDE)?, rgb(developed, INSIDE)?),
         0.0,
         Tolerance::Above(NEAR),
     )?;
     checks.compare(
         chosen,
-        "outside the selection, against the photograph",
-        apart(rgb(chosen, OUTSIDE)?, rgb(opened, OUTSIDE)?),
+        "outside the selection, against the developed photograph",
+        apart(rgb(chosen, OUTSIDE)?, rgb(developed, OUTSIDE)?),
         0.0,
         Tolerance::AtMost(NEAR),
     )?;
@@ -329,6 +370,19 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         accepted_by_agent["step"]["resolved"]["job_id"] == jobs[2]["job_id"],
         "The agent's accept resolved to the desktop's newest job",
     )?;
+    // The shown candidate was generated against the photograph without that correction: its
+    // draft is refused, in the accept's words, and the photograph is left unfilled.
+    let refused = record(accepted_by_agent);
+    ensure(
+        refused["shown"].is_null()
+            && refused["unshown"] == json!([jobs[1]["job_id"], 0])
+            && band(accepted_by_agent)["notice"]["code"] == json!("conflict")
+            && accepted_by_agent.draft().is_null(),
+        format!(
+            "The shown candidate refused after the agent's accept: {refused} {}",
+            band(accepted_by_agent)
+        ),
+    )?;
     let prompt = launch.at("prompt")?;
     ensure(
         band(prompt)["action"] == json!("Replace")
@@ -351,17 +405,47 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
             && sent["params"]["prompt"] == json!(PROMPT),
         format!("Replace sent the prompt: {sent}"),
     )?;
+    let replacing = band(replaced)["strip"]
+        .as_array()
+        .and_then(|strip| strip.last())
+        .cloned()
+        .unwrap_or_default();
+    shows(replaced, &replacing)?;
     let accepted = launch.at("accepted")?;
     ensure(
-        band(accepted)["selection"] == json!(false) && band(accepted)["strip"] == json!([]),
+        band(accepted)["selection"] == json!(false)
+            && band(accepted)["strip"] == json!([])
+            && accepted.draft().is_null(),
         format!("Accept clears the selection and strip: {}", band(accepted)),
+    )?;
+    let committed = &record(accepted)["last_request"];
+    ensure(
+        committed["method"] == json!("edit.accept-correction-patch")
+            && committed["params"]["job_id"] == replacing["job_id"]
+            && committed["params"]["candidate"] == replacing["candidate"],
+        format!("Accept committed the shown candidate: {committed}"),
     )?;
     checks.compare(
         accepted,
-        "the accepted fill, against the photograph",
-        apart(rgb(accepted, INSIDE)?, rgb(opened, INSIDE)?),
+        "the accepted fill, against the developed photograph",
+        apart(rgb(accepted, INSIDE)?, rgb(developed, INSIDE)?),
         0.0,
         Tolerance::Above(NEAR),
+    )?;
+    // What was shown is what Accept committed: inside the selection and outside it.
+    checks.compare(
+        replaced,
+        "the shown candidate inside the selection, against the accepted frame",
+        apart(rgb(replaced, INSIDE)?, rgb(accepted, INSIDE)?),
+        0.0,
+        Tolerance::Within(MATCHED),
+    )?;
+    checks.compare(
+        replaced,
+        "the shown candidate outside the selection, against the accepted frame",
+        apart(rgb(replaced, OUTSIDE)?, rgb(accepted, OUTSIDE)?),
+        0.0,
+        Tolerance::Within(MATCHED),
     )?;
     // Turned off while Remove is chosen: no Remove, and the band on Heal.
     let gone = launch.at("flag-off")?;
@@ -380,7 +464,8 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         json!({
             "near_codes": NEAR,
             "tinted_codes": TINTED,
-            "scope": "Mean 8-bit RGB of small patches of the captured photograph over a flat four-quadrant fixture, read as changed or unchanged against the opened frame; the developer fake generator fills with its context's mean, so a change is legible, not a colorimetric or model-quality claim",
+            "matched_codes": MATCHED,
+            "scope": "Mean 8-bit RGB of small patches of the captured photograph over a flat four-quadrant fixture, read as changed or unchanged against the frame after the Basic edit, and the shown candidate's frame against the accepted frame within the matched codes; the developer fake generator fills with its context's mean, so a change is legible, not a colorimetric or model-quality claim",
         }),
     )
 }
