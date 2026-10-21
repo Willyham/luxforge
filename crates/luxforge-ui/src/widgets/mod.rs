@@ -126,18 +126,20 @@ pub use mask_row::{
 };
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
-pub use mode_control::{CombineMode, ModeControlModel, mode_control};
+pub use mode_control::{CombineMode, ModeControlModel, mode_control, mode_menu};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
 pub use notched_slider::{NotchedSliderModel, StepKeys, arrow_step, notched_panel, notched_slider};
 pub use notice_card::{NoticeCardModel, Tone, notice_card, notice_card_with};
 pub use number_field::{
-    NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
-    number_field, value_input,
+    NumberFieldModel, ValueEdit, boxed_input, channel_row, inline_value, label_line, number_field,
+    value_input, values_line,
 };
 pub use overlay_control::{OverlayControlModel, OverlayMode, OverlayTint, overlay_control};
-pub use pick_bar::{PickBarModel, PickButtonModel, pick_bar, pick_button};
+pub use pick_bar::{
+    PickBarModel, PickButtonModel, PickLineModel, pick_bar, pick_button, pick_line,
+};
 pub use popover::popover;
-pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
+pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_rail, range_slider};
 pub use readout_card::readout_card;
 pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
 pub use segmented::{

@@ -240,6 +240,10 @@ struct ComponentKind {
     /// fields: a `range` over its patch method, named by that method. `None` for every kind that is
     /// not a band; its number fields are all a panel draws for it.
     band: Option<fn(&'static str) -> Control>,
+    /// The numbers this kind declares that are a setting rather than geometry, drawn as a slider
+    /// where its geometry is a typed field: a colour range's `refine` is a tightness a person tunes
+    /// by eye, where a gradient's endpoint is a position they type. Empty for every other kind.
+    sliders: &'static [&'static str],
     /// The experiment flag ([`crate::flags`]) that must be on for a new component of this kind to
     /// be created, or `None` for a kind that is always offered. Off, the kind is evaluated, listed
     /// and edited as ever; only `mask.create-<kind>` and `mask.add-<kind>` are refused, naming the
@@ -336,6 +340,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "linear",
         menu_title: "Linear gradient",
         band: None,
+        sliders: &[],
         experiment: None,
         artifact: None,
         pick: None,
@@ -352,6 +357,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "radial",
         menu_title: "Radial gradient",
         band: None,
+        sliders: &[],
         experiment: None,
         artifact: None,
         pick: None,
@@ -368,6 +374,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "brush",
         menu_title: "Brush",
         band: None,
+        sliders: &[],
         experiment: None,
         artifact: None,
         pick: None,
@@ -384,6 +391,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "luminance",
         menu_title: "Luminance range",
         band: Some(range::luminance_band),
+        sliders: &[],
         experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
         pick: Some(range::pick_luminance),
@@ -404,6 +412,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Colour range",
         // A colour range is a set of swatches and a radius, not a band on one axis.
         band: None,
+        sliders: &["refine"],
         experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
         pick: Some(range::pick_colour),
@@ -420,6 +429,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         icon: "model",
         menu_title: "Model selection",
         band: None,
+        sliders: &[],
         experiment: None,
         artifact: Some(ArtifactUse {
             of: model::artifact_of,
@@ -596,6 +606,15 @@ pub(crate) fn component_band_control(kind: &str, action: &'static str) -> Option
         .find(|entry| entry.kind == kind)
         .and_then(|entry| entry.band)
         .map(|band| band(action))
+}
+
+/// The numbers a component of `kind` declares that are drawn as a slider rather than a typed
+/// field. Empty for a kind this build does not know.
+pub(crate) fn component_slider_parameters(kind: &str) -> &'static [&'static str] {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .map_or(&[], |entry| entry.sliders)
 }
 
 /// The kinds that sample colours from the photograph, in table order. The command family generates

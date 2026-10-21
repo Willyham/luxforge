@@ -679,6 +679,7 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
             ParameterDescriptor::integer("sides", 3, 64),
             ParameterDescriptor::boolean("closed"),
         ],
+        &[],
     )
     .collect();
     assert_eq!(
@@ -686,6 +687,20 @@ fn a_generated_number_field_binds_only_a_number_parameter() {
         vec![Control::from(
             Control::number("mask.set-polygon", "feather", "Feather")
                 .number_style(NumberStyle::Field)
+        )]
+    );
+    // A number the kind names as a setting is a slider rather than a typed field.
+    let setting: Vec<Control> = geometry_controls(
+        "mask.set-colour-range",
+        vec![ParameterDescriptor::number("refine", 0.0, 100.0)],
+        &["refine"],
+    )
+    .collect();
+    assert_eq!(
+        setting,
+        vec![Control::from(
+            Control::number("mask.set-colour-range", "refine", "Refine")
+                .number_style(NumberStyle::Slider)
         )]
     );
     // And every number a registered kind declares has exactly one field, in declaration order,

@@ -156,25 +156,6 @@ pub fn number_field<'a, M: Clone + 'a>(
     )
 }
 
-/// A [`number_field`] on a [`theme::COMPACT_FIELD_ROW_HEIGHT`] row, for fields packed two to a row
-/// under the control they belong to.
-pub fn compact_number_field<'a, M: Clone + 'a>(
-    model: &NumberFieldModel,
-    on_edit_start: M,
-    on_text: impl Fn(String) -> M + 'a,
-    on_submit: M,
-    on_reset: M,
-) -> Element<'a, M> {
-    field_row(
-        model,
-        theme::COMPACT_FIELD_ROW_HEIGHT,
-        on_edit_start,
-        on_text,
-        on_submit,
-        on_reset,
-    )
-}
-
 fn field_row<'a, M: Clone + 'a>(
     model: &NumberFieldModel,
     height: f32,
@@ -402,6 +383,82 @@ pub(crate) fn field_header<'a, M: Clone + 'a>(
             .into(),
         invalid,
     )
+}
+
+/// A number typed in place on a label line, as the range-rows board writes a band's edges
+/// (`44 – 51`): the bare value as wide as its text, a press opening it for typing in an
+/// [`theme::INLINE_VALUE_WIDTH`] box. Its unit is the line's to say, so it shows none.
+pub fn inline_value<'a, M: Clone + 'a>(
+    model: &NumberFieldModel,
+    on_edit_start: M,
+    on_text: impl Fn(String) -> M + 'a,
+    on_submit: M,
+) -> Element<'a, M> {
+    match &model.edit {
+        ValueEdit::Display => button(
+            text(model.display.clone())
+                .size(theme::SIZE_CONTROL)
+                .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+                .wrapping(Wrapping::None)
+                .style(theme::ink(if model.enabled {
+                    Token::Text
+                } else {
+                    Token::TextTertiary
+                })),
+        )
+        .padding(0)
+        .style(theme::button_plain)
+        .on_press_maybe(model.enabled.then_some(on_edit_start))
+        .into(),
+        ValueEdit::Editing { text, invalid } => {
+            let input = value_input(
+                "",
+                text,
+                invalid.is_some(),
+                model.enabled,
+                on_text,
+                on_submit,
+            )
+            .width(Length::Fixed(theme::INLINE_VALUE_WIDTH))
+            .padding(0)
+            .align_x(Horizontal::Right);
+            match &model.id {
+                Some(id) => input.id(iced::widget::Id::from(id.clone())).into(),
+                None => input.into(),
+            }
+        }
+    }
+}
+
+/// A label line whose values are typed in place, `separator` between them, at the right where a
+/// slider's value sits: `Range 44 – 51`, `Feather 4 · 4`.
+pub fn values_line<'a, M: Clone + 'a>(
+    label: String,
+    enabled: bool,
+    separator: &str,
+    values: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let mut line = Row::new()
+        .push(container(control_label(label, enabled)).width(Length::Fill))
+        .spacing(theme::INLINE_VALUE_SPACING)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+    for (index, value) in values.into_iter().enumerate() {
+        if index > 0 {
+            line = line.push(
+                text(separator.to_owned())
+                    .size(theme::SIZE_CONTROL)
+                    .wrapping(Wrapping::None)
+                    .style(theme::ink(Token::TextTertiary)),
+            );
+        }
+        line = line.push(value);
+    }
+    container(line)
+        .padding(Padding::default().right(theme::VALUE_INSET))
+        .width(Length::Fill)
+        .center_y(Length::Fixed(theme::VALUES_LINE_HEIGHT))
+        .into()
 }
 
 /// Symbols sit against a number; word units have a separating space.

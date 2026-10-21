@@ -1,7 +1,7 @@
 //! Gallery states for the Masks panel's widgets, at the reference panel width, as the mask-panels
 //! and range-masks boards draw them: the mask and component rows, the mode and overlay controls, the
 //! kind menu, the group rules, the two-column fields, the toggle rows with hints, the colour range's
-//! swatches, the range picker's bar and Pick buttons, and a brush component's strokes. Widget states
+//! swatches, the range picker's line, and a brush component's strokes. Widget states
 //! only: no composed panel.
 
 use crate::Element;
@@ -9,10 +9,11 @@ use crate::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
     MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    POPOVER_GAP, PickBarModel, PickButtonModel, RenameMessages, StrokeRowModel, SwatchSlotsModel,
-    ToggleModel, ValueEdit, caption, compact_toggle, component_note, component_row,
-    coverage_thumbnail, dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control,
-    overlay_control, pick_bar, pick_button, stroke_row, swatch_slots, theme,
+    POPOVER_GAP, PickBarModel, PickButtonModel, PickLineModel, RenameMessages, StrokeRowModel,
+    SwatchSlotsModel, ToggleModel, ValueEdit, caption, compact_toggle, component_note,
+    component_row, coverage_thumbnail, dropdown_button, field_grid, group_rule, mask_row,
+    menu_list, menu_list_with_width, mode_control, mode_menu, overlay_control, pick_line,
+    stroke_row, swatch_slots, theme,
 };
 use iced::widget::{Column, Row, Space, container, row};
 use iced::{Alignment, Length, Padding};
@@ -99,19 +100,16 @@ fn mask_messages() -> MaskRowMessages<'static, ()> {
     }
 }
 
-const FIXED: &str = "A mask's first component is always Add";
-const MODES: &str = "Add \u{b7} Subtract \u{b7} Intersect";
-
-fn mode(selected: CombineMode) -> ModeControlModel {
-    ModeControlModel {
+fn mode(selected: CombineMode) -> Option<ModeControlModel> {
+    Some(ModeControlModel {
         selected,
-        fixed: None,
-        tooltip: MODES.into(),
+        tooltip: selected.label().into(),
+        open: false,
         enabled: true,
-    }
+    })
 }
 
-fn component(name: &str, icon: Icon, mode: ModeControlModel) -> ComponentRowModel {
+fn component(name: &str, icon: Icon, mode: Option<ModeControlModel>) -> ComponentRowModel {
     ComponentRowModel {
         name: name.into(),
         icon: Some(icon),
@@ -127,17 +125,16 @@ fn component(name: &str, icon: Icon, mode: ModeControlModel) -> ComponentRowMode
     }
 }
 
-fn fixed() -> ModeControlModel {
-    ModeControlModel {
-        fixed: Some(FIXED.into()),
-        ..mode(CombineMode::Add)
-    }
+/// A mask's first component, which is always Add and shows no chip.
+fn fixed() -> Option<ModeControlModel> {
+    None
 }
 
 fn component_messages() -> ComponentRowMessages<'static, ()> {
     ComponentRowMessages {
         on_select: Some(()),
-        on_mode: Some(Box::new(|_| ())),
+        on_mode: Some(()),
+        mode_menu: None,
         on_invert: Some(()),
         on_menu: Some(()),
         on_drag_start: Some(()),
@@ -355,22 +352,33 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
         ),
         component_note("Cannot move above Linear 1: a mask's first component is always Add"),
     ]));
-    // -- The mode control on its own: each mode chosen, fixed, and disabled.
+    // -- The mode chip on its own: each mode, open, and disabled; then its menu.
+    let chip = |selected| mode(selected).expect("a chip");
     let mut modes = Row::new()
         .spacing(theme::SPACING)
         .align_y(Alignment::Center);
     for selected in CombineMode::ALL {
-        modes = modes.push(mode_control(&mode(selected), |_| ()));
+        modes = modes.push(mode_control(&chip(selected), Some(())));
     }
-    modes = modes.push(mode_control(&fixed(), |_| ()));
+    modes = modes.push(mode_control(
+        &ModeControlModel {
+            open: true,
+            ..chip(CombineMode::Intersect)
+        },
+        Some(()),
+    ));
     modes = modes.push(mode_control(
         &ModeControlModel {
             enabled: false,
-            ..mode(CombineMode::Subtract)
+            ..chip(CombineMode::Subtract)
         },
-        |_| (),
+        Some(()),
     ));
     states.push(modes.into());
+    states.push(menu_list_with_width(
+        mode_menu(CombineMode::Subtract, |_| (), ()),
+        theme::MODE_MENU_WIDTH,
+    ));
     // -- The overlay row: tint in green, the selection on black with white chosen (the swatches
     // -- dimmed), and off.
     states.push(panel(vec![
@@ -433,7 +441,7 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
             dropdown_button(&add, Some(())),
             Space::new().width(Length::Fill),
             caption("as"),
-            mode_control(&mode(CombineMode::Subtract), |_| ()),
+            mode_control(&chip(CombineMode::Subtract), Some(())),
         ]
         .spacing(theme::OVERLAY_SPACING)
         .align_y(Alignment::Center)
@@ -541,93 +549,80 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
             |_| (),
         ),
     ]));
-    // -- A colour range's swatches: three of five held, then picking with one chosen, then full.
+    // -- A colour range's swatches: three of five held, one chosen, then none yet, then full.
     let held = vec![[0x6f, 0x9b, 0xd1], [0x5d, 0x8b, 0xc4], [0x8f, 0xb3, 0xe0]];
     let swatches = SwatchSlotsModel {
         swatches: held.clone(),
         limit: 5,
         selected: None,
-        picking: false,
-        pick_label: "Pick".into(),
-        pick_enabled: true,
+        caption: Some("3 of 5".into()),
         enabled: true,
     };
     let mut full = held;
     full.extend([[0x4a, 0x78, 0xb0], [0xa5, 0xc4, 0xea]]);
     states.push(panel(vec![
-        swatch_slots(&swatches, |_| (), ()),
+        swatch_slots(&swatches, |_| ()),
         swatch_slots(
             &SwatchSlotsModel {
-                picking: true,
                 selected: Some(1),
                 ..swatches.clone()
             },
             |_| (),
-            (),
+        ),
+        swatch_slots(
+            &SwatchSlotsModel {
+                swatches: Vec::new(),
+                caption: Some("No colour yet".into()),
+                ..swatches.clone()
+            },
+            |_| (),
         ),
         swatch_slots(
             &SwatchSlotsModel {
                 swatches: full,
-                pick_enabled: false,
+                caption: Some("5 of 5".into()),
                 ..swatches
             },
             |_| (),
-            (),
         ),
     ]));
-    // -- The range picker armed: a luminance range's bar and its lit Pick, then a colour range's
-    // bar with its count, then a Pick at rest and one refused.
-    let armed = PickButtonModel {
-        label: "Pick".into(),
-        armed: true,
-        enabled: true,
+    // -- The range picker's line: Pick at rest with its help button, a luminance range's bar and
+    // -- a colour range's, then a Pick refused.
+    let line = |armed: bool, enabled: bool, hint: &str| PickLineModel {
+        pick: PickButtonModel {
+            label: "Pick".into(),
+            armed,
+            enabled,
+        },
+        tooltip: "Pick luminance range".into(),
+        bar: PickBarModel {
+            hint: hint.into(),
+            enabled: true,
+        },
     };
-    let right = |button: Element<'static, ()>| -> Element<'static, ()> {
-        container(row![Space::new().width(Length::Fill), button])
-            .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
-            .width(Length::Fill)
-            .into()
-    };
+    let help = || -> Option<Element<'static, ()>> { Some(caption("i")) };
     states.push(panel(vec![
         component_row(
             &ComponentRowModel {
                 selected: true,
-                ..component("Luminance range 1", Icon::Luminance, mode(CombineMode::Add))
+                ..component("Luminance range 1", Icon::Luminance, fixed())
             },
             component_messages(),
         ),
-        pick_bar(
-            &PickBarModel {
-                hint: "Click or drag on the photo".into(),
-                count: None,
-                enabled: true,
-            },
+        pick_line(&line(false, true, ""), (), (), help()),
+        pick_line(
+            &line(true, true, "Click or drag on the photo"),
             (),
+            (),
+            help(),
         ),
-        right(pick_button(&armed, ())),
-        pick_bar(
-            &PickBarModel {
-                hint: "Click or drag \u{b7} Shift adds".into(),
-                count: Some("2 of 5".into()),
-                enabled: true,
-            },
+        pick_line(
+            &line(true, true, "Click or drag \u{b7} Shift adds"),
             (),
+            (),
+            help(),
         ),
-        right(pick_button(
-            &PickButtonModel {
-                armed: false,
-                ..armed.clone()
-            },
-            (),
-        )),
-        right(pick_button(
-            &PickButtonModel {
-                armed: false,
-                enabled: false,
-                ..armed
-            },
-            (),
-        )),
+        pick_line(&line(false, false, ""), (), (), None),
     ]));
     // -- A brush component's strokes: two deletable, and one whose delete is refused.
     states.push(panel(vec![
