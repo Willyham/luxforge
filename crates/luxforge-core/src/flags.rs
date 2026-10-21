@@ -81,6 +81,9 @@ pub struct FlagSpec {
     pub description: &'static str,
     pub kind: FlagKind,
     pub applies: Applies,
+    /// The toggle this flag refines, which it changes nothing without: Settings lists the flag
+    /// only while that toggle is on. `flags.list` and `flags.set` take it either way.
+    pub requires: Option<&'static str>,
 }
 
 impl FlagSpec {
@@ -134,6 +137,7 @@ const FLAGS: &[FlagSpec] = &[
             default: cfg!(debug_assertions),
         },
         applies: Applies::Launch,
+        requires: None,
     },
     FlagSpec {
         id: RANGE_MASKS,
@@ -141,6 +145,7 @@ const FLAGS: &[FlagSpec] = &[
         description: "Offers the luminance and colour range kinds for a new mask or component; existing ones work either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
+        requires: None,
     },
     FlagSpec {
         id: AI_GENERATIVE,
@@ -148,6 +153,7 @@ const FLAGS: &[FlagSpec] = &[
         description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
+        requires: None,
     },
     FlagSpec {
         id: AI_GENERATIVE_GPU_SHARING,
@@ -155,6 +161,7 @@ const FLAGS: &[FlagSpec] = &[
         description: "Runs a generative fill's GPU work in short slices so the editor keeps drawing while it runs; a fill may take a little longer.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
+        requires: Some(AI_GENERATIVE),
     },
     FlagSpec {
         id: PRERELEASE_CHANNEL,
@@ -162,6 +169,7 @@ const FLAGS: &[FlagSpec] = &[
         description: "Offers release candidates from the pre-release update channel as well as releases.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
+        requires: None,
     },
 ];
 
@@ -190,6 +198,7 @@ const PROOF_FLAGS: &[FlagSpec] = &[
             default: "first",
         },
         applies: Applies::Live,
+        requires: None,
     },
     FlagSpec {
         id: "proof.number",
@@ -202,6 +211,7 @@ const PROOF_FLAGS: &[FlagSpec] = &[
             default: 50.0,
         },
         applies: Applies::Live,
+        requires: None,
     },
 ];
 
@@ -236,6 +246,9 @@ pub struct ListedFlag {
     /// `toggle`, `choice` or `number`.
     pub kind: String,
     pub applies: Applies,
+    /// The toggle this flag refines: Settings lists the flag only while that toggle is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<ListedOption>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,6 +417,7 @@ pub(crate) fn list(
                 description: flag.description.into(),
                 kind: kind.into(),
                 applies: flag.applies,
+                requires: flag.requires.map(str::to_owned),
                 options,
                 min: range.map(|(min, _, _)| min),
                 max: range.map(|(_, max, _)| max),
@@ -634,6 +648,29 @@ mod tests {
                 "proof.number"
             ]
         );
+    }
+
+    #[test]
+    fn a_refining_flag_requires_a_listed_toggle_and_its_listing_names_it() {
+        for flag in listed(true) {
+            if let Some(parent) = flag.requires {
+                let parent = find(parent, false).expect("a listed product flag");
+                assert!(
+                    matches!(parent.kind, FlagKind::Toggle { .. }),
+                    "{}",
+                    flag.id
+                );
+                assert!(parent.requires.is_none(), "{} nests", flag.id);
+            }
+        }
+        let (_, store) = store("flags-requires");
+        let listed = list(&store, &LaunchFlags::default(), false).unwrap();
+        let requires = |id: &str| listed.flag(id).unwrap().requires.clone();
+        assert_eq!(
+            requires(AI_GENERATIVE_GPU_SHARING).as_deref(),
+            Some(AI_GENERATIVE)
+        );
+        assert_eq!(requires(AI_GENERATIVE), None);
     }
 
     #[test]

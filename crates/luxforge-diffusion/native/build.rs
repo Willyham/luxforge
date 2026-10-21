@@ -82,198 +82,18 @@ const IGNORE_REPLACEMENT: &str = "    if (luxforge_text_encoder_absent()) {
 /// command queue reaches the GPU between them (THIRD_PARTY.md, "Local change"). Slices end only
 /// between fused groups, and never across the points where upstream splits a graph between its
 /// command buffers, so they encode upstream's kernels. A slice target of 0, the default, runs
-/// every graph as upstream does.
-const SLICE_DECLARATIONS_ANCHOR: &str = "#import \"ggml-metal-fusion.h\"\n";
-const SLICE_DECLARATIONS: &str = r##"#import "ggml-metal-fusion.h"
-
-#include <stdatomic.h>
-"##;
+/// every graph as upstream does. The slicing itself is Objective-C in
+/// `luxforge_metal_slices.inc`, inserted before `ggml_metal_graph_compute`, whose opening then
+/// hands a graph to it while a target is set.
+const SLICE_FUNCTIONS: &str = include_str!("luxforge_metal_slices.inc");
 const SLICE_ANCHOR: &str = r##"enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
     if (ctx->has_error) {
         GGML_LOG_ERROR("%s: backend is in error state from a previous command buffer failure - recreate the backend to recover\n", __func__);
         return GGML_STATUS_FAILED;
     }
 "##;
-const SLICE_REPLACEMENT: &str = r##"// Luxforge: sliced graph execution. The GPU time a slice aims at, in microseconds; 0 runs graphs
-// as upstream does. Process-wide, as the shim sets it around each generation.
-static _Atomic(int64_t) luxforge_slice_us = 0;
-// The non-empty nodes the next slice encodes, adapted after each slice towards the target.
-static _Atomic(int) luxforge_slice_nodes = 8;
-
-#define LUXFORGE_SLICE_NODES_MIN 1
-#define LUXFORGE_SLICE_NODES_MAX 4096
-
-void luxforge_ggml_metal_set_slice_us(int64_t slice_us) {
-    atomic_store(&luxforge_slice_us, slice_us > 0 ? slice_us : 0);
-}
-
-// The graph index of the non-empty node `skip` non-empty nodes on from `start`, counted as
-// ggml_metal_op counts them; the node count past the last. Called only with fewer than the
-// non-empty nodes before the encoder's end, so the node found lies before it.
-static int luxforge_node_after(const struct ggml_cgraph * gf, int start, int skip) {
-    for (int i = start; i < gf->n_nodes; ++i) {
-        if (ggml_op_is_empty(gf->nodes[i]->op) || ggml_is_empty(gf->nodes[i])) {
-            continue;
-        }
-        if (skip == 0) {
-            return i;
-        }
-        skip--;
-    }
-    return gf->n_nodes;
-}
-
-// Where upstream's command buffer holding node `start` ends: ggml_metal_graph_compute gives the
-// first n_nodes_0 nodes to one buffer and splits the rest evenly between n_cb more. Fusion never
-// crosses these points upstream, so a slice's encoder ends at the next one too.
-static int luxforge_split_after(ggml_metal_t ctx, const struct ggml_cgraph * gf, int start) {
-    const int n_nodes = gf->n_nodes;
-    if (ctx->n_cb == 0) {
-        return n_nodes;
-    }
-    const int n_main    = MAX(64, 0.1*gf->n_nodes);
-    const int n_nodes_0 = MIN(n_main, n_nodes);
-    if (start < n_nodes_0) {
-        return n_nodes_0;
-    }
-    const int n_nodes_1      = n_nodes - n_nodes_0;
-    const int n_nodes_per_cb = (n_nodes_1 + ctx->n_cb - 1) / ctx->n_cb;
-    for (int cb_idx = 0; cb_idx < ctx->n_cb; ++cb_idx) {
-        const int idx_end = n_nodes_0 + MIN((cb_idx == ctx->n_cb - 1) ? n_nodes_1 : (cb_idx + 1) * n_nodes_per_cb, n_nodes_1);
-        if (start < idx_end) {
-            return idx_end;
-        }
-    }
-    return n_nodes;
-}
-
-// Encode into `cmd_buf` the graph's nodes from `start` on, at least `want` non-empty ones where
-// the graph has them, stopping only between fused groups: the encoder spans the rest of
-// upstream's command buffer, so fusion looks exactly as far ahead as it does upstream. Answers
-// where the next slice starts, and in `encoded` the non-empty nodes encoded.
-static int luxforge_encode_slice(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf, struct ggml_cgraph * gf, int start, int want, int * encoded) {
-    const int end = luxforge_split_after(ctx, gf, start);
-    ggml_metal_op_t ctx_op = ggml_metal_op_init(
-        ctx->dev,
-        cmd_buf,
-        gf,
-        ctx->finfo,
-        start,
-        end,
-        ctx->use_concurrency,
-        ctx->capture_compute,
-        ctx->debug_graph);
-
-    const int n = ggml_metal_op_n_nodes(ctx_op);
-    int idx = 0;
-    while (idx < n && idx < want) {
-        const int res = ggml_metal_op_encode(ctx_op, idx);
-        if (res == 0) {
-            idx = n;
-            break;
-        }
-        idx += res;
-    }
-
-    ggml_metal_op_free(ctx_op);
-
-    *encoded = idx;
-    return idx >= n ? end : luxforge_node_after(gf, start, idx);
-}
-
-// Run `gf` slice by slice: while one slice runs, the next is encoded; it is committed once the
-// running one has completed, so this backend holds at most one command buffer on the GPU and
-// other queues' work runs between slices. The last slice is kept as the last command buffer, as
-// upstream keeps its last, for ggml_metal_synchronize.
-static enum ggml_status luxforge_graph_compute_sliced(ggml_metal_t ctx, struct ggml_cgraph * gf, int64_t slice_us) {
-    if (ctx->capture_compute >= 0) {
-        ctx->capture_compute--;
-    }
-
-    // keep the memory wired
-    ggml_metal_device_rsets_keep_alive(ctx->dev);
-
-    enum ggml_status status = GGML_STATUS_SUCCESS;
-
-    @autoreleasepool {
-        id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
-
-        int start = 0;
-        id<MTLCommandBuffer> running = nil;
-        int running_nodes = 0;
-        id<MTLCommandBuffer> last = nil;
-
-        while (start < gf->n_nodes || running != nil) {
-            id<MTLCommandBuffer> next = nil;
-            int next_start = start;
-            int next_nodes = 0;
-            if (start < gf->n_nodes) {
-                next = [queue commandBufferWithUnretainedReferences];
-                next_start = luxforge_encode_slice(ctx, next, gf, start, atomic_load(&luxforge_slice_nodes), &next_nodes);
-            }
-
-            if (running != nil) {
-                [running waitUntilCompleted];
-
-                if ([running status] != MTLCommandBufferStatusCompleted) {
-                    GGML_LOG_ERROR("%s: error: a slice's command buffer failed with status %d\n", __func__, (int) [running status]);
-                    if ([running status] == MTLCommandBufferStatusError) {
-                        GGML_LOG_ERROR("error: %s\n", [[[running error] localizedDescription] UTF8String]);
-                    }
-                    ctx->has_error = true;
-                    status = GGML_STATUS_FAILED;
-                    break;
-                }
-
-                // Towards the node count that would have taken the target, halfway, so one
-                // long or short slice does not swing the next.
-                const double gpu_us = ([running GPUEndTime] - [running GPUStartTime]) * 1e6;
-                if (gpu_us > 0.0 && running_nodes > 0) {
-                    const int want = atomic_load(&luxforge_slice_nodes);
-                    double scaled = (double) running_nodes * (double) slice_us / gpu_us;
-                    if (scaled > LUXFORGE_SLICE_NODES_MAX) {
-                        scaled = LUXFORGE_SLICE_NODES_MAX;
-                    }
-                    int adapted = (int) (0.5 * ((double) want + scaled));
-                    adapted = MAX(LUXFORGE_SLICE_NODES_MIN, MIN(LUXFORGE_SLICE_NODES_MAX, adapted));
-                    atomic_store(&luxforge_slice_nodes, adapted);
-                }
-
-                if (ctx->abort_callback && ctx->abort_callback(ctx->abort_callback_data)) {
-                    GGML_LOG_INFO("%s: sliced graph aborted\n", __func__);
-                    status = GGML_STATUS_ABORTED;
-                    break;
-                }
-            }
-
-            if (next != nil) {
-                [next commit];
-                last = next;
-            }
-            running = next;
-            running_nodes = next_nodes;
-            start = next_start;
-        }
-
-        if (status == GGML_STATUS_SUCCESS && last != nil) {
-            [last retain];
-            if (ctx->cmd_bufs[ctx->n_cb].obj) {
-                [ctx->cmd_bufs[ctx->n_cb].obj release];
-            }
-            ctx->cmd_bufs[ctx->n_cb].obj = last;
-            ctx->cmd_buf_last = last;
-        }
-    }
-
-    return status;
-}
-
-enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
-    if (ctx->has_error) {
-        GGML_LOG_ERROR("%s: backend is in error state from a previous command buffer failure - recreate the backend to recover\n", __func__);
-        return GGML_STATUS_FAILED;
-    }
-
+/// What follows the anchor in the staged `ggml_metal_graph_compute`.
+const SLICE_DISPATCH: &str = r##"
     {
         // A capture (GGML_METAL_CAPTURE_COMPUTE) runs as upstream does.
         const int64_t slice_us = atomic_load(&luxforge_slice_us);
@@ -334,7 +154,7 @@ fn build_with_capture(root: &Path, capture_conditioning: bool) {
     )
     .unwrap();
 
-    // The staged copy of the one patched file.
+    // The staged engine, the first patched file.
     let engine = sd.join("src/pipeline/diffusion_engine.cpp");
     let staged = generated.join("diffusion_engine.cpp");
     let text = fs::read_to_string(&engine).unwrap();
@@ -342,6 +162,18 @@ fn build_with_capture(root: &Path, capture_conditioning: bool) {
     let text = replace_once(&text, HOOK_ANCHOR, HOOK_REPLACEMENT);
     let text = replace_once(&text, IGNORE_ANCHOR, IGNORE_REPLACEMENT);
     fs::write(&staged, text).unwrap();
+
+    // The staged Metal context, compiled only on macOS but staged on every target that builds
+    // the runtime, so an upstream change that moves an anchor fails a Linux build too.
+    let context = ggml.join("src/ggml-metal/ggml-metal-context.m");
+    let staged_context = generated.join("ggml-metal-context.m");
+    let text = fs::read_to_string(&context).unwrap();
+    let text = replace_once(
+        &text,
+        SLICE_ANCHOR,
+        &format!("{SLICE_FUNCTIONS}\n{SLICE_ANCHOR}{SLICE_DISPATCH}"),
+    );
+    fs::write(&staged_context, text).unwrap();
 
     let common_defines: &[(&str, Option<&str>)] = &[
         ("NDEBUG", None),
@@ -472,13 +304,7 @@ fn build_with_capture(root: &Path, capture_conditioning: bool) {
         // them.
         objc.include(ggml.join("src/ggml-metal"));
         objc.file(ggml.join("src/ggml-metal/ggml-metal-device.m"));
-        let context = ggml.join("src/ggml-metal/ggml-metal-context.m");
-        let text = fs::read_to_string(&context).unwrap();
-        let text = replace_once(&text, SLICE_DECLARATIONS_ANCHOR, SLICE_DECLARATIONS);
-        let text = replace_once(&text, SLICE_ANCHOR, SLICE_REPLACEMENT);
-        let staged_context = generated.join("ggml-metal-context.m");
-        fs::write(&staged_context, text).unwrap();
-        objc.file(staged_context);
+        objc.file(&staged_context);
         objects.extend(objc.compile_intermediates());
 
         let mut asm = cc::Build::new();
