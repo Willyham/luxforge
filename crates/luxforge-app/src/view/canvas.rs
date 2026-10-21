@@ -362,6 +362,7 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
         &NoticeCardModel {
             icon: match notice.icon {
                 NoticeIcon::Spark => Icon::Spark,
+                NoticeIcon::Information => Icon::Information,
                 NoticeIcon::Triangle => Icon::Clipping,
             },
             title: notice.title.clone(),

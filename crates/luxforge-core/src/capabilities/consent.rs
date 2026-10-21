@@ -2,9 +2,13 @@
 //! covers its exact scope. Its data carries the scope a client grants and the disclosure a person
 //! decides on: who asks and why, where data goes or comes from, what and how much, where it is
 //! stored, its licence, retention and whether it may cost money. The desktop shows it as a consent
-//! notice with Allow and Don't allow; a headless client receives the same failure.
+//! notice, or as the setup sheet of a download that declares an introduction; a headless client
+//! receives the same failure.
 use super::{
-    descriptor::{AdapterCost, AdapterDescriptor, CapabilityDescriptor, ResourceDescriptor},
+    descriptor::{
+        AdapterCost, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, Introduction,
+        ResourceDescriptor,
+    },
     grants::GrantScope,
     resources::Requirements,
 };
@@ -54,6 +58,9 @@ pub struct Disclosure {
     /// What a model needs of the machine: its backends, precision, resident size and minimum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements: Option<Requirements>,
+    /// What a download's capability says of the feature it sets up, when it declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub introduction: Option<Introduction>,
 }
 
 impl Disclosure {
@@ -72,6 +79,7 @@ impl Disclosure {
             tradeoff: None,
             use_restriction: None,
             requirements: None,
+            introduction: None,
         }
     }
 }
@@ -126,6 +134,10 @@ pub(crate) fn download_disclosure(
         tradeoff: resource.tradeoff.clone(),
         use_restriction: resource.use_restriction.clone(),
         requirements: Requirements::of(module, resource),
+        introduction: match &capability.kind {
+            CapabilityKind::DownloadArtifact { introduction, .. } => introduction.clone(),
+            _ => None,
+        },
         ..Disclosure::new(module, capability, data)
     }
 }
@@ -223,6 +235,7 @@ mod tests {
             (&None, &None, &None),
             "a resource that is no model says nothing of one"
         );
+        assert_eq!(download.introduction, None, "nor introduces a feature");
 
         // A model of two files: their size together, its trade-off, its use restriction and what it
         // needs of the machine; never a word of training data.
@@ -237,6 +250,19 @@ mod tests {
         resource.tradeoff = Some("Finds smaller objects; slower to start".into());
         resource.use_restriction = Some("Non-commercial use only".into());
         resource.min_memory_bytes = Some(8 << 30);
+        // Its capability's introduction travels with it, for a client's setup sheet.
+        let introduction = Introduction {
+            eyebrow: "Palette".into(),
+            title: "Tint anything".into(),
+            lead: "Download the palette to tint a photo.".into(),
+            hero: Some(crate::capabilities::descriptor::IntroductionPicture::Describe),
+            steps: Vec::new(),
+            promise: "Your photos stay on this computer.".into(),
+        };
+        model.capabilities[1].kind = CapabilityKind::DownloadArtifact {
+            resource: "palette".into(),
+            introduction: Some(introduction.clone()),
+        };
         let disclosed = download_disclosure(
             &model,
             &model.capabilities[1],
@@ -260,6 +286,7 @@ mod tests {
                 ..Requirements::default()
             })
         );
+        assert_eq!(disclosed.introduction, Some(introduction));
         let text = serde_json::to_string(&disclosed).unwrap().to_lowercase();
         assert!(!text.contains("training"), "{text}");
 

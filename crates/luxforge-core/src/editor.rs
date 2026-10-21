@@ -747,7 +747,8 @@ pub struct EditorService {
     /// set only while [`EditorService::draft_recipe`] plans one.
     previewing: std::cell::Cell<bool>,
     /// The candidate the catalog owner is committing through a candidate-accepting action, set
-    /// only for the length of that commit ([`EditorService::accept_candidate`]).
+    /// only for the length of that commit ([`EditorService::accept_candidate`]), or the one a
+    /// candidate draft holds, for the length of its plan ([`crate::DraftCandidate`]).
     pub(crate) accepting: std::cell::RefCell<Option<std::sync::Arc<crate::AcceptedCandidate>>>,
     registry: Arc<ModuleRegistry>,
     /// The budgets every evaluation this service plans shares: its own

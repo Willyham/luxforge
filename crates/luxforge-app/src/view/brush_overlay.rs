@@ -384,9 +384,9 @@ pub(crate) fn merged(loops: Vec<Outline>) -> Outline {
 }
 
 /// An operation's outline, loop by loop: the boundary of what its coverage covers, so a stroke
-/// brushed back over itself has the outline of one pass over that area. Filled together, the loops
-/// are its footprint, any hole it encloses left open.
-pub(crate) fn outline_loops(placement: &Placement, held: &HeldOperation) -> Vec<Outline> {
+/// brushed back over itself has the outline of one pass over that area. What lies off the
+/// photograph is left out, so these are drawn, not filled: [`footprint`] is what fills.
+fn outline_loops(placement: &Placement, held: &HeldOperation) -> Vec<Outline> {
     loops_outline(
         placement,
         &envelope(&held.points, held.radius, placement.map.aspect()),
@@ -397,6 +397,49 @@ pub(crate) fn outline_loops(placement: &Placement, held: &HeldOperation) -> Vec<
 /// An operation's outline: its loops ([`outline_loops`]) as one figure.
 pub(crate) fn outline(placement: &Placement, held: &HeldOperation) -> Outline {
     merged(outline_loops(placement, held))
+}
+
+/// `ring` clipped to the photograph, `[0, max]` on each axis, as Sutherland–Hodgman clips a polygon
+/// to a convex window: where the ring leaves the photograph it follows the edge to where it comes
+/// back, so the clipped ring bounds what the ring bounds on the photograph, whatever it did off it.
+/// A walk that runs along an edge and back bounds nothing.
+fn clipped(ring: &[[f64; 2]], max: (f64, f64)) -> Vec<[f64; 2]> {
+    let mut ring = ring.to_vec();
+    for (axis, bound, below) in [
+        (0, 0.0, false),
+        (0, max.0, true),
+        (1, 0.0, false),
+        (1, max.1, true),
+    ] {
+        let inside = |p: [f64; 2]| {
+            if below {
+                p[axis] <= bound
+            } else {
+                p[axis] >= bound
+            }
+        };
+        if ring.iter().all(|&p| inside(p)) {
+            continue;
+        }
+        let cross = |a: [f64; 2], b: [f64; 2]| {
+            let t = (bound - a[axis]) / (b[axis] - a[axis]);
+            let mut at = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+            at[axis] = bound;
+            at
+        };
+        let mut kept = Vec::with_capacity(ring.len() + 4);
+        for (index, &b) in ring.iter().enumerate() {
+            let a = ring[(index + ring.len() - 1) % ring.len()];
+            match (inside(a), inside(b)) {
+                (true, true) => kept.push(b),
+                (true, false) => kept.push(cross(a, b)),
+                (false, true) => kept.extend([cross(a, b), b]),
+                (false, false) => {}
+            }
+        }
+        ring = kept;
+    }
+    ring
 }
 
 /// How far an operation's source lies from its destination, in content coordinates: its source
@@ -419,6 +462,30 @@ fn moved(rings: &[Vec<[f64; 2]>], [dx, dy]: [f64; 2]) -> Vec<Vec<[f64; 2]>> {
 pub(crate) struct Figure {
     pub(crate) loops: Vec<Outline>,
     pub(crate) source: Option<Outline>,
+    /// The loops in content coordinates, as traced.
+    rings: Rc<Vec<Vec<[f64; 2]>>>,
+}
+
+impl Figure {
+    /// The figure's footprint to fill, loop by loop, when it differs from its outline: its loops
+    /// clipped to the photograph ([`clipped`]) before they are drawn. The outline leaves out what
+    /// lies off the photograph, so filling its loops would close each gap with a chord across the
+    /// picture, filling or cutting away what the stroke never covered. `None` when every loop lies
+    /// on the photograph, and the outline's loops are the footprint.
+    pub(crate) fn footprint(&self, placement: &Placement) -> Option<Vec<Outline>> {
+        let domain = placement.map.domain();
+        let on = |[x, y]: &[f64; 2]| (0.0..=domain.0).contains(x) && (0.0..=domain.1).contains(y);
+        if self.rings.iter().flatten().all(on) {
+            return None;
+        }
+        let inside: Vec<Vec<[f64; 2]>> = self
+            .rings
+            .iter()
+            .map(|ring| clipped(ring, domain))
+            .filter(|ring| ring.len() >= 3)
+            .collect();
+        Some(loops_outline(placement, &inside, false))
+    }
 }
 
 /// The figures a canvas traced last, so a redraw that changes neither a path, its radius nor the
@@ -494,6 +561,7 @@ pub(crate) fn figure(placement: &Placement, held: &HeldOperation, traces: &Trace
     Figure {
         loops: loops_outline(placement, &rings, false),
         source,
+        rings,
     }
 }
 
@@ -806,6 +874,87 @@ mod tests {
         assert!((outer - grown).abs() < grown * 0.002, "{outer} {grown}");
         let shrunk = (side - 2.0 * radius).powi(2);
         assert!((inner - shrunk).abs() < shrunk * 0.01, "{inner} {shrunk}");
+    }
+
+    /// A stroke painted off the photograph and back fills what it covers on the photograph and
+    /// nothing else, filled as the canvas fills it: each loop one closed path, even-odd. Filling
+    /// the outline's loops instead closes each stretch off the photograph with a chord across it.
+    #[test]
+    fn a_stroke_painted_off_the_photograph_and_back_fills_what_it_covers() {
+        let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let placement = Placement {
+            map: ContentMap::from_affine((6000, 4000), (6000, 4000), id, id).unwrap(),
+            view: CanvasView::fit((6000.0, 4000.0), iced::Size::new(1200.0, 800.0)).unwrap(),
+            scale_factor: 2.0,
+        };
+        let aspect = placement.map.aspect();
+        let radius = 0.03;
+        let paths: [&[[f64; 2]]; 3] = [
+            // Out through the right edge, round the corner and back in through the top.
+            &[[0.6, 0.2], [1.3, 0.2], [1.3, -0.3], [0.8, -0.3], [0.8, 0.1]],
+            // Out through the left edge and back in through it lower down.
+            &[[0.2, 0.3], [-0.3, 0.3], [-0.3, 0.7], [0.2, 0.7]],
+            // Out through the top and round two corners, back in through the bottom.
+            &[
+                [0.5, 0.5],
+                [0.5, -0.2],
+                [1.2, -0.2],
+                [1.2, 1.2],
+                [0.3, 1.2],
+                [0.3, 0.8],
+            ],
+        ];
+        let traces = Traces::default();
+        // A stroke wholly on the photograph fills its outline's own loops.
+        let on = held(vec![[0.4, 0.5], [0.6, 0.5]], radius, None);
+        assert!(
+            figure(&placement, &on, &traces)
+                .footprint(&placement)
+                .is_none()
+        );
+        for path in paths {
+            let figure = figure(&placement, &held(path.to_vec(), radius, None), &traces);
+            let loops = figure.footprint(&placement).expect("off the photograph");
+            let polygons: Vec<Vec<Point>> = loops
+                .iter()
+                .filter_map(|outline| {
+                    let first = outline.segments.first()?.0;
+                    Some(
+                        std::iter::once(first)
+                            .chain(outline.segments.iter().map(|(_, b)| *b))
+                            .collect(),
+                    )
+                })
+                .collect();
+            let filled = |p: Point| {
+                polygons.iter().fold(false, |inside, polygon| {
+                    let crossings = (0..polygon.len())
+                        .filter(|&i| {
+                            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+                            (a.y > p.y) != (b.y > p.y)
+                                && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)
+                        })
+                        .count();
+                    inside ^ (crossings % 2 == 1)
+                })
+            };
+            let mask: Vec<[f64; 2]> = path.iter().map(|[x, y]| [x * aspect, *y]).collect();
+            let steps = 80;
+            for j in 0..steps {
+                for i in 0..steps {
+                    let at = [
+                        (i as f64 + 0.5) / steps as f64,
+                        (j as f64 + 0.5) / steps as f64,
+                    ];
+                    let d = to_path([at[0] * aspect, at[1]], &mask);
+                    if (d - radius).abs() < radius / 10.0 {
+                        continue;
+                    }
+                    let point = placement.canvas_point(at[0], at[1]).unwrap();
+                    assert_eq!(filled(point), d < radius, "{path:?} at {at:?}");
+                }
+            }
+        }
     }
 
     /// However long and tangled a stroke, its outline is traced within the evaluation bound and

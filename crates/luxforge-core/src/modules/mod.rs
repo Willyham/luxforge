@@ -393,7 +393,8 @@ pub trait StageQuestions {
 
     /// The candidate the catalog owner is accepting for this plan: what a candidate-accepting
     /// action ([`ActionDescriptor::accepts_candidate`]) commits, already published as an artifact
-    /// and recorded. `None` for every other plan, a draft's included.
+    /// and recorded, or the one a candidate draft holds in memory under the identity publishing
+    /// will give it ([`crate::DraftCandidate`]). `None` for every other plan.
     fn accepting(&self) -> Option<std::sync::Arc<AcceptedCandidate>> {
         None
     }

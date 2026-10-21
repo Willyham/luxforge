@@ -79,8 +79,8 @@ pub(crate) mod calls {
 
 /// After every message: in an eligible launch, claim the notice once the workspace is usable —
 /// tool discovery has answered, so the first frame and the panels are already up, and an evidence
-/// run's opens, which are its startup, have all been captured — and show a claimed notice once
-/// nothing that delays it is open.
+/// run's opens, which are its startup, have all been captured — and the Select introduction is
+/// neither up nor due, and show a claimed notice once nothing that delays it is open.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     if !editor.usage.eligible {
         return Task::none();
@@ -90,8 +90,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
             .evidence
             .as_ref()
             .is_none_or(|evidence| evidence.step > 0);
+    // The Select introduction comes first: nothing is claimed, so quitting with it open never
+    // spends the one prompt unseen.
+    let introducing = editor.introduction_holds_notices();
     match editor.usage.prompt {
-        Prompt::Waiting if usable => {
+        Prompt::Waiting if usable && !introducing => {
             editor.usage.prompt = Prompt::Claiming;
             let (owner, client) = (editor.owner.clone(), editor.client);
             return owner_task(
@@ -99,7 +102,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
                 |answer| Message::Usage(UsageMessage::Claimed(answer)),
             );
         }
-        Prompt::Pending if editor.usage.may_present(editor.notice_delayed()) => {
+        Prompt::Pending
+            if editor
+                .usage
+                .may_present(editor.notice_delayed() || introducing) =>
+        {
             editor.usage.prompt = Prompt::Shown;
             editor.event("usage_notice_shown", || json!({}));
             editor.outcome(Outcome::UsageNotice);

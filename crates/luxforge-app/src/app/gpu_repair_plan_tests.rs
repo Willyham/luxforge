@@ -942,3 +942,146 @@ fn gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage() {
         "cases missing the spatial limits: {missed:?}"
     );
 }
+
+/// A candidate draft (`docs/design/ai-editing.md`, "Candidate drafts") drawn on the GPU through a
+/// real owner: a JPEG with a non-identity Basic edit, two candidates of the developer producer, and
+/// a draft of the accepting action set to each in turn. The drafted job's plan binds the patch the
+/// draft holds — its repair step carries resident words — and each candidate's GPU frame at 100%
+/// over the whole stage is held to the reference's frame of the same drafted stack within the
+/// spatial class, on one surface, so a patch drawn for the first candidate is never drawn for the
+/// second (the resident words and drawn patches are keyed by the artifact's identity).
+#[test]
+#[slow]
+fn gpu_draws_a_candidate_draft_within_the_spatial_limits() {
+    use super::{
+        gpu_plan::surface_plan_over, gpu_preview::derived_now, gpu_preview::gpu_source_of,
+    };
+    use luxforge_core::{DraftId, EditorService, PreviewRequest, Region};
+    use luxforge_testkit::client::{Owner, mutation, request_id, settle};
+
+    let test = "gpu_draws_a_candidate_draft_within_the_spatial_limits";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let root = luxforge_testbase::paths::temp_dir("gpu-candidate-draft");
+    let catalog = root.join("catalog.sqlite");
+    let asset = EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer()))
+        .unwrap()
+        .import(&luxforge_testbase::paths::fixture("s0/orientation-1.jpg"))
+        .unwrap()
+        .asset
+        .id;
+    let owner = Owner::start(&catalog, ModuleRegistry::developer(), "agent").unwrap();
+    let client = owner.client();
+    let id = json!(asset.as_str());
+    let revision = owner.revision(client, &id).unwrap();
+    owner
+        .call(
+            client,
+            "edit.set-basic",
+            json!({"asset_id": id, "exposure": 0.6, "contrast": 25,
+                   "mutation": mutation(revision, &request_id("basic"), "agent")}),
+        )
+        .unwrap();
+    let started = owner
+        .call(
+            client,
+            "task.generate-proof-patches",
+            json!({"asset_id": id, "count": 2, "width": 120, "height": 80, "x": 150, "y": 100,
+                   "seed": 3, "mutation": {"request_id": request_id("generate"), "actor": "agent"}}),
+        )
+        .unwrap();
+    let job = started["job_id"].clone();
+    assert_eq!(settle(&owner, client, &job).unwrap()["status"], "ready");
+    owner.prepare(client, &id).unwrap();
+    let draft = owner
+        .call(
+            client,
+            "draft.begin",
+            json!({"asset_id": id, "action": "accept-correction-patch"}),
+        )
+        .unwrap()["draft_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut surface = qualifier.surface();
+    let (mut frames, mut keys) = (Vec::new(), Vec::new());
+    for candidate in [0, 1] {
+        owner
+            .call(
+                client,
+                "draft.set",
+                json!({"draft_id": draft, "fields": {"job_id": job, "candidate": candidate}}),
+            )
+            .unwrap();
+        let (width, height) = (480, 320);
+        let drafted = super::tasks::ready_preview_job(
+            &owner,
+            PreviewRequest::new(client, asset.clone())
+                .draft(DraftId::parse(draft.clone()).unwrap())
+                .gpu_region(
+                    Region {
+                        x0: 0,
+                        y0: 0,
+                        width,
+                        height,
+                    },
+                    1.0,
+                ),
+        )
+        .expect("the draft's job");
+        let evaluation = &drafted.evaluation;
+        let luxforge_core::PreviewSource::Jpeg(image) = evaluation.source() else {
+            panic!("a JPEG source");
+        };
+        let reference = render(
+            evaluation.registry(),
+            image,
+            evaluation.recipe(),
+            RenderOptions::exact(&Cancel::never()),
+            &RenderContext::new(),
+        )
+        .and_then(|render| render.frame(SnapshotId::new()))
+        .expect("the reference frame");
+        let preview = drafted.gpu.as_deref().expect("a GPU preview");
+        let (GpuAnswer::Plan(plan), Some(request)) = (&preview.answer, &preview.boundary) else {
+            panic!("no plan: {:?}", preview.answer.fallback());
+        };
+        let resident = plan
+            .spatial
+            .iter()
+            .find(|step| step.repair.is_some())
+            .map(|step| step.resident.clone())
+            .expect("a repair step");
+        assert!(
+            !resident.is_empty(),
+            "the drafted repair step binds the held patch"
+        );
+        keys.push(resident.key);
+        let version = candidate + 1;
+        let gpu = gpu_source_of(version, evaluation.source()).expect("a GPU source");
+        let (boundary, origin, grid) =
+            derived_now(&gpu, plan, request, version).expect("a boundary from the source");
+        let converted =
+            surface_plan_over(plan, boundary, origin, grid.as_ref(), request.key.region())
+                .expect("a plan the surface runs");
+        let frame = surface.draw(&gpu, &converted).expect("the plan drawn");
+        assert_eq!(frame.size, (width, height));
+        let program: Vec<u8> = frame
+            .codes
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .collect();
+        let measured = compare(width, height, &program, &rgb(&reference.rgba));
+        eprintln!("{test}: candidate {candidate}: {}", figures(&measured));
+        assert!(
+            preview_error::verdict(&measured, Class::Spatial).passed(),
+            "candidate {candidate} misses the spatial limits"
+        );
+        frames.push(program);
+    }
+    assert_ne!(keys[0], keys[1], "each candidate's words are its own");
+    assert_ne!(frames[0], frames[1], "each candidate draws its own patch");
+    owner.close().unwrap();
+}

@@ -7,7 +7,7 @@
 //! The block is generated from the descriptor, so any module that declares settings, resources or
 //! tasks gets the same surface: one row per resource, a settings form of the module-level fields
 //! drawn with the tool panel's own control kinds, and one status line; a fill module's models are
-//! drawn as its setup instead ([`crate::state::fill_setup`]). What it does not draw — provider
+//! not drawn here but as its setup in the Corrections band ([`crate::state::fill_setup`]). What it does not draw — provider
 //! profiles, secrets, grants — is reached through the `module.*` methods every client calls.
 use crate::state::{
     Inputs,
@@ -378,8 +378,6 @@ pub(crate) struct CapabilityModel {
     pub(crate) loading: bool,
     /// Nothing is in flight for this module, so its buttons may send.
     pub(crate) enabled: bool,
-    /// The fill module's setup, drawn first; the resources it covers have no row of their own.
-    pub(crate) setup: Option<SetupModel>,
     pub(crate) resources: Vec<ResourceRowModel>,
     /// The module-level settings, each drawn as the tools panel draws a control of its kind.
     pub(crate) fields: Vec<FieldModel>,
@@ -480,6 +478,7 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
         return None;
     }
     let state = inputs.capabilities.module(&module.id);
+    // The fill module's setup is the Corrections band's: the resources it covers have no row.
     let setup = fill_setup::derive(module, state, flags);
     let covered = |id: &str| {
         setup
@@ -496,7 +495,6 @@ pub(crate) fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<
             .filter(|declared| resource_offered(flags, declared) && !covered(&declared.id))
             .map(|declared| resource_row(declared, state))
             .collect(),
-        setup,
         fields: settings_form(module, state),
         status_line: status_line(state),
     })
@@ -832,56 +830,129 @@ pub(crate) fn task_profile(state: &ModuleCapabilities, takes_profile: bool) -> O
 
 /// The consent notice over the canvas, when a capability operation the desktop started was refused
 /// for want of consent. It is not modal: the rest of the workspace stays usable.
+///
+/// A download says what it is for in the person's words and what it costs them (its size, where it
+/// comes from, and any limit its licence puts on their results) and leaves the resource's name,
+/// files, version, storage and licence to Settings › Models and the API's full disclosure. A
+/// purpose written `Lead: sentence` is the title and the first line, as `Set up AI editing?`.
+/// Sending photo data says where it goes, what is sent and kept, and whether it may cost money.
+///
+/// A download whose capability introduces the feature it sets up asks through the setup sheet
+/// instead ([`crate::state::setup_sheet`]), so it has no notice.
 pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
     let open = inputs.capabilities.consent.as_ref()?;
     let consent = &open.consent;
     let disclosure = &consent.disclosure;
-    let verb = match consent.kind {
-        GrantKind::DownloadArtifact => "download a resource",
-        GrantKind::RemoteImageRequest => "send photo data",
-    };
-    let mut lines = vec![disclosure.purpose.clone()];
-    if let Some(destination) = &disclosure.destination {
-        lines.push(match consent.kind {
-            GrantKind::DownloadArtifact => format!("From {destination}"),
-            _ => format!("To {destination}"),
-        });
+    if introduced(consent) {
+        return None;
     }
-    let data = capitalised(&disclosure.data);
-    lines.push(match disclosure.bytes {
-        Some(bytes) => format!("{data} · {}", human_bytes(bytes)),
-        None => data,
-    });
-    if let Some(storage) = &disclosure.storage {
-        lines.push(format!("Stored in {storage}"));
-    }
-    if let Some(license) = &disclosure.license {
-        lines.push(format!("License {license}"));
-    }
-    if let Some(retention) = &disclosure.retention {
-        lines.push(format!("Retention: {retention}"));
-    }
-    lines.push(
-        match disclosure.cost {
-            AdapterCost::Free => "Free",
-            AdapterCost::Paid => "May cost money",
-            AdapterCost::Unknown => "Cost unknown",
+    let (title, mut lines, actions) = match consent.kind {
+        GrantKind::DownloadArtifact => {
+            let (title, purpose) = match disclosure.purpose.split_once(": ") {
+                Some((lead, rest)) => (format!("{lead}?"), sentence(rest)),
+                None => (
+                    format!("Allow {} to download?", disclosure.module),
+                    sentence(&disclosure.purpose),
+                ),
+            };
+            let mut facts = Vec::new();
+            if let Some(bytes) = disclosure.bytes {
+                facts.push(format!("{} download", human_bytes(bytes)));
+            }
+            let hosts = hosts(disclosure);
+            if !hosts.is_empty() {
+                facts.push(format!("from {}", hosts.join(" and ")));
+            }
+            facts.push(cost(disclosure.cost).into());
+            let mut lines = vec![purpose, capitalised(&facts.join(" · "))];
+            lines.extend(disclosure.use_restriction.as_deref().map(sentence));
+            (
+                title,
+                lines,
+                vec![
+                    ("Not now".into(), NoticeAction::DenyConsent),
+                    ("Download".into(), NoticeAction::AllowConsent),
+                ],
+            )
         }
-        .into(),
-    );
+        GrantKind::RemoteImageRequest => {
+            let mut lines = vec![sentence(&disclosure.purpose)];
+            if let Some(destination) = &disclosure.destination {
+                lines.push(format!("To {destination}"));
+            }
+            let data = capitalised(&disclosure.data);
+            lines.push(match disclosure.bytes {
+                Some(bytes) => format!("{data} · {}", human_bytes(bytes)),
+                None => data,
+            });
+            if let Some(retention) = &disclosure.retention {
+                lines.push(format!("Retention: {retention}"));
+            }
+            lines.push(cost(disclosure.cost).into());
+            (
+                format!("Allow {} to send photo data?", disclosure.module),
+                lines,
+                vec![
+                    ("Don't allow".into(), NoticeAction::DenyConsent),
+                    ("Allow".into(), NoticeAction::AllowConsent),
+                ],
+            )
+        }
+    };
     if consent.denied {
         lines.push("You declined this before.".into());
     }
     Some(Notice {
         tone: NoticeTone::Warning,
-        icon: NoticeIcon::Triangle,
-        title: format!("Allow {} to {verb}?", disclosure.module),
+        icon: NoticeIcon::Information,
+        title,
         body: lines.join("\n"),
-        actions: vec![
-            ("Allow".into(), NoticeAction::AllowConsent),
-            ("Don't allow".into(), NoticeAction::DenyConsent),
-        ],
+        actions,
     })
+}
+
+/// Whether `consent` is a download that introduces the feature it sets up.
+pub(crate) fn introduced(consent: &Consent) -> bool {
+    matches!(consent.kind, GrantKind::DownloadArtifact) && consent.disclosure.introduction.is_some()
+}
+
+/// The hosts a download comes from, each once, in the order the disclosure names them.
+pub(crate) fn hosts(disclosure: &Disclosure) -> Vec<&str> {
+    disclosure
+        .destination
+        .iter()
+        .chain(&disclosure.further_origins)
+        .map(|url| host(url))
+        .fold(Vec::new(), |mut hosts, host| {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+            hosts
+        })
+}
+
+/// A disclosure's text as a sentence: capitalised, with its full stop.
+pub(crate) fn sentence(text: &str) -> String {
+    let text = capitalised(text.trim());
+    if text.ends_with(['.', '!', '?']) {
+        text
+    } else {
+        format!("{text}.")
+    }
+}
+
+/// The host a URL or origin names, as a person reads it: `huggingface.co`.
+fn host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
+pub(crate) fn cost(cost: AdapterCost) -> &'static str {
+    match cost {
+        AdapterCost::Free => "Free",
+        AdapterCost::Paid => "May cost money",
+        AdapterCost::Unknown => "Cost unknown",
+    }
 }
 
 // ---- evidence -----------------------------------------------------------------------------------

@@ -24,8 +24,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-const TASK: &str = "task.generate-proof-patches";
-const ACCEPT: &str = "edit.accept-correction-patch";
+pub(super) const TASK: &str = "task.generate-proof-patches";
+pub(super) const ACCEPT: &str = "edit.accept-correction-patch";
 
 fn registry() -> Arc<ModuleRegistry> {
     let mut registry = ModuleRegistry::builtin();
@@ -39,19 +39,19 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// One owner over a catalog holding two photographs, serving the producer, whose source worker
 /// passes `gate` before each task's work.
-struct Harness {
+pub(super) struct Harness {
     root: PathBuf,
-    catalog: PathBuf,
-    asset: AssetId,
-    other: AssetId,
-    gate: Arc<Gate>,
-    owner: OwnerHandle,
+    pub(super) catalog: PathBuf,
+    pub(super) asset: AssetId,
+    pub(super) other: AssetId,
+    pub(super) gate: Arc<Gate>,
+    pub(super) owner: OwnerHandle,
     join: Option<JoinHandle<()>>,
-    client: ClientId,
+    pub(super) client: ClientId,
 }
 
 impl Harness {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let root = temp_dir(&format!("accept-{name}")).canonicalize().unwrap();
         let catalog = root.join("catalog.sqlite");
         let (asset, other) = {
@@ -71,7 +71,7 @@ impl Harness {
         Self::start(root, catalog, asset, other)
     }
 
-    fn start(root: PathBuf, catalog: PathBuf, asset: AssetId, other: AssetId) -> Self {
+    pub(super) fn start(root: PathBuf, catalog: PathBuf, asset: AssetId, other: AssetId) -> Self {
         let gate = Arc::new(Gate::new());
         let held = gate.clone();
         let (owner, join) = OwnerHandle::start_observed(
@@ -94,7 +94,7 @@ impl Harness {
         }
     }
 
-    fn restart(mut self) -> Self {
+    pub(super) fn restart(mut self) -> Self {
         self.owner.stop();
         if let Some(join) = self.join.take() {
             join.join().unwrap();
@@ -108,7 +108,7 @@ impl Harness {
         )
     }
 
-    fn send_as(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
+    pub(super) fn send_as(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
         self.owner
             .call(
                 client,
@@ -122,26 +122,26 @@ impl Harness {
             .expect("the owner answered")
     }
 
-    fn ok(&self, method: &str, params: Value) -> Value {
+    pub(super) fn ok(&self, method: &str, params: Value) -> Value {
         let response = self.send_as(self.client, method, params);
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
         response.result.expect("a result")
     }
 
-    fn refused(&self, method: &str, params: Value) -> ApiFailure {
+    pub(super) fn refused(&self, method: &str, params: Value) -> ApiFailure {
         self.send_as(self.client, method, params)
             .error
             .unwrap_or_else(|| panic!("{method} was expected to be refused"))
     }
 
-    fn revision(&self) -> u64 {
+    pub(super) fn revision(&self) -> u64 {
         self.ok("asset.state", json!({"asset_id": self.asset}))["revision"]
             .as_u64()
             .unwrap()
     }
 
     /// The producer's candidates of the photograph, finished: the job's identity.
-    fn generate(&self, count: u64, seed: u64) -> Value {
+    pub(super) fn generate(&self, count: u64, seed: u64) -> Value {
         let started = self.ok(
             TASK,
             json!({"asset_id": self.asset, "count": count, "width": 24, "height": 16, "x": 30,
@@ -156,12 +156,18 @@ impl Harness {
         job
     }
 
-    fn accept_params(&self, job: &Value, candidate: u64, revision: u64, request: &str) -> Value {
+    pub(super) fn accept_params(
+        &self,
+        job: &Value,
+        candidate: u64,
+        revision: u64,
+        request: &str,
+    ) -> Value {
         json!({"asset_id": self.asset, "mutation": mutation_json(revision, request),
                "job_id": job, "candidate": candidate})
     }
 
-    fn states(&self, job: &Value) -> Vec<String> {
+    pub(super) fn states(&self, job: &Value) -> Vec<String> {
         self.ok("job.read", json!({"job_id": job}))["candidates"]
             .as_array()
             .unwrap()
@@ -170,14 +176,14 @@ impl Harness {
             .collect()
     }
 
-    fn corrections(&self) -> Vec<Value> {
+    pub(super) fn corrections(&self) -> Vec<Value> {
         self.ok("query.corrections", json!({"asset_id": self.asset}))["operations"]
             .as_array()
             .unwrap()
             .clone()
     }
 
-    fn events(&self) -> Vec<String> {
+    pub(super) fn events(&self) -> Vec<String> {
         self.ok("events.since", json!({"after": 0}))["events"]
             .as_array()
             .unwrap()
@@ -186,7 +192,7 @@ impl Harness {
             .collect()
     }
 
-    fn publishing(&self) -> Option<Value> {
+    pub(super) fn publishing(&self) -> Option<Value> {
         let list = self.ok("activity.list", json!({}));
         list["active"].as_array().and_then(|active| {
             active
@@ -197,7 +203,7 @@ impl Harness {
     }
 
     /// Shut the gate once no other source work is running, so only an accept waits at it.
-    fn hold(&self) {
+    pub(super) fn hold(&self) {
         wait_for("the source worker to be idle", || {
             let list = self.ok("activity.list", json!({}));
             Some(()).filter(|_| {
@@ -215,7 +221,7 @@ impl Harness {
     }
 
     /// The accept job the source worker holds at the gate.
-    fn held_accept(&self) -> Value {
+    pub(super) fn held_accept(&self) -> Value {
         let job = wait_for("the accept to reach the source worker", || {
             self.publishing()
         });
@@ -227,7 +233,11 @@ impl Harness {
 
     /// Send `params` as an accept from `client` on another thread; `None` when the call was
     /// dropped unanswered.
-    fn accept_on_thread(&self, client: ClientId, params: Value) -> JoinHandle<Option<ApiResponse>> {
+    pub(super) fn accept_on_thread(
+        &self,
+        client: ClientId,
+        params: Value,
+    ) -> JoinHandle<Option<ApiResponse>> {
         let owner = self.owner.clone();
         thread::spawn(move || {
             owner

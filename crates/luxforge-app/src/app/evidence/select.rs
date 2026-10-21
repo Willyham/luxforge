@@ -99,6 +99,20 @@ impl Editor {
             } => self.merge_choose_step(kind, last_settings),
             SelectStep::MergePreview(step) => self.merge_preview_step(step),
             SelectStep::Merged => self.merged_step(),
+            // The title bar's ?: the sheet is on screen as soon as the message is handled.
+            SelectStep::Introduction => {
+                if !self.select_shown() {
+                    return self.fail_step("Select is not shown");
+                }
+                if self.introduction.open() {
+                    return self.fail_step("the Select introduction is already open");
+                }
+                let task = self.update(Message::Introduction(
+                    crate::app::message::select_introduction::IntroductionMessage::Reopen,
+                ));
+                self.capture_next_frame();
+                task
+            }
         }
     }
 

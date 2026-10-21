@@ -212,8 +212,9 @@ impl AiModule {
                 title: "AI editing".into(),
                 hint: Some("Generative fill over the Corrections band's brush".into()),
                 developer: false,
-                // Its section holds the model cards, which the Models tab also lists: it starts
-                // collapsed, so a launch reads nothing for it until it is opened.
+                // The desktop draws no section for it: its setup is the Corrections band's and its
+                // models are in the Models tab. A client that draws one starts it collapsed, so a
+                // launch reads nothing for it until it is opened.
                 collapsed: true,
                 tasks: vec![task],
                 capabilities,

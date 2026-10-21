@@ -251,6 +251,10 @@ pub(crate) struct Preferences {
     /// On unless the person chose Don't ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) update_ask_to_move: Option<bool>,
+    /// Whether the person has closed the Select introduction, so the desktop does not show it the
+    /// first time Select is shown. Off until they close it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) select_introduction_seen: Option<bool>,
     /// The version the person skipped. Only `update.skip` writes it, through
     /// [`PreferenceStore::set_skipped_version`]: no [`PreferenceChange`] names it, so
     /// `preferences.set`, its `null` and every reset keep it.
@@ -314,6 +318,10 @@ impl Preferences {
 
     pub(crate) fn update_ask_to_move(&self) -> bool {
         self.update_ask_to_move.unwrap_or(true)
+    }
+
+    pub(crate) fn select_introduction_seen(&self) -> bool {
+        self.select_introduction_seen.unwrap_or(false)
     }
 
     /// The active theme's id, Luxforge Dark's when none is stored.
@@ -479,6 +487,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) update_checks: Option<Option<bool>>,
     pub(crate) update_install_automatically: Option<Option<bool>>,
     pub(crate) update_ask_to_move: Option<Option<bool>>,
+    pub(crate) select_introduction_seen: Option<Option<bool>>,
 }
 
 impl PreferenceChange {
@@ -522,6 +531,10 @@ impl PreferenceChange {
             self.update_install_automatically,
         );
         put(&mut preferences.update_ask_to_move, self.update_ask_to_move);
+        put(
+            &mut preferences.select_introduction_seen,
+            self.select_introduction_seen,
+        );
     }
 }
 
@@ -809,6 +822,7 @@ mod tests {
             update_checks: Some(Some(false)),
             update_install_automatically: Some(Some(true)),
             update_ask_to_move: Some(Some(false)),
+            select_introduction_seen: Some(Some(true)),
         }
     }
 
@@ -946,6 +960,7 @@ mod tests {
         assert_eq!(reopened.theme(), STORED_THEME);
         assert!(!reopened.update_checks() && reopened.update_install_automatically());
         assert!(!reopened.update_ask_to_move());
+        assert!(reopened.select_introduction_seen());
         let launch = LaunchPreferences::read(Some(root.clone()), None);
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
@@ -990,10 +1005,12 @@ mod tests {
             update_checks: Some(None),
             update_install_automatically: Some(None),
             update_ask_to_move: Some(None),
+            select_introduction_seen: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();
         assert!(after.update_checks() && !after.update_install_automatically());
         assert!(after.update_ask_to_move());
+        assert!(!after.select_introduction_seen());
         assert_eq!(after, Preferences::default());
         assert_eq!(after.theme(), LUXFORGE_DARK_ID);
         assert_eq!(

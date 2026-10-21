@@ -1142,8 +1142,9 @@ impl Editor {
     }
 
     /// Plan the view at 100% and above: the displayed stack's job with its GPU picture over the
-    /// visible region, or a paused draft's next tick over it. Nothing while a gesture's draft is
-    /// still draining: its next tick plans the view itself.
+    /// visible region, or a paused draft's next tick over it — and a shown candidate's draft at a
+    /// reduced view a zoom returned to. Nothing while a gesture's draft is still draining: its
+    /// next tick plans the view itself.
     fn view_plan(&mut self) -> Task<Message> {
         let Some(state) = &self.document.state else {
             return Task::none();
@@ -1800,6 +1801,21 @@ impl Editor {
             // and a view change asks for no render. The next frame of the target puts a picture
             // back.
             Zoomed::Kept | Zoomed::Withdrawn => Task::none(),
+            // A shown candidate's draft stays open for as long as it is chosen, so a zoom back to a
+            // reduced view plans the draft's own frame at it, never the committed state's.
+            Zoomed::Missing
+                if wants_reduced
+                    && self.core_gesture().is_some_and(|gesture| {
+                        gesture.candidate().is_some() && gesture.draft.drained()
+                    }) =>
+            {
+                self.event(
+                    "preview_proxy_requested",
+                    || json!({ "zoom": zoom, "draft": true }),
+                );
+                self.note_view_motion();
+                self.view_plan()
+            }
             Zoomed::Missing if wants_reduced => {
                 // Nothing to hand over: the frame on screen is a full-resolution render with no
                 // display-size frame beside it. The retained exact allocation is reduced again
@@ -2342,6 +2358,11 @@ impl Editor {
         // rather than repeating the entry it was drawn on.
         if let Some(line) = self.mask_gesture_status() {
             return line;
+        }
+        // A frame of Remove's shown candidate is the candidate Remove already spoke of: the status
+        // bar keeps what Remove last said about it.
+        if self.shown_candidate().is_some() {
+            return self.status.text.clone();
         }
         // So does the Corrections mode: its gesture, its last sentence or its hint.
         if let Some(line) = self.correction_status() {

@@ -249,6 +249,18 @@ impl Editor {
 
     /// Enter `mode`, under the one refusal a mode change answers.
     fn set_mode(&mut self, mode: String) -> Task<Message> {
+        // The candidate Remove shows gives way; the frame read back after its cancel is the
+        // photograph as committed, and what it asks for next runs with the mode's own tasks.
+        let yielded = if mode == self.session.workspace.mode {
+            Task::none()
+        } else {
+            self.yield_candidate()
+        };
+        let entered = self.enter_mode(mode);
+        Task::batch([yielded, entered])
+    }
+
+    fn enter_mode(&mut self, mode: String) -> Task<Message> {
         // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
         // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
         // rather than replaced by a mode that would need the client's one draft.

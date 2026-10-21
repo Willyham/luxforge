@@ -1,10 +1,9 @@
-//! The setup of AI editing, drawn from [`SetupModel`]: the tools panel's setup card and the
-//! Corrections band's setup line. Each line is its sentence, wrapping in the panel's width, a thin
-//! bar while its install runs, and its detail with the one button beside it. The view decides
+//! The setup of AI editing, drawn from a [`SetupLine`]: the Corrections band's setup line. Each
+//! line is its sentence, wrapping in the panel's width, a thin bar while its install runs, and its detail with the one button beside it. The view decides
 //! nothing: a press publishes the line's [`SetupAction`] through the caller's message.
 use crate::{
     app::message::Message,
-    state::fill_setup::{SetupAction, SetupLine, SetupModel},
+    state::fill_setup::{SetupAction, SetupLine},
 };
 use iced::{
     Alignment, Length,
@@ -52,30 +51,5 @@ pub(crate) fn line<'a>(
         (None, Some(press)) => body.push(press),
         (None, None) => body,
     };
-    body.into()
-}
-
-/// The tools panel's setup card: the heading until the main model is in, the main line, and the
-/// add-on once it is offered.
-pub(crate) fn card<'a>(
-    model: &'a SetupModel,
-    send: &dyn Fn(SetupAction) -> Message,
-    button: Button<'_, 'a>,
-) -> Element<'a, Message> {
-    let mut body = Column::new().spacing(theme::SPACING).width(Length::Fill);
-    let mut main = Column::new().spacing(4.0).width(Length::Fill);
-    if let Some(heading) = &model.heading {
-        main = main.push(
-            text(heading.clone())
-                .size(theme::SIZE_CONTROL)
-                .font(theme::FONT_SEMIBOLD)
-                .style(theme::ink(Token::Text)),
-        );
-    }
-    main = main.push(line(&model.main, model.enabled, send, button));
-    body = body.push(main);
-    if let Some(addon) = &model.addon {
-        body = body.push(line(addon, model.enabled, send, button));
-    }
     body.into()
 }

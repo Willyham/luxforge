@@ -15,6 +15,7 @@ mod decorator;
 mod disclosure_heading;
 mod double_click;
 mod dropdown;
+mod equal_row;
 mod field_grid;
 mod floating_bar;
 mod focus_control;
@@ -42,6 +43,7 @@ mod range_slider;
 mod readout_card;
 mod section_header;
 mod segmented;
+mod setup_sheet;
 mod slider;
 mod slider_guard;
 mod sparkline;
@@ -94,6 +96,7 @@ pub use disclosure_heading::disclosure_heading;
 pub use dropdown::{
     DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list, menu_list_with_width,
 };
+pub use equal_row::{EqualRow, equal_row};
 pub use field_grid::{GridField, field_grid};
 pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,
@@ -139,6 +142,9 @@ pub use readout_card::readout_card;
 pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
 pub use segmented::{
     SegmentedModel, chevron_segment, segment, segment_track, segmented, segmented_fill,
+};
+pub use setup_sheet::{
+    FactTone, SetupFactModel, SetupPicture, SetupSheetModel, SetupStepModel, setup_sheet,
 };
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;
