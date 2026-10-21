@@ -58,10 +58,7 @@ pub(crate) fn loupe<'a>(model: &'a LoupeModel, images: LoupeImages<'a>) -> Eleme
     let hints: Vec<KeyHint> = model
         .hints
         .iter()
-        .map(|(key, action)| KeyHint {
-            key: key.clone(),
-            action: action.clone(),
-        })
+        .map(|(key, action)| KeyHint::new(key.clone(), action.clone()))
         .collect();
     let body = column![
         Space::new().height(Length::Fixed(TOP_INSET)),
