@@ -365,10 +365,13 @@ impl Editor {
         path: PathBuf,
         queued: Option<tasks::StartupImport>,
     ) -> Task<Message> {
+        // The candidate Remove shows gives way; the frame read back after its cancel is the
+        // photograph as committed, and what it asks for next runs unless this start replaces it.
+        let yielded = self.yield_candidate();
         if let Some(reason) = self.gesture_refusal(Starting::Photograph) {
             self.status.text = reason;
             self.develop.reopen = false;
-            return Task::none();
+            return yielded;
         }
         self.controls.ui.analysis_serial += 1;
         self.controls.ui.analysis_pending = None;

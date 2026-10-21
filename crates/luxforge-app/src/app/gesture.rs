@@ -1,8 +1,9 @@
 //! The one gesture this client holds, and the driver that runs its core draft.
 //!
 //! A client holds at most one draft, so the desktop has exactly one place for it: [`Editor::gesture`].
-//! A slider, a mask shape or stroke and the crop frame each draft through the core as one
-//! [`CoreGesture`]: a [`CoreDraft`] state machine with a small kind of its own. Whether anything
+//! A slider, a mask shape or stroke, the crop frame, a Corrections gesture and the generative
+//! candidate Remove shows each draft through the core as one [`CoreGesture`]: a [`CoreDraft`]
+//! state machine with a small kind of its own. Whether anything
 //! may start is answered in one place, [`Editor::gesture_refusal`].
 //!
 //! The driver runs what the state machine answers. `draft.begin`, `draft.set`, `draft.reapply` and
@@ -44,6 +45,25 @@ pub(crate) enum Kind {
     Crop(CropGesture),
     /// A Corrections gesture: an add, a handle drag or a row slider of the declared brush.
     Correction(Box<super::corrections::CorrectionGesture>),
+    /// The generative candidate Remove shows in the photograph: a draft of the candidate-accepting
+    /// action, whose commit is the accept (`docs/design/ai-editing.md`, "Candidate drafts").
+    Candidate(CandidateGesture),
+}
+
+/// The candidate a candidate draft shows: its job and number. The draft opens when Remove chooses
+/// a candidate, follows each new choice and ends when the candidate is accepted or no longer wanted
+/// ([`super::remove`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CandidateGesture {
+    pub(crate) job_id: String,
+    pub(crate) candidate: u8,
+}
+
+impl CandidateGesture {
+    /// The fields its `draft.set` carries: the candidate, as the accept names it.
+    pub(crate) fn fields(&self) -> Value {
+        json!({"job_id": self.job_id, "candidate": self.candidate})
+    }
 }
 
 /// A generated control's gesture: one declared field of one action, dragged.
@@ -103,6 +123,9 @@ pub(crate) enum Starting {
     Crop,
     /// A Corrections gesture — a press that adds, a handle drag or a row slider: all three halves.
     Correction,
+    /// Remove's Generate or Regenerate: all three halves, but a candidate draft does not hold it
+    /// back, since the candidate stays shown while the next generation runs.
+    Fill,
     /// Another canvas mode: one draft only. A mode is the session's view state, which neither a
     /// historical preview nor a request in flight holds back.
     Mode,
@@ -163,6 +186,7 @@ impl Starting {
             | Self::MaskCommand
             | Self::Crop
             | Self::Correction
+            | Self::Fill
             | Self::Pick
             | Self::Action => (true, true, true),
             Self::Slider => (true, true, false),
@@ -188,6 +212,7 @@ impl Starting {
             Self::Mask | Self::MaskCommand => "before editing a mask",
             Self::Crop => "before cropping",
             Self::Correction => "before adding or editing a correction",
+            Self::Fill => "before generating",
             Self::Mode => "before entering this mode",
             Self::Pick => "before picking from the photograph",
             Self::Gallery => "before opening Components",
@@ -212,6 +237,7 @@ impl Kind {
             Self::Mask(mask) => mask.shape.method().map(str::to_owned),
             Self::Crop(crop) => Some(crop.action.clone()),
             Self::Correction(correction) => Some(correction.action()),
+            Self::Candidate(_) => Some(super::remove::ACCEPT_ACTION.to_owned()),
         }
     }
 
@@ -242,7 +268,7 @@ impl Kind {
                     })
                 })
                 .unwrap_or_default(),
-            Self::Crop(_) => DraftTarget::new(),
+            Self::Crop(_) | Self::Candidate(_) => DraftTarget::new(),
             Self::Correction(correction) => correction.target(),
         }
     }
@@ -254,6 +280,7 @@ impl Kind {
             Self::Mask(_) => "mask_draft",
             Self::Crop(_) => "crop_draft",
             Self::Correction(_) => "correction_draft",
+            Self::Candidate(_) => "candidate_draft",
         }
     }
 
@@ -264,6 +291,7 @@ impl Kind {
             Self::Mask(_) => "mask gesture",
             Self::Crop(_) => "crop draft",
             Self::Correction(_) => "correction",
+            Self::Candidate(_) => "candidate",
         }
     }
 
@@ -304,7 +332,7 @@ impl Kind {
             Self::Slider(_) => {}
             Self::Mask(mask) => mask.shape.interrupt(),
             Self::Crop(crop) => crop.frame.interrupt(),
-            Self::Correction(_) => {}
+            Self::Correction(_) | Self::Candidate(_) => {}
         }
     }
 }
@@ -334,6 +362,13 @@ impl CoreGesture {
     pub(crate) fn correction(&self) -> Option<&super::corrections::CorrectionGesture> {
         match &self.kind {
             Kind::Correction(correction) => Some(correction),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn candidate(&self) -> Option<&CandidateGesture> {
+        match &self.kind {
+            Kind::Candidate(candidate) => Some(candidate),
             _ => None,
         }
     }
@@ -425,6 +460,17 @@ impl Editor {
     fn draft_refusal(&self, starting: Starting) -> Option<String> {
         let gesture = self.core_gesture()?;
         let held = match (&gesture.kind, starting) {
+            // A shown candidate stays while the next generation runs, and gives way to a new
+            // photograph, the Select workspace or another mode, whose start sites cancel it first
+            // ([`Editor::yield_candidate`]).
+            (Kind::Candidate(_), _) if gesture.draft.in_flight() == Some(Round::Commit) => {
+                "The candidate is being accepted; wait for it".to_owned()
+            }
+            (
+                Kind::Candidate(_),
+                Starting::Fill | Starting::Photograph | Starting::Workspace | Starting::Mode,
+            ) => return None,
+            (Kind::Candidate(_), _) => "Accept the candidate or press Esc".to_owned(),
             (Kind::Slider(_), _) => {
                 return Some(format!(
                     "Finish or discard the slider draft {}",
@@ -638,7 +684,7 @@ impl Editor {
             }
             Kind::Crop(_) if self.busy => Some(IN_FLIGHT.into()),
             Kind::Crop(crop) => crop.frame.output().err().map(|error| error.to_string()),
-            Kind::Slider(_) | Kind::Mask(_) | Kind::Correction(_) => None,
+            Kind::Slider(_) | Kind::Mask(_) | Kind::Correction(_) | Kind::Candidate(_) => None,
         }
     }
 
@@ -792,6 +838,11 @@ impl Editor {
                 );
                 self.correction_ended();
             }
+            // Whatever ended it — a new stroke, Escape, leaving Remove — said so itself.
+            Kind::Candidate(candidate) => self.event(
+                "candidate_draft_cancelled",
+                || json!({"job_id": candidate.job_id, "candidate": candidate.candidate}),
+            ),
         }
         if self.document.state.is_none() {
             self.outcome(Outcome::NoNewFrame);
@@ -814,6 +865,19 @@ impl Editor {
             Step::Reapply(draft_id) => self.send_reapply(draft_id),
             Step::Conflicted => {
                 let revision = self.document.state.as_ref().map(|state| state.revision);
+                // A shown candidate follows the photograph: its draft is rebased at once, and a
+                // candidate the new stack cannot take is refused by the rebase, in the accept's
+                // own words ([`Editor::candidate_refused`]).
+                if let Some(candidate) = self.core_gesture().and_then(CoreGesture::candidate) {
+                    self.event(
+                        "candidate_draft_conflicted",
+                        || json!({"job_id": candidate.job_id, "candidate": candidate.candidate, "revision": revision}),
+                    );
+                    if let Some(session) = &mut self.session.draft {
+                        session.conflicted = true;
+                    }
+                    return self.drive(Event::Reapply);
+                }
                 let Some(gesture) = self.core_gesture_mut() else {
                     return Task::none();
                 };
@@ -831,7 +895,8 @@ impl Editor {
                             json!({"label":slider.label,"revision":revision})
                         }
                         Some((Kind::Crop(crop), draft)) => crop.summary(draft),
-                        Some((Kind::Mask(_) | Kind::Correction(_), _)) | None => {
+                        Some((Kind::Mask(_) | Kind::Correction(_) | Kind::Candidate(_), _))
+                        | None => {
                             json!({ "revision": revision })
                         }
                     }
@@ -869,6 +934,7 @@ impl Editor {
             gesture.draft.gesture,
         );
         let previews = gesture.kind.previews();
+        let candidate = matches!(gesture.kind, Kind::Candidate(_));
         self.event(
             format_args!("{prefix}_set"),
             || json!({"draft_id":draft_id.as_str(),"fields":fields}),
@@ -886,9 +952,10 @@ impl Editor {
         // bounds at Fit and below 100%, the visible region at 100% or more.
         let gpu = self.gpu_ask();
         // Only fields that ask for a colour limit can read a pixel, so only they are kept to send
-        // again: an ordinary tick's path is not copied.
-        let again =
-            luxforge_core::mask::commands::asks_colour_limit_value(&fields).then(|| fields.clone());
+        // again: an ordinary tick's path is not copied. A candidate's fields name a patch the
+        // owner reads off its thread before it answers, and are two numbers.
+        let again = (candidate || luxforge_core::mask::commands::asks_colour_limit_value(&fields))
+            .then(|| fields.clone());
         let set = tasks::draft_set_now(
             &self.owner,
             self.client,
@@ -1011,6 +1078,13 @@ impl Editor {
             }
             Err(error) => {
                 self.set_unpreviewed(&error);
+                if self
+                    .core_gesture()
+                    .and_then(CoreGesture::candidate)
+                    .is_some()
+                {
+                    return self.candidate_refused(&error.clone(), Event::Set(Err(error)));
+                }
                 let task = self.drive(Event::Set(Err(error)));
                 // A drained gesture whose newest value has no frame of its own is still drained:
                 // the frame on screen shows that, so the refused value is reported.
@@ -1114,6 +1188,13 @@ impl Editor {
                     }
                     detail
                 });
+            }
+            Kind::Candidate(candidate) => {
+                let (job_id, number) = (candidate.job_id.clone(), candidate.candidate);
+                self.event(
+                    "candidate_draft_preview",
+                    || json!({"generation":generation,"draft_revision":draft_revision,"job_id":job_id,"candidate":number}),
+                );
             }
             Kind::Crop(_) => {}
         }
@@ -1223,6 +1304,13 @@ impl Editor {
                 self.status.text = error.clone();
                 self.outcome(Outcome::DraftRefused);
                 let task = self.drive(Event::Committed(Err(error.clone())));
+                if self
+                    .core_gesture()
+                    .and_then(CoreGesture::candidate)
+                    .is_some()
+                {
+                    return Task::batch([task, self.candidate_commit_refused(&error)]);
+                }
                 self.correction_commit_refused(&error);
                 return task;
             }
@@ -1264,6 +1352,7 @@ impl Editor {
             (Kind::Correction(correction), Some(refresh)) => {
                 self.correction_committed(&correction, refresh)
             }
+            (Kind::Candidate(_), outcome) => self.candidate_committed(outcome),
             (Kind::Correction(correction), None) => {
                 self.correction_ended();
                 self.status.text = format!("{} unchanged; nothing was committed", correction.name);
@@ -1340,6 +1429,14 @@ impl Editor {
             }
             Err(error) => self.status.text = error.clone(),
         }
+        if let Err(error) = &result
+            && self
+                .core_gesture()
+                .and_then(CoreGesture::candidate)
+                .is_some()
+        {
+            return self.candidate_refused(&error.clone(), Event::Reapplied(result));
+        }
         let task = self.drive(Event::Reapplied(result));
         // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage
         // is on screen.
@@ -1360,6 +1457,7 @@ pub(crate) fn identity(answered: &Draft) -> Draft {
         fields: _,
         target,
         conflicted,
+        candidate: _,
     } = answered;
     Draft {
         draft_id: draft_id.clone(),
@@ -1370,6 +1468,7 @@ pub(crate) fn identity(answered: &Draft) -> Draft {
         fields: serde_json::Map::new(),
         target: target.clone(),
         conflicted: *conflicted,
+        candidate: None,
     }
 }
 

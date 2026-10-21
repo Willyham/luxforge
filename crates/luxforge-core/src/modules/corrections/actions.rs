@@ -241,8 +241,9 @@ pub(super) fn current_input(
 
 /// Plan an accept: the candidate the catalog owner pinned and published, appended on top as a
 /// `patch` operation, when it was generated against exactly what a new top operation reads now.
-/// Only the owner's accept flow plans it, with the published candidate in hand
-/// ([`crate::StageQuestions::accepting`]); a draft or any other caller is refused.
+/// Only the owner's accept flow plans it, with the published candidate in hand, and a candidate
+/// draft, with the candidate it holds ([`crate::StageQuestions::accepting`]); any other caller is
+/// refused.
 fn accept(
     parameters: &Map<String, Value>,
     context: &StageContext<'_>,
@@ -251,7 +252,8 @@ fn accept(
 ) -> Result<RepairPayload, Error> {
     let Some(accepted) = context.questions.accepting() else {
         return Err(Error::validation(
-            "accept-correction-patch accepts a published candidate and cannot be drafted",
+            "accept-correction-patch accepts a candidate the catalog owner holds: accept it, or \
+             draft it with draft.set",
         ));
     };
     if current.operations.len() >= MAX_CORRECTIONS {

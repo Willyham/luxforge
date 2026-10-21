@@ -2872,7 +2872,10 @@ pub(super) fn sample_value(sample: PixelSample) -> Result<Value, Error> {
 
 /// `conflicted` is derived, never notified: the asset moved under the draft. Every read, set,
 /// commit and session report recomputes it from the asset's current revision.
-fn refresh_conflict(service: &EditorService, session: &mut ClientSession) -> Result<(), Error> {
+pub(super) fn refresh_conflict(
+    service: &EditorService,
+    session: &mut ClientSession,
+) -> Result<(), Error> {
     if let Some(draft) = &mut session.draft {
         draft.conflicted = draft.base_revision != service.revision(&draft.asset_id)?;
     }
@@ -3040,7 +3043,7 @@ fn set_draft(
 
 /// Every check `draft.set` makes before it merges anything, so a rejected request leaves the draft
 /// as it was: whether the merged request will hold every required field.
-fn checked_set(
+pub(super) fn checked_set(
     service: &EditorService,
     session: &ClientSession,
     draft_id: &DraftId,
@@ -3148,7 +3151,10 @@ fn draft_reapply(
 }
 
 /// The open draft with its conflict state recomputed.
-fn draft_value(service: &EditorService, session: &mut ClientSession) -> Result<Value, Error> {
+pub(super) fn draft_value(
+    service: &EditorService,
+    session: &mut ClientSession,
+) -> Result<Value, Error> {
     refresh_conflict(service, session)?;
     value(session.draft.as_ref().expect("the draft is still open"))
 }

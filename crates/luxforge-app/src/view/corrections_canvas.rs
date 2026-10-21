@@ -512,47 +512,17 @@ impl CorrectionsCanvas<'_> {
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
     }
 
-    /// Remove's figures: the chosen candidate composited over the region it fills, or the
-    /// selection's tint without one, the stroke being painted, and a running generation's ring at
-    /// the selection's centre.
+    /// Remove's figures: the selection's tint while no candidate is shown in the photograph (a
+    /// shown candidate is the photograph's own draft, drawn by the photo surface), the stroke being
+    /// painted, and a running generation's ring at the selection's centre.
     fn remove(
         &self,
         frame: &mut Frame,
         remove: &crate::app::remove::RemoveCanvas<'_>,
         traces: &Traces,
     ) {
-        let content = self.placement.map.content();
-        let (cw, ch) = (f64::from(content.0.max(1)), f64::from(content.1.max(1)));
-        let mut previewed = false;
-        if let Some((handle, [x, y, w, h])) = remove.preview {
-            let corner = |px: u32, py: u32| {
-                self.placement
-                    .canvas_point(f64::from(px) / cw, f64::from(py) / ch)
-            };
-            if let (Some(a), Some(b), Some(d)) = (corner(x, y), corner(x + w, y), corner(x, y + h))
-            {
-                // The rectangle's mapped top edge and side, so a straightened or rotated photograph
-                // turns the preview with it.
-                let width = (b.x - a.x).hypot(b.y - a.y);
-                let height = (d.x - a.x).hypot(d.y - a.y);
-                let angle = (b.y - a.y).atan2(b.x - a.x);
-                let centre = Point::new(
-                    a.x + (b.x - a.x) / 2.0 + (d.x - a.x) / 2.0,
-                    a.y + (b.y - a.y) / 2.0 + (d.y - a.y) / 2.0,
-                );
-                let bounds = Rectangle::new(
-                    Point::new(centre.x - width / 2.0, centre.y - height / 2.0),
-                    Size::new(width, height),
-                );
-                frame.draw_image(
-                    bounds,
-                    canvas::Image::new(handle.clone()).rotation(iced::Radians(angle)),
-                );
-                previewed = true;
-            }
-        }
         if let Some(points) = remove.selection
-            && !previewed
+            && !remove.shown
         {
             self.selection(frame, points, remove.radius, false, traces);
         }
@@ -943,7 +913,7 @@ mod tests {
             live,
             radius: 0.05,
             progress: None,
-            preview: None,
+            shown: false,
         };
         let pressed = Interaction {
             pressed: true,
