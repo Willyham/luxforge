@@ -174,7 +174,7 @@ impl Lifecycle for Owner {
             .capabilities
             .iter()
             .find(|capability| {
-                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if id == resource)
+                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id, .. } if id == resource)
             })
             .expect("a download capability for the resource")
             .id

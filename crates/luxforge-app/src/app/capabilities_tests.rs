@@ -307,7 +307,6 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
     assert!(!model.loading && model.enabled);
     assert_eq!(model.resources[0].state, "Not installed");
     assert_eq!(model.resources[0].detail, "v1 · 20 B");
-    assert_eq!(model.setup, None, "only a fill module has a setup");
     // The form holds the module-level setting, drawn as a number field; the profile block's
     // endpoint and secret are set through the API.
     assert_eq!(model.fields.len(), 1);
@@ -434,12 +433,9 @@ fn consent_install_task_and_apply_go_through_the_notice() {
     });
     proof.answer();
     let notice = proof.editor.workspace.canvas.notices[0].clone();
-    assert_eq!(
-        notice.title,
-        "Allow Capabilities proof to download a resource?"
-    );
+    assert_eq!(notice.title, "Allow Capabilities proof to download?");
     assert!(
-        notice.body.contains("Proof palette 1 · 20 B"),
+        notice.body.contains("20 B download · from "),
         "{}",
         notice.body
     );
@@ -447,8 +443,8 @@ fn consent_install_task_and_apply_go_through_the_notice() {
     assert_eq!(
         notice.actions,
         vec![
-            ("Allow".to_owned(), NoticeAction::AllowConsent),
-            ("Don't allow".to_owned(), NoticeAction::DenyConsent),
+            ("Not now".to_owned(), NoticeAction::DenyConsent),
+            ("Download".to_owned(), NoticeAction::AllowConsent),
         ]
     );
     // Don't allow records the denial and leaves the module usable.

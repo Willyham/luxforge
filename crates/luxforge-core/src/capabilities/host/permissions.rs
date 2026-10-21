@@ -100,7 +100,7 @@ impl CapabilityHost {
         scope: &GrantScope,
     ) -> Result<(), Error> {
         match (&capability.kind, scope) {
-            (CapabilityKind::DownloadArtifact { resource }, GrantScope::Download(scope)) => {
+            (CapabilityKind::DownloadArtifact { resource, .. }, GrantScope::Download(scope)) => {
                 let declared = descriptor.resource(resource).ok_or_else(|| {
                     Error::internal(format!(
                         "capability {} names an undeclared resource",

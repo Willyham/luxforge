@@ -40,6 +40,7 @@ mod range_slider;
 mod readout_card;
 mod section_header;
 mod segmented;
+mod setup_sheet;
 mod slider;
 mod slider_guard;
 mod sparkline;
@@ -132,6 +133,9 @@ pub use readout_card::readout_card;
 pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
 pub use segmented::{
     SegmentedModel, chevron_segment, segment, segment_track, segmented, segmented_fill,
+};
+pub use setup_sheet::{
+    FactTone, SetupFactModel, SetupPicture, SetupSheetModel, SetupStepModel, setup_sheet,
 };
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;

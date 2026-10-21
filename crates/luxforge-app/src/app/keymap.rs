@@ -142,6 +142,9 @@ pub(crate) struct KeyContext {
     /// The Settings sheet is open: it is modal, so the workspace behind it takes no key but the
     /// ones that close the sheet.
     pub(crate) settings_open: bool,
+    /// A download's setup sheet is open, with whether it can be allowed: it is modal, so Return
+    /// answers its primary action, Escape answers Not now and no other key reaches the workspace.
+    pub(crate) setup_sheet: Option<bool>,
     /// The title bar's Export menu is open, so Escape closes it.
     pub(crate) export_menu_open: bool,
     /// The Export sheet is open: it is modal, so Escape closes it without exporting and no other
@@ -305,6 +308,22 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         && (character(key, "\\") || character(key, "|"))
     {
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
+    }
+    // A download's setup sheet is modal: Return downloads, or closes it when it cannot, Escape
+    // answers Not now, and no other key reaches the workspace behind it.
+    if let Some(can_allow) = context.setup_sheet {
+        use crate::app::message::capability::CapabilityMessage;
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Capability(CapabilityMessage::Consent(false))),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                ..
+            } => Some(Message::Capability(CapabilityMessage::Consent(can_allow))),
+            _ => None,
+        };
     }
     // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
     // the workspace behind it, Select's included. Its fields still receive their own typing.
@@ -1424,6 +1443,7 @@ mod tests {
             mask_brush: false,
             palette_open: false,
             settings_open: false,
+            setup_sheet: None,
             export_menu_open: false,
             export_sheet_open: false,
             mode_active: false,
@@ -1895,6 +1915,14 @@ mod tests {
             export_sheet_open: true,
             ..context()
         };
+        let setup_sheet = KeyContext {
+            setup_sheet: Some(true),
+            ..context()
+        };
+        let unmet_setup_sheet = KeyContext {
+            setup_sheet: Some(false),
+            ..context()
+        };
         let command = Modifiers::COMMAND;
         let shift_command = Modifiers::COMMAND | Modifiers::SHIFT;
         let option_command = Modifiers::COMMAND | Modifiers::ALT;
@@ -1967,6 +1995,34 @@ mod tests {
                 pressed(letter("z"), command),
                 Status::Ignored,
                 &export_sheet,
+                None,
+            ),
+            (
+                "Return downloads from the setup sheet",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Ignored,
+                &setup_sheet,
+                Some("Capability(Consent(true))"),
+            ),
+            (
+                "Escape answers the setup sheet's Not now",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &setup_sheet,
+                Some("Capability(Consent(false))"),
+            ),
+            (
+                "Return closes a setup sheet this machine cannot allow",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Ignored,
+                &unmet_setup_sheet,
+                Some("Capability(Consent(false))"),
+            ),
+            (
+                "the setup sheet keeps the workspace's keys",
+                pressed(letter("z"), command),
+                Status::Ignored,
+                &setup_sheet,
                 None,
             ),
             (

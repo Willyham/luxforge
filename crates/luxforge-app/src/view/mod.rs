@@ -37,6 +37,7 @@ pub(crate) mod select_catalog;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
+pub(crate) mod setup_sheet;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
@@ -261,6 +262,10 @@ pub(crate) fn workspace<'a>(
         layers = layers.push(sheet);
     }
     if let Some(sheet) = settings::settings(&model.settings) {
+        layers = layers.push(sheet);
+    }
+    // A download's setup sheet answers the person's own Set up or Add, so it sits over everything.
+    if let Some(sheet) = setup_sheet::setup_sheet(model.setup_sheet.as_ref()) {
         layers = layers.push(sheet);
     }
     layers.into()
