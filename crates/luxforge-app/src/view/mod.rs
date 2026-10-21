@@ -34,6 +34,7 @@ pub(crate) mod query_choice;
 pub(crate) mod range_pick_canvas;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_introduction;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;

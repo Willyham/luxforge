@@ -21,7 +21,8 @@ use crate::{
     presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    select_smoke as select, settings_smoke as settings, theme_smoke as theme,
+    select_introduction_smoke as select_introduction, select_smoke as select,
+    settings_smoke as settings, theme_smoke as theme,
     unsupported_catalog_smoke as unsupported_catalog, usage_backend_smoke as usage_backend,
     usage_smoke as usage, viewport_smoke as viewport, vignette_smoke as vignette,
     visibility_smoke as visibility, workspace_smoke as workspace, zoom_smoke as zoom, *,
@@ -82,6 +83,8 @@ pub struct LaunchSpec {
     pub usage_receiver: Option<&'static str>,
     /// Show the move into Applications question wherever the run's app is, so it can be captured.
     pub move_question: bool,
+    /// Show the Select introduction the first time Select is shown, so it can be captured.
+    pub introduction: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
     /// A process deadline of its own in place of the run's.
@@ -100,6 +103,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     developer: false,
     usage_receiver: None,
     move_question: false,
+    introduction: false,
     watch: None,
     deadline: None,
 };
@@ -1157,6 +1161,20 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: select_introduction::SCENARIO,
+        about: "The Select introduction over a new catalog in a background launch given --evidence-select-introduction: absent from the opened frame, then shown the first time Select is with the design's words, its steps' keys, Add a folder… and Start browsing; Return closes it and stores select_introduction_seen, the title bar's ? shows it again at 150% and in a light theme, and Escape closes it storing nothing; the log shows and closes it in order, and the sheet is drawn over the middle of the window",
+        launches: &[LaunchSpec {
+            plan: select_introduction::plan,
+            introduction: true,
+            ..APP
+        }],
+        verify: select_introduction::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(select_introduction::NOTE),
+        own: None,
+    },
+    Scenario {
         name: unsupported_catalog::SCENARIO,
         about: "A remembered catalog another version made: the window opens on the unsupported-catalog sheet naming format 16 and the current format, the catalog unchanged and the releases page, then Start a new catalog creates and remembers a new catalog beside it and the fixture opens in the editor over it; the refused catalog, its artifacts and its index keep every byte",
         // Its one launch names a catalog the run seeds before it.
@@ -1665,6 +1683,9 @@ pub(crate) fn launch_of(
     }
     if spec.move_question {
         launch = launch.move_question();
+    }
+    if spec.introduction {
+        launch = launch.introduction();
     }
     launch = launch.open_all(sources);
     if plan.scripted() {

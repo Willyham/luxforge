@@ -122,6 +122,9 @@ pub(crate) struct KeyContext {
     /// The usage statistics notice is on screen, so an Escape nothing else takes answers it No
     /// thanks.
     pub(crate) usage_notice: bool,
+    /// The Select introduction is open: it is modal, so Return and Escape close it and no other
+    /// key reaches the window behind it.
+    pub(crate) introduction: bool,
     pub(crate) gallery_open: bool,
     pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
@@ -305,6 +308,28 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         && (character(key, "\\") || character(key, "|"))
     {
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
+    }
+    // The Select introduction is modal and comes first: Return and Escape close it, before
+    // anything else that takes them, and no other key reaches the window behind it.
+    if context.introduction {
+        use crate::{
+            app::message::select_introduction::IntroductionMessage,
+            state::select_introduction::Closing,
+        };
+        let close = |how| Some(Message::Introduction(IntroductionMessage::Close(how)));
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => close(Closing::Escape),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                modifiers,
+                repeat: false,
+                ..
+            } if status == Status::Ignored && !modifiers.command() => close(Closing::Return),
+            _ => None,
+        };
     }
     // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
     // the workspace behind it, Select's included. Its fields still receive their own typing.
@@ -1416,6 +1441,7 @@ mod tests {
     fn context() -> KeyContext {
         KeyContext {
             usage_notice: false,
+            introduction: false,
             comparing: false,
             gallery_open: false,
             drafting: false,
@@ -1537,6 +1563,115 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// The Select introduction is modal: Return and Escape close it ahead of anything else that
+    /// takes them, and no other key reaches the window behind it.
+    #[test]
+    fn select_introduction_takes_return_and_escape_and_holds_every_other_key() {
+        use crate::{
+            app::message::select_introduction::IntroductionMessage,
+            state::select_introduction::Closing,
+        };
+        let open = KeyContext {
+            introduction: true,
+            select: true,
+            loupe_open: true,
+            select_menu_open: true,
+            usage_notice: true,
+            ..context()
+        };
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &open),
+            Some(Message::Introduction(IntroductionMessage::Close(
+                Closing::Escape
+            )))
+        ));
+        let enter = pressed(Key::Named(Named::Enter), Modifiers::empty());
+        assert!(matches!(
+            keymap(&enter, Status::Ignored, &open),
+            Some(Message::Introduction(IntroductionMessage::Close(
+                Closing::Return
+            )))
+        ));
+        for event in [
+            pressed(letter("p"), Modifiers::empty()),
+            pressed(letter("d"), Modifiers::empty()),
+            pressed(Key::Named(Named::ArrowDown), Modifiers::empty()),
+            pressed(Key::Named(Named::Space), Modifiers::empty()),
+            pressed(Key::Named(Named::Enter), Modifiers::COMMAND),
+            pressed(letter("z"), Modifiers::COMMAND),
+            pressed(letter(","), Modifiers::COMMAND),
+        ] {
+            assert!(
+                keymap(&event, Status::Ignored, &open).is_none(),
+                "{event:?}"
+            );
+        }
+    }
+
+    /// The keys the Select introduction names do what it says: Space looks, and in the loupe `Z`
+    /// shows 100%, `P` picks and `↓` goes to the next moment; Develop N's chord develops.
+    #[test]
+    fn select_introduction_the_keys_it_names_do_what_it_says() {
+        use crate::{
+            app::message::loupe::LoupeMessage, state::loupe::Travel,
+            state::select_introduction::STEPS,
+        };
+        let named: Vec<&str> = STEPS
+            .iter()
+            .flat_map(|step| step.keys.iter().map(|(key, _)| *key))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "Space",
+                "Z",
+                "P",
+                "\u{2193}",
+                crate::state::select_introduction::DEVELOP_KEY
+            ]
+        );
+        let grid = KeyContext {
+            select: true,
+            ..context()
+        };
+        let loupe = KeyContext {
+            loupe_open: true,
+            ..grid.clone()
+        };
+        let key = |key: Key, context: &KeyContext| {
+            keymap(&pressed(key, Modifiers::empty()), Status::Ignored, context)
+        };
+        assert!(matches!(
+            key(Key::Named(Named::Space), &grid),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)))
+        ));
+        assert!(matches!(
+            key(letter("z"), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(
+                LoupeMessage::ToggleFocus
+            )))
+        ));
+        assert!(matches!(
+            key(letter("p"), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Pick)))
+        ));
+        assert!(matches!(
+            key(Key::Named(Named::ArrowDown), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Moment(
+                Travel::Forward
+            ))))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Enter), Modifiers::COMMAND),
+                Status::Ignored,
+                &grid
+            ),
+            Some(Message::Develop(DevelopMessage::Open))
+        ));
     }
 
     #[test]

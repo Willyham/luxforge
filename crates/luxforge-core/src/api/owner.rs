@@ -3345,6 +3345,7 @@ host_params! {
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
         update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
         update_ask_to_move: Option<Option<bool>> = boolean().notes("on macOS, a release build launched outside Applications asks to move itself there (update.move-to-applications); false is the question's Don't ask again; null resets it to on"),
+        select_introduction_seen: Option<Option<bool>> = boolean().notes("the person closed the Select introduction, which the desktop shows the first time Select is shown while this is off; null or false shows it again at the desktop's next launch, true skips it"),
     }
 }
 
@@ -3398,6 +3399,7 @@ pub(super) fn preferences_set(
         update_checks: params.update_checks,
         update_install_automatically: params.update_install_automatically,
         update_ask_to_move: params.update_ask_to_move,
+        select_introduction_seen: params.select_introduction_seen,
     };
     let published = owner.host.preferences.set_published(change)?;
     let (before, stored) = published.value;

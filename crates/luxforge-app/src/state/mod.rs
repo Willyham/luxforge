@@ -29,6 +29,7 @@ pub(crate) mod query_choice;
 pub(crate) mod remove;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_introduction;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
@@ -472,6 +473,9 @@ pub(crate) struct Inputs<'a> {
     /// The Select workspace's state: which workspace is shown, what Select last read and its own
     /// choices.
     pub(crate) select: &'a select::SelectState,
+    /// The Select introduction: who it is shown to, its first showing and whether the ? showed it
+    /// again.
+    pub(crate) introduction: &'a select_introduction::Introduction,
     /// Long-running work: the board as last read, each job's rate and the view waiting on a job.
     pub(crate) long_work: &'a long_work::LongWorkState,
     /// Developing picks and the filmstrip: Develop N's confirmation, a Develop running, the
@@ -509,6 +513,8 @@ pub(crate) struct Workspace {
     pub(crate) update_notice: Option<update::UpdateNotice>,
     /// The move into Applications question, while it is on screen.
     pub(crate) move_notice: Option<move_to_applications::MoveNotice>,
+    /// The Select introduction, while it is on screen.
+    pub(crate) select_introduction: Option<select_introduction::IntroductionModel>,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -574,7 +580,24 @@ impl Workspace {
             inputs.updates,
         );
         self.usage_notice = usage::notice(inputs.usage);
-        self.update_notice = update::notice(inputs.updates);
+        // The update offer waits while the Select introduction is up, so a first launch shows one
+        // thing at a time.
+        self.update_notice = update::notice(inputs.updates).filter(|_| !inputs.introduction.open());
+        let nothing_indexed = inputs
+            .select
+            .indexed
+            .as_ref()
+            .is_none_or(|indexed| indexed.folders.is_empty())
+            && inputs
+                .select
+                .cards
+                .as_ref()
+                .is_none_or(|cards| cards.cards.is_empty());
+        self.select_introduction = select_introduction::model(
+            inputs.introduction,
+            nothing_indexed,
+            inputs.view_state.window.0,
+        );
     }
 
     /// Whether something is open over the canvas: the palette, the Settings sheet, a menu (a
@@ -781,6 +804,7 @@ mod tests {
         settings: settings::Settings,
         usage: usage::Usage,
         updates: update::Updates,
+        introduction: select_introduction::Introduction,
         preferences: preferences::PreferenceWriter,
         themes: themes::Themes,
         version_form: VersionForm,
@@ -832,6 +856,7 @@ mod tests {
                 settings: settings::Settings::default(),
                 usage: usage::Usage::default(),
                 updates: update::Updates::default(),
+                introduction: select_introduction::Introduction::default(),
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
@@ -940,6 +965,7 @@ mod tests {
                 settings: &self.settings,
                 usage: &self.usage,
                 updates: &self.updates,
+                introduction: &self.introduction,
                 preferences: &self.preferences,
                 themes: &self.themes,
                 version_form: &self.version_form,

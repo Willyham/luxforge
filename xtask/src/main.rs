@@ -83,6 +83,7 @@ mod release_source;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
+mod select_introduction_smoke;
 mod select_smoke;
 mod settings_smoke;
 mod smoke;

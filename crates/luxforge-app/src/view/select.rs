@@ -233,16 +233,25 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         screen
     };
     // Export N…'s sheet, modal over the whole window.
-    match crate::view::export_sheet::export_sheet(model.export_sheet.as_ref()) {
+    let screen = match crate::view::export_sheet::export_sheet(model.export_sheet.as_ref()) {
         Some(sheet) => stack![screen, sheet].into(),
+        None => screen,
+    };
+    // The Select introduction, modal over everything; it waits for the other sheets to close.
+    match &model.select_introduction {
+        Some(introduction) => stack![
+            screen,
+            crate::view::select_introduction::sheet(introduction)
+        ]
+        .into(),
         None => screen,
     }
 }
 
 // -- Title bar -------------------------------------------------------------------------------------
 
-/// The switch, the view's name and summary; Add a folder…, Undo and Redo of library changes,
-/// Develop N and the two panel toggles.
+/// The switch, the view's name and summary; Add a folder…, Undo and Redo of library changes, the
+/// ? that shows the Select introduction again, Develop N and the two panel toggles.
 fn title_bar<'a>(
     model: &'a SelectTitle,
     develop: &'a crate::state::develop::DevelopModel,
@@ -319,6 +328,17 @@ fn title_bar<'a>(
             Icon::Redo,
             "Redo it (\u{21e7}\u{2318}Z)",
             SelectMessage::Redo,
+        ),
+        title_bar_icon_button(
+            &IconButtonModel {
+                icon: Icon::Help,
+                tooltip: crate::state::select_introduction::REOPEN_TOOLTIP.into(),
+                enabled: true,
+                selected: false,
+            },
+            Some(Message::Introduction(
+                crate::app::message::select_introduction::IntroductionMessage::Reopen,
+            )),
         ),
         develop,
         toggle(

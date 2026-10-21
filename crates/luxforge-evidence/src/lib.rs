@@ -2727,6 +2727,10 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// desktop started has ended ready and the view it read again holds its result, selected, with
 /// nothing Select asked for still in flight, its previews among it; a failed
 /// or cancelled merge fails it with the row's words.
+///
+/// `"introduction"` presses the title bar's ?, which shows the Select introduction again, and is
+/// captured at once; it fails while Select is not shown or the sheet is already open. Return and
+/// Escape close it through `key` steps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -2775,6 +2779,7 @@ pub enum SelectStep {
     },
     MergePreview(MergePreviewStep),
     Merged,
+    Introduction,
 }
 
 /// The kind of merge a `merge_choose` step presses on the selection's merge menu.
@@ -2882,7 +2887,8 @@ impl SelectStep {
             | Self::MergeMenu(_)
             | Self::MergeChoose { .. }
             | Self::MergePreview(_)
-            | Self::Merged => Ok(()),
+            | Self::Merged
+            | Self::Introduction => Ok(()),
         }
     }
 }
