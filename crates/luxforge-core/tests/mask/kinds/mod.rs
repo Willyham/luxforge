@@ -398,7 +398,8 @@ fn compile(mask: &Mask, (width, height): (u32, u32), strokes: &Store) -> Compile
 // ---------------------------------------------------------------------------
 
 /// The kind table claims the kind and says everything a client asks of it without matching on its
-/// token: its name, glyph, menu title, band control and whether it is value-based. A stored
+/// token: its name, glyph, menu title, band control, whether it is value-based and, if it is, the
+/// limits and notes its help shows. A stored
 /// component of the kind is named from its title, validates without a stage, and round-trips byte
 /// for byte, which is what retention means for a kind this build does know.
 fn claims_its_kind<K: Kind>() {
@@ -411,6 +412,37 @@ fn claims_its_kind<K: Kind>() {
         mask::component_kind_is_value_based(kind),
         K::VALUE_BASED,
         "{kind}"
+    );
+    // A value-based kind's help says what it cannot tell apart and how to narrow it, with the
+    // shared notes beside them; a position-based kind says none of it. A value-based kind
+    // registered without limits would otherwise open an empty "Good to know" card.
+    match mask::component_kind_limits(kind) {
+        Some(limits) => {
+            assert!(K::VALUE_BASED, "{kind}: only a value-based kind has limits");
+            assert!(!limits.alike_heading.is_empty(), "{kind}: the heading");
+            assert!(!limits.alike.is_empty(), "{kind}: what it takes together");
+            for alike in limits.alike {
+                assert!(!alike.label.is_empty(), "{kind}: a label");
+                assert!(
+                    !alike.examples.is_empty(),
+                    "{kind}: {}'s examples",
+                    alike.label
+                );
+            }
+            assert!(!limits.narrow.is_empty(), "{kind}: how to narrow it");
+            for remedy in limits.narrow {
+                assert!(
+                    !remedy.action.is_empty() && !remedy.effect.is_empty(),
+                    "{kind}: a remedy"
+                );
+            }
+        }
+        None => assert!(!K::VALUE_BASED, "{kind}: a value-based kind has limits"),
+    }
+    assert_eq!(
+        mask::component_kind_notes(kind).is_empty(),
+        !K::VALUE_BASED,
+        "{kind}: the shared notes"
     );
     // The band control is published on the host descriptor over the kind's own patch method, and
     // only a band declares one.
