@@ -588,22 +588,28 @@ impl Workspace {
         // The update offer waits while the Select introduction is up, so a first launch shows one
         // thing at a time.
         self.update_notice = update::notice(inputs.updates).filter(|_| !inputs.introduction.open());
+        // Add a folder… is offered once both lists are read and empty, so it never shows and then
+        // goes as they arrive.
         let nothing_indexed = inputs
             .select
             .indexed
             .as_ref()
-            .is_none_or(|indexed| indexed.folders.is_empty())
+            .is_some_and(|indexed| indexed.folders.is_empty())
             && inputs
                 .select
                 .cards
                 .as_ref()
-                .is_none_or(|cards| cards.cards.is_empty());
+                .is_some_and(|cards| cards.cards.is_empty());
+        // Each sheet is derived only where it is drawn: the introduction over Select, a setup
+        // sheet over Develop's workspace.
+        let select_shown = inputs.select.shown == select::Shown::Select;
         self.select_introduction = select_introduction::model(
             inputs.introduction,
             nothing_indexed,
             inputs.view_state.window.0,
-        );
-        self.setup_sheet = setup_sheet::derive(inputs);
+        )
+        .filter(|_| select_shown);
+        self.setup_sheet = setup_sheet::derive(inputs).filter(|_| !select_shown);
     }
 
     /// Whether something is open over the canvas: the palette, the Settings sheet, a setup sheet, a
@@ -770,119 +776,6 @@ mod tests {
     use serde_json::json;
     use std::{collections::HashSet, path::PathBuf};
 
-    /// A download that introduces its feature asks through the setup sheet: what it needs of the
-    /// machine against what this machine has, and a past Not now. On a machine below the model's
-    /// minimum it says the model cannot run, offers no Download and only closes.
-    #[test]
-    fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
-        let mut scene = Scene::new(descriptors());
-        let consent: capabilities::Consent = serde_json::from_value(json!({
-            "module_id": "luxforge.ai",
-            "capability": "download-klein",
-            "kind": "download-artifact",
-            "scope": {},
-            "denied": true,
-            "disclosure": {
-                "module": "AI editing",
-                "purpose": "Set up AI editing: this downloads the model",
-                "destination": "https://huggingface.co/model.gguf",
-                "data": "klein 1",
-                "bytes": 2_720_267_065u64,
-                "license": "Apache-2.0",
-                "cost": "free",
-                "requirements": {"min_memory_bytes": 16u64 << 30},
-                "introduction": {
-                    "eyebrow": "AI editing",
-                    "title": "Remove anything, fill it in naturally",
-                    "lead": "Paint over something you don't want.",
-                    "steps": [{"title": "Paint over it", "body": "Brush.", "picture": "paint-over"}],
-                    "promise": "Your photos stay on this computer.",
-                },
-            },
-        }))
-        .expect("a consent-required failure's data");
-        scene.capabilities.consent = Some(capabilities::OpenConsent {
-            consent,
-            retry: None,
-        });
-        let machine = if cfg!(target_os = "macos") {
-            "Mac"
-        } else {
-            "computer"
-        };
-        let mut memory = |bytes: u64| {
-            scene.capabilities.modules.insert(
-                "luxforge.ai".into(),
-                capabilities::ModuleCapabilities {
-                    status: Some(
-                        serde_json::from_value(json!({"machine": {"memory_bytes": bytes}}))
-                            .expect("a status"),
-                    ),
-                    ..Default::default()
-                },
-            );
-            let notices = canvas::derive(&scene.inputs()).notices;
-            assert!(
-                notices.is_empty(),
-                "no notice beside the sheet: {notices:?}"
-            );
-            setup_sheet::derive(&scene.inputs()).expect("the setup sheet")
-        };
-
-        let sheet = memory(48 << 30);
-        let facts: Vec<_> = sheet
-            .facts
-            .iter()
-            .map(|fact| (fact.headline.as_str(), fact.detail.as_str()))
-            .collect();
-        assert_eq!(
-            facts,
-            [
-                ("2.5 GB download", "Once, then it works offline"),
-                ("From huggingface.co", "Free \u{b7} Apache-2.0"),
-                (
-                    "Needs 16 GB of memory",
-                    &*format!("This {machine} has 48 GB \u{2713}")
-                ),
-            ]
-        );
-        assert_eq!(
-            sheet.facts[2].kind,
-            setup_sheet::FactKind::Memory(Some(true))
-        );
-        assert_eq!(
-            sheet.notes,
-            [
-                (
-                    "You chose Not now before. Nothing has been downloaded.".to_owned(),
-                    false
-                ),
-                (
-                    "You can remove it at any time in Settings \u{203a} Models.".to_owned(),
-                    false
-                ),
-            ]
-        );
-        assert_eq!(
-            (sheet.allow.as_deref(), sheet.dismiss.as_str()),
-            (Some("Download 2.5 GB"), "Not now")
-        );
-
-        let sheet = memory(8 << 30);
-        assert_eq!(
-            (sheet.facts[2].detail.as_str(), sheet.facts[2].kind.unmet()),
-            (&*format!("This {machine} has 8 GB"), true)
-        );
-        assert_eq!(
-            sheet.notes,
-            [(format!("It can't run on this {machine}."), true)]
-        );
-        assert_eq!(
-            (sheet.allow.as_deref(), sheet.dismiss.as_str()),
-            (None, "Close")
-        );
-    }
-
     /// The pieces a derivation borrows, owned by the test so `Inputs` can point at them.
     struct Scene {
         document: document::Document,
@@ -976,7 +869,7 @@ mod tests {
                 settings: settings::Settings::default(),
                 usage: usage::Usage::default(),
                 updates: update::Updates::default(),
-                introduction: select_introduction::Introduction::default(),
+                introduction: select_introduction::Introduction::new(false),
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),

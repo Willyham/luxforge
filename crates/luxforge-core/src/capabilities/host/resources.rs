@@ -7,7 +7,7 @@ use crate::{
     Error, JobId, ModuleDescriptor, ModuleRegistry,
     api::{Origin, params::host_params},
     capabilities::{
-        consent::{consent_required, download_disclosure},
+        consent::{Disclosure, consent_required, download_disclosure},
         descriptor::{CapabilityKind, ResourceDescriptor},
         endpoint::{EndpointClass, parse_endpoint},
         grants::{DownloadScope, GrantScope},
@@ -202,8 +202,9 @@ impl CapabilityHost {
     }
 
     /// `module.resource.install`: from the pinned URL under a `download-artifact` grant. Consent,
-    /// the quota and the lane bound are checked before anything is queued; a second request joins
-    /// the queued or running install, and an installed resource answers at once.
+    /// then this machine's memory, the quota and the lane bound are checked before anything is
+    /// queued; a second request joins the queued or running install, and an installed resource
+    /// answers at once.
     pub(crate) fn install(
         &mut self,
         jobs: &mut Jobs,
@@ -233,9 +234,6 @@ impl CapabilityHost {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
         let InstallSource::Download {} = request.source.unwrap_or(InstallSource::Download {});
-        // A machine below the minimum is refused before any consent is asked: nothing it could
-        // allow would let the model run.
-        self.check_machine(resource)?;
         let capability = descriptor
             .capabilities
             .iter()
@@ -252,16 +250,27 @@ impl CapabilityHost {
         let (grant, denied) = self
             .grants()?
             .consent(&descriptor.id, &capability.id, &scope)?;
+        // Consent is asked first, on any machine, so a client can say why the model cannot run
+        // here: the disclosure carries this machine's memory and whether it fits.
         let Some(grant) = grant else {
             let install_dir = store.version_dir(&descriptor.id, resource);
             return Err(consent_required(
                 descriptor,
                 capability,
                 &scope,
-                download_disclosure(descriptor, capability, resource, &install_dir),
+                Disclosure {
+                    machine_memory_bytes: resource
+                        .min_memory_bytes
+                        .and(self.config.machine_memory_bytes),
+                    fits: self.fits(resource),
+                    ..download_disclosure(descriptor, capability, resource, &install_dir)
+                },
                 denied,
             ));
         };
+        // Only an install that would otherwise proceed is refused for the machine: a grant,
+        // however it was given, does not let a model run on a machine below its minimum.
+        self.check_machine(resource)?;
         transfer::check_quota(&store, resource, self.config.resource_quota_bytes)?;
         let job_id = JobId::new();
         let control = JobControl::new();

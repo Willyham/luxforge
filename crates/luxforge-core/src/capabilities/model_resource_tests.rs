@@ -731,23 +731,40 @@ fn a_machine_below_a_models_minimum_sees_its_requirement_and_cannot_install_it()
     assert_eq!(large["fits"], json!(false));
     assert_eq!(large["requirements"], json!({"min_memory_bytes": 64 * GIB}));
     assert_eq!(row(&owner, MODEL)["fits"], json!(true));
-    // Refused by name before consent is asked or anything is sent; a grant changes nothing.
-    for granted in [false, true] {
-        if granted {
-            grant(&owner, "large-download", LARGE);
-        }
-        let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": LARGE}));
-        assert_eq!(refused.code, "resource-limit");
-        assert_eq!(
-            refused.message,
-            "Object finder needs a machine with at least 64 GB of memory; this machine has 8 GB"
+    // Consent is asked on any machine, and its disclosure says this machine's memory and whether
+    // it fits, so a client can say why the model cannot run here.
+    let consent = |resource: &str| {
+        let refused = owner.fail(
+            INSTALL,
+            json!({"module_id": MODULE, "resource_id": resource}),
         );
-        assert_eq!(
-            refused.data.as_ref().unwrap()["requirements"],
-            json!([{"kind": "memory", "id": LARGE, "required_bytes": 64 * GIB,
-                    "machine_bytes": 8 * GIB}])
-        );
-    }
+        assert_eq!(refused.code, "consent-required", "{resource}");
+        refused.data.unwrap()["consent"]["disclosure"].clone()
+    };
+    let disclosure = consent(LARGE);
+    assert_eq!(
+        (
+            &disclosure["fits"],
+            &disclosure["machine_memory_bytes"],
+            &disclosure["requirements"]["min_memory_bytes"]
+        ),
+        (&json!(false), &json!(8 * GIB), &json!(64 * GIB))
+    );
+    assert_eq!(consent(MODEL)["fits"], json!(true));
+    // Granted, however a client gives it, the install is refused by name before anything is
+    // sent or queued.
+    grant(&owner, "large-download", LARGE);
+    let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": LARGE}));
+    assert_eq!(refused.code, "resource-limit");
+    assert_eq!(
+        refused.message,
+        "Object finder needs a machine with at least 64 GB of memory; this machine has 8 GB"
+    );
+    assert_eq!(
+        refused.data.as_ref().unwrap()["requirements"],
+        json!([{"kind": "memory", "id": LARGE, "required_bytes": 64 * GIB,
+                "machine_bytes": 8 * GIB}])
+    );
     assert_eq!(fixture.server.transport.sends(), 0);
     assert_eq!(owner.handle.lane_threads(), 0, "nothing was queued");
     owner.stop();
@@ -757,6 +774,13 @@ fn a_machine_below_a_models_minimum_sees_its_requirement_and_cannot_install_it()
     let owner = fixture.start();
     let unknown = row(&owner, LARGE);
     assert!(unknown.get("fits").is_none(), "{unknown}");
+    // The model, which declares a minimum too, was never granted.
+    let refused = owner.fail(INSTALL, json!({"module_id": MODULE, "resource_id": MODEL}));
+    let disclosure = &refused.data.as_ref().unwrap()["consent"]["disclosure"];
+    assert!(
+        disclosure.get("fits").is_none() && disclosure.get("machine_memory_bytes").is_none(),
+        "{disclosure}"
+    );
     assert_eq!(
         owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["machine"],
         json!({"memory_bytes": null})

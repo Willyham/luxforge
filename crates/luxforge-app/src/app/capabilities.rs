@@ -22,7 +22,7 @@ use crate::{
     state::{
         capabilities::{
             Consent, ModuleStatus, OpenConsent, Operation, TaskPhase, TaskRun, declares,
-            task_profile,
+            introduced, task_profile,
         },
         fields, tools,
     },
@@ -1084,9 +1084,30 @@ impl Editor {
         task
     }
 
+    /// Whether the open consent's Allow is on screen: the setup sheet's Download for a download
+    /// that introduces its feature, otherwise the consent notice's Allow or Download.
+    fn consent_allow_drawn(&self) -> bool {
+        let Some(open) = self.capabilities.consent.as_ref() else {
+            return false;
+        };
+        if introduced(&open.consent) {
+            return self
+                .workspace
+                .setup_sheet
+                .as_ref()
+                .is_some_and(|sheet| sheet.allow.is_some());
+        }
+        self.workspace.canvas.notices.iter().any(|notice| {
+            notice
+                .actions
+                .iter()
+                .any(|(_, action)| *action == crate::state::canvas::NoticeAction::AllowConsent)
+        })
+    }
+
     /// The message one scripted gesture sends, `None` for a step that sends nothing, or why it
     /// cannot be sent.
-    fn step_message(
+    pub(super) fn step_message(
         &mut self,
         module: &str,
         action: CapabilityAction,
@@ -1142,6 +1163,12 @@ impl Editor {
                     .is_none_or(|open| open.consent.module_id != module)
                 {
                     return Err(format!("no consent notice is open for {module}"));
+                }
+                // Allow is pressed only where it is drawn: neither the setup sheet nor the notice
+                // offers it on a machine that cannot run what it installs, and the setup sheet is
+                // drawn only over Develop.
+                if allow && !self.consent_allow_drawn() {
+                    return Err(format!("no Allow or Download is drawn for {module}"));
                 }
                 CapabilityMessage::Consent(allow)
             }

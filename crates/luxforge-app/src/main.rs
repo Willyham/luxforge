@@ -120,10 +120,10 @@ struct Config {
     /// `--evidence-select-introduction`: the evidence run shows the Select introduction the first
     /// time Select is shown, as a person's launch does, so it can be captured. Evidence runs only.
     evidence_introduction: bool,
-    /// Who this launch shows the Select introduction to the first time Select is shown, decided
-    /// once the arguments are read: a person's launch, or an evidence run that asks. Never by
-    /// default, so a test's launch never shows it.
-    introducer: state::select_introduction::Introducer,
+    /// Whether this launch shows the Select introduction by itself the first time Select is
+    /// shown, decided once the arguments are read: a person's launch, or an evidence run that
+    /// asks. Off by default, so a test's launch never shows it.
+    introduces: bool,
 }
 
 impl Config {
@@ -423,7 +423,7 @@ fn arguments() -> Result<Config, String> {
     if config.evidence_introduction && config.evidence.is_none() {
         return Err("--evidence-select-introduction requires --evidence-dir".into());
     }
-    config.introducer = state::select_introduction::Introducer::of(
+    config.introduces = state::select_introduction::introduces(
         config.hidden,
         config.evidence.is_some(),
         config.evidence_introduction,
