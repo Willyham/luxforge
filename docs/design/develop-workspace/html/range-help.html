@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Range help — design board</title>
+<style>
+  @font-face { font-family: "Inter"; font-weight: 400; src: local("Inter Regular"), local("Inter"), url("../../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-Regular.ttf"); }
+  @font-face { font-family: "Inter"; font-weight: 600; src: local("Inter SemiBold"), url("../../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-SemiBold.ttf"); }
+  :root {
+    --canvas: #19191b; --panel: #202023; --bar: #232326; --control: #2c2c31;
+    --rule: #2f2f32; --border: rgba(255,255,255,.06);
+    --text: #e8e8ea; --text2: #a8a8ae; --text3: #77777f;
+    --accent: #e2b46a; --ink: #1a1408; --accent-tint: rgba(226,180,106,.14);
+    --band: #2b2b30; --tint: rgba(63,208,122,.55);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f10; color: var(--text); font: 12px/1.45 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 32px; }
+  h1.board { font-size: 13px; font-weight: 600; color: var(--text2); margin: 0 0 12px; letter-spacing: .02em; }
+  .note { color: var(--text3); font-size: 11px; margin: 10px 0 36px; max-width: 1440px; }
+  .note b { color: var(--text2); }
+  .grow { flex: 1; }
+
+  /* ---------- the window behind: Develop in Mask mode ---------- */
+  .window { position: relative; width: 1440px; height: 900px; background: var(--canvas); border-radius: 10px; overflow: hidden; border: 1px solid #000; }
+  .titlebar { height: 44px; background: var(--bar); border-bottom: 1px solid var(--rule); display: flex; align-items: center; padding: 0 12px 0 84px; gap: 12px; }
+  .traffic { position: absolute; left: 14px; top: 16px; display: flex; gap: 8px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a40; display: block; }
+  .seg { display: flex; background: var(--canvas); border-radius: 6px; padding: 2px; }
+  .seg span { padding: 4px 10px; border-radius: 5px; color: var(--text2); font-size: 12px; }
+  .seg span.on { background: var(--control); color: var(--text); }
+  .seg kbd { color: var(--text3); margin-left: 6px; font: inherit; font-size: 11px; }
+  .vname { font-weight: 600; font-size: 13px; }
+  .vsum { color: var(--text3); }
+  .body { display: flex; height: calc(900px - 44px - 26px); }
+  .left { width: 240px; background: var(--panel); border-right: 1px solid var(--rule); padding: 12px; }
+  .lbl { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--text3); text-transform: uppercase; margin: 6px 0 8px; display: flex; justify-content: space-between; }
+  .hrow { color: var(--text2); padding: 4px 0; }
+  .centre { flex: 1; display: flex; align-items: center; justify-content: center; }
+  .photo { width: 858px; height: 572px; display: grid; grid-template-columns: repeat(4, 1fr); }
+  .photo i { display: block; }
+  .right { width: 300px; background: var(--panel); border-left: 1px solid var(--rule); padding: 12px; }
+  .status { height: 26px; background: var(--panel); border-top: 1px solid var(--rule); color: var(--text3); font-size: 11px; display: flex; align-items: center; padding: 0 12px; justify-content: space-between; }
+
+  /* mask panel rows, as drawn in the panel and in the drawings */
+  .crow { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--text); }
+  .crow.sel { background: var(--band); }
+  .crow .ico { width: 12px; height: 12px; border: 1.5px solid var(--text2); border-radius: 50% 50% 50% 0; transform: rotate(-45deg); }
+  .crow .sun { width: 12px; height: 12px; border: 1.5px solid var(--text2); border-radius: 50%; }
+  .pickrow { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 24px; }
+  .sw { width: 22px; height: 16px; border-radius: 3px; border: 1px dashed #4a4a50; }
+  .sw.f { border: 0; }
+  .pickbtn { height: 22px; padding: 0 8px; border-radius: 5px; background: var(--control); border: 1px solid var(--border); color: var(--text); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+  .pickbtn.on { background: var(--accent-tint); color: var(--accent); border-color: transparent; }
+  .info { width: 15px; height: 15px; border-radius: 50%; border: 1.3px solid var(--text2); color: var(--text2); font-size: 9px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-style: normal; }
+  .info.hover { border-color: var(--text); color: var(--text); box-shadow: 0 0 0 4px rgba(255,255,255,.06); }
+  .info.open { border-color: var(--accent); color: var(--accent); }
+  .pickbar { display: flex; align-items: center; gap: 8px; height: 26px; margin: 2px 0; padding: 0 4px 0 10px; border-radius: 5px; border: 1px solid rgba(226,180,106,.5); background: rgba(226,180,106,.08); color: var(--text2); font-size: 11px; }
+  .pickbar .dropper { color: var(--accent); }
+  .pickbar .count { color: var(--accent); }
+  .pickbar .done { height: 20px; padding: 0 8px; border-radius: 4px; background: var(--control); color: var(--text); display: inline-flex; align-items: center; }
+
+  /* ---------- the scrim and the sheet, as Select's introduction draws them ---------- */
+  .scrim { position: absolute; inset: 44px 0 0 0; background: rgba(10,10,11,.62); }
+  .sheet { position: absolute; left: 50%; top: calc(44px + (900px - 44px - 26px) / 2); transform: translate(-50%, -50%);
+    width: 720px; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4); overflow: hidden; }
+  .sheet.static { position: static; transform: none; }
+  .close { position: absolute; right: 14px; top: 14px; width: 24px; height: 24px; border-radius: 6px; color: var(--text3); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .head { padding: 28px 32px 0; }
+  .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 6px 0 8px; }
+  .lead { font-size: 13px; color: var(--text2); max-width: 600px; margin: 0; line-height: 1.5; }
+  .lead strong { color: var(--text); font-weight: 600; }
+
+  .steps { display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr; align-items: stretch; padding: 22px 32px 0; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 13px; padding-bottom: 60px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .illus { height: 112px; background: var(--canvas); border-bottom: 1px solid var(--border); position: relative; padding: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+  .stext { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .sname { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .num { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .sbody { color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .where { margin-top: auto; padding-top: 6px; color: var(--text3); font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .key { display: inline-flex; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--control); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; align-items: center; justify-content: center; }
+
+  /* drawings, from theme tokens and the photo's own fixed colours */
+  .mini { width: 172px; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 0; }
+  .mini .crow { height: 22px; font-size: 10.5px; }
+  .mini .pickrow { padding: 2px 8px 2px 22px; }
+  .mini .sw { width: 14px; height: 11px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 30px); grid-template-rows: repeat(2, 24px); border-radius: 4px; overflow: hidden; position: relative; }
+  .tiles i { display: block; position: relative; }
+  .tiles i.sel::after { content: ""; position: absolute; inset: 0; background: var(--tint); }
+  .cross { position: absolute; width: 14px; height: 14px; }
+  .cross::before, .cross::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+  .cross::before { left: 6px; top: 0; width: 1.5px; height: 14px; }
+  .cross::after { top: 6px; left: 0; height: 1.5px; width: 14px; }
+  .dragbox { position: absolute; border: 1.5px dashed var(--accent); background: rgba(226,180,106,.1); border-radius: 2px; }
+  .chips { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text3); }
+  .chips .sw { width: 14px; height: 11px; }
+  .chips .n { margin-left: 4px; color: var(--accent); }
+
+  .compare { padding: 22px 32px 0; }
+  .compare .lbl { margin: 0 0 8px; color: var(--text3); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .col { border-radius: 8px; padding: 12px 14px; border: 1px solid var(--border); background: var(--panel); }
+  .col.ours { border-color: rgba(226,180,106,.38); background: linear-gradient(0deg, rgba(226,180,106,.05), rgba(226,180,106,.05)), var(--panel); }
+  .col h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--text2); }
+  .col.ours h4 { color: var(--accent); }
+  .alike { display: flex; flex-direction: column; gap: 8px; }
+  .alike div { display: flex; align-items: center; gap: 10px; color: var(--text); }
+  .group { display: flex; gap: 3px; padding: 3px; border-radius: 5px; outline: 1.5px solid var(--tint); }
+  .group i { width: 16px; height: 16px; border-radius: 3px; display: block; }
+  .col ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .col li { color: var(--text); padding-left: 16px; position: relative; }
+  .col li::before { content: "✓"; position: absolute; left: 2px; color: var(--accent); font-size: 11px; }
+  .col li small { display: block; color: var(--text3); font-size: 11px; }
+
+  .foot { margin-top: 24px; padding: 14px 32px; border-top: 1px solid var(--rule); background: var(--panel); display: flex; align-items: center; gap: 10px; }
+  .promise { display: flex; align-items: center; gap: 8px; color: var(--text2); }
+  .btn { height: 28px; padding: 0 12px; border-radius: 6px; background: var(--control); color: var(--text); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--ink); border-color: transparent; font-weight: 600; }
+  .btn kbd { font: inherit; font-size: 11px; opacity: .6; }
+
+  .row-boards { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
+  .crop { background: var(--panel); border-radius: 8px; border: 1px solid #000; padding: 12px; position: relative; }
+  .tip { position: absolute; background: var(--control); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 9px; font-size: 11px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+</style>
+</head>
+<body>
+
+<!-- the fixture's twelve patches, reused by every drawing -->
+<h1 class="board">Board 1 · A colour range's help, opened from the ⓘ beside its Pick (1440 × 900 pt, Develop in Mask mode)</h1>
+<div class="window">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <div class="titlebar">
+    <div class="seg"><span>Select<kbd>G</kbd></span><span class="on">Develop<kbd>D</kbd></span></div>
+    <span class="vname">range.jpg</span><span class="vsum">1440 × 960 · JPEG</span>
+  </div>
+  <div class="body">
+    <div class="left">
+      <div class="lbl">History <span>rev 9</span></div>
+      <div class="hrow">Add intersect colour range</div>
+      <div class="hrow">Mask 1 · Exposure −1.00</div>
+      <div class="hrow">Add intersect linear</div>
+      <div class="hrow">Add luminance range</div>
+      <div class="hrow">Original</div>
+    </div>
+    <div class="centre">
+      <div class="photo">
+        <i style="background:#3b5170"></i><i style="background:#7a7a78"></i><i style="background:#c49884"></i><i style="background:#765444"></i>
+        <i style="background:#f2f2f0"></i><i style="background:#a2a2a0"></i><i style="background:#2f2f2f"></i><i style="background:#d68330"></i>
+        <i style="background:#5f7aa0"></i><i style="background:#5a6e44"></i><i style="background:#c6c6c4"></i><i style="background:#b0383c"></i>
+      </div>
+    </div>
+    <div class="right">
+      <div class="lbl">Mask 1 <span>3 components</span></div>
+      <div class="crow"><i class="sun"></i>Luminance range 1</div>
+      <div class="crow">Linear 1</div>
+      <div class="crow sel"><i class="ico"></i>Colour range 1</div>
+      <div class="pickbar"><span class="dropper">✎</span>Click or drag · Shift adds<span class="grow"></span><span class="count">0 of 5</span><span class="done">Done</span></div>
+      <div class="pickrow"><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="grow"></span><span class="pickbtn on">✎ Pick</span><i class="info open">i</i></div>
+    </div>
+  </div>
+  <div class="status"><span>Applied Add colour range · entry 9</span><span>Fit · 60%</span></div>
+
+  <div class="scrim"></div>
+
+  <div class="sheet" role="dialog" aria-labelledby="t1">
+    <div class="close">✕</div>
+    <div class="head">
+      <div class="eyebrow">How a colour range works</div>
+      <div class="title" id="t1">Select by colour</div>
+      <p class="lead">Pick a colour and everything <strong>that colour</strong> is selected, wherever it is in the photo. Brightness doesn’t count, so <strong>a lit wall and its shadow</strong> are selected together.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="illus">
+          <div class="mini">
+            <div class="crow sel"><i class="ico"></i>Colour range 1</div>
+            <div class="pickrow"><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="grow"></span><span class="pickbtn on">✎ Pick</span></div>
+          </div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">1</span>Pick</div>
+          <div class="sbody">Turn on the eyedropper. A new range starts with it on.</div>
+          <div class="where">Pick, on the component’s row</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="tiles">
+            <i class="sel" style="background:#3b5170"></i><i style="background:#7a7a78"></i><i style="background:#c49884"></i><i style="background:#765444"></i>
+            <i style="background:#f2f2f0"></i><i style="background:#a2a2a0"></i><i style="background:#2f2f2f"></i><i style="background:#d68330"></i>
+            <i class="cross" style="left:8px;top:5px"></i>
+          </div>
+          <div class="chips"><i class="sw f" style="background:#3b5170"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="n">1 of 5</span></div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">2</span>Click</div>
+          <div class="sbody">Click a colour in the photo to select it. Shift-click adds another.</div>
+          <div class="where"><span class="key">Click</span> select <span class="key">Shift</span><span class="key">Click</span> add</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="tiles">
+            <i style="background:#3b5170"></i><i style="background:#7a7a78"></i><i style="background:#c49884"></i><i class="sel" style="background:#765444"></i>
+            <i style="background:#f2f2f0"></i><i style="background:#a2a2a0"></i><i style="background:#2f2f2f"></i><i class="sel" style="background:#d68330"></i>
+            <i class="dragbox" style="left:92px;top:28px;width:26px;height:18px"></i>
+          </div>
+          <div class="chips"><i class="sw f" style="background:#d68330"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="n">1 of 5</span></div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">3</span>Drag</div>
+          <div class="sbody">Or drag over an area to take its main colour.</div>
+          <div class="where"><span class="key">Drag</span> area <span class="key">Return</span> done</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compare">
+      <div class="lbl">Good to know</div>
+      <div class="cols">
+        <div class="col">
+          <h4>It sees these as one colour</h4>
+          <div class="alike">
+            <div><span class="group"><i style="background:#f2f2f0"></i><i style="background:#a2a2a0"></i><i style="background:#2f2f2f"></i></span>White, grey and black</div>
+            <div><span class="group"><i style="background:#f1c9ad"></i><i style="background:#c49884"></i><i style="background:#765444"></i></span>Most skin tones</div>
+          </div>
+        </div>
+        <div class="col ours">
+          <h4>To narrow it</h4>
+          <ul>
+            <li>Intersect a luminance range<small>keeps only the brightness you want</small></li>
+            <li>Subtract a brush<small>paints out what it shouldn’t take</small></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <div class="promise"><i class="info">i</i>Earlier adjustments change what it selects. Judge its edges at 100%.</div>
+      <span class="grow"></span>
+      <span class="btn primary">Got it <kbd>↵</kbd></span>
+    </div>
+  </div>
+</div>
+<p class="note">A modal sheet for one kind: 720 pt wide, centred over a scrim. The eyedropper stays armed behind it. <b>Got it</b>, Return, Escape or ✕ close it, and Escape closes the sheet before it reaches the eyedropper. A press on the scrim does nothing. The drawings are composed from theme tokens and the twelve patches of the range fixture, never shipped as images. Every sentence comes from the host’s kind table and the picker’s steps, and the keys come from the keymap, so a kind registered later brings its own sheet.</p>
+
+<div class="row-boards">
+  <div>
+    <h1 class="board">Board 2 · A luminance range’s help: the same sheet, its own words</h1>
+    <div class="sheet static" style="position:relative">
+      <div class="close">✕</div>
+      <div class="head">
+        <div class="eyebrow">How a luminance range works</div>
+        <div class="title">Select by brightness</div>
+        <p class="lead">Pick a tone and everything <strong>as bright</strong> is selected, whatever its colour. Type or drag the band’s edges on the row afterwards.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="illus">
+            <div class="mini">
+              <div class="crow sel"><i class="sun"></i>Luminance range 1</div>
+              <div class="pickrow"><span class="grow"></span><span class="pickbtn on">✎ Pick</span></div>
+            </div>
+          </div>
+          <div class="stext">
+            <div class="sname"><span class="num">1</span>Pick</div>
+            <div class="sbody">Turn on the eyedropper. A new range starts with it on.</div>
+            <div class="where">Pick, on the component’s row</div>
+          </div>
+        </div>
+        <div class="arrow">›</div>
+        <div class="step">
+          <div class="illus">
+            <div class="tiles">
+              <i class="sel" style="background:#3b5170"></i><i style="background:#7a7a78"></i><i style="background:#c49884"></i><i class="sel" style="background:#765444"></i>
+              <i style="background:#f2f2f0"></i><i style="background:#a2a2a0"></i><i class="sel" style="background:#2f2f2f"></i><i style="background:#d68330"></i>
+              <i class="cross" style="left:8px;top:5px"></i>
+            </div>
+            <div class="chips">Range 12 – 24</div>
+          </div>
+          <div class="stext">
+            <div class="sname"><span class="num">2</span>Click</div>
+            <div class="sbody">Click a tone in the photo to select everything near its brightness.</div>
+            <div class="where"><span class="key">Click</span> select</div>
+          </div>
+        </div>
+        <div class="arrow">›</div>
+        <div class="step">
+          <div class="illus">
+            <div class="tiles">
+              <i style="background:#3b5170"></i><i class="sel" style="background:#7a7a78"></i><i style="background:#c49884"></i><i style="background:#765444"></i>
+              <i style="background:#f2f2f0"></i><i class="sel" style="background:#a2a2a0"></i><i style="background:#2f2f2f"></i><i class="sel" style="background:#d68330"></i>
+              <i class="dragbox" style="left:32px;top:2px;width:26px;height:44px"></i>
+            </div>
+            <div class="chips">Range 38 – 62</div>
+          </div>
+          <div class="stext">
+            <div class="sname"><span class="num">3</span>Drag</div>
+            <div class="sbody">Or drag over an area to take the tones across it.</div>
+            <div class="where"><span class="key">Drag</span> area <span class="key">Return</span> done</div>
+          </div>
+        </div>
+      </div>
+      <div class="compare">
+        <div class="lbl">Good to know</div>
+        <div class="cols">
+          <div class="col">
+            <h4>It sees these as one tone</h4>
+            <div class="alike">
+              <div><span class="group"><i style="background:#5f7aa0"></i><i style="background:#7a7a78"></i></span>A blue sky and a grey wall</div>
+              <div><span class="group"><i style="background:#5a6e44"></i><i style="background:#b0383c"></i></span>Any colours as bright</div>
+            </div>
+          </div>
+          <div class="col ours">
+            <h4>To narrow it</h4>
+            <ul>
+              <li>Intersect a colour range<small>keeps only the colour you want</small></li>
+              <li>Subtract a brush<small>paints out what it shouldn’t take</small></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="promise"><i class="info">i</i>Earlier adjustments change what it selects. Judge its edges at 100%.</div>
+        <span class="grow"></span>
+        <span class="btn primary">Got it <kbd>↵</kbd></span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <h1 class="board">Board 3 · Opening it: the ⓘ at the end of the Pick row, pointed at</h1>
+    <div class="crop" style="width:300px">
+      <div class="crow sel"><i class="ico"></i>Colour range 1</div>
+      <div class="pickbar"><span class="dropper">✎</span>Click or drag · Shift adds<span class="grow"></span><span class="count">2 of 5</span><span class="done">Done</span></div>
+      <div class="pickrow"><i class="sw f" style="background:#3b5170"></i><i class="sw f" style="background:#d68330"></i><i class="sw"></i><i class="sw"></i><i class="sw"></i><span class="grow"></span><span class="pickbtn on">✎ Pick</span><i class="info hover">i</i></div>
+      <div class="tip" style="right:-6px;top:92px">How a colour range works</div>
+      <div style="height:34px"></div>
+    </div>
+    <p class="note" style="max-width:300px">The row keeps only the one-line pick bar and the Pick row: no prose under the row. The ⓘ’s tooltip names the sheet it opens.</p>
+  </div>
+</div>
+
+</body>
+</html>

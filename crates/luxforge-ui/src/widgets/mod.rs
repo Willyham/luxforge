@@ -18,12 +18,14 @@ mod dropdown;
 mod field_grid;
 mod floating_bar;
 mod focus_control;
+mod help_sheet;
 mod histogram;
 mod hover_panel;
 mod icon_button;
 mod inline_menu;
 mod inline_notice;
 mod job_row;
+mod key_hint;
 mod list_row;
 mod mask_row;
 mod menu_choice;
@@ -97,6 +99,10 @@ pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,
 };
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
+pub use help_sheet::{
+    HelpAlike, HelpRemedy, HelpSheetModel, HelpSheetStep, HintPart, LeadPart, PatchGesture,
+    PatchHolds, StepDrawing, help_sheet,
+};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, histogram_inspector,
 };
@@ -108,6 +114,7 @@ pub use icon_button::{
 pub use inline_menu::inline_menu;
 pub use inline_notice::inline_notice;
 pub use job_row::{JobRowModel, job_row};
+pub use key_hint::{KeyHint, key_cap, key_hints};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
     ComponentRowMessages, ComponentRowModel, CorrectionRowMessages, CorrectionRowModel, DropEdge,
@@ -171,9 +178,8 @@ pub use filter_bar::{
 pub use job_row::{WorkRowModel, work_row};
 pub use long_work::{ProgressSheetModel, StatusJobModel, WorkProgress, progress_sheet, status_job};
 pub use loupe::{
-    FocusInsetModel, FrameStripModel, InsetRegion, InsetSource, KeyHint, LoupeInfoModel,
-    MomentFrame, focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, region_box,
-    visible_window,
+    FocusInsetModel, FrameStripModel, InsetRegion, InsetSource, LoupeInfoModel, MomentFrame,
+    focus_box, focus_inset, frame_strip, loupe_info_bar, region_box, visible_window,
 };
 pub use segmented::{filter_segment, filter_segment_track, keyed_segment};
 pub use select_strip::{STRIP_SLIDER_WIDTH, SelectStripModel, select_strip};

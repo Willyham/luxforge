@@ -1546,6 +1546,7 @@ impl Editor {
             settings_open: self.settings.open.is_some(),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             export_sheet_open: self.export.sheet.is_some(),
+            help_sheet_open: matches!(self.view_state.menu, Some(MenuTarget::ComponentHelp(_))),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
             modes: crate::state::tools::mode_shortcuts(

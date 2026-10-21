@@ -631,8 +631,11 @@ working either way: it renders, lists through `mask.list`, and stays editable an
 experiment on, then choose Luminance range or Colour range from New mask or from Add component. It is
 created at once as a starting selection — the whole tonal range with soft shoulders for a band, no
 colours for a colour range — in Mask mode, with its row selected, the overlay showing as the tint and
-**the eyedropper armed**. A line under the row says what a click does, with an eyedropper in the accent
-and a **Done** button; the pointer over the photograph is a crosshair. Nothing has to be bound to the mask
+**the eyedropper armed**. A short line under the row (`Click or drag on the photo`) has an eyedropper in
+the accent and a **Done** button; the pointer over the photograph is a crosshair. For the steps, press the
+**ⓘ** button at the end of the row's Pick row: a sheet shows each step with a small picture and its
+keys (**Click**, **Shift Click** for a colour range, **Drag**, **Return**), what the range sees as one
+and how to narrow it. **Got it**, Return or Escape closes it, and the eyedropper stays on. Nothing has to be bound to the mask
 first: its selection is read on the stage a first Basic adjustment will receive, so the tint, the row's
 picture and the picks all work on a brand new mask.
 
@@ -675,10 +678,8 @@ does when a layer is added ahead of a mask that is already bound. Where a Detail
 the read is after it, at the bounded precision Detail hands on.
 
 Four things about a range selection are worth knowing before you rely on one, because they are how it
-works rather than faults to be fixed. **The panel says all but the third on the component's own
-row**, above the numbers they apply to, so you read them before you type a number rather than after
-you have made an edit you did not mean; what it cannot say in a line is the arithmetic behind them,
-which is here:
+works rather than faults to be fixed. **The row's help sheet says all but the third**, one press
+from the numbers they apply to; the arithmetic behind them is here:
 
 - **It reads the input of the adjustment it modulates, not the finished picture.** A layer ahead of
   it changes what it selects: a `+0.75 EV` lift before a band drawn for a sky takes that sky from

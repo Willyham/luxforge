@@ -257,6 +257,10 @@ pub(crate) fn workspace<'a>(
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
     }
+    // A mask component's help sheet, opened from its row's help button.
+    if let Some(sheet) = masks_panel::help_sheet(&model.masks) {
+        layers = layers.push(sheet);
+    }
     if let Some(sheet) = export_sheet::export_sheet(model.export_sheet.as_ref()) {
         layers = layers.push(sheet);
     }

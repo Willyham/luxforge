@@ -23,7 +23,7 @@ use crate::{
     },
     state::{
         histogram::HistogramModel,
-        masks::{ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
+        masks::{ComponentHelp, ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
         tools::{ControlModel, drawn_by_range},
     },
     view::tools_panel::{
@@ -36,13 +36,15 @@ use iced::{
 };
 use luxforge_ui::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
-    DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
-    MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode, OverlayTint,
-    PickBarModel, PickButtonModel, RenameMessages, SliderModel, StrokeRowModel, SwatchSlotsModel,
-    ToggleModel, ValueEdit, band_header, caption, compact_toggle, component_note, component_row,
-    drop_feedback, dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control,
-    overlay_control, pick_bar, pick_button, popover, slider, stroke_row, swatch_slots, theme,
-    with_tooltip,
+    DropdownButtonModel, GridField, GroupRuleModel, HelpAlike, HelpRemedy, HelpSheetModel,
+    HelpSheetStep, HintPart, Icon, IconButtonModel, LeadPart, MaskRowMessages, MaskRowModel,
+    MenuEntry, MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode,
+    OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, RenameMessages,
+    SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
+    band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
+    dropdown_button, field_grid, group_rule, header_icon_button, help_sheet as sheet, mask_row,
+    menu_list, mode_control, overlay_control, pick_bar, pick_button, popover, slider, stroke_row,
+    swatch_slots, theme, with_tooltip,
 };
 use luxforge_ui::{Element, Token};
 
@@ -825,6 +827,14 @@ fn component_view<'a>(
         } else {
             pick_row(component, model.enabled)
         };
+        // How picking works and what the kind does not select sit behind a help button at the end
+        // of the row, so the open row stays controls rather than a page of prose.
+        let picks = match &component.help {
+            Some(help) => row![picks, help_button(component, help, menu)]
+                .align_y(Alignment::Center)
+                .into(),
+            None => picks,
+        };
         // A right press offers the pick's request, as every control in the row offers its own.
         block = block.push(mouse_area(picks).on_right_press(toggle_menu(
             menu,
@@ -833,15 +843,10 @@ fn component_view<'a>(
         if let Some(note) = component.sample_note {
             block = block.push(component_note(note));
         }
-    }
-    // What this kind does not select and why a pick cannot be taken, in the host's own words, on
-    // the open row only, so a list of components stays a list rather than a page of prose.
-    let reasons = component
-        .limits
-        .iter()
-        .chain(component.pick_reason.iter().filter(|_| component.can_pick));
-    for line in reasons {
-        block = block.push(component_note(line.clone()));
+        // Why a pick cannot be taken, in the host's own words, on the open row only.
+        if let Some(reason) = &component.pick_reason {
+            block = block.push(component_note(reason.clone()));
+        }
     }
     block.into()
 }
@@ -1277,6 +1282,131 @@ fn pick_row(component: &ComponentRow, enabled: bool) -> Element<'_, Message> {
         .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
         .width(Length::Fill)
         .into()
+}
+
+/// The open row's help button, at the end of its pick row, lit while the help sheet it opens is
+/// showing.
+fn help_button<'a>(
+    component: &ComponentRow,
+    help: &ComponentHelp,
+    menu: Option<&MenuTarget>,
+) -> Element<'a, Message> {
+    header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Information,
+            tooltip: format!("How a {} works", help.title.to_lowercase()),
+            enabled: true,
+            selected: help.open,
+        },
+        Some(toggle_menu(
+            menu,
+            MenuTarget::ComponentHelp(component.id.as_str().to_owned()),
+        )),
+    )
+}
+
+/// The open row's help sheet over the whole window, while it is showing: the picker's title, lead
+/// and steps, drawn over the panel's own patches in the overlay's tint, then what the kind takes
+/// together and how to narrow it, from the host's kind table. ✕, Got it, Return and Escape close it.
+pub(crate) fn help_sheet(model: &MasksModel) -> Option<Element<'_, Message>> {
+    let (component, help) = model.help_sheet()?;
+    let colour = |[r, g, b]: [u8; 3]| iced::Color::from_rgb8(r, g, b);
+    let patches: Vec<iced::Color> = crate::range_pick::PATCHES.map(colour).to_vec();
+    let slots = component.sample_limit;
+    let steps = help
+        .pick
+        .steps
+        .iter()
+        .map(|step| HelpSheetStep {
+            name: step.name.to_owned(),
+            body: step.body.to_owned(),
+            hint: step
+                .hint
+                .iter()
+                .map(|part| match part {
+                    crate::range_pick::Hint::Key(key) => HintPart::Key((*key).to_owned()),
+                    crate::range_pick::Hint::Text(words) => HintPart::Text((*words).to_owned()),
+                })
+                .collect(),
+            drawing: match &step.drawing {
+                crate::range_pick::StepDrawing::PickRow => StepDrawing::PickRow {
+                    icon: component.icon.and_then(Icon::from_name),
+                    label: format!("{} 1", help.title),
+                    slots: slots.min(3),
+                },
+                crate::range_pick::StepDrawing::Patches {
+                    selected,
+                    gesture,
+                    holds,
+                } => StepDrawing::Patches {
+                    colours: patches.clone(),
+                    selected: selected.to_vec(),
+                    gesture: match gesture {
+                        crate::range_pick::Gesture::Click(at) => PatchGesture::Click(*at),
+                        crate::range_pick::Gesture::Drag(at) => PatchGesture::Drag(*at),
+                    },
+                    holds: match holds {
+                        crate::range_pick::Holds::Swatch(at) => PatchHolds::Swatches {
+                            held: vec![patches[*at]],
+                            slots,
+                            count: format!("1 of {slots}"),
+                        },
+                        crate::range_pick::Holds::Band { low, high } => PatchHolds::Band {
+                            label: "Range".into(),
+                            low: *low,
+                            high: *high,
+                        },
+                    },
+                },
+            },
+        })
+        .collect();
+    let limits = help.limits;
+    Some(sheet(
+        &HelpSheetModel {
+            eyebrow: format!("How a {} works", help.title.to_lowercase()),
+            title: help.pick.title.to_owned(),
+            lead: help
+                .pick
+                .lead
+                .iter()
+                .map(|(text, strong)| LeadPart {
+                    text: (*text).to_owned(),
+                    strong: *strong,
+                })
+                .collect(),
+            steps,
+            notes_heading: "Good to know".into(),
+            alike_heading: limits
+                .map(|limits| limits.alike_heading.to_owned())
+                .unwrap_or_default(),
+            alike: limits
+                .into_iter()
+                .flat_map(|limits| limits.alike)
+                .map(|alike| HelpAlike {
+                    label: alike.label.to_owned(),
+                    examples: alike.examples.iter().copied().map(colour).collect(),
+                })
+                .collect(),
+            narrow_heading: "To narrow it".into(),
+            narrow: limits
+                .into_iter()
+                .flat_map(|limits| limits.narrow)
+                .map(|remedy| HelpRemedy {
+                    action: remedy.action.to_owned(),
+                    effect: remedy.effect.to_owned(),
+                })
+                .collect(),
+            footnote: help.notes.join(" "),
+            done: "Got it".into(),
+            tint: OverlayTint::ALL
+                .get(model.overlay.colour_selected)
+                .copied()
+                .unwrap_or(OverlayTint::Green)
+                .color(),
+        },
+        close_menu(),
+    ))
 }
 
 // ---- the brush -----------------------------------------------------------------------------------

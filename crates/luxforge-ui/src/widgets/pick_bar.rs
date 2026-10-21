@@ -47,7 +47,7 @@ pub fn pick_button<'a, M: Clone + 'a>(model: &PickButtonModel, on_pick: M) -> El
 /// Plain data for the pick bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickBarModel {
-    /// What a click and a drag do here: `Click a tone · drag over an area`.
+    /// What a click and a drag do here, in one short line: `Click or drag on the photo`.
     pub hint: String,
     /// The colours held of the most the range can hold (`2 of 5`), for a kind that holds them.
     pub count: Option<String>,
@@ -116,7 +116,7 @@ mod tests {
         ] {
             let _: Element<'_, u8> = pick_bar(
                 &PickBarModel {
-                    hint: "Click a tone \u{b7} drag over an area".into(),
+                    hint: "Click or drag on the photo".into(),
                     count,
                     enabled,
                 },

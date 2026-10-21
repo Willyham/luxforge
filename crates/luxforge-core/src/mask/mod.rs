@@ -216,18 +216,18 @@ struct ComponentKind {
     /// The kind-conformance suite (`tests/mask/kinds`) checks the two against each other for every
     /// kind.
     value_based: bool,
-    /// What this kind does **not** select, in its own terms, for a client to show where a person
-    /// would otherwise assume otherwise.
+    /// What this kind does **not** tell apart, in its own terms, and how to narrow it, for a client
+    /// to show where a person would otherwise assume otherwise.
     ///
     /// It sits in the table beside the parser for the same reason the declared parameters do: a kind
-    /// knows what its own axis cannot tell apart, and a panel that kept the sentence instead would
-    /// have to match on kind tokens. Empty for a position-based kind — a gradient and a brush select
-    /// where they were drawn, and no value in the picture changes that. Each line is one caption, is
-    /// phrased as a remedy rather than only as a warning, and quotes the
-    /// `docs/design/range-study.md` figure it rests on. [`component_kind_limits`] appends the one line
-    /// every value-based kind shares, so that sentence is written once and a kind registered later
-    /// carries it without this table being edited.
-    limits: &'static [&'static str],
+    /// knows what its own axis cannot tell apart, and a panel that kept the sentences instead would
+    /// have to match on kind tokens. `None` for a position-based kind — a gradient and a brush select
+    /// where they were drawn, and no value in the picture changes that. The words are short and
+    /// plain, read in the kind's help; the `docs/design/range-study.md` figure each rests on stays in
+    /// its doc comment. [`component_kind_notes`] answers the lines every value-based kind shares, so
+    /// they are written once and a kind registered later carries them without this table being
+    /// edited.
+    limits: Option<&'static KindLimits>,
     /// The name of the glyph a client draws this kind with, from the widget library's icon names,
     /// as a module descriptor names its own icon. It lives in the table so a panel, a menu and a
     /// draft bar show one glyph per kind without matching on kind tokens of their own.
@@ -274,15 +274,41 @@ struct ArtifactUse {
 /// the dimensions or why not.
 type ArtifactCheck = fn(&str, Option<u32>, Option<u32>, u64) -> Result<(u32, u32), String>;
 
-/// The one limit every value-based kind has, whatever its axis: it reads the input of the operation
-/// it modulates, which is what makes it move under a reordering and makes the 100% view the only
-/// place it can be read exactly.
-///
-/// The overlay reads that same input — the mask's first bound layer's, once per display cell
-/// ([proposal P16](../../../../docs/design/range-study.md#proposals)), and the sentence says so. It
-/// also says where the truth is, because at Fit the cell's own pixel is a downscaled one and
-/// coverage of the average is not the average of coverages.
-const VALUE_BASED_LIMIT: &str = "Read on this layer's own input, so a layer above it changes what this selects · the overlay reads that input too, and at Fit it reads a downscaled pixel: the 100% view is the truth";
+/// What a value-based kind does not tell apart, and how to narrow it, as its help says them.
+#[derive(Debug, PartialEq, Eq)]
+pub struct KindLimits {
+    /// What the kind sees as one, as a heading: `It sees these as one colour`.
+    pub alike_heading: &'static str,
+    /// Things it takes together, each with example colours.
+    pub alike: &'static [Alike],
+    /// How to narrow it, each with what that does.
+    pub narrow: &'static [Remedy],
+}
+
+/// Things a value-based kind takes together: what they are, and example colours of them as 8-bit
+/// sRGB codes, for a client to draw.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Alike {
+    pub label: &'static str,
+    pub examples: &'static [[u8; 3]],
+}
+
+/// One way to narrow a value-based kind: the action, and what it keeps or takes out.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Remedy {
+    pub action: &'static str,
+    pub effect: &'static str,
+}
+
+/// The limits every value-based kind has, whatever its axis: it reads the input of the operation it
+/// modulates, which is what makes it move under a reordering, and the overlay reads that same input
+/// once per display cell ([proposal P16](../../../../docs/design/range-study.md#proposals)), so at
+/// Fit a cell's pixel is a downscaled one and coverage of the average is not the average of
+/// coverages: the 100% view is the only place it can be read exactly.
+const VALUE_BASED_NOTES: &[&str] = &[
+    "Earlier adjustments change what it selects.",
+    "Judge its edges at 100%.",
+];
 
 /// How many colours one component of a sampling kind holds, and what one of them declares.
 struct ColourSamples {
@@ -306,7 +332,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parameters: Some(linear::parameters),
         samples: None,
         value_based: false,
-        limits: &[],
+        limits: None,
         icon: "linear",
         menu_title: "Linear gradient",
         band: None,
@@ -322,7 +348,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parameters: Some(radial::parameters),
         samples: None,
         value_based: false,
-        limits: &[],
+        limits: None,
         icon: "radial",
         menu_title: "Radial gradient",
         band: None,
@@ -338,7 +364,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parameters: None,
         samples: None,
         value_based: false,
-        limits: &[],
+        limits: None,
         icon: "brush",
         menu_title: "Brush",
         band: None,
@@ -354,7 +380,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parameters: Some(range::luminance_parameters),
         samples: None,
         value_based: true,
-        limits: range::LUMINANCE_LIMITS,
+        limits: Some(&range::LUMINANCE_LIMITS),
         icon: "luminance",
         menu_title: "Luminance range",
         band: Some(range::luminance_band),
@@ -373,7 +399,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
             parameters: range::colour_sample_parameters,
         }),
         value_based: true,
-        limits: range::COLOUR_LIMITS,
+        limits: Some(&range::COLOUR_LIMITS),
         icon: "colour",
         menu_title: "Colour range",
         // A colour range is a set of swatches and a radius, not a band on one axis.
@@ -390,7 +416,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         parameters: Some(model::parameters),
         samples: None,
         value_based: false,
-        limits: &[],
+        limits: None,
         icon: "model",
         menu_title: "Model selection",
         band: None,
@@ -518,22 +544,27 @@ pub fn component_kind_is_value_based(kind: &str) -> bool {
         .any(|entry| entry.kind == kind && entry.value_based)
 }
 
-/// What `kind` does **not** select: the kind's own lines from the table, then the one line every
-/// value-based kind shares.
+/// What `kind` does **not** tell apart and how to narrow it, from the table.
 ///
-/// Empty for a position-based kind and for a kind this build does not know — there is nothing honest
+/// None for a position-based kind and for a kind this build does not know — there is nothing honest
 /// to say about a kind whose payload cannot be parsed, and such a component is already named as
 /// unavailable. A client shows these where a person is choosing or editing a component of that kind,
 /// which is where the assumption they correct is made.
-pub fn component_kind_limits(kind: &str) -> Vec<&'static str> {
-    let Some(entry) = COMPONENT_KINDS.iter().find(|entry| entry.kind == kind) else {
-        return Vec::new();
-    };
-    let mut limits = entry.limits.to_vec();
-    if entry.value_based {
-        limits.push(VALUE_BASED_LIMIT);
+pub fn component_kind_limits(kind: &str) -> Option<&'static KindLimits> {
+    COMPONENT_KINDS
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .and_then(|entry| entry.limits)
+}
+
+/// The lines every value-based kind shares, for `kind`: empty for a position-based kind and for a
+/// kind this build does not know.
+pub fn component_kind_notes(kind: &str) -> &'static [&'static str] {
+    if component_kind_is_value_based(kind) {
+        VALUE_BASED_NOTES
+    } else {
+        &[]
     }
-    limits
 }
 
 /// Whether this build draws `kind`'s geometry rather than declaring it as numbers. A drawn kind has

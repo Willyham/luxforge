@@ -94,6 +94,8 @@ pub(crate) enum MenuTarget {
     Component(String),
     /// A component's Copy as JSON request: the request of every control on its row and in its menu.
     ComponentCopy(String),
+    /// A component's help sheet: how to pick into it and what its kind does not tell apart.
+    ComponentHelp(String),
     /// The New mask kind menu.
     NewMask,
     /// The Add component kind menu.

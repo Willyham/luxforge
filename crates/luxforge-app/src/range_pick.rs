@@ -25,11 +25,202 @@ use serde_json::{Map, Value, json};
 /// than a click: a hand that wobbles while clicking still clicks.
 pub(crate) const CLICK_TRAVEL: f32 = 3.0;
 
-/// What the pick bar says a click and a drag do, for a kind that sets a band.
-pub(crate) const TONE_HINT: &str = "Click a tone \u{b7} drag over an area";
+/// What the pick bar says, for a kind that sets a band. One short line: the steps are in the
+/// kind's help sheet.
+pub(crate) const TONE_HINT: &str = "Click or drag on the photo";
 /// The same for a kind that holds colours, which Shift adds to.
-pub(crate) const COLOUR_HINT: &str =
-    "Click a colour \u{b7} Shift-click to add \u{b7} drag over an area";
+pub(crate) const COLOUR_HINT: &str = "Click or drag \u{b7} Shift adds";
+
+/// How picking works for one pickable kind, as the pick bar and the kind's help sheet say it.
+#[derive(Debug, PartialEq)]
+pub(crate) struct PickHelp {
+    /// The pick bar's one line.
+    pub(crate) hint: &'static str,
+    /// The help sheet's title: `Select by colour`.
+    pub(crate) title: &'static str,
+    /// What the kind does, in a sentence or two, its key phrases emphasised.
+    pub(crate) lead: &'static [(&'static str, bool)],
+    /// The help sheet's steps, in the order a person takes them.
+    pub(crate) steps: &'static [PickStep],
+}
+
+/// One step of picking: its name, what it does, its keys and its drawing.
+#[derive(Debug, PartialEq)]
+pub(crate) struct PickStep {
+    pub(crate) name: &'static str,
+    pub(crate) body: &'static str,
+    pub(crate) hint: &'static [Hint],
+    pub(crate) drawing: StepDrawing,
+}
+
+/// A piece of a step's hint line: a key or gesture, drawn in its cap, or words.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Hint {
+    Key(&'static str),
+    Text(&'static str),
+}
+
+/// What a step's drawing shows.
+#[derive(Debug, PartialEq)]
+pub(crate) enum StepDrawing {
+    /// The component's own row with its Pick lit.
+    PickRow,
+    /// [`PATCHES`], the ones a pick selects under the tint, the gesture over one, and what the
+    /// component holds afterwards.
+    Patches {
+        selected: &'static [usize],
+        gesture: Gesture,
+        holds: Holds,
+    },
+}
+
+/// A drawing's gesture, over the patch at its index.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum Gesture {
+    Click(usize),
+    Drag(usize),
+}
+
+/// What a drawing's pick leaves the component holding.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Holds {
+    /// The colour of the patch at this index, as its first swatch.
+    Swatch(usize),
+    /// A band, its edges as fractions of the luminance axis.
+    Band { low: f32, high: f32 },
+}
+
+/// The patches a help sheet's drawings pick from, as 8-bit sRGB codes: two rows of the range
+/// fixture's kind of scene. Each drawing's selection is what that kind would take: the band around
+/// the dark blue's 31% takes the brown's 36% too, and a colour pick on it takes the lit blue.
+pub(crate) const PATCHES: [[u8; 3]; 8] = [
+    [0x3b, 0x51, 0x70],
+    [0x7a, 0x7a, 0x78],
+    [0xc4, 0x98, 0x84],
+    [0x76, 0x54, 0x44],
+    [0x6f, 0x93, 0xb8],
+    [0xa2, 0xa2, 0xa0],
+    [0x2f, 0x2f, 0x2f],
+    [0xd6, 0x83, 0x30],
+];
+
+/// Every pickable kind's first step: turning the eyedropper on.
+const PICK_STEP: PickStep = PickStep {
+    name: "Pick",
+    body: "Turn on the eyedropper. A new range starts with it on.",
+    hint: &[Hint::Text("Pick, on the component\u{2019}s row")],
+    drawing: StepDrawing::PickRow,
+};
+
+/// A kind that sets a band from what is picked.
+const TONE: PickHelp = PickHelp {
+    hint: TONE_HINT,
+    title: "Select by brightness",
+    lead: &[
+        ("Pick a tone and everything ", false),
+        ("as bright", true),
+        (
+            " is selected, whatever its colour. Type or drag the band\u{2019}s edges on the row \
+             afterwards.",
+            false,
+        ),
+    ],
+    steps: &[
+        PICK_STEP,
+        PickStep {
+            name: "Click",
+            body: "Click a tone in the photo to select everything near its brightness.",
+            hint: &[Hint::Key("Click"), Hint::Text("select")],
+            drawing: StepDrawing::Patches {
+                selected: &[0, 3],
+                gesture: Gesture::Click(0),
+                holds: Holds::Band {
+                    low: 0.27,
+                    high: 0.40,
+                },
+            },
+        },
+        PickStep {
+            name: "Drag",
+            body: "Or drag over an area to take the tones across it.",
+            hint: &[
+                Hint::Key("Drag"),
+                Hint::Text("area"),
+                Hint::Key("Return"),
+                Hint::Text("done"),
+            ],
+            drawing: StepDrawing::Patches {
+                selected: &[2, 4, 5, 7],
+                gesture: Gesture::Drag(5),
+                holds: Holds::Band {
+                    low: 0.55,
+                    high: 0.68,
+                },
+            },
+        },
+    ],
+};
+
+/// A kind that holds colours, which Shift adds to.
+const COLOUR: PickHelp = PickHelp {
+    hint: COLOUR_HINT,
+    title: "Select by colour",
+    lead: &[
+        ("Pick a colour and everything ", false),
+        ("that colour", true),
+        (
+            " is selected, wherever it is in the photo. Brightness doesn\u{2019}t count, so ",
+            false,
+        ),
+        ("a lit wall and its shadow", true),
+        (" are selected together.", false),
+    ],
+    steps: &[
+        PICK_STEP,
+        PickStep {
+            name: "Click",
+            body: "Click a colour in the photo to select it. Shift-click adds another.",
+            hint: &[
+                Hint::Key("Click"),
+                Hint::Text("select"),
+                Hint::Key("Shift"),
+                Hint::Key("Click"),
+                Hint::Text("add"),
+            ],
+            drawing: StepDrawing::Patches {
+                selected: &[0, 4],
+                gesture: Gesture::Click(0),
+                holds: Holds::Swatch(0),
+            },
+        },
+        PickStep {
+            name: "Drag",
+            body: "Or drag over an area to take its main colour.",
+            hint: &[
+                Hint::Key("Drag"),
+                Hint::Text("area"),
+                Hint::Key("Return"),
+                Hint::Text("done"),
+            ],
+            drawing: StepDrawing::Patches {
+                selected: &[2, 3, 7],
+                gesture: Gesture::Drag(7),
+                holds: Holds::Swatch(7),
+            },
+        },
+    ],
+};
+
+/// How picking works for `kind`, or none for a kind the host declares no pick for. A kind whose
+/// pick declares `add` holds colours; any other sets a band.
+pub(crate) fn help(kind: &str) -> Option<&'static PickHelp> {
+    let command = luxforge_core::mask::commands::pick(kind)?;
+    Some(help_for(command.action.parameter("add").is_some()))
+}
+
+fn help_for(adds: bool) -> &'static PickHelp {
+    if adds { &COLOUR } else { &TONE }
+}
 
 /// The armed eyedropper.
 #[derive(Clone, Debug)]
@@ -82,7 +273,7 @@ impl RangePicker {
 
     /// What the pick bar says.
     pub(crate) fn hint(&self) -> &'static str {
-        if self.adds { COLOUR_HINT } else { TONE_HINT }
+        help_for(self.adds).hint
     }
 
     /// The drag in progress as the rectangle the canvas draws, in output-stage pixels, once it has

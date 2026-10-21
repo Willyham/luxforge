@@ -152,10 +152,10 @@ fn paced_path() -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// How far down the tools panel the frame carrying the product's own statement is scrolled. The
-/// Masks panel is longer than the window at this point — a mask, three components, a brush section
-/// and the maskable modules' own sections — so the statement that sits above a band's numbers is
-/// below the fold until the panel is scrolled to it, exactly as it is for a person.
+/// How far down the tools panel the frame carrying the band's help button is scrolled. The Masks
+/// panel is longer than the window at this point — a mask, three components, a brush section and
+/// the maskable modules' own sections — so the band's row and its help button are below the fold
+/// until the panel is scrolled to them, exactly as they are for a person.
 const STATEMENT_SCROLL: f64 = 0.55;
 
 /// Where each patch of the fixture is read, as a fraction of the photograph's own drawn rectangle:
@@ -473,12 +473,13 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
         Step::new("overlay-colour", MaskStep::Hover(Some(Reference::Index(2)))).commits(0),
         // The overlay off, leaving the photograph.
         overlay("overlay-off", "off"),
-        // The band's own row open and the tools panel scrolled to it, so the frame carries **the
-        // product's own statement of what a band cannot separate** where a person reads it: above
-        // the four numbers it applies to, on the row they belong to. The statement is checked in the
+        // The band's own row open and the tools panel scrolled to it, then its help sheet open, so
+        // the frame carries **the product's own statement of what a band cannot separate** where a
+        // person reads it: one press from the row it belongs to. The statement is checked in the
         // state on every frame that has the row open; this is the one that shows it.
         select("band-row-again", 0),
         Step::new("statement", script::Step::tools_scroll(STATEMENT_SCROLL)).commits(0),
+        Step::new("help-sheet", MaskStep::Help).commits(0),
     ])
 }
 
@@ -770,15 +771,31 @@ fn sample_count(frame: &Frame, index: usize) -> Result<usize> {
         .len())
 }
 
-/// What the open row says this kind does **not** select. It is the host's own sentence from the kind
-/// table, and a frame that records none for a range component is a frame whose product said nothing.
+/// What the open row's help sheet says this kind does **not** tell apart, how to narrow it and the
+/// lines every value-based kind shares, in that order, or nothing for a row with no help. It is the
+/// host's own words from the kind table, and a frame that records none for a range component is a
+/// frame whose product said nothing.
 fn limits(frame: &Frame, index: usize) -> Result<Vec<String>> {
-    Ok(frame.component(index)?["limits"]
-        .as_array()
-        .ok_or("The component records no limits")?
-        .iter()
-        .map(|line| line.as_str().unwrap_or_default().to_owned())
-        .collect())
+    let help = &frame.component(index)?["help"];
+    if help.is_null() {
+        return Ok(Vec::new());
+    }
+    let mut said = Vec::new();
+    for part in ["alike", "narrow", "notes"] {
+        said.extend(
+            help[part]
+                .as_array()
+                .ok_or(format!("The component's help records no {part}"))?
+                .iter()
+                .map(|line| line.as_str().unwrap_or_default().to_owned()),
+        );
+    }
+    Ok(said)
+}
+
+/// Whether the open row's help sheet is showing.
+fn help_open(frame: &Frame, index: usize) -> Result<bool> {
+    Ok(frame.component(index)?["help"]["open"] == json!(true))
 }
 
 /// The colours one component has sampled, as the panel lists them on its row.
@@ -1075,7 +1092,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         "A typed kind opened a gesture",
     )?;
     unbound(created)?;
-    armed(created, "Click a tone", None)?;
+    armed(created, "on the photo", None)?;
     tinting(created)?;
 
     // The row open as created, which shows what it was created as — the whole tonal range with soft
@@ -1088,9 +1105,14 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
     )?;
     let said = limits(created, 0)?;
     ensure(
-        said.len() == 2
-            && said[0].contains("output codes apart")
-            && said[1].contains("the 100% view is the truth"),
+        said == [
+            "A blue sky and a grey wall",
+            "Any colours as bright",
+            "Intersect a colour range",
+            "Subtract a brush",
+            "Earlier adjustments change what it selects.",
+            "Judge its edges at 100%.",
+        ],
         format!("The open row said {said:?}"),
     )?;
 
@@ -1127,7 +1149,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
     // Off chosen, the eyedropper still armed: the photograph is the one the mask never touched.
     let clean = launch.at("band-photograph")?;
     photograph(clean)?;
-    armed(clean, "Click a tone", None)?;
+    armed(clean, "on the photo", None)?;
     same(checks, clean, "with the overlay chosen Off", &opened)?;
 
     // One click on the sky. The band is set around its tone — ten units each side, and shoulders of
@@ -1149,7 +1171,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
             ),
         )?;
     }
-    armed(clicked, "Click a tone", None)?;
+    armed(clicked, "on the photo", None)?;
     same(
         checks,
         clicked,
@@ -1216,7 +1238,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         sample_count(added, 2)? == 0,
         "A new colour range already holds a swatch",
     )?;
-    armed(added, "Shift-click to add", Some("0 of 5"))?;
+    armed(added, "Shift adds", Some("0 of 5"))?;
     tinting(added)?;
     let unsampled = launch.at("colour-photograph")?;
     photograph(unsampled)?;
@@ -1230,7 +1252,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         picked.len() == 1,
         format!("The pick left {picked:?} on the row"),
     )?;
-    armed(remedied, "Shift-click to add", Some("1 of 5"))?;
+    armed(remedied, "Shift adds", Some("1 of 5"))?;
     let remedy = only(
         checks,
         remedied,
@@ -1386,12 +1408,18 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         }
     }
 
-    // The statement itself, on screen. The row is open and the panel is scrolled to it, so what a
-    // person reads before typing a number into a band is in a capture and not only in a model.
+    // The statement itself, on screen. The row is open, the panel is scrolled to it and its help
+    // card is showing, so what a person reads before typing a number into a band is in a capture
+    // and not only in a model. Until the help button is pressed the row shows controls only.
     let statement = launch.at("statement")?;
     ensure(
-        limits(statement, 0)? == said,
-        format!("The row on screen says {:?}", limits(statement, 0)?),
+        !help_open(statement, 0)?,
+        "The band's help sheet showed before its button was pressed",
+    )?;
+    let card = launch.at("help-sheet")?;
+    ensure(
+        help_open(card, 0)? && limits(card, 0)? == said,
+        format!("The help sheet on screen says {:?}", limits(card, 0)?),
     )?;
     Ok(remedy)
 }
@@ -1413,7 +1441,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
     // A second mask, created with the eyedropper armed and nothing bound to any mask but launch
     // 1's. With Off chosen the photograph is the reopened one.
     let created = launch.at("grey-mask")?;
-    armed(created, "Shift-click to add", Some("0 of 5"))?;
+    armed(created, "Shift adds", Some("0 of 5"))?;
     tinting(created)?;
     let clean = launch.at("grey-photograph")?;
     photograph(clean)?;
@@ -1432,7 +1460,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
         samples(picked, 0)?.len() == 1,
         format!("The row lists {:?}", samples(picked, 0)?),
     )?;
-    armed(picked, "Shift-click to add", Some("1 of 5"))?;
+    armed(picked, "Shift adds", Some("1 of 5"))?;
     same(
         checks,
         picked,
@@ -1445,7 +1473,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
     // adjustment is dragged through the mask. The eyedropper is still armed, and the adjustment
     // landed on the open mask's own layer.
     let adjusted = launch.at("neutral")?;
-    armed(adjusted, "Shift-click to add", Some("1 of 5"))?;
+    armed(adjusted, "Shift adds", Some("1 of 5"))?;
     let neutral = only(
         checks,
         adjusted,
@@ -1477,7 +1505,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
         samples(orange, 0)?.len() == 2,
         format!("The row lists {:?}", samples(orange, 0)?),
     )?;
-    armed(orange, "Shift-click to add", Some("2 of 5"))?;
+    armed(orange, "Shift adds", Some("2 of 5"))?;
 
     // A plain click **replaces** the swatches held: the grey card alone is sampled again, the
     // orange leaves the selection, and the neutrals stay.
@@ -1490,7 +1518,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
             samples(picked, 0)?
         ),
     )?;
-    armed(replaced, "Shift-click to add", Some("1 of 5"))?;
+    armed(replaced, "Shift adds", Some("1 of 5"))?;
     let three = only(
         checks,
         replaced,
@@ -1508,11 +1536,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
 
     // A third mask, picked by **dragging over the interior of the light skin** with nothing bound
     // to it: one swatch, the area's representative colour, and the photograph unchanged.
-    armed(
-        launch.at("skin-mask")?,
-        "Shift-click to add",
-        Some("0 of 5"),
-    )?;
+    armed(launch.at("skin-mask")?, "Shift adds", Some("0 of 5"))?;
     photograph(launch.at("skin-photograph")?)?;
     let dragged = launch.at("skin-picked")?;
     ensure(
@@ -1544,11 +1568,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
         "Escape did not leave Mask mode with the eyedropper down",
     )?;
     same(checks, escaped, "after Escape", &skin)?;
-    armed(
-        launch.at("picker-rearmed")?,
-        "Shift-click to add",
-        Some("1 of 5"),
-    )?;
+    armed(launch.at("picker-rearmed")?, "Shift adds", Some("1 of 5"))?;
     ensure(
         launch.at("picker-done")?.state()["masks"]["picker"] == Value::Null,
         "Return left the eyedropper armed",
