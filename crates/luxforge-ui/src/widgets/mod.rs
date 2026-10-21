@@ -19,6 +19,7 @@ mod equal_row;
 mod field_grid;
 mod floating_bar;
 mod focus_control;
+mod guide_sheet;
 mod help_sheet;
 mod histogram;
 mod hover_panel;
@@ -102,9 +103,13 @@ pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,
 };
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
+pub use guide_sheet::{
+    GuideStep, LeadPart, guide_card, guide_cards, guide_footer, guide_head, guide_primary,
+    guide_section, guide_sheet, guide_steps,
+};
 pub use help_sheet::{
-    HelpAlike, HelpRemedy, HelpSheetModel, HelpSheetStep, HintPart, LeadPart, PatchGesture,
-    PatchHolds, StepDrawing, help_sheet,
+    HelpAlike, HelpRemedy, HelpSheetModel, HelpSheetStep, PatchGesture, PatchHolds, StepDrawing,
+    help_sheet,
 };
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, histogram_inspector,
@@ -117,7 +122,7 @@ pub use icon_button::{
 pub use inline_menu::inline_menu;
 pub use inline_notice::inline_notice;
 pub use job_row::{JobRowModel, job_row};
-pub use key_hint::{KeyHint, key_cap, key_hints};
+pub use key_hint::{KeyHint, hint_line, key_cap, key_hints};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{
     ComponentRowMessages, ComponentRowModel, CorrectionRowMessages, CorrectionRowModel, DropEdge,
