@@ -122,6 +122,8 @@ preferences! {
     /// A macOS release build launched outside Applications asks to move itself there; the
     /// question's Don't ask again turns it off.
     update_ask_to_move: bool,
+    /// The person closed the Select introduction, so it is not shown the first time Select is.
+    select_introduction_seen: bool,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
@@ -757,7 +759,8 @@ mod tests {
             "theme_follows_omarchy": true,
             "update_checks": true,
             "update_install_automatically": false,
-            "update_ask_to_move": true
+            "update_ask_to_move": true,
+            "select_introduction_seen": false
         }))
         .unwrap()
     }

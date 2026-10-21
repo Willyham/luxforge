@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Select introduction — design board</title>
+<style>
+  @font-face { font-family: "Inter"; font-weight: 400; src: local("Inter Regular"), local("Inter"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-Regular.ttf"); }
+  @font-face { font-family: "Inter"; font-weight: 600; src: local("Inter SemiBold"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-SemiBold.ttf"); }
+  :root {
+    --canvas: #19191b; --panel: #202023; --bar: #232326; --control: #2c2c31;
+    --rule: #2f2f32; --border: rgba(255,255,255,.06);
+    --text: #e8e8ea; --text2: #a8a8ae; --text3: #77777f;
+    --accent: #e2b46a; --ink: #1a1408; --accent-tint: rgba(226,180,106,.14);
+    --band: #2b2b30;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f10; color: var(--text); font: 12px/1.45 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 32px; }
+  h1.board { font-size: 13px; font-weight: 600; color: var(--text2); margin: 0 0 12px; letter-spacing: .02em; }
+  .note { color: var(--text3); font-size: 11px; margin: 10px 0 36px; max-width: 1440px; }
+
+  /* ---------- the window ---------- */
+  .window { position: relative; width: 1440px; height: 900px; background: var(--canvas); border-radius: 10px; overflow: hidden; border: 1px solid #000; }
+  .titlebar { height: 44px; background: var(--bar); border-bottom: 1px solid var(--rule); display: flex; align-items: center; padding: 0 12px 0 84px; gap: 12px; }
+  .traffic { position: absolute; left: 14px; top: 16px; display: flex; gap: 8px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a40; display: block; }
+  .seg { display: flex; background: var(--canvas); border-radius: 6px; padding: 2px; }
+  .seg span { padding: 4px 10px; border-radius: 5px; color: var(--text2); font-size: 12px; }
+  .seg span.on { background: var(--control); color: var(--text); }
+  .seg kbd { color: var(--text3); margin-left: 6px; font: inherit; font-size: 11px; }
+  .vname { font-weight: 600; font-size: 13px; }
+  .vsum { color: var(--text3); }
+  .grow { flex: 1; }
+  .btn { height: 28px; padding: 0 12px; border-radius: 6px; background: var(--control); color: var(--text); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--ink); border-color: transparent; font-weight: 600; }
+  .btn.disabled { opacity: .45; }
+  .btn kbd { font: inherit; font-size: 11px; opacity: .6; }
+  .iconbtn { width: 28px; height: 28px; border-radius: 6px; background: var(--control); border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; color: var(--text2); }
+  .iconbtn.help { font-weight: 600; font-size: 13px; }
+  .body { display: flex; height: calc(900px - 44px - 26px); }
+  .sources { width: 240px; background: var(--panel); border-right: 1px solid var(--rule); padding: 12px; }
+  .search { height: 28px; background: var(--control); border-radius: 6px; color: var(--text3); padding: 6px 10px; margin-bottom: 18px; }
+  .lbl { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--text3); text-transform: uppercase; margin: 14px 0 8px; display: flex; justify-content: space-between; }
+  .row { display: flex; justify-content: space-between; color: var(--text2); padding: 4px 0; }
+  .row b { font-weight: 400; color: var(--text3); }
+  .centre { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; flex-direction: column; color: var(--text3); gap: 10px; }
+  .info { width: 300px; background: var(--panel); border-left: 1px solid var(--rule); }
+  .status { height: 26px; background: var(--panel); border-top: 1px solid var(--rule); color: var(--text3); font-size: 11px; display: flex; align-items: center; padding: 0 12px; justify-content: space-between; }
+
+  /* ---------- the scrim and the sheet ---------- */
+  .scrim { position: absolute; inset: 44px 0 0 0; background: rgba(10,10,11,.62); }
+  .sheet { position: absolute; left: 50%; top: calc(44px + (900px - 44px - 26px) / 2); transform: translate(-50%, -50%);
+    width: 760px; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4); overflow: hidden; }
+  .sheet .close { position: absolute; right: 14px; top: 14px; width: 24px; height: 24px; border-radius: 6px; color: var(--text3); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .head { padding: 28px 32px 0; }
+  .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 6px 0 8px; }
+  .lead { font-size: 13px; color: var(--text2); max-width: 600px; margin: 0; line-height: 1.5; }
+  .lead strong { color: var(--text); font-weight: 600; }
+
+  .steps { display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr; align-items: stretch; padding: 22px 32px 0; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 13px; padding-bottom: 60px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .illus { height: 112px; background: var(--canvas); border-bottom: 1px solid var(--border); position: relative; padding: 14px; display: flex; align-items: center; justify-content: center; }
+  .stext { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .sname { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .num { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .sbody { color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .where { margin-top: auto; padding-top: 6px; color: var(--text3); font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .key { display: inline-flex; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--control); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; align-items: center; justify-content: center; }
+
+  /* illustrations, drawn only from theme tokens */
+  .mini-src { display: flex; flex-direction: column; gap: 6px; }
+  .chipsrc { display: flex; gap: 6px; align-items: center; color: var(--text2); font-size: 10.5px; }
+  .glyph { width: 16px; height: 12px; border: 1.5px solid var(--text3); border-radius: 2px; }
+  .glyph.card { width: 12px; height: 14px; border-radius: 2px 5px 2px 2px; }
+  .glyph.folder { border-radius: 1px 3px 2px 2px; }
+  .flow { color: var(--text3); margin: 0 10px; }
+  .events { display: flex; flex-direction: column; gap: 5px; width: 120px; }
+  .ev { display: flex; justify-content: space-between; background: var(--band); border-radius: 4px; padding: 4px 7px; font-size: 10.5px; color: var(--text); }
+  .ev small { color: var(--text3); font-size: 10px; }
+  .ev.sel { outline: 1px solid var(--accent); }
+
+  .moment { border: 1px solid var(--rule); border-radius: 6px; padding: 7px; background: var(--panel); }
+  .mhead { font-size: 10px; color: var(--text3); margin-bottom: 6px; }
+  .mhead b { color: var(--text2); font-weight: 600; }
+  .frames { display: flex; gap: 5px; }
+  .f { width: 40px; height: 28px; border-radius: 3px; position: relative;
+       background: linear-gradient(180deg, #6f93b8 0%, #9fb9d2 52%, #3b5d78 53%, #2c4a61 78%, #4f6b38 79%, #5d7a41 100%); }
+  .f.p { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+  .f.p::after { content: "✓"; position: absolute; left: 3px; top: 3px; width: 11px; height: 11px; border-radius: 50%; background: var(--accent); color: var(--ink); font-size: 8px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .f.dim { filter: saturate(.6) brightness(.8); }
+
+  .tree { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--text2); }
+  .tree div { display: flex; gap: 6px; align-items: center; }
+  .tree .g2 { padding-left: 12px; } .tree .g3 { padding-left: 24px; color: var(--text); }
+  .tree .g3 .n { margin-left: auto; color: var(--accent); }
+  .tree .gl { width: 11px; height: 8px; border: 1.2px solid var(--text3); border-radius: 1px 2px 1px 1px; }
+  .tree .g3 .gl { border-color: var(--accent); }
+  .devbtn { margin-left: 18px; height: 22px; padding: 0 9px; border-radius: 5px; background: var(--accent); color: var(--ink); font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; }
+
+  .compare { padding: 22px 32px 0; }
+  .compare .lbl { margin: 0 0 8px; color: var(--text3); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .col { border-radius: 8px; padding: 12px 14px; border: 1px solid var(--border); background: var(--panel); }
+  .col.ours { border-color: rgba(226,180,106,.38); background: linear-gradient(0deg, rgba(226,180,106,.05), rgba(226,180,106,.05)), var(--panel); }
+  .col h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text2); }
+  .col.ours h4 { color: var(--accent); }
+  .col ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  .col li { color: var(--text2); padding-left: 16px; position: relative; }
+  .col li::before { content: "–"; position: absolute; left: 2px; color: var(--text3); }
+  .col.ours li { color: var(--text); }
+  .col.ours li::before { content: "✓"; color: var(--accent); font-size: 11px; }
+
+  .foot { margin-top: 24px; padding: 14px 32px; border-top: 1px solid var(--rule); background: var(--panel); display: flex; align-items: center; gap: 10px; }
+  .promise { display: flex; align-items: center; gap: 8px; color: var(--text2); }
+  .shield { width: 14px; height: 16px; border: 1.5px solid var(--text2); border-radius: 3px 3px 7px 7px; }
+  .reopen { color: var(--text3); font-size: 11px; }
+
+  /* ---------- detail boards ---------- */
+  .row-boards { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
+  .crop { background: var(--bar); border-radius: 8px; border: 1px solid #000; padding: 0; position: relative; }
+  .crop .titlebar { padding-left: 16px; border-radius: 8px; }
+  .tip { position: absolute; top: 48px; background: var(--control); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 9px; font-size: 11px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+  .iconbtn.hover { background: #34343a; color: var(--text); }
+</style>
+</head>
+<body>
+
+<h1 class="board">Board 1 · First time Select is shown — an empty catalog with no indexed folders and no card (1440 × 900 pt)</h1>
+<div class="window">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <div class="titlebar">
+    <div class="seg"><span class="on">Select<kbd>G</kbd></span><span>Develop<kbd>D</kbd></span></div>
+    <span class="vname">All photographs</span><span class="vsum">Nothing developed yet</span>
+    <span class="grow"></span>
+    <span class="btn">▭ Add a folder…</span>
+    <span class="iconbtn">↶</span><span class="iconbtn">↷</span>
+    <span class="iconbtn help">?</span>
+    <span class="btn primary disabled">Develop 0 ›</span>
+    <span class="iconbtn">◧</span><span class="iconbtn">◨</span>
+  </div>
+  <div class="body">
+    <div class="sources">
+      <div class="search">⌕  Search places, dates, cameras</div>
+      <div class="lbl">Events <span>auto</span></div>
+      <div class="row" style="color:var(--text3)">No events yet</div>
+      <div class="lbl">On disk <span>+</span></div>
+      <div class="row">▸ Macintosh HD <b style="color:#3fd07a">●</b></div>
+      <div class="lbl">Catalog <span>+</span></div>
+      <div class="row">All photographs <b>0</b></div>
+      <div class="row">Recently developed <b>0</b></div>
+      <div class="row">Missing originals <b>0</b></div>
+      <div class="row">Removed <b>0</b></div>
+    </div>
+    <div class="centre">Nothing to show yet</div>
+    <div class="info"></div>
+  </div>
+  <div class="status"><span>Ready</span><span>0 in view</span></div>
+
+  <div class="scrim"></div>
+
+  <div class="sheet" role="dialog" aria-labelledby="t">
+    <div class="close">✕</div>
+    <div class="head">
+      <div class="eyebrow">How Luxforge works</div>
+      <div class="title" id="t">Select, then develop</div>
+      <p class="lead">Luxforge doesn’t import. You browse your photographs <strong>where they already are</strong>, pick the few worth developing, and <strong>only those join your catalog</strong>.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="illus">
+          <div class="mini-src">
+            <div class="chipsrc"><i class="glyph card"></i>Card</div>
+            <div class="chipsrc"><i class="glyph folder"></i>Folder</div>
+          </div>
+          <span class="flow">→</span>
+          <div class="events">
+            <div class="ev sel">Konstanz <small>1,042</small></div>
+            <div class="ev">Lake · 14 Sep <small>86</small></div>
+            <div class="ev">Zürich <small>57</small></div>
+          </div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">1</span>Browse</div>
+          <div class="sbody">Open a camera card or any folder. Luxforge sorts it into events by date and place, and keeps each burst, bracket and panorama together as one moment.</div>
+          <div class="where">Cards, Events and On disk, on the left</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="moment">
+            <div class="mhead"><b>Burst</b> · 4 frames in 0.8 s</div>
+            <div class="frames"><i class="f dim"></i><i class="f p"></i><i class="f dim"></i><i class="f dim"></i></div>
+          </div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">2</span>Pick</div>
+          <div class="sbody">Step through each moment, check focus at 100%, and pick the frames worth developing. Picks are kept as you go, even across a restart.</div>
+          <div class="where"><span class="key">Space</span> look <span class="key">Z</span> 100% <span class="key">P</span> pick <span class="key">↓</span> next moment</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="tree">
+            <div><i class="gl"></i>2026</div>
+            <div class="g2"><i class="gl"></i>Konstanz · Sep 2026</div>
+            <div class="g3"><i class="gl"></i>12 Sep <span class="n">18</span></div>
+          </div>
+          <span class="devbtn">Develop 18 ›</span>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">3</span>Develop</div>
+          <div class="sbody">Develop brings your picks into the catalog, filed by year, place and day, and opens them for editing.</div>
+          <div class="where">Develop N, top right · <span class="key">⌘</span><span class="key">↵</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compare">
+      <div class="lbl">Coming from Lightroom?</div>
+      <div class="cols">
+        <div class="col">
+          <h4>Import, then cull</h4>
+          <ul>
+            <li>Every frame you shoot goes into the catalog</li>
+            <li>Flags and stars are how you find the keepers</li>
+            <li>The catalog, previews and backups grow with every shutter press</li>
+          </ul>
+        </div>
+        <div class="col ours">
+          <h4>Select, then develop</h4>
+          <ul>
+            <li>Choosing is its own fast step, one moment at a time</li>
+            <li>The catalog holds only what you develop: 20 picks from a 1,000-frame trip add 20</li>
+            <li>The rest stay on disk, organized again whenever you come back</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <div class="promise"><i class="shield"></i>Your files are never moved, copied or changed.</div>
+      <span class="grow"></span>
+      <span class="btn">Add a folder…</span>
+      <span class="btn primary">Start browsing <kbd>↵</kbd></span>
+    </div>
+  </div>
+</div>
+<p class="note">A modal sheet centred over Select, which stays visible behind the scrim so the regions the steps name are recognisable. Return or Start browsing closes it; Escape or ✕ closes it too. <b>Add a folder…</b> appears only while nothing is indexed and no card is mounted, and opens the same native dialog as the title bar's. Every colour comes from the theme's tokens, so a light theme keeps the hierarchy; the illustrations are drawn from those tokens, not shipped as images.</p>
+
+<div class="row-boards">
+  <div>
+    <h1 class="board">Board 2 · Reopening it: the title bar's ? button, pointed at</h1>
+    <div class="crop" style="width:640px">
+      <div class="titlebar" style="padding-left:16px">
+        <span class="grow"></span>
+        <span class="btn">▭ Add a folder…</span>
+        <span class="iconbtn">↶</span><span class="iconbtn">↷</span>
+        <span class="iconbtn help hover">?</span>
+        <span class="btn primary">Develop 18 ›</span>
+        <span class="iconbtn">◧</span><span class="iconbtn">◨</span>
+      </div>
+      <div class="tip" style="left:300px">How Select works</div>
+      <div style="height:44px"></div>
+    </div>
+    <p class="note" style="max-width:640px">The same sheet, without <b>Add a folder…</b> once something is indexed. Shown only in Select's title bar; Develop has no counterpart.</p>
+  </div>
+  <div>
+    <h1 class="board">Board 3 · Footer when something is already indexed or a card is mounted</h1>
+    <div class="sheet" style="position:static; transform:none; width:760px">
+      <div class="foot" style="margin-top:0; border-top:0">
+        <div class="promise"><i class="shield"></i>Your files are never moved, copied or changed.</div>
+        <span class="grow"></span>
+        <span class="btn primary">Start browsing <kbd>↵</kbd></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

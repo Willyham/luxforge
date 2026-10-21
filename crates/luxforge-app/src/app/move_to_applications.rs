@@ -211,10 +211,12 @@ impl Editor {
     }
 
     /// What holds a pending question back: a sheet, dialog or menu that delays the usage notice,
-    /// and the usage notice itself until it is answered, so two startup notices never stack. A
-    /// move relaunches the app, so the usage notice, claimed once, comes first.
+    /// the Select introduction while it is up or due, and the usage notice itself until it is
+    /// answered, so two startup notices never stack. A move relaunches the app, so the usage
+    /// notice, claimed once, comes first.
     pub(crate) fn move_question_delayed(&self) -> bool {
         self.notice_delayed()
+            || self.introduction_holds_notices()
             || (self.usage.eligible
                 && matches!(
                     self.usage.prompt,

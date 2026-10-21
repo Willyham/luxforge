@@ -205,6 +205,8 @@ pub struct Launch {
     evidence_catalog: Option<(PathBuf, String)>,
     /// Show the move into Applications question wherever the run's app is, so it can be captured.
     move_question: bool,
+    /// Show the Select introduction the first time Select is shown, so it can be captured.
+    introduction: bool,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -234,6 +236,7 @@ impl Launch {
             evidence_config: None,
             evidence_catalog: None,
             move_question: false,
+            introduction: false,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -341,6 +344,13 @@ impl Launch {
     /// `--evidence-dir`.
     pub fn move_question(mut self) -> Self {
         self.move_question = true;
+        self
+    }
+
+    /// Show the Select introduction the first time Select is shown, as a person's launch does, so
+    /// it can be captured. Passed beside `--evidence-dir`.
+    pub fn introduction(mut self) -> Self {
+        self.introduction = true;
         self
     }
 
@@ -496,6 +506,9 @@ impl Launch {
                     }
                     if self.move_question {
                         args.push("--evidence-move-to-applications".into());
+                    }
+                    if self.introduction {
+                        args.push("--evidence-select-introduction".into());
                     }
                 }
                 Flag::GpuIdentity => {

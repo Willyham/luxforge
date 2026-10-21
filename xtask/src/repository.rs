@@ -1219,6 +1219,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--evidence-catalog\"",
             "\"--evidence-unsupported-catalog\"",
             "\"--evidence-move-to-applications\"",
+            "\"--evidence-select-introduction\"",
             "spawn_editor",
             "editor_args",
         ],

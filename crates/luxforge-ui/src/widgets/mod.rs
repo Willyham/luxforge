@@ -15,6 +15,7 @@ mod decorator;
 mod disclosure_heading;
 mod double_click;
 mod dropdown;
+mod equal_row;
 mod field_grid;
 mod floating_bar;
 mod focus_control;
@@ -92,6 +93,7 @@ pub use disclosure_heading::disclosure_heading;
 pub use dropdown::{
     DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list, menu_list_with_width,
 };
+pub use equal_row::{EqualRow, equal_row};
 pub use field_grid::{GridField, field_grid};
 pub use floating_bar::{
     DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,

@@ -199,6 +199,9 @@ pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
 mod select_folders_tests;
+pub(crate) mod select_introduction;
+#[cfg(test)]
+mod select_introduction_tests;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 #[cfg(test)]
@@ -568,6 +571,9 @@ pub(crate) struct Editor {
     /// The question a macOS release build asks when it runs outside Applications
     /// ([`move_to_applications`]).
     pub(crate) move_question: state::move_to_applications::MoveQuestion,
+    /// The Select introduction: who it is shown to, its first showing and the ?
+    /// ([`select_introduction`]).
+    pub(crate) introduction: state::select_introduction::Introduction,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -614,7 +620,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 35] = [
+const AFTER_MESSAGE: [AfterMessage; 36] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -647,6 +653,7 @@ const AFTER_MESSAGE: [AfterMessage; 35] = [
     drawn_frames::after_message,
     residency::after_message,
     themes::after_message,
+    select_introduction::after_message,
     usage::after_message,
     update::after_message,
     move_to_applications::after_message,
@@ -814,6 +821,7 @@ impl Editor {
             usage_reported_presented: None,
             updates: Default::default(),
             move_question: state::move_to_applications::MoveQuestion::new(asker),
+            introduction: state::select_introduction::Introduction::new(config.introducer),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -1160,6 +1168,7 @@ impl Editor {
         state::Inputs {
             usage: &self.usage,
             updates: &self.updates,
+            introduction: &self.introduction,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1310,6 +1319,7 @@ impl Editor {
             Message::Evidence(message) => self.evidence_update(message),
             Message::Renderer(message) => self.renderer_update(message),
             Message::Select(message) => self.select_update(message),
+            Message::Introduction(message) => self.introduction_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
             Message::MoveToApplications(message) => self.move_update(message),
@@ -1534,6 +1544,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             usage_notice: self.workspace.usage_notice.is_some(),
+            introduction: self.introduction.open(),
             gallery_open: self.gallery_page().is_some(),
             comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some()
