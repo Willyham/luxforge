@@ -91,17 +91,21 @@ pub(crate) enum Holds {
 }
 
 /// The patches a help sheet's drawings pick from, as 8-bit sRGB codes: two rows of the range
-/// fixture's kind of scene. Each drawing's selection is what that kind would take: the band around
-/// the dark blue's 31% takes the brown's 36% too, and a colour pick on it takes the lit blue.
+/// fixture's kind of scene. Each drawing's selection is what a new component of that kind takes by
+/// the host's own pick rule, whole or not at all, which
+/// `each_drawing_selects_what_its_kinds_pick_takes` checks: a click's band around the dark blue's
+/// 31% takes the dark skin's 36% too, a drag on the light grey takes the light skin and the orange
+/// as bright as it, a colour click on the dark blue takes the lit blue, and a drag on the light
+/// skin takes the dark skin.
 pub(crate) const PATCHES: [[u8; 3]; 8] = [
     [0x3b, 0x51, 0x70],
-    [0x7a, 0x7a, 0x78],
+    [0x8a, 0x8a, 0x88],
     [0xc4, 0x98, 0x84],
     [0x76, 0x54, 0x44],
     [0x6f, 0x93, 0xb8],
     [0xa2, 0xa2, 0xa0],
-    [0x2f, 0x2f, 0x2f],
-    [0xd6, 0x83, 0x30],
+    [0x1c, 0x1c, 0x1c],
+    [0xe4, 0x8e, 0x30],
 ];
 
 /// Every pickable kind's first step: turning the eyedropper on.
@@ -135,8 +139,8 @@ const TONE: PickHelp = PickHelp {
                 selected: &[0, 3],
                 gesture: Gesture::Click(0),
                 holds: Holds::Band {
-                    low: 0.27,
-                    high: 0.40,
+                    low: 0.213,
+                    high: 0.413,
                 },
             },
         },
@@ -150,11 +154,11 @@ const TONE: PickHelp = PickHelp {
                 Hint::Text("done"),
             ],
             drawing: StepDrawing::Patches {
-                selected: &[2, 4, 5, 7],
+                selected: &[2, 5, 7],
                 gesture: Gesture::Drag(5),
                 holds: Holds::Band {
-                    low: 0.55,
-                    high: 0.68,
+                    low: 0.635,
+                    high: 0.635,
                 },
             },
         },
@@ -203,9 +207,9 @@ const COLOUR: PickHelp = PickHelp {
                 Hint::Text("done"),
             ],
             drawing: StepDrawing::Patches {
-                selected: &[2, 3, 7],
-                gesture: Gesture::Drag(7),
-                holds: Holds::Swatch(7),
+                selected: &[2, 3],
+                gesture: Gesture::Drag(2),
+                holds: Holds::Swatch(2),
             },
         },
     ],
@@ -607,5 +611,94 @@ mod tests {
             Value::Object(drag.fields(true)),
             json!({"x": 0.25, "y": 0.5, "width": 0.1, "height": 0.2, "add": true})
         );
+    }
+
+    /// Each help drawing shows what its kind's own pick rule takes, so the sheet cannot teach a
+    /// selection the tool does not make: a new component of the kind, picked by the drawing's
+    /// gesture over its patch, covers every patch the drawing selects whole and every other not at
+    /// all, and holds what the drawing says it holds. The drawings draw a patch selected or not, so
+    /// the patches are chosen to fall clear of every shoulder.
+    #[test]
+    fn each_drawing_selects_what_its_kinds_pick_takes() {
+        use luxforge_core::{
+            Component, ComponentMode, Mask, Stage,
+            mask::{self, CompiledMask, Picked},
+        };
+        let table = luxforge_core::colour::srgb::decode_table();
+        let linear = |at: usize| PATCHES[at].map(|code| f64::from(table[usize::from(code)]));
+        // What `mask.create-<kind>` makes from its declared defaults: a band over the whole axis
+        // with 5% shoulders, and a colour range with no samples at the default refine.
+        let kinds = [
+            (
+                "luminance-range",
+                json!({"low": 0.0, "low_feather": 5.0, "high": 100.0, "high_feather": 5.0}),
+            ),
+            (
+                "colour-range",
+                json!({"samples": [], "refine": mask::REFINE_DEFAULT}),
+            ),
+        ];
+        for (kind, fresh) in kinds {
+            let pick = help(kind).expect("a range kind is picked");
+            let mut drawings = 0;
+            for step in pick.steps {
+                let StepDrawing::Patches {
+                    selected,
+                    gesture,
+                    holds,
+                } = &step.drawing
+                else {
+                    continue;
+                };
+                drawings += 1;
+                let name = format!("{kind} {}", step.name);
+                let area;
+                let picked = match *gesture {
+                    Gesture::Click(at) => Picked::Point(linear(at)),
+                    Gesture::Drag(at) => {
+                        area = [linear(at); 4];
+                        Picked::Area(&area)
+                    }
+                };
+                let component = Component::new("Range 1", ComponentMode::Add, kind, fresh.clone());
+                let payload = mask::pick_payload(&component, picked, false)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+                let mut held = Mask::new("Mask 1");
+                held.components = vec![Component::new(
+                    "Range 1",
+                    ComponentMode::Add,
+                    kind,
+                    payload.clone(),
+                )];
+                let compiled = CompiledMask::new(
+                    &held,
+                    Stage {
+                        width: 1,
+                        height: 1,
+                    },
+                    &Default::default(),
+                )
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+                for at in 0..PATCHES.len() {
+                    let coverage = compiled.coverage(0, 0, linear(at));
+                    if selected.contains(&at) {
+                        assert!(coverage >= 0.99, "{name}: patch {at} is {coverage}");
+                    } else {
+                        assert_eq!(coverage, 0.0, "{name}: patch {at}");
+                    }
+                }
+                match *holds {
+                    Holds::Swatch(at) => {
+                        assert_eq!(payload["samples"], json!([linear(at)]), "{name}");
+                    }
+                    Holds::Band { low, high } => {
+                        let edge = |field: &str| payload[field].as_f64().expect("a number") / 100.0;
+                        assert!((edge("low") - f64::from(low)).abs() < 0.001, "{name}");
+                        assert!((edge("high") - f64::from(high)).abs() < 0.001, "{name}");
+                    }
+                }
+            }
+            assert_eq!(drawings, 2, "{kind}: a click and a drag");
+        }
     }
 }

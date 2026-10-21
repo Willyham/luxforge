@@ -137,42 +137,31 @@ impl<'a> Finder<'a> {
         self.runs(&frames[from..], offset + from, moments);
     }
 
-    /// The panoramas of `frames` their folders or file names show, in order. A panorama whose every
-    /// link its folder makes is from its folder, any other from its file names.
+    /// The panoramas of `frames` their folders or file names show, in order. Every link in a run
+    /// joins frames of one folder, so a run is from its folder when that folder is named for
+    /// panoramas, and from its file names otherwise.
     fn folder_panoramas(&mut self, frames: &[FrameFacts]) -> Vec<(Range<usize>, MomentEvidence)> {
         let mut found = Vec::new();
         let mut start = 0;
-        let mut evidence = MomentEvidence::Folder;
         for at in 1..=frames.len() {
-            let joined = (at < frames.len())
-                .then(|| {
-                    let (a, b) = (&frames[at - 1], &frames[at]);
-                    let near = a.folder == b.folder
-                        && !a.merged
-                        && !b.merged
-                        && gap_within(a, b, FOLDER_PANORAMA_GAP_MS);
-                    if !near {
-                        None
-                    } else if self.panorama_folder(a.folder) {
-                        Some(MomentEvidence::Folder)
+            let joined = at < frames.len() && {
+                let (a, b) = (&frames[at - 1], &frames[at]);
+                a.folder == b.folder
+                    && !a.merged
+                    && !b.merged
+                    && gap_within(a, b, FOLDER_PANORAMA_GAP_MS)
+                    && (self.panorama_folder(a.folder) || names_panorama_frames(&a.name, &b.name))
+            };
+            if !joined {
+                if at - start >= 2 {
+                    let evidence = if self.panorama_folder(frames[start].folder) {
+                        MomentEvidence::Folder
                     } else {
-                        names_panorama_frames(&a.name, &b.name).then_some(MomentEvidence::Names)
-                    }
-                })
-                .flatten();
-            match joined {
-                Some(link) => {
-                    if link == MomentEvidence::Names {
-                        evidence = link;
-                    }
+                        MomentEvidence::Names
+                    };
+                    found.push((start..at, evidence));
                 }
-                None => {
-                    if at - start >= 2 {
-                        found.push((start..at, evidence));
-                    }
-                    start = at;
-                    evidence = MomentEvidence::Folder;
-                }
+                start = at;
             }
         }
         found

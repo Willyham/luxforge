@@ -88,8 +88,9 @@ pub use model::{
     THRESHOLD_DEFAULT as MODEL_THRESHOLD_DEFAULT, check_alpha,
 };
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
+pub use range::Picked;
 pub use range::REFINE_DEFAULT;
-pub(crate) use range::{Picked, REFINE_MAX, REFINE_MIN};
+pub(crate) use range::{REFINE_MAX, REFINE_MIN};
 pub use stroke::{ColourLimit, Stroke};
 pub(crate) use stroke::{SIZE_MAX, SIZE_MIN, size_is_legal, size_range};
 
@@ -226,7 +227,9 @@ struct ComponentKind {
     /// plain, read in the kind's help; the `docs/design/range-study.md` figure each rests on stays in
     /// its doc comment. [`component_kind_notes`] answers the lines every value-based kind shares, so
     /// they are written once and a kind registered later carries them without this table being
-    /// edited.
+    /// edited. The kind-conformance suite checks that every value-based kind has limits, none of
+    /// them empty, and that no position-based kind has any, so a value-based kind registered
+    /// later cannot open an empty help card.
     limits: Option<&'static KindLimits>,
     /// The name of the glyph a client draws this kind with, from the widget library's icon names,
     /// as a module descriptor names its own icon. It lives in the table so a panel, a menu and a
@@ -632,6 +635,28 @@ pub(crate) fn component_pick(kind: &str) -> Option<PickRule> {
         .iter()
         .find(|entry| entry.kind == kind)
         .and_then(|entry| entry.pick)
+}
+
+/// The payload `component` takes after a pick of `picked`, by its kind's own pick rule: exactly
+/// what `mask.pick-<kind>` writes when the host reads `picked` at the mask's input site, with `add`
+/// as the command's own. Pure, as the rule is, so a client can say what a pick takes without a
+/// session: the range picker's help drawings are checked against it. Refused for a kind this build
+/// does not know and for one that is not picked.
+pub fn pick_payload(
+    component: &Component,
+    picked: Picked<'_>,
+    add: bool,
+) -> Result<serde_json::Value, Error> {
+    if !knows_component_kind(&component.kind) {
+        return Err(rules::unknown_kind(&component.kind));
+    }
+    let rule = component_pick(&component.kind).ok_or_else(|| {
+        Error::validation(format!(
+            "component {} is not picked from the photograph",
+            component.name
+        ))
+    })?;
+    rule(component, picked, add)
 }
 
 /// What one sampled colour of `kind` declares, or none when the kind samples nothing.
@@ -1329,6 +1354,72 @@ mod tests {
         let mut mask = Mask::new("Mask 1");
         mask.components = components;
         mask
+    }
+
+    /// The two range kinds' help says exactly these words and shows exactly these colours, and
+    /// both carry the shared notes; a position-based kind and an unknown one say nothing.
+    #[test]
+    fn the_range_kinds_say_their_limits_in_these_words() {
+        const BRUSH: Remedy = Remedy {
+            action: "Subtract a brush",
+            effect: "Paints out what it shouldn\u{2019}t take",
+        };
+        assert_eq!(
+            component_kind_limits("luminance-range"),
+            Some(&KindLimits {
+                alike_heading: "It sees these as one tone",
+                alike: &[
+                    Alike {
+                        label: "A blue sky and a grey wall",
+                        examples: &[[0x6f, 0x93, 0xb8], [0x90, 0x90, 0x90]],
+                    },
+                    Alike {
+                        label: "Any colours as bright",
+                        examples: &[[0x5a, 0x8a, 0x44], [0xd0, 0x50, 0x48], [0x7c, 0x7c, 0x7c]],
+                    },
+                ],
+                narrow: &[
+                    Remedy {
+                        action: "Intersect a colour range",
+                        effect: "Keeps only the colour you want",
+                    },
+                    BRUSH,
+                ],
+            })
+        );
+        assert_eq!(
+            component_kind_limits("colour-range"),
+            Some(&KindLimits {
+                alike_heading: "It sees these as one colour",
+                alike: &[
+                    Alike {
+                        label: "White, grey and black",
+                        examples: &[[0xf2, 0xf2, 0xf0], [0x9a, 0x9a, 0x98], [0x2f, 0x2f, 0x2f]],
+                    },
+                    Alike {
+                        label: "Most skin tones",
+                        examples: &[[0xf1, 0xc9, 0xad], [0xc4, 0x98, 0x84], [0x76, 0x54, 0x44]],
+                    },
+                ],
+                narrow: &[
+                    Remedy {
+                        action: "Intersect a luminance range",
+                        effect: "Keeps only the brightness you want",
+                    },
+                    BRUSH,
+                ],
+            })
+        );
+        let notes = [
+            "Earlier adjustments change what it selects.",
+            "Judge its edges at 100%.",
+        ];
+        assert_eq!(component_kind_notes("luminance-range"), notes);
+        assert_eq!(component_kind_notes("colour-range"), notes);
+        for kind in ["linear", "brush", "no-such-kind"] {
+            assert_eq!(component_kind_limits(kind), None, "{kind}");
+            assert!(component_kind_notes(kind).is_empty(), "{kind}");
+        }
     }
 
     /// One vertical gradient over a square stage: coverage is exactly zero at and behind `p0`,
