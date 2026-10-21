@@ -11,7 +11,8 @@
 /// The sheet's capitalised label over its title.
 pub(crate) const EYEBROW: &str = "HOW LUXFORGE WORKS";
 pub(crate) const TITLE: &str = "Select, then develop";
-/// The lead, in runs: the emphasised ones are drawn in primary text, the rest in secondary.
+/// The lead, in runs, each with whether it is one of the two emphasised phrases the view sets
+/// apart from the rest.
 pub(crate) const LEAD: [(&str, bool); 5] = [
     (
         "Luxforge doesn\u{2019}t import. You browse your photographs ",
@@ -116,48 +117,20 @@ pub(crate) const APPROACHES: [Approach; 2] = [
     },
 ];
 
-/// Who this launch shows the sheet to the first time Select is shown, decided once at launch.
-/// The title bar's ? shows it in any launch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Introducer {
-    /// A hidden, background, evidence or test launch: never shows it by itself.
-    #[default]
-    Never,
-    /// A launch a person uses, with its window shown.
-    Person,
-    /// An evidence run given `--evidence-select-introduction`: it shows the sheet as a person's
-    /// launch does, so it can be captured.
-    Evidence,
+/// Whether this launch shows the sheet by itself the first time Select is shown, decided once
+/// its arguments are read: an evidence run only when it is given
+/// `--evidence-select-introduction`, so it can be captured, and otherwise a launch with its window
+/// shown. Hidden, background and test launches never do. The title bar's ? shows it in any launch.
+pub(crate) fn introduces(hidden: bool, evidence: bool, flag: bool) -> bool {
+    if evidence { flag } else { !hidden }
 }
 
-impl Introducer {
-    /// Who this launch introduces Select to: an evidence run only when it asks, and otherwise a
-    /// launch with its window shown.
-    pub(crate) fn of(hidden: bool, evidence: bool, flag: bool) -> Self {
-        if evidence && flag {
-            Self::Evidence
-        } else if !hidden && !evidence {
-            Self::Person
-        } else {
-            Self::Never
-        }
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Never => "never",
-            Self::Person => "person",
-            Self::Evidence => "evidence",
-        }
-    }
-}
-
-/// Where the first showing is. It moves forward only: once closed or found not to be needed, only
-/// the ? shows the sheet again in this launch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Where the first showing is. Once closed or found not to be needed, only the ? shows the sheet
+/// again in this launch; a first showing that leaving Select took down waits again, as it was
+/// never closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum First {
     /// Waiting for Select to be shown with nothing that delays the sheet open.
-    #[default]
     Waiting,
     /// On screen.
     Shown,
@@ -207,22 +180,21 @@ impl Closing {
 }
 
 /// The desktop's Select introduction.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Introduction {
-    pub(crate) introducer: Introducer,
     pub(crate) first: First,
     /// The ? showed it again; closing it then stores nothing.
     pub(crate) reopened: bool,
 }
 
 impl Introduction {
-    pub(crate) fn new(introducer: Introducer) -> Self {
+    /// The introduction of a launch that shows it by itself, or not ([`introduces`]).
+    pub(crate) fn new(introduces: bool) -> Self {
         Self {
-            introducer,
-            first: if introducer == Introducer::Never {
-                First::NotShown("launch")
-            } else {
+            first: if introduces {
                 First::Waiting
+            } else {
+                First::NotShown("launch")
             },
             reopened: false,
         }
@@ -316,21 +288,18 @@ mod tests {
 
     #[test]
     fn only_a_shown_window_or_an_evidence_run_that_asks_introduces_select() {
-        assert_eq!(Introducer::of(false, false, false), Introducer::Person);
-        assert_eq!(Introducer::of(true, false, false), Introducer::Never);
-        assert_eq!(Introducer::of(true, true, false), Introducer::Never);
-        assert_eq!(Introducer::of(false, true, false), Introducer::Never);
-        assert_eq!(Introducer::of(true, true, true), Introducer::Evidence);
-        assert_eq!(
-            Introduction::new(Introducer::Never).first,
-            First::NotShown("launch")
-        );
-        assert_eq!(Introduction::new(Introducer::Person).first, First::Waiting);
+        assert!(introduces(false, false, false));
+        assert!(!introduces(true, false, false));
+        assert!(!introduces(true, true, false));
+        assert!(!introduces(false, true, false));
+        assert!(introduces(true, true, true));
+        assert_eq!(Introduction::new(false).first, First::NotShown("launch"));
+        assert_eq!(Introduction::new(true).first, First::Waiting);
     }
 
     #[test]
     fn the_notices_wait_while_the_sheet_is_up_or_due_in_select() {
-        let waiting = Introduction::new(Introducer::Person);
+        let waiting = Introduction::new(true);
         assert!(waiting.holds_notices(true));
         assert!(
             !waiting.holds_notices(false),
@@ -352,7 +321,7 @@ mod tests {
     fn add_a_folder_is_offered_only_while_nothing_is_indexed() {
         let shown = Introduction {
             first: First::Shown,
-            ..Introduction::new(Introducer::Person)
+            ..Introduction::new(true)
         };
         assert_eq!(
             model(&shown, true, 1440.0).unwrap().buttons(),
@@ -362,7 +331,7 @@ mod tests {
             model(&shown, false, 1440.0).unwrap().buttons(),
             ["Start browsing"]
         );
-        assert!(model(&Introduction::new(Introducer::Person), true, 1440.0).is_none());
+        assert!(model(&Introduction::new(true), true, 1440.0).is_none());
         assert!(!model(&shown, true, 824.0).unwrap().stacked);
         assert!(
             model(&shown, true, 823.0).unwrap().stacked,
@@ -376,7 +345,7 @@ mod tests {
     fn the_words_follow_the_catalogs_vocabulary() {
         let shown = Introduction {
             first: First::Shown,
-            ..Introduction::new(Introducer::Person)
+            ..Introduction::new(true)
         };
         let model = model(&shown, true, 1440.0).unwrap();
         let ours: String = model

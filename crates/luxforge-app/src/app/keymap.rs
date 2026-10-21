@@ -346,10 +346,16 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
                 key: Key::Named(Named::Escape),
                 ..
             } => Some(Message::Capability(CapabilityMessage::Consent(false))),
+            // As the Select introduction's: a fresh, plain Return no widget took, so a held key
+            // or a chord never answers the download.
             Keys::KeyPressed {
                 key: Key::Named(Named::Enter),
+                modifiers,
+                repeat: false,
                 ..
-            } => Some(Message::Capability(CapabilityMessage::Consent(can_allow))),
+            } if status == Status::Ignored && !modifiers.command() => {
+                Some(Message::Capability(CapabilityMessage::Consent(can_allow)))
+            }
             _ => None,
         };
     }
@@ -2167,6 +2173,27 @@ mod tests {
                 Status::Ignored,
                 &unmet_setup_sheet,
                 Some("Capability(Consent(false))"),
+            ),
+            (
+                "a held Return does not download",
+                held(Key::Named(Named::Enter), Modifiers::empty(), true),
+                Status::Ignored,
+                &setup_sheet,
+                None,
+            ),
+            (
+                "a Return a widget took does not download",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Captured,
+                &setup_sheet,
+                None,
+            ),
+            (
+                "Develop N's chord does not download",
+                pressed(Key::Named(Named::Enter), command),
+                Status::Ignored,
+                &setup_sheet,
+                None,
             ),
             (
                 "the setup sheet keeps the workspace's keys",
