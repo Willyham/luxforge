@@ -140,6 +140,18 @@ impl ContentMap {
             .ok()
     }
 
+    /// Where normalized content position `(x, y)` lands in the output stage, inside it or not
+    /// ([`GeometryMap::to_output_unbounded`]): what a figure clipped to the output stage is
+    /// traced through. `None` only where the map itself is undefined.
+    pub(crate) fn to_output_unbounded(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.geometry
+            .to_output_unbounded(
+                x * self.geometry.content.width as f64,
+                y * self.geometry.content.height as f64,
+            )
+            .ok()
+    }
+
     pub(crate) fn to_content(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         self.locate(x, y).ok()
     }

@@ -82,14 +82,32 @@ pub(crate) fn curve_within(
     dashed: bool,
     budget: usize,
 ) -> Outline {
-    struct Build<'a, F> {
+    curve_placed(placement, point, seeds, dashed, budget, |x, y| {
+        placement.canvas_point(x, y)
+    })
+}
+
+/// [`curve_within`] drawn through `place` rather than [`Placement::canvas_point`]: a figure that
+/// is clipped to the output stage afterwards is traced through
+/// [`Placement::canvas_point_unbounded`], so content the output does not show still has a place
+/// and the figure has no gap there.
+pub(crate) fn curve_placed(
+    placement: &Placement,
+    point: impl Fn(f64) -> (f64, f64),
+    seeds: usize,
+    dashed: bool,
+    budget: usize,
+    place: impl Fn(f64, f64) -> Option<Point>,
+) -> Outline {
+    struct Build<'a, F, P> {
         placement: &'a Placement,
         point: F,
+        place: P,
         outline: Outline,
         leaves: usize,
         budget: usize,
     }
-    impl<F: Fn(f64) -> (f64, f64)> Build<'_, F> {
+    impl<F: Fn(f64) -> (f64, f64), P: Fn(f64, f64) -> Option<Point>> Build<'_, F, P> {
         fn segment(&mut self, t0: f64, t1: f64, depth: u8) {
             if self.leaves >= self.budget {
                 self.outline.approximate = true;
@@ -106,7 +124,7 @@ pub(crate) fn curve_within(
             if same_outside(&content, self.placement.map.domain()) {
                 return;
             }
-            let mapped = content.map(|p| self.placement.canvas_point(p.0, p.1));
+            let mapped = content.map(|p| (self.place)(p.0, p.1));
             // A warped map refuses points outside its output. Do not spend the entire
             // subdivision budget on an off-screen arc before reaching the visible one.
             if mapped.iter().all(Option::is_none) {
@@ -129,10 +147,7 @@ pub(crate) fn curve_within(
                 self.outline.approximate = true;
             }
             if let Some((a, b)) = clip(content[0], content[4], self.placement.map.domain())
-                && let (Some(a), Some(b)) = (
-                    self.placement.canvas_point(a.0, a.1),
-                    self.placement.canvas_point(b.0, b.1),
-                )
+                && let (Some(a), Some(b)) = ((self.place)(a.0, a.1), (self.place)(b.0, b.1))
             {
                 self.outline.segments.push((a, b));
             }
@@ -141,6 +156,7 @@ pub(crate) fn curve_within(
     let mut build = Build {
         placement,
         point,
+        place,
         outline: Outline::default(),
         leaves: 0,
         budget: budget.min(MAX_SEGMENTS),

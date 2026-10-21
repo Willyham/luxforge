@@ -1039,19 +1039,29 @@ impl GeometryMap {
             }
         }
     }
-    pub fn to_output(&self, mut x: f64, mut y: f64) -> Result<(f64, f64), MapError> {
+    pub fn to_output(&self, x: f64, y: f64) -> Result<(f64, f64), MapError> {
+        let (x, y) = self.to_output_unbounded(x, y)?;
+        if matches!(self.mapping, MappingShape::Warp { .. })
+            && (x < 0.0
+                || y < 0.0
+                || x > f64::from(self.output.width)
+                || y > f64::from(self.output.height))
+        {
+            return Err(MapError::Outside);
+        }
+        Ok((x, y))
+    }
+    /// [`Self::to_output`] without its output-stage check: where content position `(x, y)` lands
+    /// by the same steps, inside the output stage or not. A warp zoomed to cover its output sends
+    /// content near its edges past the output, which [`Self::to_output`] refuses; a client clipping
+    /// a figure to the output stage needs where it lands instead. Still refused where a step itself
+    /// is undefined, past a perspective's pole or where a lens's inverse does not converge.
+    pub fn to_output_unbounded(&self, mut x: f64, mut y: f64) -> Result<(f64, f64), MapError> {
         match &self.mapping {
             MappingShape::Affine { forward, .. } => Ok(Affine(*forward).at(x, y)),
             MappingShape::Warp { steps, .. } => {
                 for step in steps {
                     (x, y) = step.output_at(x, y)?;
-                }
-                if x < 0.0
-                    || y < 0.0
-                    || x > f64::from(self.output.width)
-                    || y > f64::from(self.output.height)
-                {
-                    return Err(MapError::Outside);
                 }
                 Ok((x, y))
             }
