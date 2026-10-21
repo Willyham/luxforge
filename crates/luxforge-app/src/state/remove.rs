@@ -662,7 +662,6 @@ mod tests {
         };
         let setup = SetupModel {
             module_id: "ai".into(),
-            heading: Some("Set up AI editing".into()),
             main: main.clone(),
             addon: None,
             enabled: true,

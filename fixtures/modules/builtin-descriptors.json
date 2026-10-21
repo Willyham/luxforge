@@ -6269,8 +6269,31 @@
         "capabilities": [
           {
             "id": "download-klein",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Paint over something you don't want and Luxforge fills the area in to match the rest of the photo. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Brush across the object, its shadow and its reflection. Cover a little more than you think.",
+                  "picture": "paint-over",
+                  "title": "Paint over it"
+                },
+                {
+                  "body": "Generate makes a fill and Regenerate another. Compare them over the photo and keep the best.",
+                  "picture": "candidates",
+                  "title": "Generate"
+                },
+                {
+                  "body": "The fill becomes one step in the photo's history. Your original file is never changed.",
+                  "picture": "history",
+                  "title": "Accept"
+                }
+              ],
+              "title": "Remove anything, fill it in naturally"
+            },
             "kind": "download-artifact",
-            "purpose": "Set up AI editing: download the model that removes and fills, which runs on this computer",
+            "purpose": "Set up AI editing: this downloads the model that removes objects and fills in parts of a photo. It runs on this computer, so your photos stay on it",
             "resource": "generative-klein-4b"
           },
           {
@@ -6288,8 +6311,15 @@
           },
           {
             "id": "download-klein-text-encoder",
+            "introduction": {
+              "eyebrow": "AI editing · Add-on",
+              "hero": "describe",
+              "lead": "Type what should be there, such as “a red bicycle” or “calm water”, and Replace paints it into the area you selected. It adds a second model, which also runs entirely on this computer.",
+              "promise": "Your photos and what you type stay on this computer.",
+              "title": "Fill it with what you describe"
+            },
             "kind": "download-artifact",
-            "purpose": "Add Replace: download the model that reads what you describe, which runs on this computer",
+            "purpose": "Add Replace: this downloads the model that reads what you describe, so Replace can fill with it. It runs on this computer, so your photos stay on it",
             "resource": "generative-klein-text-encoder"
           },
           {

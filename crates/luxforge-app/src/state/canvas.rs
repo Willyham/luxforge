@@ -228,10 +228,12 @@ pub(crate) enum NoticeTone {
     Error,
 }
 
-/// A notice's leading icon: the spark for a change another client made, the triangle for the rest.
+/// A notice's leading icon: the spark for a change another client made, the information mark for
+/// a question that warns of nothing (a consent notice), the triangle for the rest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeIcon {
     Spark,
+    Information,
     Triangle,
 }
 

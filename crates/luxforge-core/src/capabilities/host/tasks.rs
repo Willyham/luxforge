@@ -282,7 +282,7 @@ impl CapabilityHost {
             match &capability.kind {
                 // A task that uses a resource's capability reads the installed resource; the
                 // install asked for the download grant.
-                CapabilityKind::DownloadArtifact { resource } => {
+                CapabilityKind::DownloadArtifact { resource, .. } => {
                     match rows.iter().find(|row| &row.id == resource) {
                         Some(row) if row.state == ResourceState::Installed => {
                             if let Some(path) = &row.path {

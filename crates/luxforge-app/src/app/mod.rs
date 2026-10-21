@@ -1555,6 +1555,11 @@ impl Editor {
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette.open,
             settings_open: self.settings.open.is_some(),
+            setup_sheet: self
+                .workspace
+                .setup_sheet
+                .as_ref()
+                .map(|sheet| sheet.allow.is_some()),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             export_sheet_open: self.export.sheet.is_some(),
             mode_active: self.session.workspace.mode != POINTER_MODE,

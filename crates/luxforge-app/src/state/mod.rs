@@ -33,6 +33,7 @@ pub(crate) mod select_introduction;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
+pub(crate) mod setup_sheet;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -526,6 +527,8 @@ pub(crate) struct Workspace {
     pub(crate) develop: develop::DevelopModel,
     /// The Export sheet, while it is open.
     pub(crate) export_sheet: Option<export_sheet::ExportSheetModel>,
+    /// A download's setup sheet, while it asks.
+    pub(crate) setup_sheet: Option<setup_sheet::SetupSheet>,
 }
 
 impl Workspace {
@@ -598,16 +601,18 @@ impl Workspace {
             nothing_indexed,
             inputs.view_state.window.0,
         );
+        self.setup_sheet = setup_sheet::derive(inputs);
     }
 
-    /// Whether something is open over the canvas: the palette, the Settings sheet, a menu (a
-    /// popover's or a context menu's) or one of copy settings' chooser, menu, confirmation and
-    /// report. A press on the photograph then closes it rather than painting, so the canvas draws
+    /// Whether something is open over the canvas: the palette, the Settings sheet, a setup sheet, a
+    /// menu (a popover's or a context menu's) or one of copy settings' chooser, menu, confirmation
+    /// and report. A press on the photograph then closes it rather than painting, so the canvas draws
     /// no brush cursor and leaves the pointer to the system ([`canvas::CanvasModel::covered`]).
     pub(crate) fn covers_canvas(&self) -> bool {
         self.palette.open
             || self.settings.open.is_some()
             || self.export_sheet.is_some()
+            || self.setup_sheet.is_some()
             || self.tools.menu.is_some()
             || self.copy_settings.menu.is_some()
             || self.copy_settings.report.is_some()
@@ -762,6 +767,119 @@ mod tests {
     };
     use serde_json::json;
     use std::{collections::HashSet, path::PathBuf};
+
+    /// A download that introduces its feature asks through the setup sheet: what it needs of the
+    /// machine against what this machine has, and a past Not now. On a machine below the model's
+    /// minimum it says the model cannot run, offers no Download and only closes.
+    #[test]
+    fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
+        let mut scene = Scene::new(descriptors());
+        let consent: capabilities::Consent = serde_json::from_value(json!({
+            "module_id": "luxforge.ai",
+            "capability": "download-klein",
+            "kind": "download-artifact",
+            "scope": {},
+            "denied": true,
+            "disclosure": {
+                "module": "AI editing",
+                "purpose": "Set up AI editing: this downloads the model",
+                "destination": "https://huggingface.co/model.gguf",
+                "data": "klein 1",
+                "bytes": 2_720_267_065u64,
+                "license": "Apache-2.0",
+                "cost": "free",
+                "requirements": {"min_memory_bytes": 16u64 << 30},
+                "introduction": {
+                    "eyebrow": "AI editing",
+                    "title": "Remove anything, fill it in naturally",
+                    "lead": "Paint over something you don't want.",
+                    "steps": [{"title": "Paint over it", "body": "Brush.", "picture": "paint-over"}],
+                    "promise": "Your photos stay on this computer.",
+                },
+            },
+        }))
+        .expect("a consent-required failure's data");
+        scene.capabilities.consent = Some(capabilities::OpenConsent {
+            consent,
+            retry: None,
+        });
+        let machine = if cfg!(target_os = "macos") {
+            "Mac"
+        } else {
+            "computer"
+        };
+        let mut memory = |bytes: u64| {
+            scene.capabilities.modules.insert(
+                "luxforge.ai".into(),
+                capabilities::ModuleCapabilities {
+                    status: Some(
+                        serde_json::from_value(json!({"machine": {"memory_bytes": bytes}}))
+                            .expect("a status"),
+                    ),
+                    ..Default::default()
+                },
+            );
+            let notices = canvas::derive(&scene.inputs()).notices;
+            assert!(
+                notices.is_empty(),
+                "no notice beside the sheet: {notices:?}"
+            );
+            setup_sheet::derive(&scene.inputs()).expect("the setup sheet")
+        };
+
+        let sheet = memory(48 << 30);
+        let facts: Vec<_> = sheet
+            .facts
+            .iter()
+            .map(|fact| (fact.headline.as_str(), fact.detail.as_str()))
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                ("2.5 GB download", "Once, then it works offline"),
+                ("From huggingface.co", "Free \u{b7} Apache-2.0"),
+                (
+                    "Needs 16 GB of memory",
+                    &*format!("This {machine} has 48 GB \u{2713}")
+                ),
+            ]
+        );
+        assert_eq!(
+            sheet.facts[2].kind,
+            setup_sheet::FactKind::Memory(Some(true))
+        );
+        assert_eq!(
+            sheet.notes,
+            [
+                (
+                    "You chose Not now before. Nothing has been downloaded.".to_owned(),
+                    false
+                ),
+                (
+                    "You can remove it at any time in Settings \u{203a} Models.".to_owned(),
+                    false
+                ),
+            ]
+        );
+        assert_eq!(
+            (sheet.allow.as_deref(), sheet.dismiss.as_str()),
+            (Some("Download 2.5 GB"), "Not now")
+        );
+
+        let sheet = memory(8 << 30);
+        assert_eq!(
+            (sheet.facts[2].detail.as_str(), sheet.facts[2].kind.unmet()),
+            (&*format!("This {machine} has 8 GB"), true)
+        );
+        assert_eq!(
+            sheet.notes,
+            [(format!("It can't run on this {machine}."), true)]
+        );
+        assert_eq!(
+            (sheet.allow.as_deref(), sheet.dismiss.as_str()),
+            (None, "Close")
+        );
+    }
 
     /// The pieces a derivation borrows, owned by the test so `Inputs` can point at them.
     struct Scene {

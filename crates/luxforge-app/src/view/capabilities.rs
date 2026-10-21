@@ -38,8 +38,8 @@ fn text_button<'a>(text: &str, accent: bool, press: Option<Message>) -> Element<
         .into()
 }
 
-/// The block above a capability module's controls: a fill module's setup card, a row per other
-/// resource, the settings form, and the one status line. Grants are managed through
+/// The block above a capability module's controls: a row per resource, the settings form, and
+/// the one status line. Grants are managed through
 /// `module.permission.*`.
 pub(crate) fn block(model: &CapabilityModel) -> Element<'_, Message> {
     if model.loading {
@@ -47,13 +47,6 @@ pub(crate) fn block(model: &CapabilityModel) -> Element<'_, Message> {
     }
     let module_id = &model.module_id;
     let mut body = Column::new().spacing(theme::SPACING / 2.0);
-    if let Some(setup) = &model.setup {
-        body = body.push(super::fill_setup::card(
-            setup,
-            &|action| capability(action.into()),
-            &|text, accent, press| text_button(text, accent, press),
-        ));
-    }
     for resource in &model.resources {
         body = body.push(resource_view(module_id, resource, model.enabled));
     }
