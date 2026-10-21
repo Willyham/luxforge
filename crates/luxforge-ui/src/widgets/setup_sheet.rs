@@ -8,7 +8,7 @@
 
 use super::button_row::{ButtonSize, ButtonTone, text_button};
 use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
-use super::loupe::{KeyHint, key_hints};
+use super::key_hint::{KeyHint, key_hints};
 use crate::theme;
 use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
