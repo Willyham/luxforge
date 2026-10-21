@@ -98,6 +98,10 @@ pub(crate) enum MenuTarget {
     ComponentCopy(String),
     /// A component's help sheet: how to pick into it and what its kind does not tell apart.
     ComponentHelp(String),
+    /// A component's mode chip: Add, Subtract and Intersect.
+    ComponentMode(String),
+    /// The Add row's mode chip: the mode the next component is added in.
+    AddMode,
     /// The New mask kind menu.
     NewMask,
     /// The Add component kind menu.

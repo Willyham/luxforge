@@ -24,7 +24,7 @@ use crate::{
     state::{
         histogram::HistogramModel,
         masks::{ComponentHelp, ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
-        tools::{ControlModel, drawn_by_range},
+        tools::{ControlModel, NumberControlStyle, drawn_by_range},
     },
     view::tools_panel::{
         control_copy_menu, control_menu, control_view, sized_toggle_view, ui_edit,
@@ -39,12 +39,12 @@ use luxforge_ui::{
     DropdownButtonModel, GridField, GroupRuleModel, HelpAlike, HelpRemedy, HelpSheetModel,
     HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart, MaskRowMessages, MaskRowModel,
     MenuEntry, MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode,
-    OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, RenameMessages,
-    SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel, ValueEdit,
-    band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
+    OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, PickLineModel,
+    RenameMessages, SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel,
+    ValueEdit, band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
     dropdown_button, field_grid, group_rule, header_icon_button, help_sheet as sheet, mask_row,
-    menu_list, mode_control, overlay_control, pick_bar, pick_button, popover, slider, stroke_row,
-    swatch_slots, theme, with_tooltip,
+    menu_list, menu_list_with_width, mode_control, mode_menu, overlay_control, pick_line, popover,
+    slider, stroke_row, swatch_slots, theme, with_tooltip,
 };
 use luxforge_ui::{Element, Token};
 
@@ -648,9 +648,13 @@ fn open_mask<'a>(
     .into()
 }
 
-/// The next component's kind and mode, chosen before the gesture: `+ Add component ▾  as + − ∩`.
+/// The next component's kind and mode, chosen before the gesture: `+ Add component ▾  as − ▾`.
 fn add_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'a, Message> {
     let modes = model.modes.len();
+    let selected = CombineMode::ALL
+        .get(model.add_mode)
+        .copied()
+        .unwrap_or(CombineMode::Add);
     let add = kind_dropdown(
         "Add component",
         true,
@@ -660,23 +664,25 @@ fn add_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'
         kind_menu(model, KindMenu::Add),
         menu,
     );
+    let open = menu == Some(&MenuTarget::AddMode);
+    let toggle = toggle_menu(menu, MenuTarget::AddMode);
     let mode = mode_control(
         &ModeControlModel {
-            selected: CombineMode::ALL
-                .get(model.add_mode)
-                .copied()
-                .unwrap_or(CombineMode::Add),
-            fixed: None,
-            tooltip: model.modes.join(" \u{b7} "),
+            selected,
+            tooltip: format!("Add the next component as {}", selected.label()),
+            open,
             enabled: model.enabled && modes == CombineMode::ALL.len(),
         },
-        |mode| {
-            let index = CombineMode::ALL
-                .iter()
-                .position(|known| *known == mode)
-                .unwrap_or(0);
-            mask(MaskMessage::SetAddMode(index))
-        },
+        Some(toggle.clone()),
+    );
+    let mode = popover(
+        mode,
+        open.then(|| {
+            mode_list(selected, |mode| {
+                mask(MaskMessage::SetAddMode(mode_position(mode)))
+            })
+        }),
+        toggle,
     );
     container(
         row![add, Space::new().width(Length::Fill), note("as"), mode]
@@ -689,10 +695,30 @@ fn add_row<'a>(model: &'a MasksModel, menu: Option<&'a MenuTarget>) -> Element<'
     .into()
 }
 
+/// A mode's position in the host's own list of modes, which the chip's menu and the controller
+/// both resolve a chosen mode against.
+fn mode_position(mode: CombineMode) -> usize {
+    CombineMode::ALL
+        .iter()
+        .position(|known| *known == mode)
+        .unwrap_or(0)
+}
+
+/// A mode chip's open menu: the three modes, a press on the current one just putting it away.
+fn mode_list<'a>(
+    selected: CombineMode,
+    on_select: impl Fn(CombineMode) -> Message,
+) -> Element<'a, Message> {
+    menu_list_with_width(
+        mode_menu(selected, on_select, close_menu()),
+        theme::MODE_MENU_WIDTH,
+    )
+}
+
 // ---- the components ------------------------------------------------------------------------------
 
-/// One component's row and, while it is selected, what sits under it: its fields, its strokes or
-/// swatches, and its kind's own lines.
+/// One component's row and, while it is selected, what sits under it: a picked kind's pick line,
+/// its swatches, its fields and its strokes.
 ///
 /// Every control here belongs to *this* component and not to whichever one happens to be selected:
 /// the mode is a property of a component, editable at any time. Hovering the row shows this
@@ -707,23 +733,30 @@ fn component_view<'a>(
 ) -> Element<'a, Message> {
     let id = component.id.as_str().to_owned();
     let enabled = model.enabled && component.available;
-    let declared = model.modes.clone();
+    let selected_mode = CombineMode::ALL
+        .get(component.mode_selected)
+        .copied()
+        .unwrap_or(CombineMode::Add);
+    // A mask's first component is always Add, so its row shows no mode at all; the host's reason
+    // stays on the row's state for a client that asks.
+    let mode_target = MenuTarget::ComponentMode(id.clone());
+    let mode_open = menu == Some(&mode_target);
+    let choosable = !component.mode_options.is_empty() && component.mode_reason.is_none();
+    let declared = component.mode_options.clone();
     let row_id = id.clone();
     let view = component_row(
         &ComponentRowModel {
             name: component.name.clone(),
             icon: component.icon.and_then(Icon::from_name),
-            mode: ModeControlModel {
-                selected: CombineMode::ALL
-                    .get(component.mode_selected)
-                    .copied()
-                    .unwrap_or(CombineMode::Add),
-                // The first component's mode is fixed by the composition: `+` alone, dimmed, with
-                // the host's own reason as its tooltip.
-                fixed: component.mode_reason.clone(),
-                tooltip: model.modes.join(" \u{b7} "),
+            mode: choosable.then(|| ModeControlModel {
+                selected: selected_mode,
+                tooltip: format!(
+                    "{} \u{b7} how it combines with those above",
+                    selected_mode.label()
+                ),
+                open: mode_open,
                 enabled,
-            },
+            }),
             inverted: component.inverted,
             invert_tooltip: if component.inverted {
                 format!("{} · on", component.invert_label)
@@ -739,20 +772,17 @@ fn component_view<'a>(
         },
         ComponentRowMessages {
             on_select: Some(mask(MaskMessage::SelectComponent(id.clone()))),
-            on_mode: (!component.mode_options.is_empty()).then(|| {
-                Box::new(move |mode: CombineMode| {
-                    let index = CombineMode::ALL
-                        .iter()
-                        .position(|known| *known == mode)
-                        .unwrap_or(0);
-                    match declared.get(index) {
+            on_mode: choosable.then(|| toggle_menu(menu, mode_target.clone())),
+            mode_menu: (choosable && mode_open).then(|| {
+                mode_list(selected_mode, move |mode| {
+                    match declared.get(mode_position(mode)) {
                         Some(token) => run(RowEdit::ComponentMode {
                             component: row_id.clone(),
                             mode: token.clone(),
                         }),
-                        None => mask(MaskMessage::SelectComponent(row_id.clone())),
+                        None => close_menu(),
                     }
-                }) as Box<dyn Fn(CombineMode) -> Message + 'a>
+                })
             }),
             on_invert: Some(run(RowEdit::ComponentInvert {
                 component: id.clone(),
@@ -794,18 +824,26 @@ fn component_view<'a>(
         return view;
     }
     let mut block = Column::new().push(view);
-    // The armed eyedropper's bar, straight under the row it picks into.
-    if component.picking
-        && let Some(picker) = &model.picker
-    {
-        block = block.push(pick_bar(
-            &PickBarModel {
-                hint: picker.hint.to_owned(),
-                count: picker.count.clone(),
-                enabled: true,
-            },
-            mask(MaskMessage::PickDone),
+    if component.can_pick {
+        // A picked kind's first line is its pick: Pick at rest, the bar while the eyedropper is
+        // armed on it, so arming moves nothing under it. How picking works and what the kind does
+        // not select sit behind the help button at its end, so the open row stays controls rather
+        // than a page of prose. A right press offers the pick's request, as every control in the
+        // row offers its own.
+        block = block.push(mouse_area(pick_row(model, component, menu)).on_right_press(
+            toggle_menu(
+                menu,
+                MenuTarget::ComponentCopy(component.id.as_str().to_owned()),
+            ),
         ));
+        // Why a pick cannot be taken, in the host's own words, on the open row only.
+        if let Some(reason) = &component.pick_reason {
+            block = block.push(component_note(reason.clone()));
+        }
+        // A colour range's colours, with how many it holds at the end of the line.
+        if component.sample_limit > 0 {
+            block = block.push(swatches(component, model.enabled, menu));
+        }
     }
     // The component's own fields: the gesture's while one is open on it, its stored geometry's
     // otherwise.
@@ -819,34 +857,6 @@ fn component_view<'a>(
     }
     if !component.strokes.is_empty() {
         block = block.push(strokes(component, model.enabled, menu));
-    }
-    if component.can_pick {
-        // A colour range's Pick sits at the end of its swatch row; a band's under its fields.
-        let picks = if component.sample_limit > 0 {
-            swatches(component, model.enabled, menu)
-        } else {
-            pick_row(component, model.enabled)
-        };
-        // How picking works and what the kind does not select sit behind a help button at the end
-        // of the row, so the open row stays controls rather than a page of prose.
-        let picks = match &component.help {
-            Some(help) => row![picks, help_button(component, help, menu)]
-                .align_y(Alignment::Center)
-                .into(),
-            None => picks,
-        };
-        // A right press offers the pick's request, as every control in the row offers its own.
-        block = block.push(mouse_area(picks).on_right_press(toggle_menu(
-            menu,
-            MenuTarget::ComponentCopy(component.id.as_str().to_owned()),
-        )));
-        if let Some(note) = component.sample_note {
-            block = block.push(component_note(note));
-        }
-        // Why a pick cannot be taken, in the host's own words, on the open row only.
-        if let Some(reason) = &component.pick_reason {
-            block = block.push(component_note(reason.clone()));
-        }
     }
     block.into()
 }
@@ -978,9 +988,10 @@ pub(crate) fn component_copy_menu(
 }
 
 /// The selected component's generated geometry controls: its plain numbers as two columns of
-/// fields, each with the context menu a generated control carries, and any other control kind
-/// through the generated control view, so a kind whose declarations bring a richer control (a range)
-/// draws it here unchanged.
+/// fields, each with the context menu a generated control carries, and any other control kind —
+/// a band, or a number its kind declares as a slider (a colour range's Refine) — through the
+/// generated control view, so a kind whose declarations bring a richer control draws it here
+/// unchanged.
 fn component_fields<'a>(
     fields: &'a [ControlModel],
     enabled: bool,
@@ -1001,7 +1012,7 @@ fn component_fields<'a>(
             continue;
         }
         match field {
-            ControlModel::Slider(number) => {
+            ControlModel::Slider(number) if number.style == NumberControlStyle::Field => {
                 if open_menu.is_none() {
                     open_menu = control_copy_menu(&number.action, &number.parameter, menu);
                 }
@@ -1187,8 +1198,8 @@ fn strokes<'a>(
         .into()
 }
 
-/// A colour range's held swatches, its empty slots and its pick. A press on a swatch opens its
-/// menu: Remove, and the request Remove sends.
+/// A colour range's held swatches, its empty slots and how many it holds. A press on a swatch opens
+/// its menu: Remove, and the request Remove sends.
 fn swatches<'a>(
     component: &'a ComponentRow,
     enabled: bool,
@@ -1211,9 +1222,7 @@ fn swatches<'a>(
                 .collect(),
             limit: component.sample_limit,
             selected: chosen,
-            picking: component.picking,
-            pick_label: component.pick_label.clone(),
-            pick_enabled: component.pick_reason.is_none(),
+            caption: component.sample_caption.clone(),
             enabled,
         },
         {
@@ -1233,7 +1242,6 @@ fn swatches<'a>(
                 )
             }
         },
-        mask(MaskMessage::Pick),
     );
     let entries = chosen
         .and_then(|index| {
@@ -1263,28 +1271,42 @@ fn swatches<'a>(
     popover(slots, entries.map(menu_list), close_menu())
 }
 
-/// A band's Pick, at the right under its fields, lit while the eyedropper is armed on it.
-fn pick_row(component: &ComponentRow, enabled: bool) -> Element<'_, Message> {
-    let button = pick_button(
-        &PickButtonModel {
-            label: component.pick_label.clone(),
-            armed: component.picking,
-            enabled: enabled && component.pick_reason.is_none(),
+/// A picked kind's pick line: Pick, or the bar while the eyedropper is armed on this component,
+/// then the help button.
+fn pick_row<'a>(
+    model: &'a MasksModel,
+    component: &'a ComponentRow,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let hint = model
+        .picker
+        .as_ref()
+        .filter(|_| component.picking)
+        .map(|picker| picker.hint.to_owned())
+        .unwrap_or_default();
+    pick_line(
+        &PickLineModel {
+            pick: PickButtonModel {
+                label: component.pick_label.clone(),
+                armed: component.picking,
+                enabled: model.enabled && component.pick_reason.is_none(),
+            },
+            tooltip: component.pick_title.clone(),
+            bar: PickBarModel {
+                hint,
+                enabled: true,
+            },
         },
         mask(MaskMessage::Pick),
-    );
-    let button = with_tooltip(
-        button,
-        component.pick_title.clone(),
-        iced::widget::tooltip::Position::Top,
-    );
-    container(row![Space::new().width(Length::Fill), button])
-        .padding(Padding::default().left(theme::COMPONENT_DETAIL_INDENT))
-        .width(Length::Fill)
-        .into()
+        mask(MaskMessage::PickDone),
+        component
+            .help
+            .as_ref()
+            .map(|help| help_button(component, help, menu)),
+    )
 }
 
-/// The open row's help button, at the end of its pick row, lit while the help sheet it opens is
+/// The open row's help button, at the end of its pick line, lit while the help sheet it opens is
 /// showing.
 fn help_button<'a>(
     component: &ComponentRow,

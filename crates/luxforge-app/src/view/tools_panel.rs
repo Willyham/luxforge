@@ -42,12 +42,12 @@ use luxforge_ui::{
     SectionHeaderModel, SegmentedModel, SliderModel, StepperModel, StepperRail,
     StepperRailMessages, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, badge, boxed_input,
     button_row, caption, channel_row, chip, chip_row, chip_wrap, color_picker, color_swatch,
-    compact_number_field, curve_editor, equal_button_row, error_caption, focus_control,
-    histogram_inspector, icon_button, icon_button_row, inline_menu, label_line, labelled_button,
-    list_heading, menu_choice, module_section, number_field, range_slider, readout_card,
-    row_icon_button, section_label, segmented, slider, steady_bottom, stepper, sub_group_header,
+    curve_editor, equal_button_row, error_caption, focus_control, histogram_inspector, icon_button,
+    icon_button_row, inline_menu, inline_value, label_line, labelled_button, list_heading,
+    menu_choice, module_section, number_field, range_rail, readout_card, row_icon_button,
+    section_label, segmented, slider, steady_bottom, stepper, sub_group_header,
     sub_group_header_with_actions, sub_group_header_with_controls, tab_row, text_button, theme,
-    toggle,
+    toggle, values_line,
 };
 use serde_json::{Map, Value};
 
@@ -1243,7 +1243,7 @@ fn range_view<'a>(
         targets[grips.iter().position(|known| *known == grip).unwrap_or(0)].clone()
     };
     let (change, release, reset) = (target.clone(), target.clone(), target);
-    let widget = range_slider(
+    let widget = range_rail(
         &model,
         move |grip, value| {
             let (action, parameter, min, max) = change(grip);
@@ -1270,65 +1270,106 @@ fn range_view<'a>(
         .map(|field| (field.parameter.clone(), Value::from(field.value)))
         .collect();
     let band = with_control_menu_preset(widget, &range.action, None, Some(&shown), menu);
-    column![band, range_fields(enabled, range, menu)]
-        .spacing(theme::ROW_SPACING)
-        .into()
+    // The edges on the label line, as a slider's value sits, and the shoulders on a line of their
+    // own under the rail, each number typed in place: the band reads in three lines.
+    let mut lines = column![range_values(
+        enabled,
+        range.label.clone(),
+        "\u{2013}",
+        vec![&range.low, &range.high],
+        menu,
+    )]
+    .spacing(theme::SLIDER_GAP);
+    lines = lines.push(band);
+    let feathers: Vec<&SliderControl> = [range.low_feather.as_ref(), range.high_feather.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !feathers.is_empty() {
+        lines = lines.push(range_values(
+            enabled,
+            RANGE_FEATHER_LABEL.to_owned(),
+            "\u{b7}",
+            feathers,
+            menu,
+        ));
+    }
+    lines.into()
 }
 
-/// A band's fields two to a row, on compact rows, as the board lays them out: the low edge beside
-/// its shoulder, then the high edge beside its shoulder. Kept private and plain so a shared field
-/// grid can take its place without touching the band.
-fn range_fields<'a>(
+/// What a band's shoulders are called on their line: the width it fades over on either side.
+const RANGE_FEATHER_LABEL: &str = "Feather";
+
+/// One of a band's label lines: `label`, then each of `fields` typed in place with `separator`
+/// between them, and a field's refusal under the line while what is typed cannot be read. A right
+/// press on a number offers its own request, under the line.
+fn range_values<'a>(
     enabled: bool,
-    range: &'a RangeControl,
+    label: String,
+    separator: &str,
+    fields: Vec<&'a SliderControl>,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    let cell = |field: Option<&'a SliderControl>| -> Element<'a, Message> {
-        match field {
-            Some(field) => number_view_on(enabled, field, menu, theme::COMPACT_FIELD_ROW_HEIGHT),
-            None => Space::new().width(Length::Fill).into(),
+    let values = fields
+        .iter()
+        .map(|field| {
+            let (action, parameter) = (field.action.clone(), field.parameter.clone());
+            let (text_action, text_parameter) = (action.clone(), parameter.clone());
+            let value = inline_value(
+                &NumberFieldModel {
+                    id: Some(field.id.clone()),
+                    label: field.label.clone(),
+                    display: field.display.clone(),
+                    edit: ui_edit(&field.edit, &field.display, &field.invalid),
+                    unit: None,
+                    enabled,
+                },
+                Message::Control(ControlMessage::EditValue {
+                    action: action.clone(),
+                    parameter: parameter.clone(),
+                }),
+                move |text| {
+                    Message::Control(ControlMessage::Field {
+                        action: text_action.clone(),
+                        parameter: text_parameter.clone(),
+                        text,
+                    })
+                },
+                Message::Control(ControlMessage::Submit {
+                    action: action.clone(),
+                    parameter: Some(parameter.clone()),
+                }),
+            );
+            mouse_area(value)
+                .on_right_press(open_control_menu(&action, Some(&parameter), None))
+                .into()
+        })
+        .collect();
+    let mut block = column![values_line(label, enabled, separator, values)].spacing(4.0);
+    for field in &fields {
+        if let Some(reason) = &field.invalid {
+            block = block.push(error_caption(reason.clone()));
         }
-    };
-    let pair = |left: &'a SliderControl, right: Option<&'a SliderControl>| {
-        row![
-            iced::widget::container(cell(Some(left))).width(Length::Fill),
-            iced::widget::container(cell(right)).width(Length::Fill),
-        ]
-        .spacing(RANGE_FIELD_COLUMN_GAP)
-        .width(Length::Fill)
-    };
-    column![
-        pair(&range.low, range.low_feather.as_ref()),
-        pair(&range.high, range.high_feather.as_ref()),
-    ]
-    .spacing(RANGE_FIELD_ROW_GAP)
-    .into()
+        if let Some(method) = open_method(menu, &field.action, Some(&field.parameter), None) {
+            block = block.push(control_menu_preset(
+                method,
+                &field.action,
+                Some(&field.parameter),
+                None,
+            ));
+        }
+    }
+    block.into()
 }
 
-/// mask-panels.png, `.fields`: two columns 10 pt apart and rows 2 pt apart. The board also indents
-/// them 22 pt under the band; the declared labels (`Low Feather`) are longer than the board's
-/// (`low shoulder`), so the columns keep the full width instead.
-const RANGE_FIELD_COLUMN_GAP: f32 = 10.0;
-const RANGE_FIELD_ROW_GAP: f32 = 2.0;
-
+/// A number control in its declared style, with the menu a right press opens.
 fn number_view<'a>(
     enabled: bool,
     field: &'a SliderControl,
     menu: Option<&'a MenuTarget>,
 ) -> Element<'a, Message> {
-    number_view_on(enabled, field, menu, theme::FIELD_ROW_HEIGHT)
-}
-
-/// A number control whose `field` style sits on a row `row_height` tall: a module panel's own
-/// row, or the compact row a range packs its fields on.
-fn number_view_on<'a>(
-    enabled: bool,
-    field: &'a SliderControl,
-    menu: Option<&'a MenuTarget>,
-    row_height: f32,
-) -> Element<'a, Message> {
     with_control_menu(
-        number_control(enabled, field, row_height),
+        number_control(enabled, field),
         &field.action,
         Some(&field.parameter),
         menu,
@@ -1336,8 +1377,8 @@ fn number_view_on<'a>(
 }
 
 /// One number or integer parameter's control in its declared style, with the keys a focused
-/// stepper or field takes, its `field` style on a row `row_height` tall.
-fn number_control(enabled: bool, field: &SliderControl, row_height: f32) -> Element<'_, Message> {
+/// stepper or field takes.
+fn number_control(enabled: bool, field: &SliderControl) -> Element<'_, Message> {
     let spec = &field.spec;
     // Where a bipolar rail's fill grows from, when the declared zero is on the rail.
     let zero = (spec.soft_min..=spec.soft_max)
@@ -1419,9 +1460,6 @@ fn number_control(enabled: bool, field: &SliderControl, row_height: f32) -> Elem
                 submit,
                 reset,
             )
-        }
-        NumberControlStyle::Field if row_height < theme::FIELD_ROW_HEIGHT => {
-            compact_number_field(&field_model, edit_start, on_text, submit, reset)
         }
         NumberControlStyle::Field => number_field(&field_model, edit_start, on_text, submit, reset),
         NumberControlStyle::Stepper { rail } => {
@@ -2287,11 +2325,7 @@ fn crop_section_view<'a>(
     // The angle is the generic stepper of the crop action's declared angle. It has no control
     // menu: what a crop draft copies is its whole frame, from Apply's.
     if let Some(angle) = &model.angle {
-        rows.push(number_control(
-            model.enabled,
-            angle,
-            theme::FIELD_ROW_HEIGHT,
-        ));
+        rows.push(number_control(model.enabled, angle));
     }
     rows.push(straighten_button(model));
     if !model.drafting {

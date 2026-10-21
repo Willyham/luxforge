@@ -16,7 +16,7 @@
 use super::coverage_thumbnail::{CoverageThumbnailModel, coverage_thumbnail};
 use super::icon_button::{Icon, IconButtonModel, icon, sized_icon_button};
 use super::list_row::marker_circle;
-use super::mode_control::{CombineMode, ModeControlModel, inert_mode_control, mode_control};
+use super::mode_control::{ModeControlModel, mode_control};
 use super::number_field::value_input;
 use super::truncated_text::truncated_text;
 use crate::theme;
@@ -151,7 +151,9 @@ pub struct ComponentRowModel {
     pub name: String,
     /// The kind's icon; `None` keeps its column empty, so the names still line up.
     pub icon: Option<Icon>,
-    pub mode: ModeControlModel,
+    /// The component's mode chip; `None` for a mask's first component, which is always Add and
+    /// shows none.
+    pub mode: Option<ModeControlModel>,
     /// The component is inverted: the invert glyph is in the accent.
     pub inverted: bool,
     pub invert_tooltip: String,
@@ -169,8 +171,11 @@ pub struct ComponentRowModel {
 /// What a component row publishes. `None` leaves that part inert.
 pub struct ComponentRowMessages<'a, M> {
     pub on_select: Option<M>,
-    /// A press on a mode segment, with its mode.
-    pub on_mode: Option<Box<dyn Fn(CombineMode) -> M + 'a>>,
+    /// A press on the mode chip, which opens its menu or, while it is open, closes it; a press
+    /// outside the open menu publishes it too.
+    pub on_mode: Option<M>,
+    /// The mode chip's open menu ([`crate::mode_menu`]), dropped under the chip.
+    pub mode_menu: Option<Element<'a, M>>,
     pub on_invert: Option<M>,
     pub on_menu: Option<M>,
     /// A press on the grip. `None` lets the press select the row.
@@ -187,6 +192,7 @@ impl<M> Default for ComponentRowMessages<'_, M> {
         Self {
             on_select: None,
             on_mode: None,
+            mode_menu: None,
             on_invert: None,
             on_menu: None,
             on_drag_start: None,
@@ -197,7 +203,7 @@ impl<M> Default for ComponentRowMessages<'_, M> {
     }
 }
 
-/// Renders one component's row: the grip, the kind's icon, the name, the mode control, the invert
+/// Renders one component's row: the grip, the kind's icon, the name, the mode chip, the invert
 /// glyph and the menu button.
 pub fn component_row<'a, M: Clone + 'a>(
     model: &ComponentRowModel,
@@ -213,9 +219,22 @@ pub fn component_row<'a, M: Clone + 'a>(
         Some(kind) => icon(kind, theme::HEADER_ICON_SIZE, Token::TextSecondary),
         None => Space::new().into(),
     };
-    let mode = match messages.on_mode {
-        Some(on_mode) if enabled => mode_control(&model.mode, on_mode),
-        _ => inert_mode_control(&model.mode),
+    let mode: Element<'a, M> = match &model.mode {
+        Some(chip) => {
+            let on_mode = messages.on_mode.filter(|_| enabled);
+            let view = mode_control(
+                &ModeControlModel {
+                    enabled: chip.enabled && enabled,
+                    ..chip.clone()
+                },
+                on_mode.clone(),
+            );
+            match (messages.mode_menu, on_mode) {
+                (Some(menu), Some(dismiss)) => super::popover::popover(view, Some(menu), dismiss),
+                _ => view,
+            }
+        }
+        None => Space::new().into(),
     };
     let invert_ink = if model.inverted {
         Token::Accent
@@ -654,6 +673,7 @@ fn row_button<'a, M: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CombineMode;
 
     fn mask(selected: bool, visible: bool, active: bool) -> MaskRowModel {
         MaskRowModel {
@@ -715,12 +735,12 @@ mod tests {
         let model = ComponentRowModel {
             name: "Radial 1".into(),
             icon: Some(Icon::Radial),
-            mode: ModeControlModel {
-                selected: CombineMode::Add,
-                fixed: Some("A mask's first component is always Add".into()),
+            mode: Some(ModeControlModel {
+                selected: CombineMode::Subtract,
                 tooltip: String::new(),
+                open: true,
                 enabled: true,
-            },
+            }),
             inverted: true,
             invert_tooltip: "Invert".into(),
             menu_tooltip: "Component actions".into(),
@@ -734,7 +754,12 @@ mod tests {
             &model,
             ComponentRowMessages {
                 on_select: Some(0),
-                on_mode: Some(Box::new(|_| 1)),
+                on_mode: Some(1),
+                mode_menu: Some(crate::menu_list(crate::mode_menu(
+                    CombineMode::Subtract,
+                    |_| 1,
+                    1,
+                ))),
                 on_invert: Some(2),
                 on_menu: Some(3),
                 on_drag_start: Some(4),
@@ -759,6 +784,7 @@ mod tests {
         let _: Element<'_, u8> = component_row(
             &ComponentRowModel {
                 icon: None,
+                mode: None,
                 hovered: true,
                 selected: false,
                 enabled: false,

@@ -679,16 +679,24 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
 }
 
 /// The range eyedropper as the frame's panel reported it: armed, with the hint of the kind it is
-/// armed on and, for a colour range, how many swatches are held of the most it holds.
+/// armed on and, for a colour range, what its swatch line says it holds.
 fn armed(frame: &Frame, hint: &str, count: Option<&str>) -> Result {
-    let picker = &frame.state()["masks"]["picker"];
+    let masks = &frame.state()["masks"];
+    let picker = &masks["picker"];
+    let caption = masks["components"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["picking"] == json!(true)))
+        .map(|row| row["sample_caption"].clone());
     ensure(
         picker["armed"] == json!(true)
             && picker["hint"]
                 .as_str()
                 .is_some_and(|said| said.contains(hint))
-            && picker["count"] == json!(count),
-        format!("The eyedropper reads {picker}, expected a hint with {hint:?} and count {count:?}"),
+            && caption == Some(json!(count)),
+        format!(
+            "The eyedropper reads {picker} over swatches saying {caption:?}, expected a hint with \
+             {hint:?} and {count:?}"
+        ),
     )
 }
 
@@ -1238,7 +1246,7 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         sample_count(added, 2)? == 0,
         "A new colour range already holds a swatch",
     )?;
-    armed(added, "Shift adds", Some("0 of 5"))?;
+    armed(added, "Shift adds", Some("No colour yet"))?;
     tinting(added)?;
     let unsampled = launch.at("colour-photograph")?;
     photograph(unsampled)?;
@@ -1441,7 +1449,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
     // A second mask, created with the eyedropper armed and nothing bound to any mask but launch
     // 1's. With Off chosen the photograph is the reopened one.
     let created = launch.at("grey-mask")?;
-    armed(created, "Shift adds", Some("0 of 5"))?;
+    armed(created, "Shift adds", Some("No colour yet"))?;
     tinting(created)?;
     let clean = launch.at("grey-photograph")?;
     photograph(clean)?;
@@ -1536,7 +1544,7 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
 
     // A third mask, picked by **dragging over the interior of the light skin** with nothing bound
     // to it: one swatch, the area's representative colour, and the photograph unchanged.
-    armed(launch.at("skin-mask")?, "Shift adds", Some("0 of 5"))?;
+    armed(launch.at("skin-mask")?, "Shift adds", Some("No colour yet"))?;
     photograph(launch.at("skin-photograph")?)?;
     let dragged = launch.at("skin-picked")?;
     ensure(

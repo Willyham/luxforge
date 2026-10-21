@@ -1,17 +1,18 @@
-//! A mask component's mode as a compact three-glyph segmented control, `+ − ∩`, as the
-//! mask-panels board draws `.mode`: [`theme::MODE_SEGMENT_SIZE`] segments inset
-//! [`theme::MODE_INSET`] on a small track. The chosen segment is raised; a chosen Subtract reads in
-//! [`theme::CLIPPING_HIGHLIGHT`] and a chosen Intersect in [`theme::CLIPPING_SHADOW`] — the control
-//! never sits over the photograph, so the two clipping hues cannot be mistaken for clipping there.
+//! A mask component's mode as one chip, as the range-rows board draws `.mode`: the mode's own
+//! glyph and a chevron on a small track. A press asks for the caller's menu of the three modes
+//! ([`mode_menu`]), which the caller drops under the chip with [`crate::popover`]; the chip itself
+//! only shows the mode. A Subtract glyph reads in [`theme::CLIPPING_HIGHLIGHT`] and an Intersect in
+//! [`theme::CLIPPING_SHADOW`] — the chip never sits over the photograph, so the two clipping hues
+//! cannot be mistaken for clipping there.
 //!
-//! A fixed mode (a mask's first component, which is always Add) shows its one glyph alone, dimmed,
-//! with the reason as its tooltip. The same control stands alone in the Add row, after an `as`
-//! caption, for the next component's mode.
+//! A mask's first component is always Add and draws no chip. The same chip ends the Add row, after
+//! an `as` caption, for the next component's mode.
 
+use super::dropdown::{MenuEntry, MenuItem};
 use super::icon_button::{Icon, icon, with_tooltip};
 use crate::theme;
 use crate::{Element, Ink, Token};
-use iced::widget::{Row, button, container, tooltip};
+use iced::widget::{button, row, tooltip};
 use iced::{Alignment, Length};
 
 /// How a component combines with the ones above it.
@@ -23,10 +24,10 @@ pub enum CombineMode {
 }
 
 impl CombineMode {
-    /// The three modes, in the control's order.
+    /// The three modes, in the menu's order.
     pub const ALL: [Self; 3] = [Self::Add, Self::Subtract, Self::Intersect];
 
-    /// The glyph the control draws for the mode.
+    /// The glyph the chip and the menu draw for the mode.
     pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Add => Icon::Plus,
@@ -34,149 +35,151 @@ impl CombineMode {
             Self::Intersect => Icon::Intersect,
         }
     }
-}
 
-/// Plain data for one mode control.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModeControlModel {
-    pub selected: CombineMode,
-    /// The reason the mode cannot change. `Some` draws `selected` alone, dimmed, with the reason as
-    /// the tooltip.
-    pub fixed: Option<String>,
-    /// The tooltip while the mode can change, such as `Add · Subtract · Intersect`.
-    pub tooltip: String,
-    pub enabled: bool,
-}
-
-/// A glyph's ink: the chosen Subtract in the highlight clipping red, the chosen Intersect in the
-/// shadow clipping blue, the chosen Add in bright text; the others tertiary. A fixed mode's glyph
-/// is dimmed, and a disabled control's glyphs are all faint. The two clipping colours are fixed,
-/// the same in every theme, as the mask-panels board draws them.
-pub(crate) fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -> Ink {
-    match (enabled, fixed, selected, mode) {
-        (false, ..) => Token::TextFaint.into(),
-        (true, true, _, _) => Token::ModeFixedInk.into(),
-        (true, false, false, _) => Token::TextTertiary.into(),
-        (true, false, true, CombineMode::Add) => Token::TextBright.into(),
-        (true, false, true, CombineMode::Subtract) => theme::CLIPPING_HIGHLIGHT.into(),
-        (true, false, true, CombineMode::Intersect) => theme::CLIPPING_SHADOW.into(),
+    /// What the menu calls the mode.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Add => "Add",
+            Self::Subtract => "Subtract",
+            Self::Intersect => "Intersect",
+        }
     }
 }
 
-/// The control's width for `segments` glyphs: the segments and the insets around and between them.
-#[cfg(test)]
-pub(crate) const fn mode_control_width(segments: usize) -> f32 {
-    segments as f32 * theme::MODE_SEGMENT_SIZE + (segments as f32 + 1.0) * theme::MODE_INSET
+/// Plain data for one mode chip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModeControlModel {
+    pub selected: CombineMode,
+    /// The chip's tooltip, such as `Subtract · change how this component combines`.
+    pub tooltip: String,
+    /// The chip's menu is open: the chip is drawn raised.
+    pub open: bool,
+    pub enabled: bool,
 }
 
-/// Renders one mode control. A press on a segment publishes `on_select` with its mode.
+/// A glyph's ink: Subtract in the highlight clipping red, Intersect in the shadow clipping blue,
+/// Add in bright text, and every glyph faint on a disabled chip. The two clipping colours are fixed,
+/// the same in every theme, as the mask-panels board draws them.
+pub(crate) fn mode_ink(mode: CombineMode, enabled: bool) -> Ink {
+    match (enabled, mode) {
+        (false, _) => Token::TextFaint.into(),
+        (true, CombineMode::Add) => Token::TextBright.into(),
+        (true, CombineMode::Subtract) => theme::CLIPPING_HIGHLIGHT.into(),
+        (true, CombineMode::Intersect) => theme::CLIPPING_SHADOW.into(),
+    }
+}
+
+/// Renders one mode chip. A press publishes `on_open`, or nothing when it is `None` or the chip is
+/// disabled.
 pub fn mode_control<'a, M: Clone + 'a>(
     model: &ModeControlModel,
-    on_select: impl Fn(CombineMode) -> M + 'a,
+    on_open: Option<M>,
 ) -> Element<'a, M> {
-    build(model, Some(&on_select))
+    let content = row![
+        icon(
+            model.selected.icon(),
+            theme::MODE_GLYPH_SIZE,
+            mode_ink(model.selected, model.enabled)
+        ),
+        icon(
+            Icon::ChevronDown,
+            theme::MODE_CHEVRON_SIZE,
+            if model.enabled {
+                Token::TextTertiary
+            } else {
+                Token::TextFaint
+            }
+        ),
+    ]
+    .spacing(theme::MODE_CHIP_SPACING)
+    .align_y(Alignment::Center)
+    .height(Length::Fill);
+    let chip = button(content)
+        .padding([0.0, theme::MODE_CHIP_PADDING])
+        .height(Length::Fixed(theme::MODE_CHIP_HEIGHT))
+        .style(theme::mode_chip(model.open))
+        .on_press_maybe(on_open.filter(|_| model.enabled));
+    with_tooltip(chip, model.tooltip.clone(), tooltip::Position::Top)
 }
 
-/// A mode control that publishes nothing, as a disabled row draws it.
-pub(crate) fn inert_mode_control<'a, M: Clone + 'a>(model: &ModeControlModel) -> Element<'a, M> {
-    build(
-        &ModeControlModel {
-            enabled: false,
-            ..model.clone()
-        },
-        None::<&dyn Fn(CombineMode) -> M>,
-    )
-}
-
-fn build<'a, M: Clone + 'a>(
-    model: &ModeControlModel,
-    on_select: Option<&dyn Fn(CombineMode) -> M>,
-) -> Element<'a, M> {
-    let fixed = model.fixed.is_some();
-    let modes: &[CombineMode] = if fixed {
-        std::slice::from_ref(&model.selected)
-    } else {
-        &CombineMode::ALL
-    };
-    let segments = modes.iter().map(|&mode| {
-        let selected = mode == model.selected;
-        let ink = mode_ink(mode, selected, fixed, model.enabled);
-        button(container(icon(mode.icon(), theme::MODE_GLYPH_SIZE, ink)).center(Length::Fill))
-            .padding(0)
-            .width(Length::Fixed(theme::MODE_SEGMENT_SIZE))
-            .height(Length::Fixed(theme::MODE_SEGMENT_SIZE))
-            .style(theme::mode_segment(selected, fixed))
-            .on_press_maybe(
-                on_select
-                    .filter(|_| model.enabled && !fixed && !selected)
-                    .map(|on_select| on_select(mode)),
-            )
-            .into()
-    });
-    let track = container(
-        Row::with_children(segments)
-            .spacing(theme::MODE_INSET)
-            .align_y(Alignment::Center),
-    )
-    .padding(theme::MODE_INSET)
-    .style(theme::mode_track(fixed));
-    let tip = model.fixed.clone().unwrap_or_else(|| model.tooltip.clone());
-    with_tooltip(track, tip, tooltip::Position::Top)
+/// The chip's menu: the three modes with their glyphs. A press on another mode publishes
+/// `on_select` with it; a press on the current one publishes `on_keep`, which leaves it as it is.
+pub fn mode_menu<M: Clone>(
+    selected: CombineMode,
+    on_select: impl Fn(CombineMode) -> M,
+    on_keep: M,
+) -> Vec<MenuEntry<M>> {
+    CombineMode::ALL
+        .into_iter()
+        .map(|mode| {
+            MenuEntry::Item(MenuItem {
+                icon: Some(mode.icon()),
+                label: mode.label().to_owned(),
+                trailing: (mode == selected).then(|| "current".to_owned()),
+                on_press: Some(if mode == selected {
+                    on_keep.clone()
+                } else {
+                    on_select(mode)
+                }),
+                reason: None,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// mask-panels.html: three 18 pt segments inset 1 pt, 58 pt across; a fixed one is 20 pt.
     #[test]
-    fn the_control_is_its_segments_and_insets() {
-        assert_eq!(mode_control_width(3), 58.0);
-        assert_eq!(mode_control_width(1), 20.0);
-    }
-
-    #[test]
-    fn a_chosen_subtract_is_red_and_a_chosen_intersect_blue() {
+    fn a_subtract_is_red_and_an_intersect_blue() {
         assert_eq!(
-            mode_ink(CombineMode::Subtract, true, false, true),
+            mode_ink(CombineMode::Subtract, true),
             theme::CLIPPING_HIGHLIGHT.into()
         );
         assert_eq!(
-            mode_ink(CombineMode::Intersect, true, false, true),
+            mode_ink(CombineMode::Intersect, true),
             theme::CLIPPING_SHADOW.into()
         );
-        assert_eq!(
-            mode_ink(CombineMode::Add, true, false, true),
-            Token::TextBright.into()
-        );
+        assert_eq!(mode_ink(CombineMode::Add, true), Token::TextBright.into());
         for mode in CombineMode::ALL {
-            assert_eq!(
-                mode_ink(mode, false, false, true),
-                Token::TextTertiary.into()
-            );
-            assert_eq!(mode_ink(mode, true, true, true), Token::ModeFixedInk.into());
-            assert_eq!(mode_ink(mode, true, false, false), Token::TextFaint.into());
+            assert_eq!(mode_ink(mode, false), Token::TextFaint.into());
         }
+    }
+
+    #[test]
+    fn the_menu_offers_every_mode_and_keeps_the_current_one() {
+        let entries = mode_menu(CombineMode::Subtract, Some, None);
+        let pressed: Vec<_> = entries
+            .iter()
+            .map(|entry| match entry {
+                MenuEntry::Item(item) => (item.label.as_str(), item.on_press),
+                _ => panic!("the mode menu holds only items"),
+            })
+            .collect();
+        assert_eq!(
+            pressed,
+            vec![
+                ("Add", Some(Some(CombineMode::Add))),
+                ("Subtract", Some(None)),
+                ("Intersect", Some(Some(CombineMode::Intersect))),
+            ]
+        );
     }
 
     #[test]
     fn every_state_builds() {
         for selected in CombineMode::ALL {
-            for fixed in [
-                None,
-                Some("A mask's first component is always Add".to_string()),
-            ] {
-                for enabled in [true, false] {
-                    let _: Element<'_, CombineMode> = mode_control(
-                        &ModeControlModel {
-                            selected,
-                            fixed: fixed.clone(),
-                            tooltip: "Add \u{b7} Subtract \u{b7} Intersect".into(),
-                            enabled,
-                        },
-                        |mode| mode,
-                    );
-                }
+            for (open, enabled) in [(false, true), (true, true), (false, false)] {
+                let _: Element<'_, ()> = mode_control(
+                    &ModeControlModel {
+                        selected,
+                        tooltip: selected.label().into(),
+                        open,
+                        enabled,
+                    },
+                    Some(()),
+                );
             }
         }
     }
