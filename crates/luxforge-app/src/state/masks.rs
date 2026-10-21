@@ -331,17 +331,17 @@ pub(crate) struct ComponentRow {
     pub(crate) pick_title: String,
     /// Why this component cannot be picked into right now.
     pub(crate) pick_reason: Option<String>,
-    /// What this component's kind does **not** select, shown on the open row in the kind's own terms.
+    /// How this component's kind works, in the help sheet behind the help button beside Pick on the
+    /// open row: how to pick, and what the kind does **not** tell apart.
     ///
-    /// Empty for a position-based kind, which has none of these limits: a gradient and a brush select
-    /// where they are drawn and nothing about the picture's values changes that. A value-based kind
-    /// carries two lines — what its one axis cannot tell apart, and what reading the operation's input
-    /// costs — because both are surprising and both are measured
-    /// (`docs/design/range-study.md`), and a person who learns them from a rendered frame instead has
-    /// already made an edit they did not mean. It is read from
-    /// [`luxforge_core::mask::component_kind_limits`], which is the host's own kind table, so a kind
-    /// registered later carries its own line and the shared one without this being edited.
-    pub(crate) limits: Vec<String>,
+    /// None for a kind with no pick, and on a closed row. The steps are the range picker's own
+    /// ([`crate::range_pick::help`]); the notes are read from
+    /// [`luxforge_core::mask::component_kind_limits`], the host's own kind table, so a kind
+    /// registered later carries its own lines and the shared ones without this being edited. They
+    /// are surprising and measured (`docs/design/range-study.md`), and a person who learns them from
+    /// a rendered frame instead has already made an edit they did not mean, so they are one press
+    /// away on the row being edited, not a paragraph under it.
+    pub(crate) help: Option<ComponentHelp>,
     /// How many colours this component's kind holds, for the swatch slots; zero for a kind that
     /// samples none.
     pub(crate) sample_limit: usize,
@@ -354,6 +354,21 @@ pub(crate) struct ComponentRow {
     pub(crate) menu_open: bool,
     /// The open gesture edits this component, so its fields are the gesture's.
     pub(crate) drafting: bool,
+}
+
+/// One component kind's help sheet, as the open row offers it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ComponentHelp {
+    /// The kind's own title: `Colour range`.
+    pub(crate) title: String,
+    /// How picking into it works: the sheet's title, lead and steps.
+    pub(crate) pick: &'static crate::range_pick::PickHelp,
+    /// What the kind does not tell apart, and how to narrow it.
+    pub(crate) limits: Option<&'static luxforge_core::mask::KindLimits>,
+    /// The lines every value-based kind shares.
+    pub(crate) notes: &'static [&'static str],
+    /// The sheet is showing, opened from the help button.
+    pub(crate) open: bool,
 }
 
 /// One sampled colour of a component that holds a list of them, as the panel lists it.
@@ -616,6 +631,17 @@ impl Default for MasksModel {
 }
 
 impl MasksModel {
+    /// The open row's help sheet, while it is showing, with the row it is about.
+    pub(crate) fn help_sheet(&self) -> Option<(&ComponentRow, &ComponentHelp)> {
+        self.components.iter().find_map(|component| {
+            component
+                .help
+                .as_ref()
+                .filter(|help| help.open)
+                .map(|help| (component, help))
+        })
+    }
+
     /// Correlated evidence: what the panel showed when a frame was captured.
     pub(crate) fn summary(&self) -> serde_json::Value {
         serde_json::json!({
@@ -673,14 +699,31 @@ impl MasksModel {
                 "pick_reason": row.pick_reason,
                 // The kind's own number fields as the open row shows them, so a captured frame is
                 // evidence of the geometry a person can read rather than of the payload behind it,
-                // and the statement above them travels with it. Both are empty on a closed row,
-                // exactly as the panel draws them.
+                // and the kind's help travels with it. Both are absent on a closed row, exactly as
+                // the panel draws them.
                 "fields": row.fields.iter().filter_map(|field| match field {
                     crate::state::tools::ControlModel::Slider(slider) =>
                         Some((slider.parameter.clone(), serde_json::json!(slider.value))),
                     _ => None,
                 }).collect::<serde_json::Map<_, _>>(),
-                "limits": row.limits,
+                "help": row.help.as_ref().map(|help| serde_json::json!({
+                    "open": help.open,
+                    "title": help.pick.title,
+                    "steps": help.pick.steps.iter().map(|step| serde_json::json!({
+                        "name": step.name,
+                        "keys": step.hint.iter().filter_map(|part| match part {
+                            crate::range_pick::Hint::Key(key) => Some(*key),
+                            crate::range_pick::Hint::Text(_) => None,
+                        }).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                    "alike": help.limits.map(|limits| {
+                        limits.alike.iter().map(|alike| alike.label).collect::<Vec<_>>()
+                    }),
+                    "narrow": help.limits.map(|limits| {
+                        limits.narrow.iter().map(|remedy| remedy.action).collect::<Vec<_>>()
+                    }),
+                    "notes": help.notes,
+                })),
                 "renaming": row.renaming,
                 "menu_open": row.menu_open,
                 "drafting": row.drafting,
@@ -757,6 +800,9 @@ fn menu_summary(menu: &crate::state::MenuTarget) -> serde_json::Value {
         MenuTarget::Component(component) => serde_json::json!({"component": component}),
         MenuTarget::ComponentCopy(component) => {
             serde_json::json!({"component_copy": component})
+        }
+        MenuTarget::ComponentHelp(component) => {
+            serde_json::json!({"component_help": component})
         }
         MenuTarget::NewMask => serde_json::json!("new_mask"),
         MenuTarget::AddComponent => serde_json::json!("add_component"),
@@ -1229,11 +1275,18 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 pick_label: PICK_LABEL.to_owned(),
                 pick_title: pick_title(&component.kind),
                 pick_reason: pick_reason(component, refusal),
-                limits: if selected {
-                    kind_limits(&component.kind)
-                } else {
-                    Vec::new()
-                },
+                help: selected
+                    .then(|| {
+                        component_help(
+                            &component.kind,
+                            matches!(
+                                inputs.view_state.menu.as_ref(),
+                                Some(crate::state::MenuTarget::ComponentHelp(id))
+                                    if id == component.id.as_str()
+                            ),
+                        )
+                    })
+                    .flatten(),
                 sample_limit: luxforge_core::mask::component_sample_limit(&component.kind)
                     .unwrap_or(0),
                 icon: luxforge_core::mask::kind_icon(&component.kind),
@@ -1256,16 +1309,19 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
         .collect()
 }
 
-/// What one kind does not select, read from the host's own kind table rather than from a list here.
+/// One kind's help sheet, for a kind the range picker picks into: the picker's steps, and what the
+/// kind does not tell apart, read from the host's own kind table rather than from a list here.
 ///
-/// A position-based kind answers nothing: a gradient and a brush select where they were drawn, and no
-/// value in the picture changes that. A kind registered later carries its own statement without this
-/// being touched, which is the whole reason the sentences live in the table.
-fn kind_limits(kind: &str) -> Vec<String> {
-    luxforge_core::mask::component_kind_limits(kind)
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+/// A kind registered later carries its own statement without this being touched, which is the whole
+/// reason the sentences live in the table.
+fn component_help(kind: &str, open: bool) -> Option<ComponentHelp> {
+    Some(ComponentHelp {
+        title: luxforge_core::mask::kind_title(kind),
+        pick: crate::range_pick::help(kind)?,
+        limits: luxforge_core::mask::component_kind_limits(kind),
+        notes: luxforge_core::mask::component_kind_notes(kind),
+        open,
+    })
 }
 
 /// What a Pick button reads, as the range-masks board draws it.

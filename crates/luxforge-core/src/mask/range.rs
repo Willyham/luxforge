@@ -30,7 +30,9 @@
 //! The luminance axis and the Oklab conversion are the **delivered** ones, read from the Basic
 //! module's own `f64` constants rather than copied here, so the editor keeps one definition of
 //! luminance and one colour space.
-use super::{Binding, ComponentField, Field, parameters::check_declared, smooth};
+use super::{
+    Alike, Binding, ComponentField, Field, KindLimits, Remedy, parameters::check_declared, smooth,
+};
 use crate::{
     Component, Control, Error, ParameterDescriptor, RailDecoration,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
@@ -71,28 +73,66 @@ pub(super) const LUMINANCE_KIND: &str = "luminance-range";
 /// The token a stored colour-range component carries.
 pub(super) const COLOUR_KIND: &str = "colour-range";
 
-/// What a luminance band cannot separate, with the study's own measurement.
+/// What a luminance band cannot separate, with example colours, and how to narrow it.
 ///
-/// The figure is the point: a photographed blue sky reads `47.254` on this axis and a mid-grey card
-/// `47.815`, which is `0.56` of a slider unit and `1.43` output codes, so **no** band takes one
-/// without the other. It is phrased as a remedy because the remedy is the component list a person is
-/// already looking at, and it is the study's
-/// `the_luminance_band_cannot_separate_a_blue_sky_from_a_grey_card`.
-pub(super) const LUMINANCE_LIMITS: &[&str] = &[
-    "Brightness only · a photographed blue sky and a grey card are 1.4 output codes apart, so one band takes both: intersect a colour range, or subtract a brush",
-];
+/// It rests on the study's measurement: a photographed blue sky reads `47.254` on this axis and a
+/// mid-grey card `47.815`, `1.43` output codes apart, so **no** band takes one without the other
+/// (`the_luminance_band_cannot_separate_a_blue_sky_from_a_grey_card`). The figure stays in the study
+/// and the user guide; a person reads the consequence and what to do about it.
+pub(super) const LUMINANCE_LIMITS: KindLimits = KindLimits {
+    alike_heading: "It sees these as one tone",
+    alike: &[
+        Alike {
+            label: "A blue sky and a grey wall",
+            examples: &[[0x6f, 0x93, 0xb8], [0x90, 0x90, 0x90]],
+        },
+        Alike {
+            label: "Any colours as bright",
+            examples: &[[0x5a, 0x8a, 0x44], [0xd0, 0x50, 0x48], [0x7c, 0x7c, 0x7c]],
+        },
+    ],
+    narrow: &[
+        Remedy {
+            action: "Intersect a colour range",
+            effect: "Keeps only the colour you want",
+        },
+        BRUSH_REMEDY,
+    ],
+};
 
-/// What a colour range cannot separate, with the study's own measurements.
+/// What a colour range cannot separate, with example colours, and how to narrow it.
 ///
-/// Two facts, because they have one cause — the metric is the chromaticity plane and `L` does not
-/// appear, which is what holds a surface across a stop of shading. Every neutral is within `0.0015` of
-/// every other, a third of the tightest radius, so a sampled grey selects the whole tonal range; and
-/// dark skin is `0.0108` from light skin, a third of what one face's own shading spans, so any setting
-/// that holds a lit face takes both. `every_neutral_is_one_colour_to_the_frozen_metric` and the
-/// study's skin measurement assert them.
-pub(super) const COLOUR_LIMITS: &[&str] = &[
-    "Colour only, with no lightness · every neutral is one colour, and two people's skin is one colour: intersect a luminance range, or subtract a brush",
-];
+/// Two facts with one cause — the metric is the chromaticity plane and `L` does not appear, which is
+/// what holds a surface across a stop of shading. Every neutral is within `0.0015` of every other, so
+/// a sampled grey selects the whole tonal range; and dark skin is `0.0108` from light skin, a third
+/// of what one face's own shading spans, so any setting that holds a lit face takes both.
+/// `every_neutral_is_one_colour_to_the_frozen_metric` and the study's skin measurement assert them.
+pub(super) const COLOUR_LIMITS: KindLimits = KindLimits {
+    alike_heading: "It sees these as one colour",
+    alike: &[
+        Alike {
+            label: "White, grey and black",
+            examples: &[[0xf2, 0xf2, 0xf0], [0x9a, 0x9a, 0x98], [0x2f, 0x2f, 0x2f]],
+        },
+        Alike {
+            label: "Most skin tones",
+            examples: &[[0xf1, 0xc9, 0xad], [0xc4, 0x98, 0x84], [0x76, 0x54, 0x44]],
+        },
+    ],
+    narrow: &[
+        Remedy {
+            action: "Intersect a luminance range",
+            effect: "Keeps only the brightness you want",
+        },
+        BRUSH_REMEDY,
+    ],
+};
+
+/// The remedy both range kinds share: a brush subtracted over what they should not take.
+const BRUSH_REMEDY: Remedy = Remedy {
+    action: "Subtract a brush",
+    effect: "Paints out what it shouldn\u{2019}t take",
+};
 
 // ---------------------------------------------------------------------------
 // The shared axes: the luminance axis and the Oklab chromaticity of one pixel

@@ -315,11 +315,12 @@ and the user guide repeats it. Every figure is asserted by a named test.
 
 **The product repeats it too, and reads it from the same table that makes a kind creatable.** Each
 kind carries its own limit lines beside its parser — `LUMINANCE_LIMITS` and `COLOUR_LIMITS` in
-`range.rs` — and `mask::component_kind_limits` returns them followed by the one line every value-based
-kind shares, so a kind registered later carries that sentence with no panel edited. The Masks panel
-draws them on the open component's row, above the numbers they apply to, and draws under the list of
-kinds the thing no absent button can say: there is no Sky, Subject, People, Objects or Background
-here. The [phase-D scenario](../../xtask/src/mask_range_smoke.rs) captures both.
+`range.rs` — and `mask::component_kind_limits` returns them, with `mask::component_kind_notes` the
+lines every value-based kind shares, so a kind registered later carries those sentences with no panel edited. The Masks panel
+shows them in the open component's help sheet, one press from the numbers they apply to, as what
+the kind sees as one, with example colours, and how to narrow it; the figures stay here and in the
+user guide. The [phase-D scenario](../../xtask/src/mask_range_smoke.rs) opens the sheet and
+captures it.
 
 **A luminance band cannot separate a blue sky from a grey card.** A photographed blue sky sits at
 `47.25` on the axis and a mid-grey at `47.81` — `0.56` of a slider unit, `1.4` output codes apart.

@@ -147,6 +147,9 @@ pub(crate) struct KeyContext {
     /// The Export sheet is open: it is modal, so Escape closes it without exporting and no other
     /// key reaches the workspace behind it.
     pub(crate) export_sheet_open: bool,
+    /// A mask component's help sheet is open: it is modal, so Escape and Return close it and no
+    /// other key reaches the workspace behind it, an armed eyedropper's included.
+    pub(crate) help_sheet_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
     /// Escape with its own cancel first; a mode without one has nothing to discard.
     pub(crate) mode_active: bool,
@@ -330,6 +333,17 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
                 key: Key::Named(Named::Escape),
                 ..
             } => Some(Message::Export(ExportMessage::Sheet(SheetMessage::Close))),
+            _ => None,
+        };
+    }
+    // A help sheet is modal as the Export sheet is. Escape and Return close it, the eyedropper
+    // behind it staying armed, and nothing else reaches the workspace.
+    if context.help_sheet_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape | Named::Enter),
+                ..
+            } => Some(Message::View(ViewMessage::CloseMenu)),
             _ => None,
         };
     }
@@ -1426,6 +1440,7 @@ mod tests {
             settings_open: false,
             export_menu_open: false,
             export_sheet_open: false,
+            help_sheet_open: false,
             mode_active: false,
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],

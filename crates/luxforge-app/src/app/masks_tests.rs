@@ -2662,6 +2662,78 @@ fn an_empty_colour_range_says_to_pick_a_colour() {
     assert_eq!(row.sample_note, None);
 }
 
+/// A range row keeps how it works behind its help button: closed until pressed, then a modal sheet
+/// with the picker's steps and the kind's own limits from the host's table. Escape and Return each
+/// close it, and neither reaches the eyedropper behind it, which Return would otherwise put down.
+#[test]
+fn a_range_rows_help_sheet_is_closed_until_its_button_opens_it() {
+    use crate::range_pick::Hint;
+    use iced::keyboard::key::Named;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("colour-range".to_owned()));
+    let row = &masking.editor.workspace.masks.components[0];
+    let help = row.help.as_ref().expect("a colour range offers help");
+    assert!(!help.open);
+    assert_eq!(help.title, "Colour range");
+    assert_eq!(
+        help.limits,
+        luxforge_core::mask::component_kind_limits("colour-range")
+    );
+    assert!(help.limits.is_some());
+    assert_eq!(
+        help.notes,
+        luxforge_core::mask::component_kind_notes("colour-range")
+    );
+    assert!(help.pick.steps.iter().any(|step| {
+        step.hint
+            .windows(2)
+            .any(|keys| keys == [Hint::Key("Shift"), Hint::Key("Click")])
+    }));
+    assert!(masking.editor.workspace.masks.help_sheet().is_none());
+
+    let component = row.id.as_str().to_owned();
+    let press = |key: Named| {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: Key::Named(key),
+            modified_key: Key::Named(key),
+            physical_key: iced::keyboard::key::Physical::Unidentified(
+                iced::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        })
+    };
+    for key in [Named::Escape, Named::Enter] {
+        let _ = masking.editor.update(Message::View(ViewMessage::OpenMenu(
+            MenuTarget::ComponentHelp(component.clone()),
+        )));
+        let summary = masking.editor.workspace.masks.summary();
+        assert_eq!(summary["components"][0]["help"]["open"], json!(true));
+        assert_eq!(summary["menu"], json!({"component_help": component}));
+        assert!(masking.editor.workspace.masks.help_sheet().is_some());
+
+        let closing = super::keymap::keymap(
+            &press(key),
+            iced::event::Status::Ignored,
+            &masking.editor.key_context(),
+        )
+        .expect("the sheet takes the key");
+        assert!(
+            matches!(closing, Message::View(ViewMessage::CloseMenu)),
+            "{key:?} closes the sheet"
+        );
+        let _ = masking.editor.update(closing);
+        assert!(masking.editor.view_state.menu.is_none(), "{key:?}");
+        assert!(
+            masking.editor.mask_panel.picker.is_some(),
+            "{key:?} closes the sheet and leaves the eyedropper armed"
+        );
+    }
+}
+
 /// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
 /// exactly that component — not one whose role was guessed from a modifier key afterwards.
 /// An Add brush in hand has not made its component yet, so a change of the Add row's mode reaches

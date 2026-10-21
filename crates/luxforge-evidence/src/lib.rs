@@ -2412,6 +2412,10 @@ pub enum MaskStep {
     /// the panel's Pick button does.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Pick,
+    /// Open the selected component's help sheet, as the help button beside its Pick does. An
+    /// `Escape` or `Return` key step puts it away again.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Help,
 }
 
 impl MaskStep {
@@ -2468,7 +2472,12 @@ impl MaskStep {
                     .try_for_each(|point| content_point(*point, "mask drag point"))
             }
             Self::Row(row) => row.validate(),
-            Self::Release | Self::Apply | Self::Cancel | Self::Reapply | Self::Pick => Ok(()),
+            Self::Release
+            | Self::Apply
+            | Self::Cancel
+            | Self::Reapply
+            | Self::Pick
+            | Self::Help => Ok(()),
         }
     }
 }

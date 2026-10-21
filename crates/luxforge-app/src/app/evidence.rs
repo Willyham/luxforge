@@ -2819,6 +2819,15 @@ impl Editor {
                 }
                 (Message::Mask(MaskMessage::Pick), Expect::Redraw)
             }
+            // The help sheet is view state its button opens: it sends nothing and renders no pixel,
+            // so its frame is the next redraw.
+            MaskStep::Help => {
+                let Some(component) = self.mask_panel.selected_component.as_ref() else {
+                    return self.fail_step("a help step needs a selected component");
+                };
+                let target = MenuTarget::ComponentHelp(component.as_str().to_owned());
+                (Message::View(ViewMessage::OpenMenu(target)), Expect::Redraw)
+            }
             // With only a brush in hand, Done and Cancel put it down: nothing is sent, so the frame
             // is the next redraw.
             ending @ (MaskStep::Apply | MaskStep::Cancel) => {

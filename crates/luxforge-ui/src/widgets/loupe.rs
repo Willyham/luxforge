@@ -1,6 +1,6 @@
 //! The loupe's chrome, as the choosing-from-a-burst board draws it: the moment's numbered frames
 //! under the photograph (`.mstrip .fr`), the info bar over it, the 100% focus check's inset and the
-//! pointer's region box, and the key hints (`.hint`).
+//! pointer's region box. Its key hints (`.hint`) are [`super::key_hint`]'s.
 //!
 //! Image content is always the caller's: each frame and the inset's region take an
 //! [`image::Handle`] the caller made once and holds, so drawing one never uploads it again. A long
@@ -11,7 +11,7 @@ use super::icon_button::{Icon, IconButtonModel, icon, sized_icon_button};
 use crate::theme;
 use crate::{Element, Theme, Token};
 use iced::widget::image::{self, Handle};
-use iced::widget::text::{LineHeight, Wrapping};
+use iced::widget::text::Wrapping;
 use iced::widget::{Row, Space, button, column, container, row, stack, text, tooltip};
 use iced::{Alignment, Border, ContentFit, Length, Point, Rectangle, Size};
 use std::ops::Range;
@@ -411,42 +411,6 @@ pub fn region_box(pointer: Point, image: Rectangle, size: Size) -> Rectangle {
     Rectangle::new(Point::new(x, y), size)
 }
 
-/// One key hint: the key's cap and what it does.
-#[derive(Debug, Clone, PartialEq)]
-pub struct KeyHint {
-    pub key: String,
-    pub action: String,
-}
-
-/// Renders the loupe's key hints on one line, [`theme::KEY_HINT_SPACING`] apart: each key in its
-/// cap, then its action in [`Token::TextIdentity`].
-pub fn key_hints<'a, M: 'a>(hints: &[KeyHint]) -> Element<'a, M> {
-    Row::with_children(hints.iter().map(|hint| {
-        row![
-            container(
-                text(hint.key.clone())
-                    .size(theme::SIZE_SECTION_LABEL)
-                    .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
-                    .font(theme::FONT_SEMIBOLD)
-                    .wrapping(Wrapping::None)
-                    .style(theme::ink(Token::TextLabel)),
-            )
-            .padding(theme::KEY_CAP_PADDING)
-            .style(theme::tag_surface(theme::KEY_CAP_RADIUS)),
-            text(hint.action.clone())
-                .size(theme::SIZE_CAPTION)
-                .wrapping(Wrapping::None)
-                .style(theme::ink(Token::TextIdentity)),
-        ]
-        .spacing(theme::KEY_CAP_SPACING)
-        .align_y(Alignment::Center)
-        .into()
-    }))
-    .spacing(theme::KEY_HINT_SPACING)
-    .align_y(Alignment::Center)
-    .into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,9 +523,5 @@ mod tests {
             });
         }
         let _: Element<'_, ()> = focus_box(Size::new(64.0, 44.0));
-        let _: Element<'_, ()> = key_hints(&[KeyHint {
-            key: "P".into(),
-            action: "pick".into(),
-        }]);
     }
 }

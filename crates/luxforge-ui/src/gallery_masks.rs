@@ -598,7 +598,7 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
         ),
         pick_bar(
             &PickBarModel {
-                hint: "Click a tone \u{b7} drag over an area".into(),
+                hint: "Click or drag on the photo".into(),
                 count: None,
                 enabled: true,
             },
@@ -607,7 +607,7 @@ pub(crate) fn gallery_masks() -> Vec<Element<'static, ()>> {
         right(pick_button(&armed, ())),
         pick_bar(
             &PickBarModel {
-                hint: "Click a colour \u{b7} Shift-click to add \u{b7} drag over an area".into(),
+                hint: "Click or drag \u{b7} Shift adds".into(),
                 count: Some("2 of 5".into()),
                 enabled: true,
             },

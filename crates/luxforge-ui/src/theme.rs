@@ -952,6 +952,41 @@ pub const COMPONENT_NOTE_PADDING: Padding = Padding {
     bottom: 4.0,
     left: COMPONENT_DETAIL_INDENT,
 };
+/// A help sheet (a tool's How it works, drawn as Select's introduction is): 720 pt on the sheet
+/// surface over the scrim, inset 28 pt above and 32 pt at the sides, its title 22 pt semibold and
+/// its sections 22 pt apart. Its step cards are rounded 8 pt on [`Token::Background`], 20 pt apart
+/// with a `›` between them, each a 112 pt drawing on [`Token::Surround`] above its text, inset
+/// 12 pt and 14 pt, 156 pt tall, and its number in an 18 pt accent-tinted disc. A drawing's
+/// patches are 30 × 24 pt, its swatches 14 × 11 pt, an example colour 16 pt square. A Good to know
+/// line is 30 pt. The footer is inset 14 pt and 32 pt.
+pub const HELP_SHEET_WIDTH: f32 = 720.0;
+pub const HELP_SHEET_INSET: f32 = 32.0;
+pub const HELP_SHEET_TOP: f32 = 28.0;
+pub const SIZE_HELP_TITLE: f32 = 22.0;
+pub const HELP_SHEET_SECTION_SPACING: f32 = 22.0;
+pub const HELP_STEP_GAP: f32 = 20.0;
+pub const HELP_STEP_RADIUS: f32 = 8.0;
+pub const HELP_STEP_DRAWING_HEIGHT: f32 = 112.0;
+pub const HELP_STEP_PADDING: Padding = Padding {
+    top: 12.0,
+    right: 14.0,
+    bottom: 14.0,
+    left: 14.0,
+};
+pub const HELP_STEP_TEXT_HEIGHT: f32 = 156.0;
+pub const HELP_STEP_NUMBER: f32 = 18.0;
+pub const HELP_NOTE_ROW_HEIGHT: f32 = 30.0;
+pub const HELP_PATCH_WIDTH: f32 = 30.0;
+pub const HELP_PATCH_HEIGHT: f32 = 24.0;
+pub const HELP_SWATCH_WIDTH: f32 = 14.0;
+pub const HELP_SWATCH_HEIGHT: f32 = 11.0;
+pub const HELP_EXAMPLE_SIZE: f32 = 16.0;
+pub const HELP_FOOTER_PADDING: Padding = Padding {
+    top: 14.0,
+    right: 32.0,
+    bottom: 14.0,
+    left: 32.0,
+};
 
 /// A row's name while it is renamed in place: a 20 pt input in the name's place.
 pub const RENAME_INPUT_HEIGHT: f32 = 20.0;
@@ -1238,6 +1273,61 @@ pub fn source_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
             snap: false,
         }
     }
+}
+
+/// A help sheet's step card, and its plain Good to know card: [`Token::Background`] in a
+/// [`Token::Border`] outline, rounded [`HELP_STEP_RADIUS`].
+pub fn help_card_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().background).border(Border {
+        color: theme.palette().border,
+        width: BORDER_WIDTH,
+        radius: HELP_STEP_RADIUS.into(),
+    })
+}
+
+/// The Good to know card that says what to do: the same card washed with the accent at 5% in the
+/// accent at 38%.
+pub fn help_remedy_surface(theme: &Theme) -> container::Style {
+    let p = theme.palette();
+    surface(mix(p.background, p.accent, 0.05)).border(Border {
+        color: Color {
+            a: 0.38,
+            ..p.accent
+        },
+        width: BORDER_WIDTH,
+        radius: HELP_STEP_RADIUS.into(),
+    })
+}
+
+/// A step card's drawing: [`Token::Surround`], its upper corners the card's, less its outline.
+pub fn help_drawing_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().surround).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: iced::border::top(HELP_STEP_RADIUS - BORDER_WIDTH),
+    })
+}
+
+/// A step's number: the accent at 14% in a disc.
+pub fn help_number_surface(theme: &Theme) -> container::Style {
+    surface(Color {
+        a: 0.14,
+        ..theme.palette().accent
+    })
+    .border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: (HELP_STEP_NUMBER / 2.0).into(),
+    })
+}
+
+/// A help sheet's footer: [`Token::Background`], its lower corners the sheet's, less its outline.
+pub fn help_footer_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().background).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: iced::border::bottom(SHEET_RADIUS - BORDER_WIDTH),
+    })
 }
 
 /// A neutral tag or a key cap: [`Token::Control`], rounded `radius`.
