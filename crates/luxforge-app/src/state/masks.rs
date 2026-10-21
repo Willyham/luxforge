@@ -322,8 +322,10 @@ pub(crate) struct ComponentRow {
     /// The host declares a pick for this component's kind, so the open row offers Pick, which arms
     /// the eyedropper on it.
     pub(crate) can_pick: bool,
-    /// The note under the swatches while a sampling kind holds no colour yet and the row is open.
-    pub(crate) sample_note: Option<&'static str>,
+    /// What the open row's swatch line says at its end: how many colours a sampling kind holds of
+    /// the most it holds (`2 of 5`), or `No colour yet`. None for a kind that samples nothing, and
+    /// on a closed row.
+    pub(crate) sample_caption: Option<String>,
     /// The eyedropper is armed on this component: its Pick is lit and the pick bar sits under it.
     pub(crate) picking: bool,
     /// What the Pick button reads, and its tooltip: the host's own declared title for the pick.
@@ -569,8 +571,6 @@ pub(crate) struct PickerModel {
     pub(crate) kind: String,
     /// What a click and a drag do: the bar's hint.
     pub(crate) hint: &'static str,
-    /// The colours held of the most the kind holds (`2 of 5`), for a kind that holds them.
-    pub(crate) count: Option<String>,
     /// The drag in progress, as output-stage pixels `[x0, y0, x1, y1]`, once it is one.
     pub(crate) rectangle: Option<[f64; 4]>,
     /// A pick waits for the one in flight, or for the photograph's coordinates.
@@ -695,7 +695,7 @@ impl MasksModel {
                     "swatch": sample.swatch,
                 })).collect::<Vec<_>>(),
                 "picking": row.picking,
-                "sample_note": row.sample_note,
+                "sample_caption": row.sample_caption,
                 "pick_reason": row.pick_reason,
                 // The kind's own number fields as the open row shows them, so a captured frame is
                 // evidence of the geometry a person can read rather than of the payload behind it,
@@ -780,7 +780,6 @@ impl MasksModel {
                 "component": picker.component.as_str(),
                 "kind": picker.kind,
                 "hint": picker.hint,
-                "count": picker.count,
                 "rectangle": picker.rectangle,
                 "waiting": picker.waiting,
                 "mapped": picker.mapped,
@@ -804,6 +803,10 @@ fn menu_summary(menu: &crate::state::MenuTarget) -> serde_json::Value {
         MenuTarget::ComponentHelp(component) => {
             serde_json::json!({"component_help": component})
         }
+        MenuTarget::ComponentMode(component) => {
+            serde_json::json!({"component_mode": component})
+        }
+        MenuTarget::AddMode => serde_json::json!("add_mode"),
         MenuTarget::NewMask => serde_json::json!("new_mask"),
         MenuTarget::AddComponent => serde_json::json!("add_component"),
         MenuTarget::Swatch { component, index } => {
@@ -1048,22 +1051,16 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
 fn picker_model(inputs: &Inputs<'_>, open: Option<&MaskReport>) -> Option<PickerModel> {
     let picker = inputs.mask_panel.picker.as_ref()?;
     let report = open.filter(|report| report.id == picker.mask)?;
-    let component = report
+    report
         .components
         .iter()
-        .find(|component| component.id == picker.component)?;
-    let count = luxforge_core::mask::component_sample_limit(&component.kind).map(|limit| {
-        let held = component.payload[luxforge_core::mask::SAMPLES_FIELD]
-            .as_array()
-            .map_or(0, Vec::len);
-        format!("{held} of {limit}")
-    });
+        .any(|component| component.id == picker.component)
+        .then_some(())?;
     Some(PickerModel {
         mask: picker.mask.clone(),
         component: picker.component.clone(),
         kind: picker.kind.clone(),
         hint: picker.hint(),
-        count,
         rectangle: picker.rectangle(),
         waiting: picker.waiting.is_some(),
         mapped: picker.map.is_some(),
@@ -1263,12 +1260,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                     Vec::new()
                 },
                 can_pick: commands::pick(&component.kind).is_some(),
-                sample_note: (selected
-                    && luxforge_core::mask::component_sample_limit(&component.kind).is_some()
-                    && component.payload[luxforge_core::mask::SAMPLES_FIELD]
-                        .as_array()
-                        .is_none_or(Vec::is_empty))
-                .then_some("Pick a colour to select"),
+                sample_caption: selected.then(|| sample_caption(component)).flatten(),
                 picking: inputs.mask_panel.picker.as_ref().is_some_and(|picker| {
                     picker.mask == report.id && picker.component == component.id
                 }),
@@ -1321,6 +1313,20 @@ fn component_help(kind: &str, open: bool) -> Option<ComponentHelp> {
         limits: luxforge_core::mask::component_kind_limits(kind),
         notes: luxforge_core::mask::component_kind_notes(kind),
         open,
+    })
+}
+
+/// What a sampling kind's swatch line says at its end: how many colours it holds of the most it
+/// holds, or that it holds none yet. None for a kind that samples nothing.
+fn sample_caption(component: &ComponentReport) -> Option<String> {
+    let limit = luxforge_core::mask::component_sample_limit(&component.kind)?;
+    let held = component.payload[luxforge_core::mask::SAMPLES_FIELD]
+        .as_array()
+        .map_or(0, Vec::len);
+    Some(if held == 0 {
+        "No colour yet".to_owned()
+    } else {
+        format!("{held} of {limit}")
     })
 }
 

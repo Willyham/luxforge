@@ -2313,8 +2313,7 @@
             "action": "mask.set-colour-range",
             "kind": "number",
             "label": "Refine",
-            "parameter": "refine",
-            "style": "field"
+            "parameter": "refine"
           },
           {
             "action": "mask.set-model",

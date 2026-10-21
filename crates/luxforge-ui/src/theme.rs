@@ -233,6 +233,11 @@ pub const BORDER_WIDTH: f32 = 1.0;
 /// note). A value with a word unit, such as `+0.35 EV`, may run past the box's left edge rather
 /// than wrap, so the right edge, where the units digit sits, never moves.
 pub const VALUE_WIDTH: f32 = 48.0;
+/// A number typed in place on a label line (a band's edges and shoulders): as wide as its text and
+/// 28 pt while it is typed, the values and their separators 5 pt apart, on a 22 pt line.
+pub const INLINE_VALUE_WIDTH: f32 = 28.0;
+pub const INLINE_VALUE_SPACING: f32 = 5.0;
+pub const VALUES_LINE_HEIGHT: f32 = 22.0;
 /// A square icon button: title-bar actions and context toggles.
 pub const ICON_BUTTON_SIZE: f32 = 26.0;
 /// The icon inside an [`ICON_BUTTON_SIZE`] button.
@@ -362,9 +367,6 @@ pub const CHIP_SPACING: f32 = 4.0;
 pub const CHIP_ROW_BOTTOM: f32 = 4.0;
 /// A number field's row: the label, the value box and any unit.
 pub const FIELD_ROW_HEIGHT: f32 = 24.0;
-/// A field row packed two to a row under a control it belongs to, such as a range's four fields
-/// (mask-panels.png, `.fields .fld`): the same 20 pt box on a 22 pt row.
-pub const COMPACT_FIELD_ROW_HEIGHT: f32 = 22.0;
 /// A number field's value box.
 pub const FIELD_WIDTH: f32 = 56.0;
 /// A value box's height.
@@ -825,18 +827,17 @@ pub const SMALL_ICON_SIZE: f32 = 12.0;
 pub const KIND_ICON_WIDTH: f32 = 16.0;
 /// A component row's drag handle.
 pub const GRIP_SIZE: f32 = 12.0;
-/// The mode control (`.mode`): 18 pt segments inset 1 pt on a track rounded 5 pt, each segment
-/// rounded 4 pt, the glyph a [`MODE_GLYPH_SIZE`] icon.
-pub const MODE_SEGMENT_SIZE: f32 = 18.0;
-pub const MODE_INSET: f32 = 1.0;
+/// The mode chip (range-rows.html `.mode`): 18 pt tall, inset 5 pt, rounded 5 pt, the mode's
+/// [`MODE_GLYPH_SIZE`] glyph 3 pt before an 8 pt chevron; its menu of the three modes is 150 pt.
+pub const MODE_CHIP_HEIGHT: f32 = 18.0;
+pub const MODE_CHIP_PADDING: f32 = 5.0;
+pub const MODE_CHIP_SPACING: f32 = 3.0;
 pub const MODE_RADIUS: f32 = 5.0;
-pub const MODE_SEGMENT_RADIUS: f32 = 4.0;
 pub const MODE_GLYPH_SIZE: f32 = 10.0;
-/// A fixed mode control (a mask's first component) is drawn at the board's 55% opacity. Its track
-/// and segment are dark enough that Iced's linear blending matches the board, so they are the
-/// palette's `tab_track` and `tab_selected` at this alpha over whatever row they sit on; the ink
-/// is its `mode_fixed_ink`, the bright text at 55% over that segment, precomputed opaque because a
-/// light alpha would render far brighter.
+pub const MODE_CHEVRON_SIZE: f32 = 8.0;
+pub const MODE_MENU_WIDTH: f32 = 150.0;
+/// The theme's `mode_fixed_ink` is the bright text at this opacity over the selected tab fill at
+/// the same opacity, precomputed opaque because a light alpha would render far brighter.
 pub const MODE_FIXED_OPACITY: f32 = 0.55;
 /// The overlay row (`.ov`): 26 pt, its label in a 52 pt box, its parts 6 pt apart, inset 4 pt.
 pub const OVERLAY_ROW_HEIGHT: f32 = 26.0;
@@ -906,10 +907,17 @@ pub const SWATCH_SLOT_RADIUS: f32 = 4.0;
 pub const SWATCH_SLOT_SPACING: f32 = 6.0;
 /// The dashes of an empty slot's outline.
 pub const SWATCH_SLOT_DASH: f32 = 2.0;
+/// A colour range's swatch line: inset past the grip, its caption 6 pt from the right, 4 pt over
+/// what follows.
+pub const SWATCH_LINE_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 6.0,
+    bottom: 4.0,
+    left: COMPONENT_DETAIL_INDENT,
+};
 /// The range picker's bar under the selected component row (range-masks.html `.pick`): at least
 /// 28 pt, inset 3 pt above and below, 8 pt before the glyph and 4 pt after Done, its parts 7 pt
-/// apart, rounded 5 pt, 8 pt in from the row and 6 pt over what follows; the accent at 10% behind
-/// it and at 30% around it.
+/// apart, rounded 5 pt; the accent at 10% behind it and at 30% around it.
 pub const PICK_BAR_HEIGHT: f32 = 28.0;
 pub const PICK_BAR_PADDING: Padding = Padding {
     top: 3.0,
@@ -919,11 +927,15 @@ pub const PICK_BAR_PADDING: Padding = Padding {
 };
 pub const PICK_BAR_SPACING: f32 = 7.0;
 pub const PICK_BAR_RADIUS: f32 = 5.0;
-pub const PICK_BAR_MARGIN: Padding = Padding {
-    top: 0.0,
-    right: 0.0,
-    bottom: 6.0,
-    left: 8.0,
+/// The pick line under an open range row: the bar or Pick, then the help button 6 pt after it,
+/// inset past the grip and 4 pt from the right as the row's own buttons are, 2 pt above and 4 pt
+/// under what follows.
+pub const PICK_LINE_SPACING: f32 = 6.0;
+pub const PICK_LINE_PADDING: Padding = Padding {
+    top: 2.0,
+    right: 4.0,
+    bottom: 4.0,
+    left: COMPONENT_DETAIL_INDENT,
 };
 pub const PICK_BAR_FILL_ALPHA: f32 = 0.10;
 pub const PICK_BAR_BORDER_ALPHA: f32 = 0.30;
@@ -2252,44 +2264,21 @@ pub fn mask_row(
     }
 }
 
-/// The mode control's track: the tab track rounded [`MODE_RADIUS`], at [`MODE_FIXED_OPACITY`]
-/// when the mode is fixed.
-pub fn mode_track(fixed: bool) -> impl Fn(&Theme) -> container::Style {
-    move |theme| {
-        let alpha = if fixed { MODE_FIXED_OPACITY } else { 1.0 };
-        surface(Color {
-            a: alpha,
-            ..theme.palette().tab_track
-        })
-        .border(Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: MODE_RADIUS.into(),
-        })
-    }
-}
-
-/// One mode segment: raised on the selected tab fill when chosen (at [`MODE_FIXED_OPACITY`] when
-/// fixed), the control surface under the pointer, else bare. Its glyph carries the mode's colour.
-pub fn mode_segment(
-    selected: bool,
-    fixed: bool,
-) -> impl Fn(&Theme, button::Status) -> button::Style {
+/// A component's mode chip: the tab track rounded [`MODE_RADIUS`], the control surface under the
+/// pointer and the selected tab fill while its menu is open. Its glyph carries the mode's colour.
+pub fn mode_chip(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let palette = theme.palette();
-        let background = match (selected, status) {
-            (true, _) => Some(Color {
-                a: if fixed { MODE_FIXED_OPACITY } else { 1.0 },
-                ..palette.tab_selected
-            }),
-            (false, button::Status::Hovered | button::Status::Pressed) => Some(palette.control),
-            (false, _) => None,
+        let background = match (open, status) {
+            (true, _) => palette.tab_selected,
+            (false, button::Status::Hovered | button::Status::Pressed) => palette.control,
+            (false, _) => palette.tab_track,
         };
         button::Style {
-            background: background.map(Background::Color),
+            background: Some(Background::Color(background)),
             text_color: palette.text,
             border: Border {
-                radius: MODE_SEGMENT_RADIUS.into(),
+                radius: MODE_RADIUS.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
             },
@@ -3228,13 +3217,8 @@ mod tests {
             (28.0, 19.0, 3.0)
         );
         assert_eq!(
-            (MODE_SEGMENT_SIZE, MODE_INSET, MODE_RADIUS),
-            (18.0, 1.0, 5.0)
-        );
-        assert_eq!(
-            MODE_SEGMENT_SIZE * 3.0 + MODE_INSET * 4.0,
-            58.0,
-            "three segments on their track"
+            (MODE_CHIP_HEIGHT, MODE_CHIP_PADDING, MODE_RADIUS),
+            (18.0, 5.0, 5.0)
         );
         assert_eq!((OVERLAY_ROW_HEIGHT, OVERLAY_SEGMENT_HEIGHT), (26.0, 20.0));
         assert_eq!((MENU_WIDTH, MENU_ITEM_HEIGHT), (200.0, 26.0));
@@ -3621,7 +3605,6 @@ mod tests {
         assert_eq!(fill(menu_surface(&theme)), colour(p.menu_surface));
         assert_eq!(menu_surface(&theme).border.color, p.menu_border);
         assert_eq!(fill(menu_separator(&theme)), colour(p.menu_separator));
-        assert_eq!(fill(mode_track(false)(&theme)), colour(p.tab_track));
         for border in [
             Token::ChromeBorder,
             Token::StripRule,
@@ -3701,9 +3684,13 @@ mod tests {
         );
         assert_eq!(segment(true)(&theme, active).text_color, p.text_bright);
         assert_eq!(segment(false)(&theme, active).text_color, p.text_secondary);
-        assert_eq!(mode_segment(true, false)(&theme, active).text_color, p.text);
+        assert_eq!(mode_chip(false)(&theme, active).text_color, p.text);
         assert_eq!(
-            mode_segment(true, false)(&theme, active).background,
+            mode_chip(false)(&theme, active).background,
+            colour(p.tab_track)
+        );
+        assert_eq!(
+            mode_chip(true)(&theme, active).background,
             colour(p.tab_selected)
         );
         assert_eq!(
