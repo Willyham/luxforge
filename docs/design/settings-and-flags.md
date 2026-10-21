@@ -22,7 +22,7 @@ Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, fla
 
 ## Registry
 
-`luxforge_core::flags`. A flag is a `FlagSpec`: a stable `id` (lowercase, dotted), a short `title`, a one-sentence `description` of what it changes, a `kind` and when it `applies`.
+`luxforge_core::flags`. A flag is a `FlagSpec`: a stable `id` (lowercase, dotted), a short `title`, a one-sentence `description` of what it changes, a `kind`, when it `applies` and, for a flag that refines another, the toggle it `requires`.
 
 | Kind | Value | Declares |
 | --- | --- | --- |
@@ -32,6 +32,8 @@ Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, fla
 
 `applies` is `live`, read by its consumer each time it is needed, or `launch`, read once as a binary starts. A launch flag's change takes effect the next time the desktop launches.
 
+`requires` names a product toggle a flag changes nothing without. The host lists, reads and sets the flag whatever that toggle is; Settings lists its row only while the toggle is on, as the host last answered, so a refinement of an experiment that is off is not shown.
+
 The flags:
 
 | Flag | Kind | Applies | Default | Listed | What it changes |
@@ -39,7 +41,7 @@ The flags:
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
 | `masks.range-selections` | toggle | live | off | always | Luminance and colour range masks: the New mask and Add component menus, their keys and the palette offer the two range kinds, and `mask.create-<kind>` and `mask.add-<kind>` accept them ([gated kinds](#gated-mask-kinds)) |
 | `ai.generative` | toggle | live | off | always | Generative fill: whether `task.fill-generative` is offered, and whether the desktop shows Remove, the AI editing section and the generative models in Settings › Models ([gated generative fill](#gated-generative-fill)); never how an accepted fill renders |
-| `ai.generative-gpu-sharing` | toggle | live | off | always | A generative fill's GPU work runs in short slices, so the editor keeps drawing while it runs ([sharing the GPU](ai-editing.md#sharing-the-gpu)); read as each fill is requested, and never what an accepted fill renders |
+| `ai.generative-gpu-sharing` | toggle | live | off | always; Settings only while `ai.generative` is on (`requires`) | A generative fill's GPU work runs in short slices, so the editor keeps drawing while it runs ([sharing the GPU](ai-editing.md#sharing-the-gpu)); read as each fill is requested, and never what an accepted fill renders |
 | `updates.prerelease-channel` | toggle | live | off | always | The update check follows the `prerelease` channel as well as the default one, so release candidates are offered ([automatic updates](auto-update.md#the-feed)); off, `update.status` never offers a pre-release |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
@@ -50,13 +52,13 @@ The flags:
 
 ### Gated generative fill
 
-`ai.generative` gates generating a fill, not having one. The fill task declares it in its descriptor (`flags`) and each of its model resources names it (`flag`) ([module capabilities](module-capabilities.md)), so the desktop hides them from the descriptor alone, reading the flag as off until `flags.list` first answers. Off, the desktop shows no Remove segment in the Corrections band and takes no Remove gesture, draws no AI editing section, and Settings › Models lists none of the generative models nor their minimums; turning it off while Remove is chosen returns the band to Heal or Clone, and a generation already running finishes. The owner refuses `task.fill-generative` as `not-ready` naming the flag, and still lists the task and its models and installs or removes them for any client. An accepted fill is a stored patch and renders whatever the flag. The desktop reads the flags again after its own toggle's answer and on another client's `flags.set` event, and reads the fill module's status again when the one it holds predates the change.
+`ai.generative` gates generating a fill, not having one. The fill task declares it in its descriptor (`flags`) and each of its model resources names it (`flag`) ([module capabilities](module-capabilities.md)), so the desktop hides them from the descriptor alone, reading the flag as off until `flags.list` first answers. Off, the desktop shows no Remove segment in the Corrections band and takes no Remove gesture, draws no AI editing section, Settings › Models lists none of the generative models nor their minimums, and Experiments does not list `ai.generative-gpu-sharing`; turning it off while Remove is chosen returns the band to Heal or Clone, and a generation already running finishes. The owner refuses `task.fill-generative` as `not-ready` naming the flag, and still lists the task and its models and installs or removes them for any client. An accepted fill is a stored patch and renders whatever the flag. The desktop reads the flags again after its own toggle's answer and on another client's `flags.set` event, and reads the fill module's status again when the one it holds predates the change.
 
 The two proof flags follow the proof modules' rule: they exist only when the running host serves the test modules, and change nothing, so the choice and number controls have a real flag to render and test. A stored proof value is kept, and listed as unrecognized, by a host that does not list them.
 
 ## API
 
-`flags.list {}` returns `{flags, unrecognized}`. Each flag is `{id, title, description, kind, applies, default, value, stored}` with `options` for a choice and `min`, `max` and `step` for a number. `value` is what a live flag reads now and a launch flag's next launch reads; `stored` says whether the person chose it. A launch flag on a host the desktop started also carries `active`, the value this launch resolved, and `override` when the command line forced it (`"--developer"`); a live flag carries both only when its host forced it, as a test host forces an experiment on for its life whatever is stored. A flag whose stored value does not fit carries `error` and follows its default. `unrecognized` lists the identities of stored values no listed flag claims. The read creates no file and changes nothing.
+`flags.list {}` returns `{flags, unrecognized}`. Each flag is `{id, title, description, kind, applies, default, value, stored}` with `options` for a choice, `min`, `max` and `step` for a number, and `requires` for a flag that refines a toggle. `value` is what a live flag reads now and a launch flag's next launch reads; `stored` says whether the person chose it. A launch flag on a host the desktop started also carries `active`, the value this launch resolved, and `override` when the command line forced it (`"--developer"`); a live flag carries both only when its host forced it, as a test host forces an experiment on for its life whatever is stored. A flag whose stored value does not fit carries `error` and follows its default. `unrecognized` lists the identities of stored values no listed flag claims. The read creates no file and changes nothing.
 
 `flags.set {flag, value}` stores `value` for `flag`, checked against the flag's kind; `null` or an absent `value` removes the stored value, so the flag follows its default. Setting the current stored value again is accepted and writes nothing. The answer is the same as `flags.list`, so a client adopts one answer. An unknown flag, a value of the wrong kind, an option the choice does not offer or a number outside its range or off its step is refused by name. A change is announced in the event log under `flags.set`, so another client reads the flags again. It changes no recipe, history or render, and needs a configured application preference directory.
 

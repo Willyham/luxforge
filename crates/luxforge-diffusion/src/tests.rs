@@ -527,7 +527,9 @@ mod native {
 
     /// A generation that shares the GPU makes the whole-graph generation's candidate byte for
     /// byte: its slices encode upstream's kernels, only in more command buffers. Reports both
-    /// times, which are the slices' cost, not a measurement of record.
+    /// times, which are the slices' cost, not a measurement of record. macOS only: slicing is the
+    /// Metal backend's, and a CPU build ignores the slice target, so elsewhere it proves nothing.
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "needs the pinned klein files"]
     fn a_generation_that_shares_the_gpu_makes_the_whole_graph_candidate() {
