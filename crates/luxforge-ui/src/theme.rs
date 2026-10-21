@@ -952,41 +952,51 @@ pub const COMPONENT_NOTE_PADDING: Padding = Padding {
     bottom: 4.0,
     left: COMPONENT_DETAIL_INDENT,
 };
-/// A help sheet (a tool's How it works, drawn as Select's introduction is): 720 pt on the sheet
-/// surface over the scrim, inset 28 pt above and 32 pt at the sides, its title 22 pt semibold and
-/// its sections 22 pt apart. Its step cards are rounded 8 pt on [`Token::Background`], 20 pt apart
-/// with a `›` between them, each a 112 pt drawing on [`Token::Surround`] above its text, inset
-/// 12 pt and 14 pt, 156 pt tall, and its number in an 18 pt accent-tinted disc. A drawing's
-/// patches are 30 × 24 pt, its swatches 14 × 11 pt, an example colour 16 pt square. A Good to know
-/// line is 30 pt. The footer is inset 14 pt and 32 pt.
-pub const HELP_SHEET_WIDTH: f32 = 720.0;
-pub const HELP_SHEET_INSET: f32 = 32.0;
-pub const HELP_SHEET_TOP: f32 = 28.0;
-pub const SIZE_HELP_TITLE: f32 = 22.0;
-pub const HELP_SHEET_SECTION_SPACING: f32 = 22.0;
-pub const HELP_STEP_GAP: f32 = 20.0;
-pub const HELP_STEP_RADIUS: f32 = 8.0;
-pub const HELP_STEP_DRAWING_HEIGHT: f32 = 112.0;
-pub const HELP_STEP_PADDING: Padding = Padding {
+/// A guide sheet: a modal sheet that explains a feature in steps — the Select introduction, a
+/// tool's help sheet and a download's setup sheet — as the Select introduction's board draws it.
+/// On the sheet surface over the scrim, at least 32 pt from the window's edges, its content
+/// scrolling inside it in a shorter window. The head is 28 pt from the top and 32 pt from the
+/// sides, the ✕ 14 pt from the corner: the eyebrow the accent's capitalised label, the title
+/// 22 pt semibold and the lead 13 pt, at most 620 pt wide. The parts under it are 22 pt apart and
+/// 32 pt from the sides, and 24 pt over the footer, which is inset 14 pt and 32 pt under its rule.
+/// Step cards are 20 pt apart with a `›` between them, each a 112 pt drawing over its text, inset
+/// 12 pt above and 14 pt elsewhere, its number in an 18 pt disc and its hint line at its foot,
+/// 6 pt under its text. Cards side by side elsewhere, a comparison or tiles, are 12 pt apart. Every
+/// card is rounded 8 pt.
+pub const GUIDE_MARGIN: f32 = 32.0;
+pub const GUIDE_INSET: f32 = 32.0;
+pub const GUIDE_HEAD_TOP: f32 = 28.0;
+pub const GUIDE_CLOSE_INSET: f32 = 14.0;
+pub const SIZE_GUIDE_TITLE: f32 = 22.0;
+pub const GUIDE_LEAD_WIDTH: f32 = 620.0;
+pub const GUIDE_PART_SPACING: f32 = 22.0;
+pub const GUIDE_FOOTER_GAP: f32 = 24.0;
+pub const GUIDE_FOOTER_PADDING: Padding = Padding {
+    top: 14.0,
+    right: GUIDE_INSET,
+    bottom: 14.0,
+    left: GUIDE_INSET,
+};
+pub const GUIDE_STEP_GAP: f32 = 20.0;
+pub const GUIDE_DRAWING_HEIGHT: f32 = 112.0;
+pub const GUIDE_CARD_RADIUS: f32 = 8.0;
+pub const GUIDE_CARD_PADDING: Padding = Padding {
     top: 12.0,
     right: 14.0,
     bottom: 14.0,
     left: 14.0,
 };
-pub const HELP_STEP_TEXT_HEIGHT: f32 = 156.0;
-pub const HELP_STEP_NUMBER: f32 = 18.0;
+pub const GUIDE_NUMBER_SIZE: f32 = 18.0;
+pub const GUIDE_CARD_GAP: f32 = 12.0;
+/// A help sheet: 720 pt wide. A drawing's patches are 30 × 24 pt, its swatches 14 × 11 pt, an
+/// example colour 16 pt square. A Good to know line is 30 pt.
+pub const HELP_SHEET_WIDTH: f32 = 720.0;
 pub const HELP_NOTE_ROW_HEIGHT: f32 = 30.0;
 pub const HELP_PATCH_WIDTH: f32 = 30.0;
 pub const HELP_PATCH_HEIGHT: f32 = 24.0;
 pub const HELP_SWATCH_WIDTH: f32 = 14.0;
 pub const HELP_SWATCH_HEIGHT: f32 = 11.0;
 pub const HELP_EXAMPLE_SIZE: f32 = 16.0;
-pub const HELP_FOOTER_PADDING: Padding = Padding {
-    top: 14.0,
-    right: 32.0,
-    bottom: 14.0,
-    left: 32.0,
-};
 
 /// A row's name while it is renamed in place: a 20 pt input in the name's place.
 pub const RENAME_INPUT_HEIGHT: f32 = 20.0;
@@ -1275,19 +1285,19 @@ pub fn source_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
     }
 }
 
-/// A help sheet's step card, and its plain Good to know card: [`Token::Background`] in a
-/// [`Token::Border`] outline, rounded [`HELP_STEP_RADIUS`].
-pub fn help_card_surface(theme: &Theme) -> container::Style {
+/// A guide sheet's card — a step, a tile, a plain side of a comparison: [`Token::Background`] in a
+/// [`Token::Border`] outline, rounded [`GUIDE_CARD_RADIUS`].
+pub fn guide_card_surface(theme: &Theme) -> container::Style {
     surface(theme.palette().background).border(Border {
         color: theme.palette().border,
         width: BORDER_WIDTH,
-        radius: HELP_STEP_RADIUS.into(),
+        radius: GUIDE_CARD_RADIUS.into(),
     })
 }
 
-/// The Good to know card that says what to do: the same card washed with the accent at 5% in the
-/// accent at 38%.
-pub fn help_remedy_surface(theme: &Theme) -> container::Style {
+/// A guide sheet's card in the accent, Luxforge's side or what to do: the same card washed with the
+/// accent at 5% in the accent at 38%.
+pub fn guide_accent_card_surface(theme: &Theme) -> container::Style {
     let p = theme.palette();
     surface(mix(p.background, p.accent, 0.05)).border(Border {
         color: Color {
@@ -1295,21 +1305,22 @@ pub fn help_remedy_surface(theme: &Theme) -> container::Style {
             ..p.accent
         },
         width: BORDER_WIDTH,
-        radius: HELP_STEP_RADIUS.into(),
+        radius: GUIDE_CARD_RADIUS.into(),
     })
 }
 
 /// A step card's drawing: [`Token::Surround`], its upper corners the card's, less its outline.
-pub fn help_drawing_surface(theme: &Theme) -> container::Style {
+pub fn guide_drawing_surface(theme: &Theme) -> container::Style {
     surface(theme.palette().surround).border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
-        radius: iced::border::top(HELP_STEP_RADIUS - BORDER_WIDTH),
+        radius: iced::border::top(GUIDE_CARD_RADIUS - BORDER_WIDTH),
     })
 }
 
-/// A step's number: the accent at 14% in a disc.
-pub fn help_number_surface(theme: &Theme) -> container::Style {
+/// A step's number, and the lit Pick a help drawing shows: the accent at 14%, rounded to a disc at
+/// the number's size.
+pub fn guide_number_surface(theme: &Theme) -> container::Style {
     surface(Color {
         a: 0.14,
         ..theme.palette().accent
@@ -1317,12 +1328,12 @@ pub fn help_number_surface(theme: &Theme) -> container::Style {
     .border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
-        radius: (HELP_STEP_NUMBER / 2.0).into(),
+        radius: (GUIDE_NUMBER_SIZE / 2.0).into(),
     })
 }
 
-/// A help sheet's footer: [`Token::Background`], its lower corners the sheet's, less its outline.
-pub fn help_footer_surface(theme: &Theme) -> container::Style {
+/// A guide sheet's footer: [`Token::Background`], its lower corners the sheet's, less its outline.
+pub fn guide_footer_surface(theme: &Theme) -> container::Style {
     surface(theme.palette().background).border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
@@ -1457,29 +1468,13 @@ pub fn quiet_action(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// The setup sheet a download that introduces a feature asks through, as the AI editing setup
-/// board draws it: 760 pt wide on the sheet surface, its head, steps, facts and footer 32 pt from
-/// its sides; the head 28 pt from the top, its title 22 pt and its lead 13 pt; three step cards
-/// 20 pt apart with a 112 pt picture area each, or one 150 pt hero; the facts as three tiles 12 pt
-/// apart; 22 pt between the parts and 24 pt above the footer.
+/// The setup sheet a download that introduces a feature asks through, a guide sheet as the AI
+/// editing setup board draws it: 760 pt wide, its three steps or one 150 pt hero, then the facts
+/// as tiles, each glyph in a 28 pt box.
 pub const SETUP_SHEET_WIDTH: f32 = 760.0;
-pub const SETUP_SHEET_INSET: f32 = 32.0;
-pub const SETUP_HEAD_TOP: f32 = 28.0;
-pub const SETUP_PART_SPACING: f32 = 22.0;
-pub const SETUP_FOOTER_GAP: f32 = 24.0;
-pub const SIZE_SETUP_TITLE: f32 = 22.0;
-pub const SIZE_SETUP_LEAD: f32 = 13.0;
-pub const SETUP_LEAD_WIDTH: f32 = 620.0;
-pub const SETUP_STEP_GAP: f32 = 20.0;
-pub const SETUP_PICTURE_HEIGHT: f32 = 112.0;
-/// A step card's whole height, so the three cards stand level whatever their text's length.
-pub const SETUP_STEP_HEIGHT: f32 = 268.0;
 /// The history picture's two rows' width.
 pub const SETUP_HISTORY_WIDTH: f32 = 170.0;
 pub const SETUP_HERO_HEIGHT: f32 = 150.0;
-pub const SETUP_CARD_RADIUS: f32 = 8.0;
-pub const SETUP_NUMBER_SIZE: f32 = 18.0;
-pub const SETUP_TILE_GAP: f32 = 12.0;
 pub const SETUP_GLYPH_BOX: f32 = 28.0;
 /// The scenes the pictures draw: a step's, a candidate's and the hero's two, in points.
 pub const SETUP_SCENE: iced::Size = iced::Size::new(150.0, 84.0);
@@ -1499,42 +1494,6 @@ pub const SETUP_SCENE_STOPS: [(f32, Color); 6] = [
 /// The pole a scene's object is, and the bicycle Replace paints in: fixed, like the scene.
 pub const SETUP_SCENE_OBJECT: Color = Color::from_rgb8(0x2a, 0x2a, 0x2e);
 pub const SETUP_SCENE_BICYCLE: Color = Color::from_rgb8(0xd6, 0x40, 0x3a);
-
-/// The setup sheet: the sheet surface, rounded as a step card is.
-pub fn setup_sheet_surface(theme: &Theme) -> container::Style {
-    sheet_surface(theme).border(Border {
-        color: theme.palette().strip_rule,
-        width: BORDER_WIDTH,
-        radius: (SETUP_CARD_RADIUS + 2.0).into(),
-    })
-}
-
-/// A setup step's card or a fact's tile: the panel, bordered, rounded; `outline` replaces the
-/// border's colour, as an unmet fact's error ink does.
-pub fn setup_card_surface(outline: Option<Token>) -> impl Fn(&Theme) -> container::Style {
-    move |theme| {
-        let p = theme.palette();
-        surface(p.background).border(Border {
-            color: outline.map_or(p.border, |token| p.get(token)),
-            width: BORDER_WIDTH,
-            radius: SETUP_CARD_RADIUS.into(),
-        })
-    }
-}
-
-/// A setup step's picture area: the canvas surround, rounded at the card's top corners.
-pub fn setup_picture_surface(theme: &Theme) -> container::Style {
-    surface(theme.palette().surround).border(Border {
-        color: Color::TRANSPARENT,
-        width: 0.0,
-        radius: iced::border::Radius {
-            top_left: SETUP_CARD_RADIUS,
-            top_right: SETUP_CARD_RADIUS,
-            bottom_right: 0.0,
-            bottom_left: 0.0,
-        },
-    })
-}
 
 /// A round or rounded fill `radius` in `fill`, such as a step's number or a fact's glyph box.
 pub fn rounded_fill(fill: impl Into<Ink>, radius: f32) -> impl Fn(&Theme) -> container::Style {

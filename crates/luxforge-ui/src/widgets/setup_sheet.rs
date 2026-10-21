@@ -1,19 +1,23 @@
-//! The setup sheet a download that sets up a feature asks through, as the AI editing setup board
-//! (`docs/design/ai-editing/setup-board.html`) draws it: the feature in its own words, how it is
-//! used in up to three pictured steps or one hero picture, the download's facts as three tiles,
-//! and the decision in its footer. The caller lays it over its scrim; the sheet is the card alone.
+//! The setup sheet a download that sets up a feature asks through, a guide sheet
+//! ([`super::guide_sheet`]) as the AI editing setup board (`docs/design/ai-editing/setup-board.html`)
+//! draws it: the feature in its own words, how it is used in up to three pictured steps or one hero
+//! picture, the download's facts as three tiles, and the decision in its footer.
 //!
 //! The pictures are drawn here from the theme and a fixed sky-water-grass scene, never shipped as
 //! images, so every theme keeps their hierarchy.
 
 use super::button_row::{ButtonSize, ButtonTone, text_button};
-use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
-use super::key_hint::{KeyHint, key_hints};
+use super::guide_sheet::{
+    GuideStep, LeadPart, guide_card, guide_cards, guide_footer, guide_head, guide_primary,
+    guide_section, guide_sheet, guide_steps,
+};
+use super::icon_button::{Icon, icon};
+use super::key_hint::KeyHint;
 use crate::theme;
 use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
-use iced::widget::{Row, Space, canvas, column, container, row, text};
-use iced::{Alignment, Color, Length, Point, Rectangle, Renderer, Size};
+use iced::widget::{Column, Space, canvas, column, container, row, text};
+use iced::{Alignment, Border, Color, Length, Point, Rectangle, Renderer, Size};
 
 /// A picture the sheet draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +38,7 @@ pub struct SetupStepModel {
     pub title: String,
     pub body: String,
     pub picture: SetupPicture,
-    /// The keys that do it, from the keymap, under its text.
+    /// The keys that do it, from the keymap, at its foot.
     pub hints: Vec<KeyHint>,
 }
 
@@ -81,188 +85,64 @@ pub struct SetupSheetModel {
     pub dismiss: String,
 }
 
-/// Renders the sheet, [`theme::SETUP_SHEET_WIDTH`] wide: `allow` is the primary action's message
-/// and `dismiss` the other's.
+/// Renders the sheet over a scrim that fills the window, [`theme::SETUP_SHEET_WIDTH`] wide where
+/// the window has room, its content scrolling where it has not: `allow` is the primary action's
+/// message and `dismiss` the other's, which the ✕ publishes too. A press on the scrim does nothing.
 pub fn setup_sheet<'a, M: Clone + 'a>(
     model: &SetupSheetModel,
     allow: M,
     dismiss: M,
 ) -> Element<'a, M> {
-    let inset = theme::SETUP_SHEET_INSET;
-    let head = column![
-        text(model.eyebrow.to_uppercase())
-            .size(theme::SIZE_SECTION_LABEL)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::Accent)),
-        text(model.title.clone())
-            .size(theme::SIZE_SETUP_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::TextBright)),
-        container(
-            text(model.lead.clone())
-                .size(theme::SIZE_SETUP_LEAD)
-                .line_height(1.5)
-                .style(theme::ink(Token::TextSecondary)),
-        )
-        .max_width(theme::SETUP_LEAD_WIDTH),
-    ]
-    .spacing(theme::SPACING * 0.75);
-
-    // The close button answers as the other action does.
-    let close = header_icon_button(
-        &IconButtonModel {
-            icon: Icon::Close,
-            tooltip: model.dismiss.clone(),
-            enabled: true,
-            selected: false,
-        },
-        Some(dismiss.clone()),
-    );
-    let head = row![container(head).width(Length::Fill), close].align_y(Alignment::Start);
-    let mut body = column![container(head).padding(iced::Padding {
-        left: inset,
-        right: theme::SPACING * 1.75,
-        ..iced::Padding::ZERO
-    })]
-    .spacing(theme::SETUP_PART_SPACING)
-    .padding(iced::Padding {
-        top: theme::SETUP_HEAD_TOP,
-        ..iced::Padding::ZERO
-    });
+    let mut parts = Vec::new();
     if let Some(hero) = model.hero {
-        body = body.push(container(hero_picture(hero)).padding([0.0, inset]));
+        parts.push(hero_picture(hero));
     }
     if !model.steps.is_empty() {
-        body = body.push(container(steps(&model.steps)).padding([0.0, inset]));
-    }
-    body = body.push(container(facts(model)).padding([0.0, inset]));
-
-    let mut actions = row![
-        icon(Icon::Lock, theme::SHEET_ICON_SIZE, Token::TextSecondary),
-        text(model.promise.clone())
-            .size(theme::SIZE_CONTROL)
-            .style(theme::ink(Token::TextSecondary)),
-        Space::new().width(Length::Fill),
-        text_button(
-            &model.dismiss,
-            if model.allow.is_some() {
-                ButtonTone::Control
-            } else {
-                ButtonTone::Primary
-            },
-            ButtonSize::Regular,
-            Some(dismiss),
-        ),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center);
-    if let Some(label) = &model.allow {
-        actions = actions.push(text_button(
-            label,
-            ButtonTone::Primary,
-            ButtonSize::Regular,
-            Some(allow),
+        parts.push(guide_steps(
+            model
+                .steps
+                .iter()
+                .map(|step| GuideStep {
+                    name: step.title.clone(),
+                    body: step.body.clone(),
+                    place: None,
+                    hints: step.hints.clone(),
+                    drawing: picture(step.picture),
+                })
+                .collect(),
+            false,
         ));
     }
-    let footer = container(actions)
-        .width(Length::Fill)
-        .padding([theme::SPACING * 1.75, inset])
-        .style(theme::panel_surface);
+    parts.push(facts(model));
 
-    container(column![
-        body,
-        Space::new().height(theme::SETUP_FOOTER_GAP),
-        container(Space::new())
-            .width(Length::Fill)
-            .height(theme::BORDER_WIDTH)
-            .style(theme::rule_surface),
-        footer,
-    ])
-    .width(Length::Fixed(theme::SETUP_SHEET_WIDTH))
-    .clip(true)
-    .style(theme::setup_sheet_surface)
-    .into()
+    // The primary action carries Return's ↵: Download, or Close when nothing can be allowed.
+    let buttons = match &model.allow {
+        Some(label) => vec![
+            text_button(
+                &model.dismiss,
+                ButtonTone::Control,
+                ButtonSize::Regular,
+                Some(dismiss.clone()),
+            ),
+            guide_primary(label, allow),
+        ],
+        None => vec![guide_primary(&model.dismiss, dismiss.clone())],
+    };
+    guide_sheet(
+        theme::SETUP_SHEET_WIDTH,
+        guide_head(
+            &model.eyebrow,
+            &model.title,
+            &LeadPart::plain(model.lead.clone()),
+            &model.dismiss,
+            dismiss,
+        ),
+        parts,
+        guide_footer(Icon::Lock, &model.promise, buttons, false),
+    )
 }
 
-/// The steps side by side, a `›` between each two.
-fn steps<'a, M: 'a>(steps: &[SetupStepModel]) -> Element<'a, M> {
-    let mut cards = Row::new().align_y(Alignment::Center);
-    for (index, step) in steps.iter().enumerate() {
-        if index > 0 {
-            cards = cards.push(
-                container(
-                    text("\u{203a}")
-                        .size(theme::SIZE_SETUP_LEAD)
-                        .style(theme::ink(Token::TextTertiary)),
-                )
-                .width(theme::SETUP_STEP_GAP)
-                .align_x(Alignment::Center),
-            );
-        }
-        cards = cards.push(step_card(index + 1, step));
-    }
-    cards.into()
-}
-
-/// One step: its picture over its number, title, text and keys.
-fn step_card<'a, M: 'a>(number: usize, step: &SetupStepModel) -> Element<'a, M> {
-    let heading = row![
-        container(
-            text(number.to_string())
-                .size(theme::SIZE_CAPTION)
-                .font(theme::FONT_SEMIBOLD)
-                .style(theme::ink(Token::Accent)),
-        )
-        .width(theme::SETUP_NUMBER_SIZE)
-        .height(theme::SETUP_NUMBER_SIZE)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(theme::rounded_fill(
-            Token::SelectedFill,
-            theme::SETUP_NUMBER_SIZE / 2.0
-        )),
-        text(step.title.clone())
-            .size(theme::SIZE_MODULE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::TextBright)),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center);
-    let mut words = column![
-        heading,
-        text(step.body.clone())
-            .size(theme::SIZE_CONTROL)
-            .line_height(1.5)
-            .style(theme::ink(Token::TextSecondary)),
-        Space::new().height(Length::Fill),
-    ]
-    .spacing(theme::SPACING * 0.75)
-    .height(Length::Fill);
-    if !step.hints.is_empty() {
-        words = words.push(key_hints(&step.hints));
-    }
-    container(column![
-        container(picture(step.picture))
-            .width(Length::Fill)
-            .height(theme::SETUP_PICTURE_HEIGHT)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(theme::setup_picture_surface),
-        container(Space::new())
-            .width(Length::Fill)
-            .height(theme::BORDER_WIDTH)
-            .style(theme::rule_surface),
-        container(words)
-            .padding([theme::SPACING * 1.5, theme::SPACING * 1.75])
-            .height(Length::Fill),
-    ])
-    .width(Length::FillPortion(1))
-    .height(Length::Fixed(theme::SETUP_STEP_HEIGHT))
-    .style(theme::setup_card_surface(None))
-    .into()
-}
-
-/// The hero: the picture across the sheet on the canvas surround.
+/// The hero: the picture across the sheet on the canvas surround, in a card's outline.
 fn hero_picture<'a, M: 'a>(picture: SetupPicture) -> Element<'a, M> {
     container(self::picture(picture))
         .width(Length::Fill)
@@ -270,29 +150,19 @@ fn hero_picture<'a, M: 'a>(picture: SetupPicture) -> Element<'a, M> {
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
         .style(|theme: &Theme| {
-            let mut style = theme::setup_card_surface(None)(theme);
+            let mut style = theme::guide_card_surface(theme);
             style.background = Some(theme.palette().surround.into());
             style
         })
         .into()
 }
 
-/// The facts as tiles, under their label, then the notes.
+/// The facts as tiles, under their label when there is one, then the notes.
 fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
-    let mut part = column![].spacing(theme::SPACING);
-    if let Some(label) = &model.facts_label {
-        part = part.push(
-            text(label.to_uppercase())
-                .size(theme::SIZE_SECTION_LABEL)
-                .font(theme::FONT_SEMIBOLD)
-                .style(theme::ink(Token::TextTertiary)),
-        );
-    }
-    part = part.push(
-        Row::with_children(model.facts.iter().map(fact))
-            .spacing(theme::SETUP_TILE_GAP)
-            .width(Length::Fill),
-    );
+    let mut part = Column::new().spacing(theme::SPACING).push(guide_cards(
+        model.facts.iter().map(fact).collect::<Vec<_>>(),
+        false,
+    ));
     for (note, warns) in &model.notes {
         part = part.push(
             text(note.clone())
@@ -304,7 +174,10 @@ fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
                 })),
         );
     }
-    part.into()
+    match &model.facts_label {
+        Some(label) => guide_section(label, part.into()),
+        None => part.into(),
+    }
 }
 
 /// One fact's tile: its glyph in a tinted box, its headline and its detail.
@@ -314,7 +187,7 @@ fn fact<'a, M: 'a>(fact: &SetupFactModel) -> Element<'a, M> {
         FactTone::Met => (Token::Accent, Token::Accent, None),
         FactTone::Unmet => (Token::Error, Token::Error, Some(Token::Error)),
     };
-    container(
+    guide_card(
         row![
             container(icon(fact.glyph, theme::SHEET_ICON_SIZE, glyph_ink))
                 .width(theme::SETUP_GLYPH_BOX)
@@ -335,9 +208,16 @@ fn fact<'a, M: 'a>(fact: &SetupFactModel) -> Element<'a, M> {
         ]
         .spacing(theme::SPACING * 1.25),
     )
-    .width(Length::FillPortion(1))
-    .padding([theme::SPACING * 1.5, theme::SPACING * 1.75])
-    .style(theme::setup_card_surface(outline))
+    .style(move |theme: &Theme| {
+        let style = theme::guide_card_surface(theme);
+        match outline {
+            Some(token) => style.border(Border {
+                color: theme.palette().get(token),
+                ..style.border
+            }),
+            None => style,
+        }
+    })
     .into()
 }
 
@@ -454,7 +334,7 @@ fn picture<'a, M: 'a>(picture: SetupPicture) -> Element<'a, M> {
                 .style(theme::ink(Token::TextTertiary)),
             Scene::new(theme::SETUP_HERO_SCENE, Subject::Bicycle).element(),
         ]
-        .spacing(theme::SETUP_PART_SPACING)
+        .spacing(theme::GUIDE_PART_SPACING)
         .align_y(Alignment::Center)
         .into(),
     }
@@ -609,5 +489,57 @@ impl<M> canvas::Program<M, Theme> for Scene {
             }
         }
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_state_builds() {
+        let step = |picture| SetupStepModel {
+            title: "Generate".into(),
+            body: "Generate fills the area.".into(),
+            picture,
+            hints: vec![KeyHint::new("Esc", "cancels")],
+        };
+        let fact = |tone| SetupFactModel {
+            glyph: Icon::Drive,
+            headline: "2.5 GB download".into(),
+            detail: "Once, then it works offline".into(),
+            tone,
+        };
+        let steps = SetupSheetModel {
+            eyebrow: "AI editing".into(),
+            title: "Remove anything".into(),
+            lead: "Paint over something.".into(),
+            hero: None,
+            steps: [
+                SetupPicture::PaintOver,
+                SetupPicture::Candidates,
+                SetupPicture::History,
+            ]
+            .map(step)
+            .to_vec(),
+            facts_label: Some("Before it can start".into()),
+            facts: [FactTone::Plain, FactTone::Met, FactTone::Unmet]
+                .map(fact)
+                .to_vec(),
+            notes: vec![("It can't run on this Mac.".into(), true)],
+            promise: "Your photos stay on this computer.".into(),
+            allow: Some("Download 2.5 GB".into()),
+            dismiss: "Not now".into(),
+        };
+        let _: Element<'_, bool> = setup_sheet(&steps, true, false);
+        let hero = SetupSheetModel {
+            hero: Some(SetupPicture::Describe),
+            steps: Vec::new(),
+            facts_label: None,
+            allow: None,
+            dismiss: "Close".into(),
+            ..steps
+        };
+        let _: Element<'_, bool> = setup_sheet(&hero, true, false);
     }
 }

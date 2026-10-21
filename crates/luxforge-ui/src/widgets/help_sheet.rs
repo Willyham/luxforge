@@ -1,25 +1,23 @@
-//! A help sheet: how one tool works, kept out of the panel until a person asks for it, drawn as
-//! Select's introduction is — a modal sheet over a scrim.
+//! A help sheet: how one tool works, kept out of the panel until a person asks for it, a guide
+//! sheet ([`super::guide_sheet`]) as Select's introduction is.
 //!
 //! An accent eyebrow, a title and a lead; the steps side by side, each a small drawing over its
 //! name, a sentence and its keys in caps; then Good to know as two cards, what the tool takes
 //! together and what to do about it; and a footer with one more line and Got it. Everything is
 //! plain data and every colour but the drawings' patches comes from the theme, so a light theme
-//! keeps the hierarchy. The scrim takes every press without closing the sheet, so a stray click does
-//! not dismiss text being read.
+//! keeps the hierarchy.
 
-use super::button_row::{ButtonSize, ButtonTone, LabelledButtonModel, labelled_button};
-use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
-use super::key_hint::key_cap;
-use super::text::section_label;
+use super::guide_sheet::{
+    GuideStep, LeadPart, guide_card, guide_cards, guide_footer, guide_head, guide_primary,
+    guide_section, guide_sheet, guide_steps,
+};
+use super::icon_button::{Icon, icon};
+use super::key_hint::KeyHint;
 use crate::theme;
 use crate::{Element, Theme, Token};
-use iced::widget::text::{LineHeight, Span, Wrapping};
-use iced::widget::{
-    Column, Row, Space, Stack, column, container, mouse_area, opaque, rich_text, row, scrollable,
-    stack, text,
-};
-use iced::{Alignment, Border, Color, Font, Length, Padding};
+use iced::widget::text::Wrapping;
+use iced::widget::{Column, Row, Space, column, container, row, stack, text};
+use iced::{Alignment, Border, Color, Length, Padding};
 
 /// Plain data for a help sheet.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,29 +43,14 @@ pub struct HelpSheetModel {
     pub tint: Color,
 }
 
-/// A run of the lead, emphasised or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeadPart {
-    pub text: String,
-    pub strong: bool,
-}
-
 /// One step: its drawing, its name, what it does and its keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HelpSheetStep {
     pub name: String,
     pub body: String,
-    pub hint: Vec<HintPart>,
+    pub hint: Vec<KeyHint>,
     pub drawing: StepDrawing,
 }
-
-/// A piece of a step's hint line: a key in its cap, or words.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HintPart {
-    Key(String),
-    Text(String),
-}
-
 /// What a step's drawing shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepDrawing {
@@ -128,225 +111,46 @@ pub struct HelpRemedy {
 /// [`theme::HELP_SHEET_WIDTH`] wide where the window has room, its content scrolling where it has
 /// not. ✕ and the done button publish `on_close`; a press on the scrim does nothing.
 pub fn help_sheet<'a, M: Clone + 'a>(model: &HelpSheetModel, on_close: M) -> Element<'a, M> {
-    let close = header_icon_button(
-        &IconButtonModel {
-            icon: Icon::Close,
-            tooltip: "Close".into(),
-            enabled: true,
-            selected: false,
-        },
-        Some(on_close.clone()),
+    let steps = model
+        .steps
+        .iter()
+        .map(|step| GuideStep {
+            name: step.name.clone(),
+            body: step.body.clone(),
+            place: None,
+            hints: step.hint.clone(),
+            drawing: drawing(&step.drawing, model.tint),
+        })
+        .collect();
+    let notes = guide_section(
+        &model.notes_heading,
+        guide_cards(
+            [
+                guide_card(alike(&model.alike_heading, &model.alike)).into(),
+                guide_card(narrow(&model.narrow_heading, &model.narrow))
+                    .style(theme::guide_accent_card_surface)
+                    .into(),
+            ],
+            false,
+        ),
     );
-    let head = column![
-        text(model.eyebrow.to_uppercase())
-            .size(theme::SIZE_SECTION_LABEL)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::Accent)),
-        text(model.title.clone())
-            .size(theme::SIZE_HELP_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::Text)),
-        lead(&model.lead),
-    ]
-    .spacing(theme::SPACING * 0.75);
-    let head = row![head.width(Length::Fill), close].align_y(Alignment::Start);
-
-    let mut steps = Row::new().align_y(Alignment::Center);
-    for (index, step) in model.steps.iter().enumerate() {
-        if index > 0 {
-            steps = steps.push(
-                container(
-                    text("\u{203a}")
-                        .size(theme::SIZE_TITLE)
-                        .style(theme::ink(Token::TextTertiary)),
-                )
-                .width(Length::Fixed(theme::HELP_STEP_GAP))
-                .align_x(Alignment::Center),
-            );
-        }
-        steps = steps.push(step_card(index + 1, step, model.tint));
-    }
-
-    let notes = column![
-        section_label(model.notes_heading.clone()),
-        row![
-            container(alike(&model.alike_heading, &model.alike))
-                .padding([12.0, 14.0])
-                .width(Length::Fill)
-                .style(theme::help_card_surface),
-            container(narrow(&model.narrow_heading, &model.narrow))
-                .padding([12.0, 14.0])
-                .width(Length::Fill)
-                .style(theme::help_remedy_surface),
-        ]
-        .spacing(theme::SPACING * 1.5),
-    ]
-    .spacing(theme::SPACING);
-
-    let body = column![head, steps, notes]
-        .spacing(theme::HELP_SHEET_SECTION_SPACING)
-        .padding(Padding {
-            top: theme::HELP_SHEET_TOP,
-            right: theme::HELP_SHEET_INSET,
-            bottom: theme::HELP_SHEET_SECTION_SPACING,
-            left: theme::HELP_SHEET_INSET,
-        });
-
-    let footer = container(
-        row![
-            icon(
-                Icon::Information,
-                theme::SHEET_ICON_SIZE,
-                Token::TextSecondary
-            ),
-            text(model.footnote.clone())
-                .size(theme::SIZE_CONTROL)
-                .style(theme::ink(Token::TextSecondary))
-                .width(Length::Fill),
-            labelled_button(
-                &LabelledButtonModel {
-                    label: model.done.clone(),
-                    icon: None,
-                    key_hint: Some("return".into()),
-                    tone: ButtonTone::Primary,
-                    size: ButtonSize::Regular,
-                    fill: false,
-                    enabled: true,
-                },
-                Some(on_close),
-            ),
-        ]
-        .spacing(theme::SPACING)
-        .align_y(Alignment::Center),
+    guide_sheet(
+        theme::HELP_SHEET_WIDTH,
+        guide_head(
+            &model.eyebrow,
+            &model.title,
+            &model.lead,
+            "Close",
+            on_close.clone(),
+        ),
+        [guide_steps(steps, false), notes],
+        guide_footer(
+            Icon::Information,
+            &model.footnote,
+            vec![guide_primary(&model.done, on_close)],
+            false,
+        ),
     )
-    .padding(theme::HELP_FOOTER_PADDING)
-    .width(Length::Fill)
-    .style(theme::help_footer_surface);
-    let rule = container(Space::new())
-        .width(Length::Fill)
-        .height(Length::Fixed(theme::BORDER_WIDTH))
-        .style(theme::fill(Token::Rule));
-
-    let sheet = container(column![
-        scrollable(body).height(Length::Shrink),
-        rule,
-        footer
-    ])
-    .padding(Padding::new(theme::BORDER_WIDTH))
-    .width(Length::Fill)
-    .max_width(theme::HELP_SHEET_WIDTH)
-    .style(theme::sheet_surface);
-
-    // The scrim claims the pointer over everything it covers, so a canvas tool under it draws no
-    // cursor of its own, and takes every press without closing the sheet.
-    let scrim = opaque(
-        mouse_area(
-            container(Space::new())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(theme::scrim_surface),
-        )
-        .interaction(iced::mouse::Interaction::Idle),
-    );
-    stack![
-        scrim,
-        container(opaque(sheet))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(theme::HELP_SHEET_INSET)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center),
-    ]
-    .into()
-}
-
-/// The lead: 13 pt in the secondary ink, its emphasised runs semibold in the primary. A span's
-/// colour is fixed before the theme is known, so each ink is its own layer of the same paragraph,
-/// as the metric row draws its figure and unit.
-fn lead<'a, M: 'a>(parts: &[LeadPart]) -> Element<'a, M> {
-    let layer = |strong: bool, ink: Token| {
-        rich_text(
-            parts
-                .iter()
-                .map(|part| {
-                    Span::<(), Font>::new(part.text.clone())
-                        .font_maybe(part.strong.then_some(theme::FONT_SEMIBOLD))
-                        .color_maybe((part.strong != strong).then_some(Color::TRANSPARENT))
-                })
-                .collect::<Vec<_>>(),
-        )
-        .size(theme::SIZE_TITLE)
-        .line_height(LineHeight::Relative(1.5))
-        .width(Length::Fill)
-        .style(theme::ink(ink))
-    };
-    Stack::with_children([
-        layer(false, Token::TextSecondary).into(),
-        layer(true, Token::Text).into(),
-    ])
-    .into()
-}
-
-/// One step's card: its drawing over its number and name, what it does and its hint line.
-fn step_card<'a, M: 'a>(number: usize, step: &HelpSheetStep, tint: Color) -> Element<'a, M> {
-    let drawing = container(drawing(&step.drawing, tint))
-        .width(Length::Fill)
-        .height(Length::Fixed(theme::HELP_STEP_DRAWING_HEIGHT))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(theme::help_drawing_surface);
-    let name = row![
-        container(
-            text(number.to_string())
-                .size(theme::SIZE_CAPTION)
-                .font(theme::FONT_SEMIBOLD)
-                .style(theme::ink(Token::Accent)),
-        )
-        .width(Length::Fixed(theme::HELP_STEP_NUMBER))
-        .height(Length::Fixed(theme::HELP_STEP_NUMBER))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(theme::help_number_surface),
-        text(step.name.clone())
-            .size(theme::SIZE_MODULE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .style(theme::ink(Token::Text)),
-    ]
-    .spacing(theme::SPACING)
-    .align_y(Alignment::Center);
-    let hint = Row::with_children(step.hint.iter().map(|part| {
-        match part {
-            HintPart::Key(key) => key_cap(key.clone()),
-            HintPart::Text(words) => text(words.clone())
-                .size(theme::SIZE_CAPTION)
-                .wrapping(Wrapping::None)
-                .style(theme::ink(Token::TextTertiary))
-                .into(),
-        }
-    }))
-    .spacing(theme::KEY_CAP_SPACING)
-    .align_y(Alignment::Center)
-    .wrap()
-    .vertical_spacing(theme::KEY_CAP_SPACING);
-    // The text is one height on every card, its hint at the foot, so the cards stand level: a
-    // card's height cannot follow its neighbours' inside the sheet's scrolling body.
-    let words = column![
-        name,
-        text(step.body.clone())
-            .size(theme::SIZE_CONTROL)
-            .line_height(LineHeight::Relative(1.5))
-            .style(theme::ink(Token::TextSecondary)),
-        Space::new().height(Length::Fill),
-        hint,
-    ]
-    .spacing(theme::SPACING * 0.75)
-    .padding(theme::HELP_STEP_PADDING)
-    .height(Length::Fixed(theme::HELP_STEP_TEXT_HEIGHT));
-    container(column![drawing, words])
-        .padding(Padding::new(theme::BORDER_WIDTH))
-        .width(Length::Fill)
-        .style(theme::help_card_surface)
-        .into()
 }
 
 /// A step's drawing, from the theme's surfaces and the drawing's own patch colours.
@@ -384,7 +188,7 @@ fn drawing<'a, M: 'a>(drawing: &StepDrawing, tint: Color) -> Element<'a, M> {
                     .align_y(Alignment::Center),
                 )
                 .padding([3.0, 7.0])
-                .style(theme::help_number_surface),
+                .style(theme::guide_number_surface),
             );
             container(
                 column![
@@ -403,7 +207,7 @@ fn drawing<'a, M: 'a>(drawing: &StepDrawing, tint: Color) -> Element<'a, M> {
             )
             .padding(Padding::from([4.0, 0.0]))
             .width(Length::Fixed(theme::HELP_PATCH_WIDTH * 5.5))
-            .style(theme::help_card_surface)
+            .style(theme::guide_card_surface)
             .into()
         }
         StepDrawing::Patches {
@@ -664,7 +468,10 @@ mod tests {
                 HelpSheetStep {
                     name: "Pick".into(),
                     body: "Turn on the eyedropper.".into(),
-                    hint: vec![HintPart::Text("Pick, on the row".into())],
+                    hint: vec![KeyHint {
+                        keys: Vec::new(),
+                        action: "Pick, on the row".into(),
+                    }],
                     drawing: StepDrawing::PickRow {
                         icon: Some(Icon::Colour),
                         label: "Colour range 1".into(),
@@ -674,11 +481,10 @@ mod tests {
                 HelpSheetStep {
                     name: "Click".into(),
                     body: "Click a colour.".into(),
-                    hint: vec![
-                        HintPart::Key("Shift".into()),
-                        HintPart::Key("Click".into()),
-                        HintPart::Text("add".into()),
-                    ],
+                    hint: vec![KeyHint {
+                        keys: vec!["Shift".into(), "Click".into()],
+                        action: "add".into(),
+                    }],
                     drawing: StepDrawing::Patches {
                         colours: vec![blue; 8],
                         selected: vec![0],
@@ -693,7 +499,7 @@ mod tests {
                 HelpSheetStep {
                     name: "Drag".into(),
                     body: "Drag over an area.".into(),
-                    hint: vec![HintPart::Key("Drag".into())],
+                    hint: vec![KeyHint::new("Drag", "")],
                     drawing: StepDrawing::Patches {
                         colours: vec![blue; 8],
                         selected: vec![1, 2],
