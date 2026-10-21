@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI editing setup — design board</title>
+<style>
+  @font-face { font-family: "Inter"; font-weight: 400; src: local("Inter Regular"), local("Inter"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-Regular.ttf"); }
+  @font-face { font-family: "Inter"; font-weight: 600; src: local("Inter SemiBold"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-SemiBold.ttf"); }
+  :root {
+    --canvas: #19191b; --panel: #202023; --bar: #232326; --control: #2c2c31;
+    --rule: #2f2f32; --border: rgba(255,255,255,.06);
+    --text: #e8e8ea; --text2: #a8a8ae; --text3: #77777f;
+    --accent: #e2b46a; --ink: #1a1408; --accent-tint: rgba(226,180,106,.14);
+    --warn: #e0875a; --warn-tint: rgba(224,135,90,.12); --ok: #3fd07a;
+    --band: #2b2b30;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f10; color: var(--text); font: 12px/1.45 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 32px; }
+  h1.board { font-size: 13px; font-weight: 600; color: var(--text2); margin: 0 0 12px; letter-spacing: .02em; }
+  .note { color: var(--text3); font-size: 11px; margin: 10px 0 36px; max-width: 1440px; }
+
+  /* ---------- the window: Develop, Corrections band, Remove chosen ---------- */
+  .window { position: relative; width: 1440px; height: 900px; background: var(--canvas); border-radius: 10px; overflow: hidden; border: 1px solid #000; }
+  .titlebar { height: 44px; background: var(--bar); border-bottom: 1px solid var(--rule); display: flex; align-items: center; padding: 0 12px 0 84px; gap: 12px; }
+  .traffic { position: absolute; left: 14px; top: 16px; display: flex; gap: 8px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a40; display: block; }
+  .seg { display: flex; background: var(--canvas); border-radius: 6px; padding: 2px; }
+  .seg span { padding: 4px 10px; border-radius: 5px; color: var(--text2); font-size: 12px; }
+  .seg span.on { background: var(--control); color: var(--text); }
+  .seg kbd { color: var(--text3); margin-left: 6px; font: inherit; font-size: 11px; }
+  .vname { font-weight: 600; font-size: 13px; }
+  .vsum { color: var(--text3); }
+  .grow { flex: 1; }
+  .btn { height: 28px; padding: 0 12px; border-radius: 6px; background: var(--control); color: var(--text); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--ink); border-color: transparent; font-weight: 600; }
+  .btn.disabled { opacity: .45; }
+  .btn kbd { font: inherit; font-size: 11px; opacity: .6; }
+  .iconbtn { width: 28px; height: 28px; border-radius: 6px; background: var(--control); border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; color: var(--text2); }
+  .body { display: flex; height: calc(900px - 44px - 26px); }
+  .left { width: 240px; background: var(--panel); border-right: 1px solid var(--rule); padding: 12px; }
+  .lbl { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--text3); text-transform: uppercase; margin: 14px 0 8px; display: flex; justify-content: space-between; }
+  .row { display: flex; justify-content: space-between; color: var(--text2); padding: 4px 0; }
+  .centre { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; }
+  .photo { width: 760px; height: 506px; border-radius: 2px; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, #7c9cc0 0%, #b5c9dc 48%, #46677f 49%, #34546b 74%, #5a7741 75%, #4b6636 100%); }
+  .band { width: 300px; background: var(--panel); border-left: 1px solid var(--rule); padding: 12px; }
+  .band h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; }
+  .band h3 small { color: var(--text3); font-weight: 400; font-size: 11px; }
+  .kinds { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--canvas); border-radius: 6px; padding: 2px; margin-bottom: 14px; }
+  .kinds span { text-align: center; padding: 4px 0; color: var(--text2); border-radius: 5px; }
+  .kinds span.on { background: var(--control); color: var(--text); }
+  .bandtext { color: var(--text); line-height: 1.45; margin: 0 0 8px; }
+  .status { height: 26px; background: var(--panel); border-top: 1px solid var(--rule); color: var(--text3); font-size: 11px; display: flex; align-items: center; padding: 0 12px; justify-content: space-between; }
+
+  /* ---------- the scrim and the sheet ---------- */
+  .scrim { position: absolute; inset: 44px 0 0 0; background: rgba(10,10,11,.62); }
+  .sheet { position: absolute; left: 50%; top: calc(44px + (900px - 44px - 26px) / 2); transform: translate(-50%, -50%);
+    width: 760px; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4); overflow: hidden; }
+  .sheet.static { position: static; transform: none; }
+  .close { position: absolute; right: 14px; top: 14px; width: 24px; height: 24px; border-radius: 6px; color: var(--text3); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .head { padding: 28px 32px 0; }
+  .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 6px 0 8px; }
+  .lead { font-size: 13px; color: var(--text2); max-width: 620px; margin: 0; line-height: 1.5; }
+  .lead strong { color: var(--text); font-weight: 600; }
+
+  /* steps: the same three-card row as the Select introduction */
+  .steps { display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr; align-items: stretch; padding: 22px 32px 0; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 13px; padding-bottom: 60px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .illus { height: 112px; background: var(--canvas); border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .stext { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .sname { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .num { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .sbody { color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .where { margin-top: auto; padding-top: 6px; color: var(--text3); font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .key { display: inline-flex; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--control); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; align-items: center; justify-content: center; }
+
+  /* drawings, composed from theme tokens and the fixed sky-water-grass frame */
+  .scene { width: 150px; height: 84px; border-radius: 4px; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, #6f93b8 0%, #9fb9d2 50%, #3b5d78 51%, #2c4a61 76%, #4f6b38 77%, #5d7a41 100%); }
+  .scene.small { width: 64px; height: 42px; border-radius: 3px; }
+  .pole { position: absolute; left: 92px; top: 14px; width: 5px; height: 62px; background: #2a2a2e; border-radius: 2px; }
+  .pole::before { content: ""; position: absolute; left: -9px; top: 6px; width: 23px; height: 3px; background: #2a2a2e; border-radius: 2px; }
+  .stroke { position: absolute; left: 82px; top: 8px; width: 26px; height: 74px; border-radius: 13px; background: rgba(226,180,106,.38); outline: 1.5px dashed var(--accent); outline-offset: -1px; }
+  .brush { position: absolute; left: 100px; top: 2px; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+  .ring { position: absolute; left: 82px; top: 8px; width: 26px; height: 74px; border-radius: 13px; outline: 1.5px solid var(--accent); outline-offset: -1px; }
+  .cands { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .strip { display: flex; gap: 5px; }
+  .strip .scene.small.chosen { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+  .progress { width: 150px; height: 4px; border-radius: 2px; background: var(--control); overflow: hidden; }
+  .progress i { display: block; width: 62%; height: 100%; background: var(--accent); }
+  .cap { font-size: 10px; color: var(--text3); }
+  .hist { display: flex; flex-direction: column; gap: 4px; width: 170px; font-size: 10.5px; }
+  .hist div { display: flex; gap: 6px; align-items: center; padding: 4px 7px; border-radius: 4px; color: var(--text2); }
+  .hist div.now { background: var(--band); color: var(--text); }
+  .hist .dot { width: 6px; height: 6px; border-radius: 50%; border: 1.2px solid var(--text3); }
+  .hist .now .dot { background: var(--accent); border-color: var(--accent); }
+  .hist small { margin-left: auto; color: var(--text3); font-size: 10px; }
+
+  /* what is downloaded: three facts */
+  .facts { padding: 22px 32px 0; }
+  .facts .lbl { margin: 0 0 8px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
+  .tile .ic { width: 28px; height: 28px; border-radius: 7px; background: var(--accent-tint); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
+  .tile b { display: block; font-size: 13px; font-weight: 600; }
+  .tile span { color: var(--text3); font-size: 11px; }
+  .tile .ok { color: var(--ok); }
+  .tile.warn { border-color: rgba(224,135,90,.45); background: linear-gradient(0deg, var(--warn-tint), var(--warn-tint)), var(--panel); }
+  .tile.warn .ic { background: var(--warn-tint); color: var(--warn); }
+  .tile.warn span { color: var(--warn); }
+  .aside { color: var(--text3); font-size: 11px; margin-top: 8px; }
+  .aside.warn { color: var(--warn); }
+
+  .foot { margin-top: 24px; padding: 14px 32px; border-top: 1px solid var(--rule); background: var(--panel); display: flex; align-items: center; gap: 10px; }
+  .promise { display: flex; align-items: center; gap: 8px; color: var(--text2); }
+  .shield { width: 14px; height: 16px; border: 1.5px solid var(--text2); border-radius: 3px 3px 7px 7px; }
+
+  /* Replace's hero */
+  .hero { margin: 22px 32px 0; background: var(--canvas); border: 1px solid var(--border); border-radius: 8px; height: 150px; display: flex; align-items: center; justify-content: center; gap: 22px; }
+  .prompt { width: 190px; height: 30px; border-radius: 6px; background: var(--control); border: 1px solid var(--accent); display: flex; align-items: center; padding: 0 10px; color: var(--text); font-size: 12px; }
+  .prompt::after { content: ""; width: 1px; height: 14px; background: var(--accent); margin-left: 2px; }
+  .flow { color: var(--text3); font-size: 15px; }
+  .bike { position: absolute; left: 66px; top: 40px; width: 40px; height: 22px; }
+  .bike i { position: absolute; bottom: 0; width: 15px; height: 15px; border: 2.5px solid #d6403a; border-radius: 50%; }
+  .bike i:first-child { left: 0; } .bike i:nth-child(2) { right: 0; }
+  .bike b { position: absolute; left: 7px; bottom: 7px; width: 26px; height: 2.5px; background: #d6403a; transform: rotate(-18deg); }
+  .sel { position: absolute; left: 58px; top: 30px; width: 56px; height: 38px; border-radius: 10px; outline: 1.5px dashed var(--accent); background: rgba(226,180,106,.25); }
+
+  .row-boards { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
+  .crop { background: var(--panel); border: 1px solid #000; border-radius: 8px; width: 300px; padding: 12px; }
+  .meter { height: 4px; border-radius: 2px; background: var(--control); overflow: hidden; margin: 8px 0 4px; }
+  .meter i { display: block; width: 41%; height: 100%; background: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1 class="board">Board 1 · Set up in Remove — the first time AI editing is set up (1440 × 900 pt)</h1>
+<div class="window">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <div class="titlebar">
+    <div class="seg"><span>Select<kbd>G</kbd></span><span class="on">Develop<kbd>D</kbd></span></div>
+    <span class="vname">DSC_0412.NEF</span><span class="vsum">6048 × 4024 · RAW</span>
+    <span class="grow"></span>
+    <span class="iconbtn">↶</span><span class="iconbtn">↷</span>
+    <span class="iconbtn">◧</span><span class="iconbtn">◨</span>
+  </div>
+  <div class="body">
+    <div class="left">
+      <div class="lbl">Versions <span>+</span></div>
+      <div class="lbl">History <span>rev 0</span></div>
+      <div class="row" style="color:var(--text)">○ Original</div>
+    </div>
+    <div class="centre"><div class="photo"></div></div>
+    <div class="band">
+      <h3>Corrections <small>0 corrections · Esc leaves</small></h3>
+      <div class="kinds"><span>Heal</span><span>Clone</span><span class="on">Remove</span></div>
+      <div class="lbl">Remove</div>
+      <p class="bandtext">Remove objects and fill in parts of a photo.</p>
+      <span class="btn primary">Set up…</span>
+    </div>
+  </div>
+  <div class="status"><span>Set up AI editing first</span><span>Fit · 18%</span></div>
+
+  <div class="scrim"></div>
+
+  <div class="sheet" role="dialog" aria-labelledby="t1">
+    <div class="close">✕</div>
+    <div class="head">
+      <div class="eyebrow">AI editing</div>
+      <div class="title" id="t1">Remove anything, fill it in naturally</div>
+      <p class="lead">Paint over something you don’t want and Luxforge fills the area in to match the rest of the photo. It runs <strong>entirely on this computer</strong>, so <strong>your photos never leave it</strong>.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="illus">
+          <div class="scene"><i class="pole"></i><i class="stroke"></i><i class="brush"></i></div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">1</span>Paint over it</div>
+          <div class="sbody">Brush across the object, its shadow and its reflection. Cover a little more than you think.</div>
+          <div class="where"><span class="key">[</span><span class="key">]</span> brush size</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="cands">
+            <div class="strip"><i class="scene small chosen"></i><i class="scene small"></i></div>
+            <div class="progress"><i></i></div>
+            <div class="cap">Generating · step 5 of 8</div>
+          </div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">2</span>Generate</div>
+          <div class="sbody">Generate makes a fill and Regenerate another. Compare them over the photo and keep the best.</div>
+          <div class="where">Generate · Regenerate · <span class="key">Esc</span> cancels</div>
+        </div>
+      </div>
+      <div class="arrow">›</div>
+      <div class="step">
+        <div class="illus">
+          <div class="hist">
+            <div class="now"><i class="dot"></i>Add Generative fill 1 <small>rev 1</small></div>
+            <div><i class="dot"></i>Original</div>
+          </div>
+        </div>
+        <div class="stext">
+          <div class="sname"><span class="num">3</span>Accept</div>
+          <div class="sbody">The fill becomes one step in the photo’s history. Your original file is never changed.</div>
+          <div class="where"><span class="key">⌘</span><span class="key">Z</span> undoes it</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="facts">
+      <div class="lbl">Before it can start</div>
+      <div class="tiles">
+        <div class="tile"><span class="ic">↓</span><div><b>2.5 GB download</b><span>Once, then it works offline</span></div></div>
+        <div class="tile"><span class="ic">◎</span><div><b>From huggingface.co</b><span>Free · Apache-2.0</span></div></div>
+        <div class="tile"><span class="ic">▤</span><div><b>Needs 16 GB of memory</b><span class="ok">This Mac has 48 GB ✓</span></div></div>
+      </div>
+      <div class="aside">You can remove it at any time in Settings › Models.</div>
+    </div>
+
+    <div class="foot">
+      <div class="promise"><i class="shield"></i>Your photos stay on this computer.</div>
+      <span class="grow"></span>
+      <span class="btn">Not now</span>
+      <span class="btn primary">Download 2.5 GB <kbd>↵</kbd></span>
+    </div>
+  </div>
+</div>
+<p class="note">A modal sheet centred over Develop, replacing the consent notice for an AI editing download. The workspace stays visible behind the scrim, so the Remove group the sheet came from is recognisable. Download or Return grants this resource's download and starts it; Not now, Escape or ✕ declines, as Don't allow does today. A press on the scrim does nothing. The sheet's measurements, tokens and keycaps are the Select introduction's, so the two read as one family.</p>
+
+<h1 class="board">Board 2 · Add Replace — the add-on, from Add under the prompt</h1>
+<div class="sheet static" style="position:relative" role="dialog" aria-labelledby="t2">
+  <div class="close">✕</div>
+  <div class="head">
+    <div class="eyebrow">AI editing · Add-on</div>
+    <div class="title" id="t2">Fill it with what you describe</div>
+    <p class="lead">Type what should be there — <strong>“a red bicycle”</strong>, <strong>“calm water”</strong> — and Replace paints it into the area you selected. It adds a second model, which also runs <strong>entirely on this computer</strong>.</p>
+  </div>
+  <div class="hero">
+    <div class="scene" style="width:180px;height:100px"><i class="sel"></i></div>
+    <div class="prompt">a red bicycle</div>
+    <span class="flow">→</span>
+    <div class="scene" style="width:180px;height:100px"><i class="bike"><i></i><i></i><b></b></i><i class="ring" style="left:58px;top:30px;width:56px;height:38px;border-radius:10px"></i></div>
+  </div>
+  <div class="facts">
+    <div class="tiles">
+      <div class="tile"><span class="ic">↓</span><div><b>2.3 GB download</b><span>Once, then it works offline</span></div></div>
+      <div class="tile"><span class="ic">◎</span><div><b>From huggingface.co</b><span>Free · Apache-2.0</span></div></div>
+      <div class="tile"><span class="ic">▤</span><div><b>Needs 24 GB of memory</b><span class="ok">This Mac has 48 GB ✓</span></div></div>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="promise"><i class="shield"></i>Your photos and what you type stay on this computer.</div>
+    <span class="grow"></span>
+    <span class="btn">Not now</span>
+    <span class="btn primary">Download 2.3 GB <kbd>↵</kbd></span>
+  </div>
+</div>
+<p class="note">One hero drawing instead of three steps: Replace is the same workflow as Remove with a prompt, so the sheet shows only what is new.</p>
+
+<div class="row-boards">
+  <div>
+    <h1 class="board">Board 3 · This machine has too little memory</h1>
+    <div class="sheet static" style="width:760px">
+      <div class="facts" style="padding-top:18px">
+        <div class="tiles">
+          <div class="tile"><span class="ic">↓</span><div><b>2.3 GB download</b><span>Once, then it works offline</span></div></div>
+          <div class="tile"><span class="ic">◎</span><div><b>From huggingface.co</b><span>Free · Apache-2.0</span></div></div>
+          <div class="tile warn"><span class="ic">!</span><div><b>Needs 24 GB of memory</b><span>This Mac has 16 GB</span></div></div>
+        </div>
+        <div class="aside warn">It can’t run on this Mac.</div>
+      </div>
+      <div class="foot">
+        <div class="promise"><i class="shield"></i>Your photos and what you type stay on this computer.</div>
+        <span class="grow"></span>
+        <span class="btn primary">Close <kbd>↵</kbd></span>
+      </div>
+    </div>
+    <p class="note" style="max-width:760px">The machine minimum is already refused by the core; the sheet says so before anything downloads, and offers no Download.</p>
+  </div>
+  <div>
+    <h1 class="board">Board 4 · A licence limit, and a second ask</h1>
+    <div class="sheet static" style="width:760px">
+      <div class="facts" style="padding-top:18px">
+        <div class="tiles">
+          <div class="tile"><span class="ic">↓</span><div><b>4.1 GB download</b><span>Once, then it works offline</span></div></div>
+          <div class="tile warn"><span class="ic">§</span><div><b>From huggingface.co</b><span>Free · personal use only</span></div></div>
+          <div class="tile"><span class="ic">▤</span><div><b>Needs 24 GB of memory</b><span class="ok">This Mac has 48 GB ✓</span></div></div>
+        </div>
+        <div class="aside warn">Its licence doesn’t allow results to be used commercially.</div>
+        <div class="aside">You chose Not now before. Nothing has been downloaded.</div>
+      </div>
+      <div class="foot">
+        <div class="promise"><i class="shield"></i>Your photos stay on this computer.</div>
+        <span class="grow"></span>
+        <span class="btn">Not now</span>
+        <span class="btn primary">Download 4.1 GB <kbd>↵</kbd></span>
+      </div>
+    </div>
+    <p class="note" style="max-width:760px">The use restriction line is shown exactly when the resource declares one (no model offered today does); the declined line when the person declined this version before.</p>
+  </div>
+  <div>
+    <h1 class="board">Board 5 · After Download: progress in the Remove group</h1>
+    <div class="crop">
+      <div class="lbl" style="margin-top:0">Remove</div>
+      <p class="bandtext">Setting up AI editing</p>
+      <div class="meter"><i></i></div>
+      <div class="row" style="padding:0;font-size:11px;color:var(--text3)"><span>1.0 of 2.5 GB · about 3 min</span><span style="color:var(--text2)">Cancel</span></div>
+    </div>
+    <p class="note" style="max-width:300px">The sheet closes on Download; the download's progress and Cancel stay where Set up was, and Remove is offered once it finishes. Clone and Heal work meanwhile.</p>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1367,6 +1367,115 @@ pub fn quiet_action(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// The setup sheet a download that introduces a feature asks through, as the AI editing setup
+/// board draws it: 760 pt wide on the sheet surface, its head, steps, facts and footer 32 pt from
+/// its sides; the head 28 pt from the top, its title 22 pt and its lead 13 pt; three step cards
+/// 20 pt apart with a 112 pt picture area each, or one 150 pt hero; the facts as three tiles 12 pt
+/// apart; 22 pt between the parts and 24 pt above the footer.
+pub const SETUP_SHEET_WIDTH: f32 = 760.0;
+pub const SETUP_SHEET_INSET: f32 = 32.0;
+pub const SETUP_HEAD_TOP: f32 = 28.0;
+pub const SETUP_PART_SPACING: f32 = 22.0;
+pub const SETUP_FOOTER_GAP: f32 = 24.0;
+pub const SIZE_SETUP_TITLE: f32 = 22.0;
+pub const SIZE_SETUP_LEAD: f32 = 13.0;
+pub const SETUP_LEAD_WIDTH: f32 = 620.0;
+pub const SETUP_STEP_GAP: f32 = 20.0;
+pub const SETUP_PICTURE_HEIGHT: f32 = 112.0;
+/// A step card's whole height, so the three cards stand level whatever their text's length.
+pub const SETUP_STEP_HEIGHT: f32 = 268.0;
+/// The history picture's two rows' width.
+pub const SETUP_HISTORY_WIDTH: f32 = 170.0;
+pub const SETUP_HERO_HEIGHT: f32 = 150.0;
+pub const SETUP_CARD_RADIUS: f32 = 8.0;
+pub const SETUP_NUMBER_SIZE: f32 = 18.0;
+pub const SETUP_TILE_GAP: f32 = 12.0;
+pub const SETUP_GLYPH_BOX: f32 = 28.0;
+/// The scenes the pictures draw: a step's, a candidate's and the hero's two, in points.
+pub const SETUP_SCENE: iced::Size = iced::Size::new(150.0, 84.0);
+pub const SETUP_CANDIDATE: iced::Size = iced::Size::new(64.0, 42.0);
+pub const SETUP_HERO_SCENE: iced::Size = iced::Size::new(180.0, 100.0);
+pub const SETUP_PROMPT_WIDTH: f32 = 190.0;
+/// A scene's sky, water and grass, top to bottom: fixed across themes, as the clipping colours
+/// are, so a picture reads as a photograph in a light theme too.
+pub const SETUP_SCENE_STOPS: [(f32, Color); 6] = [
+    (0.0, Color::from_rgb8(0x6f, 0x93, 0xb8)),
+    (0.50, Color::from_rgb8(0x9f, 0xb9, 0xd2)),
+    (0.51, Color::from_rgb8(0x3b, 0x5d, 0x78)),
+    (0.76, Color::from_rgb8(0x2c, 0x4a, 0x61)),
+    (0.77, Color::from_rgb8(0x4f, 0x6b, 0x38)),
+    (1.0, Color::from_rgb8(0x5d, 0x7a, 0x41)),
+];
+/// The pole a scene's object is, and the bicycle Replace paints in: fixed, like the scene.
+pub const SETUP_SCENE_OBJECT: Color = Color::from_rgb8(0x2a, 0x2a, 0x2e);
+pub const SETUP_SCENE_BICYCLE: Color = Color::from_rgb8(0xd6, 0x40, 0x3a);
+
+/// The setup sheet: the sheet surface, rounded as a step card is.
+pub fn setup_sheet_surface(theme: &Theme) -> container::Style {
+    sheet_surface(theme).border(Border {
+        color: theme.palette().strip_rule,
+        width: BORDER_WIDTH,
+        radius: (SETUP_CARD_RADIUS + 2.0).into(),
+    })
+}
+
+/// A setup step's card or a fact's tile: the panel, bordered, rounded; `outline` replaces the
+/// border's colour, as an unmet fact's error ink does.
+pub fn setup_card_surface(outline: Option<Token>) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let p = theme.palette();
+        surface(p.background).border(Border {
+            color: outline.map_or(p.border, |token| p.get(token)),
+            width: BORDER_WIDTH,
+            radius: SETUP_CARD_RADIUS.into(),
+        })
+    }
+}
+
+/// A setup step's picture area: the canvas surround, rounded at the card's top corners.
+pub fn setup_picture_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().surround).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: iced::border::Radius {
+            top_left: SETUP_CARD_RADIUS,
+            top_right: SETUP_CARD_RADIUS,
+            bottom_right: 0.0,
+            bottom_left: 0.0,
+        },
+    })
+}
+
+/// A round or rounded fill `radius` in `fill`, such as a step's number or a fact's glyph box.
+pub fn rounded_fill(fill: impl Into<Ink>, radius: f32) -> impl Fn(&Theme) -> container::Style {
+    let fill = fill.into();
+    move |theme| {
+        surface(fill.resolve(theme.palette())).border(Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: radius.into(),
+        })
+    }
+}
+
+/// An outline `width` in `ink`, rounded `radius`, over nothing: the prompt's field and a chosen
+/// candidate's ring.
+pub fn outline(
+    ink: impl Into<Ink>,
+    width: f32,
+    radius: f32,
+) -> impl Fn(&Theme) -> container::Style {
+    let ink = ink.into();
+    move |theme| container::Style {
+        border: Border {
+            color: ink.resolve(theme.palette()),
+            width,
+            radius: radius.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 /// The in-view progress sheet's surface.
 pub fn sheet_surface(theme: &Theme) -> container::Style {
     let p = theme.palette();

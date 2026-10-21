@@ -1163,14 +1163,23 @@ pub(crate) fn controls_of<'a>(
 
 /// Whether a module has anything of its own to draw: controls, a capability block, or the host's
 /// crop-frame editor its canvas declares. A module with none — the RAW development, whose controls
-/// are Basic's variants, Corrections, whose band is its own mode's, or AI editing while its
-/// experiment is off — has no section.
+/// are Basic's variants, Corrections, whose band is its own mode's, or AI editing — has no
+/// section. A fill module's models and their setup belong to the Corrections band's Remove group,
+/// where they are used, so they draw no capability block here, flag on or off; its settings would.
 pub(crate) fn draws_section(
     module: &ModuleDescriptor,
     flags: Option<&luxforge_core::flags::FlagList>,
 ) -> bool {
+    let fill = module
+        .tasks
+        .iter()
+        .any(|task| task.id.starts_with(crate::state::remove::FILL_TASK_PREFIX));
     !module.controls.is_empty()
-        || capabilities::declares_offered(module, flags)
+        || (if fill {
+            module.settings.is_some()
+        } else {
+            capabilities::declares_offered(module, flags)
+        })
         || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
 }
 

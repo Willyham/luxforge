@@ -107,12 +107,14 @@ fn descriptor() -> ModuleDescriptor {
                 "fill-download",
                 CapabilityKind::DownloadArtifact {
                     resource: FILL.into(),
+                    introduction: None,
                 },
             ),
             capability(
                 "embed-download",
                 CapabilityKind::DownloadArtifact {
                     resource: EMBED.into(),
+                    introduction: None,
                 },
             ),
             capability("fill", local(FILL, ModelKind::Generator)),

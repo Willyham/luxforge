@@ -1,6 +1,5 @@
-//! Setting up AI editing: the one setup a fill module's models need, as the tools panel's AI
-//! editing section and the Corrections band's Remove both show it
-//! ([design](../../../../docs/design/ai-editing.md)).
+//! Setting up AI editing: the one setup a fill module's models need, as the Corrections band's
+//! Remove shows it ([design](../../../../docs/design/ai-editing.md)).
 //!
 //! The setup is derived from what the desktop already holds of the fill module
 //! ([`crate::state::remove::fill_module`]): its descriptor's resource sizes and minimums, its
@@ -8,7 +7,7 @@
 //! tiers' missing runtime or model and their models' files) and the install jobs it tracks. The
 //! copy names the feature, never a model: the model's name, version and provenance are in
 //! Settings › Models. Every action is the capability block's own install or cancel, so an install
-//! from either place goes through the same consent notice.
+//! goes through the same consent notice as any other.
 use crate::state::{
     capabilities::{ModuleCapabilities, capitalised, human_bytes, job},
     models::{held, memory_text},
@@ -75,8 +74,6 @@ impl SetupLine {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SetupModel {
     pub(crate) module_id: String,
-    /// `Set up AI editing`, until the main model is installed.
-    pub(crate) heading: Option<String>,
     /// The model that removes and fills.
     pub(crate) main: SetupLine,
     /// Replace's text encoder, offered only once the main model is installed.
@@ -91,7 +88,6 @@ pub(crate) struct SetupModel {
 impl SetupModel {
     pub(crate) fn summary(&self) -> Value {
         json!({
-            "heading": self.heading,
             "main": self.main.summary(),
             "addon": self.addon.as_ref().map(SetupLine::summary),
             "enabled": self.enabled,
@@ -426,7 +422,6 @@ pub(crate) fn derive(
     };
     Some(SetupModel {
         module_id: module.id.clone(),
-        heading: (!main.installed).then(|| format!("Set up {title}")),
         main,
         addon,
         enabled: state.pending == 0 && module.is_available(),
@@ -564,7 +559,6 @@ mod tests {
     #[test]
     fn before_the_status_is_read_it_is_checking() {
         let setup = setup(&ModuleCapabilities::default());
-        assert_eq!(setup.heading.as_deref(), Some("Set up AI editing"));
         assert_eq!(setup.main.text, "Checking AI editing\u{2026}");
         assert_eq!(setup.main.action, None);
         assert_eq!(setup.addon, None);
@@ -703,7 +697,6 @@ mod tests {
             ))
         };
         let ready = with(row("text", "not-installed", json!({})), Vec::new());
-        assert_eq!(ready.heading, None);
         assert!(ready.main.installed);
         assert_eq!(
             ready.main.text,
