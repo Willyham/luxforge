@@ -554,6 +554,56 @@ fn a_running_fill_locks_its_photograph_only_and_a_cancel_releases_it() {
 
 #[test]
 #[slow]
+fn a_candidate_draft_begins_and_changes_under_a_running_fill_but_commits_after_it() {
+    let fixture = Fixture::new("candidate-draft-lock");
+    let [asset, _] = fixture.assets.clone();
+    let owner = fixture.ready();
+    let shown = owner.generate(with(selection(&asset), json!({"seed": 5, "candidates": 2})));
+    let shown = shown["job_id"].clone();
+    let revision = owner.asset_revision(&asset);
+    fixture.gate.shut();
+    let running = owner
+        .fill(with(selection(&asset), json!({"seed": 9})))
+        .unwrap()["job_id"]
+        .clone();
+    wait_for("the running fill to hold its candidate", || {
+        Some(()).filter(|_| fixture.gate.holding())
+    });
+    // The draft commits nothing, so it begins, changes and reapplies under the lock.
+    let draft = owner.ok(
+        "draft.begin",
+        json!({"asset_id": asset, "action": "accept-correction-patch"}),
+    )["draft_id"]
+        .clone();
+    let set = |candidate: u64| {
+        owner.ok(
+            "draft.set",
+            json!({"draft_id": draft, "fields": {"job_id": shown, "candidate": candidate}}),
+        )
+    };
+    set(0);
+    assert_eq!(set(1)["draft_revision"], 2);
+    owner.ok("draft.reapply", json!({"draft_id": draft}));
+    let commit = json!({"draft_id": draft, "mutation": mutation_json(revision, "commit")});
+    let locked = owner.fail("draft.commit", commit.clone());
+    assert_eq!(locked.code, "conflict", "{locked:?}");
+    let data = locked.data.expect("the lock is named");
+    assert_eq!(data["reason"], "locked");
+    assert_eq!(data["job_id"], running);
+    assert_eq!(owner.states(&shown), ["live", "live"]);
+    assert_eq!(owner.asset_revision(&asset), revision);
+    // The refused commit kept the draft; once the fill is cancelled it is the accept.
+    owner.ok("job.cancel", json!({"job_id": running}));
+    let committed = owner.ok("draft.commit", commit);
+    assert_eq!(committed["outcome"], "applied", "{committed}");
+    assert_eq!(owner.states(&shown), ["live", "accepted"]);
+    assert_eq!(owner.asset_revision(&asset), revision + 1);
+    fixture.gate.open();
+    owner.finished(&running);
+}
+
+#[test]
+#[slow]
 fn every_refusal_is_named_and_generates_nothing() {
     let fixture = Fixture::new("refusals");
     let [asset, _] = fixture.assets.clone();

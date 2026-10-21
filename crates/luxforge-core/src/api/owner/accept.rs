@@ -23,17 +23,19 @@
 //! The caller leaving — a disconnect stops its accept job — or `job.cancel` of the accept job drops
 //! the call and the pin before anything is committed. A caller that may not wait
 //! ([`super::OwnerHandle::call_unparked`]) is answered `not-ready` before anything is pinned.
-use super::{Call, Owner, OwnerCall, SourceFlightKey, SourceResult, SourceTaskKind, methods};
+use super::{
+    Call, Owner, OwnerCall, SourceFlightKey, SourceResult, SourceTaskKind, candidate_draft,
+    methods, requests::RequestKey,
+};
 use crate::{
-    AcceptedCandidate, AssetId, Error, JobId, Mutation,
+    AcceptedCandidate, AssetId, DraftId, Error, JobId, Mutation,
     api::{ApiResponse, Origin, announce_once, params},
     artifacts::{
         ArtifactRecord, ArtifactWriter, PreparedArtifact,
         candidates::{CandidatePin, CandidateRead},
     },
-    jobs::JobKind,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 /// The `not-ready` answer's `data.reason` for an accept sent where it may not wait.
@@ -48,6 +50,8 @@ pub(super) struct AcceptRequest {
     parameters: Value,
     candidate: CandidateRead,
     origin: Origin,
+    /// The candidate draft this accept commits, if it is one's.
+    closes: Option<DraftClose>,
 }
 
 /// An accept whose candidate the source worker is publishing: left by [`begin`] for the owner to
@@ -102,7 +106,27 @@ pub(super) fn begin(
     action_id: &str,
     parks: bool,
 ) -> Result<Value, Error> {
-    let mut parameters = params::generated(&call.request.params)?;
+    let parameters = params::generated(&call.request.params)?;
+    start(owner, call, action_id, parameters, parks, None)
+}
+
+/// The candidate draft an accept commits ([`super::candidate_draft`]): it closes once the entry
+/// commits, and the commit's answer is recorded under its own request-table key.
+pub(super) struct DraftClose {
+    pub(super) draft_id: DraftId,
+    pub(super) key: Option<RequestKey>,
+}
+
+/// [`begin`] with the request's parameters in hand, envelope included: an accept's own, or a
+/// candidate draft's commit's, which `closes`.
+pub(super) fn start(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    action_id: &str,
+    mut parameters: Map<String, Value>,
+    parks: bool,
+    closes: Option<DraftClose>,
+) -> Result<Value, Error> {
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     let mutation: Mutation = params::take(&mut parameters, "mutation")?;
     let job_id: JobId = parameters
@@ -126,6 +150,9 @@ pub(super) fn begin(
             .service
             .action_retry(&asset_id, &mutation, action_id, parameters.clone())?
     {
+        if let Some(closes) = &closes {
+            owner.close_draft(call.client, &closes.draft_id);
+        }
         return methods::value(result);
     }
     let session = owner.sessions.entry(call.client).or_default();
@@ -137,12 +164,7 @@ pub(super) fn begin(
             mutation.expected_revision, state.revision
         )));
     }
-    let record = owner.jobs.read_for(&job_id, call.client)?;
-    if record.kind != JobKind::Task {
-        return Err(Error::validation(format!(
-            "job {job_id} is not a task and holds no candidates"
-        )));
-    }
+    candidate_draft::task_job(owner, call.client, &job_id)?;
     if !parks {
         return Err(Error::not_ready(
             "accepting a candidate publishes it off the catalog owner; send the call where it may \
@@ -152,17 +174,7 @@ pub(super) fn begin(
     }
     let pin = owner.service.candidates().pin(&job_id, candidate)?;
     let read = pin.candidate().clone();
-    if read.asset_id != asset_id {
-        return Err(Error::validation(format!(
-            "candidate {candidate} of job {job_id} belongs to another photograph"
-        )));
-    }
-    let Some(generated) = &read.input else {
-        return Err(Error::conflict(format!(
-            "candidate {candidate} of job {job_id} does not say what it was generated against"
-        )));
-    };
-    check_input(generated, &owner.service.correction_input(&asset_id)?)?;
+    candidate_draft::of_this_input(owner, &read, &asset_id, &job_id)?;
     let writer = owner.service.artifact_writer()?;
     let job = owner.sources.submit(
         &mut owner.jobs,
@@ -193,13 +205,17 @@ pub(super) fn begin(
             parameters,
             candidate: read,
             origin: call.origin.clone(),
+            closes,
         },
     });
     Ok(Value::Null)
 }
 
 /// A `conflict` naming each component of the candidate's input that differs from `now`.
-fn check_input(generated: &crate::RepairInput, now: &crate::RepairInput) -> Result<(), Error> {
+pub(super) fn check_input(
+    generated: &crate::RepairInput,
+    now: &crate::RepairInput,
+) -> Result<(), Error> {
     let reasons = generated.reasons(now);
     if reasons.is_empty() {
         return Ok(());
@@ -260,10 +276,17 @@ impl Owner {
             // Nobody waits any more: the pin drops and the artifact, if recorded, stays unreferenced.
             return Err(Error::cancelled("the accept was cancelled"));
         };
-        let committed = self.commit_accept(&parked.request, record, prepared);
+        let mut committed = self.commit_accept(&parked.request, record, prepared);
         match &committed {
             Ok(_) => pin.accepted(),
             Err(_) => drop(pin),
+        }
+        // A candidate draft's commit closes it, and its answer is recorded as a commit's is.
+        if let (Ok(value), Some(closes)) = (&mut committed, parked.request.closes) {
+            self.close_draft(parked.call.client, &closes.draft_id);
+            if let Some(key) = closes.key {
+                self.requests.record(key, value);
+            }
         }
         self.answer_accept(parked.call, committed);
         Ok(json!({ "artifact": artifact }))
@@ -308,6 +331,17 @@ impl Owner {
         }
         self.record_announced();
         methods::value(result)
+    }
+
+    /// End `client`'s draft `draft_id`, which its accept has committed.
+    fn close_draft(&mut self, client: crate::ClientId, draft_id: &DraftId) {
+        if let Some(session) = self.sessions.get_mut(&client)
+            && session.held_draft(draft_id).is_ok()
+        {
+            session.pixel_memo.clear();
+            session.draft = None;
+            session.touch();
+        }
     }
 
     /// Answer a parked accept's call with the owner's sequence now.

@@ -125,6 +125,7 @@ fn settable() -> Value {
         "update_checks": true,
         "update_install_automatically": false,
         "update_ask_to_move": true,
+        "select_introduction_seen": false,
     })
 }
 
@@ -182,6 +183,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "update_checks": false,
         "update_install_automatically": true,
         "update_ask_to_move": false,
+        "select_introduction_seen": true,
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
@@ -235,6 +237,10 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         (
             json!({"performance_expanded": 1}),
             "parameter performance_expanded must be a boolean",
+        ),
+        (
+            json!({"select_introduction_seen": "yes"}),
+            "parameter select_introduction_seen must be a boolean",
         ),
         (
             json!({"mask_overlay_colour": "red"}),
@@ -376,6 +382,12 @@ fn only_a_change_to_a_general_row_is_announced() {
         ("checks", json!({"update_checks": false})),
         ("automatic", json!({"update_install_automatically": true})),
         ("ask-to-move", json!({"update_ask_to_move": false})),
+        // Whether the Select introduction was closed is the desktop's own remembered state.
+        ("introduction", json!({"select_introduction_seen": true})),
+        (
+            "introduction-reset",
+            json!({"select_introduction_seen": null}),
+        ),
         ("follow-default", json!({"theme_follows_omarchy": true})),
         ("follow", json!({"theme_follows_omarchy": false})),
     ] {

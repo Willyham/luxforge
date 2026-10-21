@@ -7,9 +7,9 @@ use super::{
     source::{Evaluated, RawSettingsMode, raw_settings, validate_source_recipe},
 };
 use crate::{
-    AssetId, Draft, DraftTarget, EntryId, Error, ErrorKind, HistoryEntry, Layer, LayerId,
-    LinearImage, LinearSettings, MaskId, ModuleRegistry, Mutation, Provider, Recipe,
-    SkippedSetting, Transform,
+    AssetId, Draft, DraftTarget, EntryId, Error, ErrorKind, HistoryEntry, IdentityKind, Layer,
+    LayerId, LinearImage, LinearSettings, MaskId, ModuleRegistry, Mutation, ParameterKind,
+    Provider, Recipe, SkippedSetting, Transform,
     mask::commands::{MaskOutcome, MaskTarget},
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
@@ -660,7 +660,23 @@ impl EditorService {
                  names only the objects its gesture edits"
             )));
         }
-        check_target(declared, &request)?;
+        // A candidate draft's job is not an object its gesture edits but the candidate it shows,
+        // chosen with `draft.set` like the candidate's number (`docs/design/ai-editing.md`,
+        // "Candidate drafts"), so the target need not name it.
+        if declared.accepts_candidate {
+            let mut chosen = declared.clone();
+            for parameter in &mut chosen.parameters {
+                parameter.required &= !matches!(
+                    parameter.kind,
+                    ParameterKind::Identity {
+                        of: IdentityKind::Job
+                    }
+                );
+            }
+            check_target(&chosen, &request)?;
+        } else {
+            check_target(declared, &request)?;
+        }
         self.check_draft(asset_id, action_id, mask.as_ref(), &Map::new())?;
         if let ActionRef::Module(provider, declared) = action {
             self.check_operation_target(asset_id, provider.descriptor(), declared, &target)?;
@@ -765,9 +781,20 @@ impl EditorService {
         // A preview, not a commit: a plan whose commit runs a search once — an automatic repair
         // source — plans no change here, so a preview never parks a read.
         let was = self.previewing.replace(true);
+        // A candidate draft is planned as its accept is, with the candidate it holds in place of
+        // the published one ([`crate::DraftCandidate`]); its fields name that candidate or the
+        // plan is refused as any accept without a candidate is.
+        let held = draft
+            .candidate
+            .as_ref()
+            .filter(|held| held.names(&draft.fields))
+            .map(|held| self.accepting.replace(Some(held.accepted.clone())));
         let planned = self
             .plan_request(&head.asset, current, &prepared)
             .map(|request| request.planned);
+        if let Some(accepting) = held {
+            *self.accepting.borrow_mut() = accepting;
+        }
         self.previewing.set(was);
         let recipe = match self.needing(stack, planned)? {
             Some(planned) => planned.recipe,

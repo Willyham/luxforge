@@ -176,6 +176,7 @@ fn descriptor() -> crate::ModuleDescriptor {
             id: id.into(),
             kind: CapabilityKind::DownloadArtifact {
                 resource: resource.into(),
+                introduction: None,
             },
             purpose: "Install the object finder.".into(),
         });

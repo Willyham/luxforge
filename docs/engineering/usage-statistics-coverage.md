@@ -241,7 +241,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `pick.plan` | Exempt (read) | Plans a Develop of picks; its `pick.develop` is the operation. |
 | `pick.set` | `interaction` pick-set | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `preferences.read` | Exempt (read) | Reads preferences. |
-| `preferences.set` | `interaction` preferences-change | Only a deliberate preference the event log announces (Settings); the remembered workspace, brush, window, last export and Performance state a desktop stores as it goes are not. |
+| `preferences.set` | `interaction` preferences-change | Only a deliberate preference the event log announces (Settings); the remembered workspace, brush, window, last export, Performance state and Select introduction a desktop stores as it goes are not. |
 | `preset.capture` | Exempt (read) | Captures settings for a preset form; the save is `preset.create`/`preset.update`. |
 | `preset.create` | `interaction` preset-create | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `preset.delete` | `interaction` preset-delete | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |

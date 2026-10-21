@@ -67,6 +67,9 @@ mod export_tests;
 mod paged_export_tests;
 // The catalog's owner-side homes, one file each: the index, preview and library lanes and
 // browse views ([`catalog`]).
+mod candidate_draft;
+#[cfg(test)]
+mod candidate_draft_tests;
 pub(super) mod candidates;
 pub(super) mod files;
 #[cfg(test)]
@@ -572,6 +575,9 @@ enum SourceTaskKind {
     Collect(Collection),
     /// Publish a pinned candidate as an artifact for the accept a call waits on ([`accept`]).
     Accept(Box<accept::AcceptWork>),
+    /// Read and verify a candidate's patch for the candidate draft a call waits on
+    /// ([`candidate_draft`]).
+    DraftPatch(Box<candidate_draft::PrepareWork>),
 }
 
 impl SourceTaskKind {
@@ -593,6 +599,7 @@ impl SourceTaskKind {
             }
             Self::Collect(_) => (JobKind::Collect, None),
             Self::Accept(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
+            Self::DraftPatch(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
         }
     }
 }
@@ -601,6 +608,7 @@ enum SourceResult {
     Prepared(Box<Prepared>),
     Collected(Collected),
     Accepted(Box<accept::Published>),
+    DraftPatch(Box<candidate_draft::PreparedPatch>),
 }
 
 struct SourceTask {
@@ -982,6 +990,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             asset_id: Some(work.asset_id().clone()),
             job_id: Some(task.id.to_string()),
         },
+        SourceTaskKind::DraftPatch(work) => ActivitySpec {
+            kind: "artifacts.read",
+            label: "Reading candidate",
+            detail: work.detail(),
+            asset_id: Some(work.asset_id().clone()),
+            job_id: Some(task.id.to_string()),
+        },
     }
 }
 
@@ -1012,6 +1027,9 @@ fn run_source_task(
         SourceTaskKind::Accept(work) => work
             .run(cancel)
             .map(|published| SourceResult::Accepted(Box::new(published))),
+        SourceTaskKind::DraftPatch(work) => work
+            .run(cancel)
+            .map(|prepared| SourceResult::DraftPatch(Box::new(prepared))),
     }
 }
 
@@ -1734,6 +1752,9 @@ fn owner_loop(
         deferred: None,
         accept_parking: None,
         parked_accepts: HashMap::new(),
+        draft_patch_parking: None,
+        parked_draft_patches: HashMap::new(),
+        draft_patch_in_hand: None,
         call_parks: true,
         catalog,
         // The port's notifier never blocks, whatever thread signals it: a wake that finds the
@@ -2105,6 +2126,14 @@ pub(super) struct Owner {
     accept_parking: Option<accept::PendingAccept>,
     /// The accepts waiting on their publication, by job.
     parked_accepts: HashMap<JobId, accept::ParkedAccept>,
+    /// Set by a candidate draft's `draft.set` that queued its candidate's preparation: the call
+    /// [`Owner::call`] parks until that job completes ([`candidate_draft`]). Empty between calls.
+    draft_patch_parking: Option<JobId>,
+    /// The `draft.set` calls waiting on their candidate's preparation, by job: at most one a
+    /// client.
+    parked_draft_patches: HashMap<JobId, OwnerCall>,
+    /// The candidate patch a parked `draft.set` runs again with, for the length of that call.
+    draft_patch_in_hand: Option<candidate_draft::PreparedPatch>,
     /// Whether the call being answered may wait ([`OwnerCall::parks`]).
     call_parks: bool,
     /// The catalog's owner-side state, one field per lane and one for browse views, each in its own
@@ -2239,6 +2268,13 @@ impl Owner {
             self.park_accept(call, pending);
             return;
         }
+        // And a candidate draft's set waiting for its candidate's patch.
+        if let Some(job) = self.draft_patch_parking.take()
+            && result.is_ok()
+        {
+            self.park_draft_patch(call, job);
+            return;
+        }
         // So is a call waiting for the index lane to read the disk for it.
         if let Some(deferred) = self.deferred.take()
             && result.is_ok()
@@ -2353,8 +2389,9 @@ impl Owner {
             usage::deduplicated(self, &request.method, &mut first);
             return Ok(Planned::Value(first));
         }
-        // A photograph a running task holds locked takes no edit until the task ends.
-        if method.edits_asset() {
+        // A photograph a running task holds locked takes no edit until the task ends; a candidate
+        // draft's begin and reapply commit nothing and go through.
+        if method.edits_asset() && !candidate_draft::unlocked(self, client, request) {
             let asset = match self.sessions.get(&client) {
                 Some(session) => subject(session, &request.params),
                 None => request
@@ -2389,6 +2426,20 @@ impl Owner {
         };
         if let Some(refusal) = action.and_then(|action| self.experiment_refusal(action)) {
             return Err(refusal);
+        }
+        // A candidate draft's set prepares the candidate it names, and its commit is the accept
+        // ([`candidate_draft`]).
+        if candidate_draft::handles(self, client, request) {
+            let call = Call {
+                client,
+                request,
+                origin,
+            };
+            return match call.request.method.as_str() {
+                "draft.set" => candidate_draft::set(self, &call),
+                _ => candidate_draft::commit(self, &call, key),
+            }
+            .map(Planned::Value);
         }
         // An action that accepts a candidate pins and publishes it before it commits ([`accept`]).
         if let methods::Method::Action(action_id) = &method
@@ -2894,6 +2945,7 @@ impl Owner {
         self.tiles.disconnect(client);
         self.drop_parked_reads(client);
         self.drop_parked_accepts(client);
+        self.drop_parked_draft_patches(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
@@ -2910,6 +2962,16 @@ impl Owner {
         // An accept's publication answers the call parked on it, whoever still wants the job.
         if self.parked_accepts.contains_key(id) || matches!(result, Ok(SourceResult::Accepted(_))) {
             let outcome = self.accept_published(id, result);
+            self.jobs.finish(id, outcome.map(Output::Value));
+            self.sources.complete(id);
+            self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+            return;
+        }
+        // So does a candidate draft's preparation the call it was for.
+        if self.parked_draft_patches.contains_key(id)
+            || matches!(result, Ok(SourceResult::DraftPatch(_)))
+        {
+            let outcome = self.draft_patch_prepared(id, result);
             self.jobs.finish(id, outcome.map(Output::Value));
             self.sources.complete(id);
             self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
@@ -2936,6 +2998,9 @@ impl Owner {
                     .map(Completed::Value)
                     .map_err(|error| Error::internal(error.to_string())),
                 SourceResult::Accepted(_) => Err(Error::internal("an accept no call waits on")),
+                SourceResult::DraftPatch(_) => {
+                    Err(Error::internal("a candidate patch no call waits on"))
+                }
             })
         } else {
             Err(Error::conflict("source job cancelled"))
@@ -3345,6 +3410,7 @@ host_params! {
         update_checks: Option<Option<bool>> = boolean().notes("check for updates at launch and then daily; null resets it to on"),
         update_install_automatically: Option<Option<bool>> = boolean().notes("download an update in the background and install it at the next ordinary quit, only while update_checks is on and never for an update that changes the catalog format; null resets it to off"),
         update_ask_to_move: Option<Option<bool>> = boolean().notes("on macOS, a release build launched outside Applications asks to move itself there (update.move-to-applications); false is the question's Don't ask again; null resets it to on"),
+        select_introduction_seen: Option<Option<bool>> = boolean().notes("the person closed the Select introduction, which the desktop shows the first time Select is shown while this is off; null or false shows it again at the desktop's next launch, true skips it"),
     }
 }
 
@@ -3398,6 +3464,7 @@ pub(super) fn preferences_set(
         update_checks: params.update_checks,
         update_install_automatically: params.update_install_automatically,
         update_ask_to_move: params.update_ask_to_move,
+        select_introduction_seen: params.select_introduction_seen,
     };
     let published = owner.host.preferences.set_published(change)?;
     let (before, stored) = published.value;

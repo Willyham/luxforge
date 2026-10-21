@@ -925,9 +925,12 @@ impl Editor {
         if shown == Shown::Develop {
             return self.enter_develop();
         }
+        // The candidate Remove shows gives way; the frame read back after its cancel is the
+        // photograph as committed, and what it asks for next runs unless this start replaces it.
+        let yielded = self.yield_candidate();
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
-            return Task::none();
+            return yielded;
         }
         self.palette.open = false;
         self.view_state.menu = None;
@@ -939,7 +942,7 @@ impl Editor {
             self.select.check.offer(());
         }
         // The cards and volumes, and the catalog's counts, as they are now.
-        let mut tasks = vec![self.read_disks(), self.read_counts()];
+        let mut tasks = vec![yielded, self.read_disks(), self.read_counts()];
         if !std::mem::replace(&mut self.select.events_read, true) {
             tasks.push(self.read_events());
         }

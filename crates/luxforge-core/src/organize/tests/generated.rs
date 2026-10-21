@@ -238,6 +238,7 @@ fn check_layout(
             MomentEvidence::Metadata => "metadata",
             MomentEvidence::Previews => "previews",
             MomentEvidence::Folder => "folder",
+            MomentEvidence::Names => "names",
         });
         assert_eq!(
             (found_kind, found_evidence),

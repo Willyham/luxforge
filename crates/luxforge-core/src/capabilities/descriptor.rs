@@ -211,8 +211,14 @@ pub struct CapabilityDescriptor {
 pub enum CapabilityKind {
     /// Send one declared data class of one asset to a profile's endpoint through its adapter.
     RemoteImageRequest { adapter: String, data: DataClass },
-    /// Install a declared resource from its pinned URL.
-    DownloadArtifact { resource: String },
+    /// Install a declared resource from its pinned URL. With an `introduction`, a client asking
+    /// for the download's consent may present the feature it sets up, as the desktop's setup
+    /// sheet does; the disclosure carries it.
+    DownloadArtifact {
+        resource: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        introduction: Option<Introduction>,
+    },
     /// Hold one declared resource loaded by the host's local inference runtime between tasks, in
     /// a host-owned slot that counts `resident_bytes` against the host's resident budget: opened
     /// as a `model` on the first of `backends` the runtime offers, at `precision`. Loaded by
@@ -234,6 +240,92 @@ pub enum CapabilityKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         with: Vec<String>,
     },
+}
+
+/// What a download's setup says of the feature it sets up, before the person decides: a short
+/// label, a title and a lead in the feature's words, how it is used in at most
+/// [`MAX_INTRODUCTION_STEPS`] steps or one `hero` picture, and the promise its footer makes. The
+/// facts of the download itself (its size, origin, cost, licence and what it needs of the machine)
+/// are the disclosure's, never repeated here. Pictures are named, not shipped: a client draws each
+/// from its own components.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Introduction {
+    pub eyebrow: String,
+    pub title: String,
+    pub lead: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero: Option<IntroductionPicture>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<IntroductionStep>,
+    pub promise: String,
+}
+
+/// One step of an [`Introduction`]: what the person does, and the picture that shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntroductionStep {
+    pub title: String,
+    pub body: String,
+    pub picture: IntroductionPicture,
+}
+
+/// The pictures an introduction may name. Each is drawn by the client from its own components and
+/// theme, so every theme keeps its hierarchy and the descriptor ships no image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntroductionPicture {
+    /// A brush painting over an object in a photograph.
+    PaintOver,
+    /// Generated candidates, one chosen, and a generation's progress.
+    Candidates,
+    /// The photo's history with the accepted correction on top of the original.
+    History,
+    /// A selection, a described prompt and the area filled with what it describes.
+    Describe,
+}
+
+/// The most steps an introduction shows.
+pub(crate) const MAX_INTRODUCTION_STEPS: usize = 3;
+/// The longest an introduction's line may be, in characters: its lead and each step's body.
+const MAX_INTRODUCTION_TEXT: usize = 400;
+/// The longest its eyebrow, title, promise and step titles may be.
+const MAX_INTRODUCTION_LABEL: usize = 80;
+
+/// An introduction's text is present and bounded, and it shows a hero or steps, not both.
+fn validate_introduction(id: &str, introduction: &Introduction) -> Result<(), Error> {
+    let bounded = |what: &str, text: &str, limit: usize| {
+        if text.trim().is_empty() {
+            Err(Error::validation(format!(
+                "capability {id}'s introduction declares no {what}"
+            )))
+        } else if text.chars().count() > limit {
+            Err(Error::validation(format!(
+                "capability {id}'s introduction {what} is longer than {limit} characters"
+            )))
+        } else {
+            Ok(())
+        }
+    };
+    bounded("eyebrow", &introduction.eyebrow, MAX_INTRODUCTION_LABEL)?;
+    bounded("title", &introduction.title, MAX_INTRODUCTION_LABEL)?;
+    bounded("lead", &introduction.lead, MAX_INTRODUCTION_TEXT)?;
+    bounded("promise", &introduction.promise, MAX_INTRODUCTION_LABEL)?;
+    if introduction.steps.len() > MAX_INTRODUCTION_STEPS {
+        return Err(Error::validation(format!(
+            "capability {id}'s introduction has more than {MAX_INTRODUCTION_STEPS} steps"
+        )));
+    }
+    if introduction.hero.is_some() && !introduction.steps.is_empty() {
+        return Err(Error::validation(format!(
+            "capability {id}'s introduction shows both a hero and steps"
+        )));
+    }
+    for step in &introduction.steps {
+        bounded("step title", &step.title, MAX_INTRODUCTION_LABEL)?;
+        bounded("step body", &step.body, MAX_INTRODUCTION_TEXT)?;
+    }
+    Ok(())
 }
 
 /// What a `local-runtime` capability opens its resource as.
@@ -672,11 +764,17 @@ fn validate_capability<'a>(
                 )));
             }
         }
-        CapabilityKind::DownloadArtifact { resource } => {
+        CapabilityKind::DownloadArtifact {
+            resource,
+            introduction,
+        } => {
             if module.resource(resource).is_none() {
                 return Err(Error::validation(format!(
                     "capability {id} names undeclared resource {resource}"
                 )));
+            }
+            if let Some(introduction) = introduction {
+                validate_introduction(id, introduction)?;
             }
         }
         CapabilityKind::LocalRuntime {
@@ -723,7 +821,7 @@ fn validate_companions(
             )));
         }
         if !module.capabilities.iter().any(|capability| {
-            matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held } if held == companion)
+            matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held, .. } if held == companion)
         }) {
             return Err(Error::validation(format!(
                 "capability {id} opens its model with resource {companion}, which no download-artifact capability installs"
@@ -750,7 +848,7 @@ fn validate_local_runtime(
         )));
     }
     if !module.capabilities.iter().any(|capability| {
-        matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held } if held == resource)
+        matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held, .. } if held == resource)
     }) {
         return Err(Error::validation(format!(
             "local-runtime capability {id} holds resource {resource}, which no download-artifact capability installs"
@@ -1587,9 +1685,48 @@ mod tests {
                 |d| {
                     d.capabilities[1].kind = CapabilityKind::DownloadArtifact {
                         resource: "missing".into(),
+                        introduction: None,
                     }
                 },
                 "capability palette names undeclared resource missing",
+            ),
+            // A download's introduction: present, bounded, a hero or steps.
+            (
+                |d| {
+                    d.capabilities[1].kind = introduced(Introduction {
+                        title: " ".into(),
+                        ..introduction()
+                    })
+                },
+                "capability palette's introduction declares no title",
+            ),
+            (
+                |d| {
+                    d.capabilities[1].kind = introduced(Introduction {
+                        lead: "x".repeat(MAX_INTRODUCTION_TEXT + 1),
+                        ..introduction()
+                    })
+                },
+                "capability palette's introduction lead is longer than 400 characters",
+            ),
+            (
+                |d| {
+                    let step = introduction().steps[0].clone();
+                    d.capabilities[1].kind = introduced(Introduction {
+                        steps: vec![step; MAX_INTRODUCTION_STEPS + 1],
+                        ..introduction()
+                    })
+                },
+                "capability palette's introduction has more than 3 steps",
+            ),
+            (
+                |d| {
+                    d.capabilities[1].kind = introduced(Introduction {
+                        hero: Some(IntroductionPicture::Describe),
+                        ..introduction()
+                    })
+                },
+                "capability palette's introduction shows both a hero and steps",
             ),
             (
                 |d| d.capabilities[0].purpose = String::new(),
@@ -2060,5 +2197,49 @@ mod tests {
             error.detail,
             "capability fill is local-runtime, which no permission gates"
         );
+    }
+
+    /// A valid introduction of three steps.
+    fn introduction() -> Introduction {
+        let step = |title: &str, picture| IntroductionStep {
+            title: title.into(),
+            body: "What the person does.".into(),
+            picture,
+        };
+        Introduction {
+            eyebrow: "Palette".into(),
+            title: "Tint anything".into(),
+            lead: "Download the palette to tint a photo.".into(),
+            hero: None,
+            steps: vec![
+                step("Paint", IntroductionPicture::PaintOver),
+                step("Choose", IntroductionPicture::Candidates),
+                step("Keep", IntroductionPicture::History),
+            ],
+            promise: "Your photos stay on this computer.".into(),
+        }
+    }
+
+    /// The fixture's palette download, introduced by `introduction`.
+    fn introduced(introduction: Introduction) -> CapabilityKind {
+        CapabilityKind::DownloadArtifact {
+            resource: "palette".into(),
+            introduction: Some(introduction),
+        }
+    }
+
+    #[test]
+    fn a_download_introduction_validates_and_round_trips_beside_its_resource() {
+        let mut descriptor = capability_descriptor();
+        descriptor.capabilities[1].kind = introduced(introduction());
+        descriptor
+            .validate()
+            .expect("an introduced download validates");
+        let json = serde_json::to_value(&descriptor.capabilities[1]).expect("serialises");
+        assert_eq!(json["kind"], "download-artifact");
+        assert_eq!(json["resource"], "palette");
+        assert_eq!(json["introduction"]["steps"][0]["picture"], "paint-over");
+        let back: CapabilityDescriptor = serde_json::from_value(json).expect("deserialises");
+        assert_eq!(back, descriptor.capabilities[1]);
     }
 }

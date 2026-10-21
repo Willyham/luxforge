@@ -37,6 +37,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `export_last` | `{settings, preset_id}`, or `null` | `null`: the sheet opens on Web | remembered | next export |
 | `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
 | `panorama_merge` | `{projection, boundary_warp}`: `auto`, `perspective`, `cylindrical` or `spherical`, and 0–100; or `null` | `null`: Auto and 0 | remembered | next ⌥-click merge |
+| `select_introduction_seen` | boolean, or `null` | `null`: not seen | remembered: closing the [Select introduction](select-introduction.md) sets it | next launch |
 
 ### Protected usage statistics record
 

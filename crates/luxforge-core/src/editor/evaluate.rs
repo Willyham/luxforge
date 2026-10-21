@@ -385,6 +385,8 @@ impl EditorService {
         selection: AnalysisSelection<'_>,
         purpose: Purpose,
     ) -> Result<Stack, Error> {
+        // The patch a candidate draft holds, which its renders bind from the draft.
+        let mut held = None;
         let (asset, entry, drafted) = match selection {
             AnalysisSelection::Current => {
                 let (asset, entry) = self.saved_entry(asset_id, None)?;
@@ -418,6 +420,10 @@ impl EditorService {
             AnalysisSelection::Draft(draft) => {
                 let (recipe, head, entry) = self.planned_draft(asset_id, draft)?;
                 validate_source_recipe(&self.registry, &head.asset, &recipe)?;
+                held = draft
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| candidate.artifact.clone());
                 let stamp = DraftStamp {
                     draft_id: draft.draft_id.clone(),
                     draft_revision: draft.draft_revision,
@@ -466,7 +472,7 @@ impl EditorService {
         // evaluated as the cache shares it, uncopied.
         let (recipe, draft) = match drafted {
             Some((mut recipe, stamp)) => {
-                let bound = self.bind_artifacts(&mut recipe);
+                let bound = self.bind_artifacts_holding(&mut recipe, held.as_ref());
                 self.needing(needs(&recipe), bound)?;
                 (Some(recipe), stamp)
             }

@@ -122,6 +122,9 @@ pub(crate) struct KeyContext {
     /// The usage statistics notice is on screen, so an Escape nothing else takes answers it No
     /// thanks.
     pub(crate) usage_notice: bool,
+    /// The Select introduction is open: it is modal, so Return and Escape close it and no other
+    /// key reaches the window behind it.
+    pub(crate) introduction: bool,
     pub(crate) gallery_open: bool,
     pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
@@ -142,6 +145,9 @@ pub(crate) struct KeyContext {
     /// The Settings sheet is open: it is modal, so the workspace behind it takes no key but the
     /// ones that close the sheet.
     pub(crate) settings_open: bool,
+    /// A download's setup sheet is open, with whether it can be allowed: it is modal, so Return
+    /// answers its primary action, Escape answers Not now and no other key reaches the workspace.
+    pub(crate) setup_sheet: Option<bool>,
     /// The title bar's Export menu is open, so Escape closes it.
     pub(crate) export_menu_open: bool,
     /// The Export sheet is open: it is modal, so Escape closes it without exporting and no other
@@ -308,6 +314,44 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
         && (character(key, "\\") || character(key, "|"))
     {
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
+    }
+    // The Select introduction is modal and comes first: Return and Escape close it, before
+    // anything else that takes them, and no other key reaches the window behind it.
+    if context.introduction {
+        use crate::{
+            app::message::select_introduction::IntroductionMessage,
+            state::select_introduction::Closing,
+        };
+        let close = |how| Some(Message::Introduction(IntroductionMessage::Close(how)));
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => close(Closing::Escape),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                modifiers,
+                repeat: false,
+                ..
+            } if status == Status::Ignored && !modifiers.command() => close(Closing::Return),
+            _ => None,
+        };
+    }
+    // A download's setup sheet is modal: Return downloads, or closes it when it cannot, Escape
+    // answers Not now, and no other key reaches the workspace behind it.
+    if let Some(can_allow) = context.setup_sheet {
+        use crate::app::message::capability::CapabilityMessage;
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Capability(CapabilityMessage::Consent(false))),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                ..
+            } => Some(Message::Capability(CapabilityMessage::Consent(can_allow))),
+            _ => None,
+        };
     }
     // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
     // the workspace behind it, Select's included. Its fields still receive their own typing.
@@ -1430,6 +1474,7 @@ mod tests {
     fn context() -> KeyContext {
         KeyContext {
             usage_notice: false,
+            introduction: false,
             comparing: false,
             gallery_open: false,
             drafting: false,
@@ -1438,6 +1483,7 @@ mod tests {
             mask_brush: false,
             palette_open: false,
             settings_open: false,
+            setup_sheet: None,
             export_menu_open: false,
             export_sheet_open: false,
             help_sheet_open: false,
@@ -1552,6 +1598,115 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// The Select introduction is modal: Return and Escape close it ahead of anything else that
+    /// takes them, and no other key reaches the window behind it.
+    #[test]
+    fn select_introduction_takes_return_and_escape_and_holds_every_other_key() {
+        use crate::{
+            app::message::select_introduction::IntroductionMessage,
+            state::select_introduction::Closing,
+        };
+        let open = KeyContext {
+            introduction: true,
+            select: true,
+            loupe_open: true,
+            select_menu_open: true,
+            usage_notice: true,
+            ..context()
+        };
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &open),
+            Some(Message::Introduction(IntroductionMessage::Close(
+                Closing::Escape
+            )))
+        ));
+        let enter = pressed(Key::Named(Named::Enter), Modifiers::empty());
+        assert!(matches!(
+            keymap(&enter, Status::Ignored, &open),
+            Some(Message::Introduction(IntroductionMessage::Close(
+                Closing::Return
+            )))
+        ));
+        for event in [
+            pressed(letter("p"), Modifiers::empty()),
+            pressed(letter("d"), Modifiers::empty()),
+            pressed(Key::Named(Named::ArrowDown), Modifiers::empty()),
+            pressed(Key::Named(Named::Space), Modifiers::empty()),
+            pressed(Key::Named(Named::Enter), Modifiers::COMMAND),
+            pressed(letter("z"), Modifiers::COMMAND),
+            pressed(letter(","), Modifiers::COMMAND),
+        ] {
+            assert!(
+                keymap(&event, Status::Ignored, &open).is_none(),
+                "{event:?}"
+            );
+        }
+    }
+
+    /// The keys the Select introduction names do what it says: Space looks, and in the loupe `Z`
+    /// shows 100%, `P` picks and `↓` goes to the next moment; Develop N's chord develops.
+    #[test]
+    fn select_introduction_the_keys_it_names_do_what_it_says() {
+        use crate::{
+            app::message::loupe::LoupeMessage, state::loupe::Travel,
+            state::select_introduction::STEPS,
+        };
+        let named: Vec<&str> = STEPS
+            .iter()
+            .flat_map(|step| step.keys.iter().map(|(key, _)| *key))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "Space",
+                "Z",
+                "P",
+                "\u{2193}",
+                crate::state::select_introduction::DEVELOP_KEY
+            ]
+        );
+        let grid = KeyContext {
+            select: true,
+            ..context()
+        };
+        let loupe = KeyContext {
+            loupe_open: true,
+            ..grid.clone()
+        };
+        let key = |key: Key, context: &KeyContext| {
+            keymap(&pressed(key, Modifiers::empty()), Status::Ignored, context)
+        };
+        assert!(matches!(
+            key(Key::Named(Named::Space), &grid),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)))
+        ));
+        assert!(matches!(
+            key(letter("z"), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(
+                LoupeMessage::ToggleFocus
+            )))
+        ));
+        assert!(matches!(
+            key(letter("p"), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Pick)))
+        ));
+        assert!(matches!(
+            key(Key::Named(Named::ArrowDown), &loupe),
+            Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Moment(
+                Travel::Forward
+            ))))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Enter), Modifiers::COMMAND),
+                Status::Ignored,
+                &grid
+            ),
+            Some(Message::Develop(DevelopMessage::Open))
+        ));
     }
 
     #[test]
@@ -1910,6 +2065,14 @@ mod tests {
             export_sheet_open: true,
             ..context()
         };
+        let setup_sheet = KeyContext {
+            setup_sheet: Some(true),
+            ..context()
+        };
+        let unmet_setup_sheet = KeyContext {
+            setup_sheet: Some(false),
+            ..context()
+        };
         let command = Modifiers::COMMAND;
         let shift_command = Modifiers::COMMAND | Modifiers::SHIFT;
         let option_command = Modifiers::COMMAND | Modifiers::ALT;
@@ -1982,6 +2145,34 @@ mod tests {
                 pressed(letter("z"), command),
                 Status::Ignored,
                 &export_sheet,
+                None,
+            ),
+            (
+                "Return downloads from the setup sheet",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Ignored,
+                &setup_sheet,
+                Some("Capability(Consent(true))"),
+            ),
+            (
+                "Escape answers the setup sheet's Not now",
+                pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &setup_sheet,
+                Some("Capability(Consent(false))"),
+            ),
+            (
+                "Return closes a setup sheet this machine cannot allow",
+                pressed(Key::Named(Named::Enter), Modifiers::empty()),
+                Status::Ignored,
+                &unmet_setup_sheet,
+                Some("Capability(Consent(false))"),
+            ),
+            (
+                "the setup sheet keeps the workspace's keys",
+                pressed(letter("z"), command),
+                Status::Ignored,
+                &setup_sheet,
                 None,
             ),
             (

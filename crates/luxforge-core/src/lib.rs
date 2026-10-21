@@ -104,7 +104,7 @@ pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
-pub use draft::{Draft, DraftTarget, declared_target};
+pub use draft::{Draft, DraftCandidate, DraftTarget, declared_target};
 /// The catalog format this build opens, which release builds record for the update feed.
 pub use editor::CATALOG_FORMAT;
 pub use editor::{

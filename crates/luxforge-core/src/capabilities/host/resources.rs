@@ -240,7 +240,7 @@ impl CapabilityHost {
             .capabilities
             .iter()
             .find(|capability| {
-                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
+                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id, .. } if *id == resource.id)
             })
             .ok_or_else(|| {
                 Error::validation(format!(

@@ -33,6 +33,7 @@ pub(crate) mod renderer;
 pub(crate) mod residency;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_introduction;
 pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
@@ -95,6 +96,8 @@ pub(crate) enum Message {
     Renderer(renderer::RendererMessage),
     /// One Select workspace gesture or owner answer.
     Select(select::SelectMessage),
+    /// The Select introduction: the title bar's ? and the sheet's ways of closing.
+    Introduction(select_introduction::IntroductionMessage),
     /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
     LongWork(long_work::LongWorkMessage),
     /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving

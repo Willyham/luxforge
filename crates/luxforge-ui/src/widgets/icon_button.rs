@@ -93,11 +93,14 @@ pub enum Icon {
     // The Corrections workspace: its mode and its two kinds.
     Heal,
     Clone,
+    // The Select introduction: the title bar's button that shows it, and its promise.
+    Help,
+    Shield,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 77] = [
+    pub const NAMED: [(&'static str, Icon); 79] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -180,6 +183,9 @@ impl Icon {
         // The Corrections workspace: Heal is its mode's icon and both name a correction's kind.
         ("heal", Self::Heal),
         ("clone", Self::Clone),
+        // The Select introduction.
+        ("help", Self::Help),
+        ("shield", Self::Shield),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -436,6 +442,30 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             poly(frame, &[(6.5, 7.2), (8.0, 7.2), (8.0, 11.4)]);
             line(frame, (6.5, 11.4), (9.5, 11.4));
         }
+        // A question mark in a circle, drawn as Information is: a hook over a short stem, and
+        // the dot under it.
+        Icon::Help => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 6.0 * s), stroke);
+            let mut hook = arc_points(8.0, 6.4, 1.9, 180.0, 405.0);
+            hook.push((8.0, 9.2));
+            poly(frame, &hook);
+            frame.fill(&canvas::Path::circle(p(8.0, 11.3), 0.8 * s), color);
+        }
+        // A shield: a flat top, straight sides and a point at the foot.
+        Icon::Shield => poly(
+            frame,
+            &[
+                (8.0, 2.0),
+                (13.0, 3.8),
+                (13.0, 8.0),
+                (12.2, 10.6),
+                (8.0, 14.0),
+                (3.8, 10.6),
+                (3.0, 8.0),
+                (3.0, 3.8),
+                (8.0, 2.0),
+            ],
+        ),
         Icon::Plus => {
             line(frame, (8.0, 3.0), (8.0, 13.0));
             line(frame, (3.0, 8.0), (13.0, 8.0));
