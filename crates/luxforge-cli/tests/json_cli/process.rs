@@ -196,7 +196,8 @@ fn the_headless_owner_reports_the_reference_renderer() {
 
 /// `luxforge-json` serves the test modules only with `--developer`, whatever its build profile:
 /// without it `schema.list` names no method a developer-only module generates and `module.list` no
-/// such module; with it the list gains exactly those. A proof endpoint without it is refused
+/// such module; with it the list gains exactly those, and the AI module's analyses that only a
+/// developer run's fake models make available (`task.analyse-scene`, `task.analyse-depth`). A proof endpoint without it is refused
 /// before anything starts, in the desktop's words.
 #[test]
 fn test_modules_are_served_only_with_developer() {
@@ -229,6 +230,14 @@ fn test_modules_are_served_only_with_developer() {
                 }
             }
         }
+        // The AI module declares the scene and depth analyses only where a run offers their
+        // models, which today is a developer run's fakes.
+        if extra.contains(&"--developer") {
+            generated.extend([
+                "task.analyse-scene".to_owned(),
+                "task.analyse-depth".to_owned(),
+            ]);
+        }
         generated.sort();
         (methods, developer_ids, generated)
     };
@@ -255,7 +264,7 @@ fn test_modules_are_served_only_with_developer() {
     added.sort();
     assert_eq!(
         added, generated,
-        "developer mode adds exactly the test modules' methods"
+        "developer mode adds exactly the test modules' methods and the fake-model analyses"
     );
     assert!(ordinary.iter().all(|method| developer.contains(method)));
 
