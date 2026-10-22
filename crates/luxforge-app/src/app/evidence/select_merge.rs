@@ -53,13 +53,12 @@ impl Editor {
         };
         let found = state
             .content
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Moment { index, actions, .. } => Some((*index, actions)),
+            .framed()
+            .enumerate()
+            .filter_map(|(number, block)| match block {
+                Block::Moment { index, actions, .. } => Some((number, (*index, actions))),
                 _ => None,
             })
-            .enumerate()
             .find(|(_, (index, _))| {
                 summary
                     .groups

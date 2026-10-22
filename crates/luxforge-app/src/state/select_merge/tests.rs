@@ -1062,7 +1062,7 @@ fn panorama_merge_stack_words_footers_and_band() {
         outside_filter: false,
     };
     let cell = stack_cell(Some(&stack), None);
-    assert_eq!(cell.exposure, Some("Frame 2 of 7"));
+    assert_eq!(cell.footer, Some("Frame 2 of 7"));
     assert_eq!(cell.icon, Some(KindIcon::Panorama));
     assert_eq!(stack_band(&stack, None).title, "Frame 2 of 7");
     assert_eq!(panorama_leader(Some(&stack)), None);
@@ -1075,6 +1075,7 @@ fn panorama_merge_stack_words_footers_and_band() {
         cell.badge.map(|(long, short, _)| (long, short)),
         Some(("Panorama \u{b7} 7 photos", "Pano \u{b7} 7"))
     );
+    assert_eq!(cell.footer, Some("Merged"));
     assert_eq!(panorama_leader(Some(&stack)), Some(&merge_id));
     let band = stack_band(&stack, None);
     assert_eq!(band.title, "Panorama \u{b7} 7 photos");
