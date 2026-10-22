@@ -144,6 +144,12 @@ impl Known {
         self.present.extend(present);
     }
 
+    /// The indexed folder at `path`, whose volume is not mounted, was just found there off the
+    /// owner, as a survey would have found it: it is not offline until a survey says otherwise.
+    pub(crate) fn found(&mut self, path: PathBuf) {
+        self.present.insert(path);
+    }
+
     /// The volumes mounted now, as the owner knows them without touching a file system: each one
     /// learned whose mount is in `mounts`, the platform's table read now, in that table's order.
     pub(crate) fn now(&self, mounts: &[Mount]) -> Mounts<'_> {
