@@ -88,6 +88,9 @@ pub struct HeadlessSurface {
     queue: wgpu::Queue,
     pipeline: Executor,
     surface: State,
+    /// Whether each frame of a picture at rest begins once everything released has retired
+    /// ([`HeadlessSurface::settle_frames`]).
+    settled: bool,
 }
 
 impl HeadlessSurface {
@@ -106,7 +109,19 @@ impl HeadlessSurface {
             queue: queue.clone(),
             pipeline,
             surface,
+            settled: false,
         }
+    }
+
+    /// Begin each frame of a picture at rest ([`HeadlessSurface::rest`]) only once everything the
+    /// frames before it released has retired, as the desktop's frames, a display's refresh apart,
+    /// find them retired. Frames drawn back to back instead find a release retired or still
+    /// charged as the GPU and the retirement worker happen to keep up: a tile refused beside a
+    /// charge still retiring waits a frame for it, which leaves its slot fitted otherwise than one
+    /// drawn at once, so what the later tiles need beside it varies with the host's load. Settled,
+    /// a picture at rest's least budget is the same at every draw, for a test that finds it.
+    pub fn settle_frames(&mut self) {
+        self.settled = true;
     }
 
     /// One frame's source: held, a frame's rows of it written, and the frame ended.
@@ -132,6 +147,9 @@ impl HeadlessSurface {
             luxforge_testbase::try_wait_progressing("the picture at rest's last tile", || {
                 use luxforge_testbase::Look;
                 frames += 1;
+                if self.settled {
+                    retired(&self.device, &self.pipeline);
+                }
                 self.pipeline
                     .fit_source(&self.device, &self.queue, Some(source));
                 self.pipeline.prepare_rest(
@@ -235,18 +253,7 @@ impl HeadlessSurface {
     /// pipeline released has retired: the editor's surface holds one slot and its picture at rest,
     /// never a run of released ones still charged, so the next draw is charged as it would be.
     fn retired(&self) {
-        let _ = luxforge_testbase::try_wait_for("the released slots' retirement", || {
-            // A retirement ends in a completion callback, which any poll of the device runs: this
-            // one rather than the retirement worker's next, up to 2 ms later.
-            let _ = self.device.poll(wgpu::PollType::Poll);
-            (self
-                .pipeline
-                .figures
-                .retirement_pending
-                .load(std::sync::atomic::Ordering::Acquire)
-                == 0)
-                .then_some(())
-        });
+        retired(&self.device, &self.pipeline);
     }
 
     /// `plan`, a region plan whose boundary is derived from `source`, drawn as a picture at rest
@@ -503,4 +510,20 @@ impl HeadlessSurface {
         readback.unmap();
         Ok(bytes)
     }
+}
+
+/// Wait, through the test base's one hang-bounded wait, until every resource `pipeline` released
+/// has retired ([`HeadlessSurface::retired`]).
+fn retired(device: &wgpu::Device, pipeline: &Executor) {
+    let _ = luxforge_testbase::try_wait_for("the released slots' retirement", || {
+        // A retirement ends in a completion callback, which any poll of the device runs: this one
+        // rather than the retirement worker's next, up to 2 ms later.
+        let _ = device.poll(wgpu::PollType::Poll);
+        (pipeline
+            .figures
+            .retirement_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0)
+            .then_some(())
+    });
 }
