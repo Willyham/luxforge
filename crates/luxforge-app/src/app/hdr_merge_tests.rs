@@ -674,6 +674,21 @@ fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder()
         !editor.select.state.rows.cell(at).unwrap().picked,
         "a result is never shown picked"
     );
+    assert!(
+        editor.select.state.rows.cell(at).unwrap().in_catalog,
+        "its cell says it is in the catalog"
+    );
+    // `P` on the result picks nothing, not its originals either, and says why over the grid until
+    // its time is up.
+    let before = editor.select.library.clone();
+    key(&mut editor, "p", Modifiers::empty());
+    assert_eq!(editor.select.library, before, "no pick.set is sent");
+    let toast = editor.workspace.select.pick_toast.clone().expect("a toast");
+    assert_eq!(toast.title, "This HDR merge is already in the catalog");
+    assert_eq!(editor.workspace.select.title.picks, 0);
+    let (number, _) = editor.select.state.pick_toast.clone().unwrap();
+    let _ = editor.update(Message::Select(SelectMessage::PickToastExpired(number)));
+    assert!(editor.workspace.select.pick_toast.is_none());
     // In the folder of the place the plan named, as a second client reads it.
     let folders: luxforge_core::catalog_types::CatalogFolders = serde_json::from_value(
         call(&editor.owner, agent, "folder.list", json!({}))

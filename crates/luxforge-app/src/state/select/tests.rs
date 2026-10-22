@@ -1803,3 +1803,68 @@ fn a_send_back_is_said_as_the_core_records_and_refuses_it() {
         None
     );
 }
+
+/// `P` on a merge's result picks nothing, not its originals either: the result joined the catalog
+/// when it was made, which its cell and a toast over the grid say. Beside files it names what
+/// stopped the pick; a selection of files alone has no toast.
+#[test]
+fn a_pick_of_a_merge_result_picks_nothing_and_says_it_is_in_the_catalog() {
+    use luxforge_core::catalog_types::{MergeKind, RowStack, StackExpansion, StackRole};
+    let mut rows = RowCache::default();
+    rows.reset(7, 20);
+    let request = rows.next_request(0..20).unwrap();
+    let mut read = block(0, 20);
+    read[5].item = RowItem::Photo {
+        asset_id: AssetId::new(),
+    };
+    read[5].stack = Some(RowStack {
+        merge_id: serde_json::from_value(json!("merge-0123456789abcdef0123456789abcdef")).unwrap(),
+        kind: MergeKind::Hdr,
+        role: StackRole::Leader,
+        size: 3,
+        collapsed: 3,
+        expansion: Some(StackExpansion::Collapsed),
+        ordinal: None,
+        offset_ev: None,
+        outside_filter: false,
+    });
+    assert!(rows.answered(7, request.from, read, 0..20));
+    assert!(
+        rows.cell(5).unwrap().in_catalog,
+        "the result is in the catalog"
+    );
+    assert!(!rows.cell(4).unwrap().in_catalog);
+    let selecting = |ranges: &[(u32, u32)]| {
+        SelectionModel::of(&session(7, ranges, ranges.first().map(|r| r.0)), Some(7))
+    };
+
+    assert_eq!(
+        pick_toast(&selecting(&[(5, 1)]), &rows),
+        Some(PickToast {
+            title: "This HDR merge is already in the catalog".into(),
+            body: "A merge joins the catalog when it is made, so it needs no pick.".into(),
+        })
+    );
+    assert_eq!(
+        pick_toast(&selecting(&[(3, 4)]), &rows),
+        Some(PickToast {
+            title: "Nothing picked".into(),
+            body: "The selection includes an HDR merge, which is already in the catalog. \
+                   Select only files to pick them."
+                .into(),
+        })
+    );
+    assert_eq!(
+        pick_toast(&selecting(&[(0, 5)]), &rows),
+        None,
+        "files alone"
+    );
+    assert_eq!(
+        catalog_toast(None, true, 2).title,
+        "These are already in the catalog"
+    );
+    assert_eq!(
+        catalog_toast(Some(MergeKind::Panorama), true, 1).title,
+        "This panorama merge is already in the catalog"
+    );
+}

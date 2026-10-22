@@ -26,6 +26,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 #[cfg(test)]
@@ -190,6 +191,11 @@ pub(crate) struct SelectState {
     /// The card connected while Luxforge ran that the notice offers, by volume, until it is
     /// browsed, dismissed or taken out.
     pub(crate) card_notice: Option<VolumeId>,
+    /// What the last `P` that met a photograph already in the catalog says over the grid, with the
+    /// number its timer clears it by, until [`PICK_TOAST_DURATION`] has passed.
+    pub(crate) pick_toast: Option<(u64, PickToast)>,
+    /// The number the next pick toast takes, so an older one's timer leaves a newer one alone.
+    pub(crate) pick_toasts: u64,
 }
 
 impl Default for SelectState {
@@ -227,6 +233,8 @@ impl Default for SelectState {
             forget: None,
             seen_cards: None,
             card_notice: None,
+            pick_toast: None,
+            pick_toasts: 0,
             merge: super::select_merge::SelectMerge::default(),
         }
     }
@@ -590,6 +598,78 @@ pub(crate) fn pick_value(selection: &SelectionModel, rows: &RowCache) -> bool {
         .iter()
         .flat_map(|&(start, end)| start..end)
         .all(|position| rows.read(position).is_some_and(|row| row.picked))
+}
+
+/// How long a pick toast stays over the grid.
+pub(crate) const PICK_TOAST_DURATION: Duration = Duration::from_secs(4);
+
+/// What `P` says, over the grid, when the selection holds a photograph already in the catalog: a
+/// merge's result, which joined the catalog when it was made, or a developed photograph. Only
+/// files are picked, so it picks nothing, not even a merge's originals.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PickToast {
+    pub(crate) title: String,
+    pub(crate) body: String,
+}
+
+/// The toast for a `P` on `selection` when a row read of it is a photograph, `None` when none is.
+/// It names the first such photograph's kind, and says whether the selection held only
+/// photographs or files beside them.
+pub(crate) fn pick_toast(selection: &SelectionModel, rows: &RowCache) -> Option<PickToast> {
+    let mut photos = 0_u64;
+    let mut first = None;
+    for position in selection.ranges.iter().flat_map(|&(start, end)| start..end) {
+        if let Some(row) = rows.read(position)
+            && matches!(row.item, RowItem::Photo { .. })
+        {
+            photos += 1;
+            first.get_or_insert(row);
+        }
+    }
+    let row = first?;
+    let only = photos == u64::from(selection.count);
+    Some(catalog_toast(
+        row.stack.as_ref().map(|stack| stack.kind),
+        only,
+        photos,
+    ))
+}
+
+/// The toast for `photos` photographs already in the catalog, the first a merge of `merge` kind
+/// when it is one; `only` when nothing else was selected.
+pub(crate) fn catalog_toast(
+    merge: Option<luxforge_core::catalog_types::MergeKind>,
+    only: bool,
+    photos: u64,
+) -> PickToast {
+    use luxforge_core::catalog_types::MergeKind;
+    let (noun, named) = match merge {
+        Some(MergeKind::Hdr) => ("HDR merge", "an HDR merge"),
+        Some(MergeKind::Panorama) => ("panorama merge", "a panorama merge"),
+        None => ("photograph", "a developed photograph"),
+    };
+    if !only {
+        return PickToast {
+            title: "Nothing picked".to_owned(),
+            body: format!(
+                "The selection includes {named}, which is already in the catalog. Select only \
+                 files to pick them."
+            ),
+        };
+    }
+    PickToast {
+        title: if photos == 1 {
+            format!("This {noun} is already in the catalog")
+        } else {
+            "These are already in the catalog".to_owned()
+        },
+        body: if merge.is_some() {
+            "A merge joins the catalog when it is made, so it needs no pick."
+        } else {
+            "A developed photograph needs no pick: only files are picked."
+        }
+        .to_owned(),
+    }
 }
 
 /// The status bar's sentence for a recorded library change: its label from the journal, as a
@@ -1337,7 +1417,8 @@ pub(crate) struct CellFacts {
     /// Width over height, upright, from the header's dimensions and orientation.
     pub(crate) aspect: Option<f32>,
     pub(crate) picked: bool,
-    /// A file that is already a developed photograph's original.
+    /// A file that is already a developed photograph's original, or a photograph: over files, a
+    /// merge's result, which joined the catalog when it was made.
     pub(crate) in_catalog: bool,
     pub(crate) availability: Availability,
     pub(crate) edited: bool,
@@ -1356,7 +1437,11 @@ pub(crate) fn cell_facts(row: &ViewRow) -> CellFacts {
         copied: !row.copies.is_empty(),
         aspect: aspect(row),
         picked: row.picked,
-        in_catalog: matches!(row.item, RowItem::File { .. }) && row.developed_as.is_some(),
+        in_catalog: match row.item {
+            RowItem::File { .. } => row.developed_as.is_some(),
+            RowItem::Photo { .. } => true,
+            RowItem::Input { .. } => false,
+        },
         availability: if row.availability == FileAvailability::Offline {
             Availability::Offline
         } else if row.preview == PreviewState::Unavailable {
@@ -1680,6 +1765,8 @@ pub(crate) struct SelectModel {
     pub(crate) forget: Option<ForgetSheet>,
     /// The notice of a card connected while Luxforge ran, over the centre's top.
     pub(crate) card_notice: Option<CardNotice>,
+    /// Why the last `P` picked nothing, over the centre's top for a moment.
+    pub(crate) pick_toast: Option<PickToast>,
 }
 
 /// Remove from indexed folders…'s confirmation: what it removes and what it leaves.
@@ -1748,6 +1835,7 @@ pub(crate) fn model(
         forget: forget_sheet(state),
         merge: super::select_merge::derive(&state.merge),
         card_notice: card_notice(state),
+        pick_toast: state.pick_toast.as_ref().map(|(_, toast)| toast.clone()),
     };
     // The loupe says what it shows and whether its next frames are ready.
     if model.loupe.open && !model.loupe.status.is_empty() {
@@ -2473,6 +2561,7 @@ pub(crate) fn item_info(
             push("Catalog", Some("In the catalog".to_owned()));
         }
         RowItem::Photo { .. } => {
+            push("Catalog", Some("In the catalog".to_owned()));
             push(
                 "Edited",
                 Some(if row.edited { "Yes" } else { "No" }.to_owned()),
