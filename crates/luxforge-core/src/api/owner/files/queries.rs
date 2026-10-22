@@ -171,6 +171,18 @@ pub(super) fn mounted(owner: &Owner) -> Mounts<'_> {
     files.surveys.known.now(&files.mounts.list())
 }
 
+/// The folder at `path`, on the volume `volume`, was just found on disk by the query thread, as
+/// `index.add-folder` finds the folder it adds. A folder on a volume the surveys do not know as
+/// mounted (one the platform's table leaves out, such as a Linux tmpfs) is offline unless a survey
+/// found it there, and none has looked for a folder added since: it is recorded as found, so it is
+/// not offline while it is there. One on a mounted volume is not, so it goes offline as soon as
+/// that volume is taken out.
+pub(super) fn found(owner: &mut Owner, path: PathBuf, volume: &VolumeId) {
+    if !mounted(owner).is_mounted(volume) {
+        owner.catalog.files.surveys.known.found(path);
+    }
+}
+
 /// The catalog's index for the index lane's reads on the owner, never opened here: the service's
 /// open index; none when the last survey found no index; or why the survey could not open it.
 pub(super) fn index(owner: &Owner) -> Result<Option<RefMut<'_, IndexDb>>, Error> {

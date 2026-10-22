@@ -148,6 +148,7 @@ fn add(
             })
         },
     )?;
+    queries::found(owner, canonical, &volume.id);
     if let Some(prepared) = prepared {
         super::enqueue_refresh(owner, prepared);
     }

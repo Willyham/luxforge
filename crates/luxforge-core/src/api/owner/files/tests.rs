@@ -1029,6 +1029,38 @@ fn indexed_folders_are_library_changes_with_undo_and_redo() {
     assert_eq!(removed_again["outcome"], "no-op");
 }
 
+/// A folder added on a volume the mount table leaves out (a Linux tmpfs, say) is on the volume of
+/// its device, which no survey learns as mounted: it is not offline while it is there, though no
+/// survey has looked for it since it was added.
+#[test]
+fn a_folder_added_on_a_volume_the_table_leaves_out_is_not_offline() {
+    let fixture = Fixture::new("unlisted");
+    let owner = fixture.owner();
+    let client = owner.register();
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::default())),
+    );
+    // The first survey of the empty table, before the folder is there to be found.
+    assert!(
+        ok(owner, client, "index.folders", json!({}))["folders"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let photos = fixture.dir.join("photos");
+    put(&photos.join("a.jpg"), &camera_jpeg());
+    let added = ok(
+        owner,
+        client,
+        "index.add-folder",
+        json!({"path": photos, "mutation": envelope("add")}),
+    );
+    assert_eq!(added["folder"]["offline"], false, "{added}");
+    let folders = ok(owner, client, "index.folders", json!({}))["folders"].clone();
+    assert_eq!(folders[0]["offline"], false, "{folders}");
+}
+
 /// After a restart, a retried `index.add-folder` or `index.remove-folder` is answered from the
 /// journal with the change its first attempt recorded, and records nothing.
 #[test]
