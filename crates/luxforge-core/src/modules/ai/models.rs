@@ -194,7 +194,7 @@ impl ModelFile {
         }
     }
 
-    fn capability(&self) -> CapabilityDescriptor {
+    pub(crate) fn capability(&self) -> CapabilityDescriptor {
         CapabilityDescriptor {
             id: self.download.into(),
             kind: CapabilityKind::DownloadArtifact {
@@ -530,6 +530,12 @@ impl DeveloperModels {
         let url = request.endpoint.url.as_str();
         [FAKE_GENERATOR, FAKE_TEXT_ENCODER]
             .into_iter()
+            .chain(
+                super::analysis::models::DEVELOPER_ANALYSIS
+                    .models
+                    .iter()
+                    .map(|model| model.file),
+            )
             .find(|file| file.url() == url)
     }
 }

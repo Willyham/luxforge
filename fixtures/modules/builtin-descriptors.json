@@ -6336,16 +6336,189 @@
             "with": [
               "generative-klein-4b"
             ]
+          },
+          {
+            "id": "download-segmenter-l0-encoder",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Hold the pointer over something in the photo and Luxforge outlines the whole object, ready to remove or to mask. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
+                  "picture": "paint-over",
+                  "title": "Point at it"
+                },
+                {
+                  "body": "Click to choose it, or paint across several and choose among them.",
+                  "picture": "candidates",
+                  "title": "Click or paint"
+                }
+              ],
+              "title": "Pick an object by pointing at it"
+            },
+            "kind": "download-artifact",
+            "purpose": "Set up object picking: this downloads the model that finds the object under the pointer. It runs on this computer, so your photos stay on it",
+            "resource": "segmenter-l0-encoder"
+          },
+          {
+            "backends": [
+              "coreml",
+              "directml",
+              "cpu"
+            ],
+            "id": "run-segmenter-l0-encoder",
+            "kind": "local-runtime",
+            "model": "session",
+            "precision": "fp32",
+            "purpose": "Analyse photos with Object picking: image encoder (EfficientViT-SAM L0)",
+            "resident_bytes": 402653184,
+            "resource": "segmenter-l0-encoder"
+          },
+          {
+            "id": "download-segmenter-l0-decoder",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Hold the pointer over something in the photo and Luxforge outlines the whole object, ready to remove or to mask. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
+                  "picture": "paint-over",
+                  "title": "Point at it"
+                },
+                {
+                  "body": "Click to choose it, or paint across several and choose among them.",
+                  "picture": "candidates",
+                  "title": "Click or paint"
+                }
+              ],
+              "title": "Pick an object by pointing at it"
+            },
+            "kind": "download-artifact",
+            "purpose": "Set up object picking: this downloads the model that finds the object under the pointer. It runs on this computer, so your photos stay on it",
+            "resource": "segmenter-l0-decoder"
+          },
+          {
+            "backends": [
+              "coreml",
+              "directml",
+              "cpu"
+            ],
+            "id": "run-segmenter-l0-decoder",
+            "kind": "local-runtime",
+            "model": "session",
+            "precision": "fp32",
+            "purpose": "Analyse photos with Object picking: prompt decoder (EfficientViT-SAM L0)",
+            "resident_bytes": 67108864,
+            "resource": "segmenter-l0-decoder"
           }
         ],
         "collapsed": true,
         "controls": [],
         "developer": false,
         "effects": [],
-        "hint": "Generative fill over the Corrections band's brush",
+        "hint": "Generative fill over the Corrections band's brush, and picking objects",
         "id": "luxforge.ai",
         "layout": "stacked",
-        "queries": [],
+        "queries": [
+          {
+            "id": "pick-object",
+            "notes": "the objects one prompt picks on this photograph, from the segmenter's cached analysis of it as it is now; not-ready naming task.analyse (data.requirements kind analysis) when it is not analysed. Answered by the host's query worker, one running and one waiting: a newer request replaces the waiting one, which is answered cancelled. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Offered only while the ai.analysis flag is on. Result: {decision (one, several or nothing), chosen (candidate positions), candidates [{candidate, prompt, index, predicted_iou, stability, stroke_coverage, object_coverage, area, bounds (normalized), preview {width, height, codes (base64 8-bit coverage over bounds, at most 65536 pixels)}}], analysis {input, models}}",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "points",
+                "name": "point",
+                "notes": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+                "points_max": 1,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "positive",
+                "notes": "positions on the object",
+                "points_max": 16,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "negative",
+                "notes": "positions off the object",
+                "points_max": 16,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "box",
+                "notes": "a box around the object: its top-left and bottom-right corners",
+                "points_max": 2,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "stroke",
+                "notes": "a brush stroke's path over one or more objects",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "radius",
+                "notes": "the stroke's brush radius; required with stroke",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": "chosen",
+                "kind": "enum",
+                "name": "previews",
+                "notes": "which candidates carry a coverage preview",
+                "options": [
+                  "chosen",
+                  "all",
+                  "none"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Pick object"
+          }
+        ],
         "reset": null,
         "resources": [
           {
@@ -6417,6 +6590,44 @@
             "tradeoff": "Needed only to describe what Replace puts in the region; needs 24 GB of memory",
             "url": "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/22c9fc8a8c7700b76a1789366280a6a5a1ad1120/Qwen3-4B-Q4_K_M.gguf",
             "version": "qwen3-4b-q4_k_m-22c9fc8a-tokenizer-e7b7dc27"
+          },
+          {
+            "bytes": 123112917,
+            "flag": "ai.analysis",
+            "format": "onnx",
+            "id": "segmenter-l0-encoder",
+            "license": "Apache-2.0",
+            "provenance": "MIT Han Lab EfficientViT-SAM L0, ONNX export as published in mit-han-lab/efficientvit-sam@a2f0c592 (onnx/l0_encoder.onnx and onnx/l0_decoder.onnx)",
+            "redirect_origins": [
+              "https://us.aws.cdn.hf.co",
+              "https://eu.aws.cdn.hf.co",
+              "https://cas-bridge.xethub.hf.co",
+              "https://cdn-lfs.hf.co"
+            ],
+            "sha256": "7a37ebd16e65c31253416e33897e7e6b07699127765d538e99ecbfaa3ad1e727",
+            "title": "Object picking: image encoder (EfficientViT-SAM L0)",
+            "tradeoff": "Finds the object under the pointer; about 120 MB",
+            "url": "https://huggingface.co/mit-han-lab/efficientvit-sam/resolve/a2f0c5929196a13ef1ffc9338d3f9e482e1e0e68/onnx/l0_encoder.onnx",
+            "version": "efficientvit-sam-l0-a2f0c592"
+          },
+          {
+            "bytes": 16470362,
+            "flag": "ai.analysis",
+            "format": "onnx",
+            "id": "segmenter-l0-decoder",
+            "license": "Apache-2.0",
+            "provenance": "MIT Han Lab EfficientViT-SAM L0, ONNX export as published in mit-han-lab/efficientvit-sam@a2f0c592 (onnx/l0_encoder.onnx and onnx/l0_decoder.onnx)",
+            "redirect_origins": [
+              "https://us.aws.cdn.hf.co",
+              "https://eu.aws.cdn.hf.co",
+              "https://cas-bridge.xethub.hf.co",
+              "https://cdn-lfs.hf.co"
+            ],
+            "sha256": "053e72c5703736a8a8a92482c9990c4a26dde9dcb7ff26b05843cf0bc433f42f",
+            "title": "Object picking: prompt decoder (EfficientViT-SAM L0)",
+            "tradeoff": "Outlines the object the encoder found; about 16 MB",
+            "url": "https://huggingface.co/mit-han-lab/efficientvit-sam/resolve/a2f0c5929196a13ef1ffc9338d3f9e482e1e0e68/onnx/l0_decoder.onnx",
+            "version": "efficientvit-sam-l0-a2f0c592"
           }
         ],
         "tasks": [
@@ -6531,6 +6742,123 @@
             "uses": [
               "run-klein",
               "run-klein-replace"
+            ]
+          },
+          {
+            "asset": true,
+            "flags": [
+              "ai.analysis"
+            ],
+            "id": "analyse",
+            "notes": "Runs the segmenter's image encoder over this photograph, so query.pick-object can answer. Result: {cached, input, guide, models}. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on.",
+            "parameters": [],
+            "profile": false,
+            "reads": "repair-output",
+            "title": "Analyse objects",
+            "uses": [
+              "run-segmenter-l0-encoder",
+              "run-segmenter-l0-decoder"
+            ]
+          },
+          {
+            "asset": true,
+            "flags": [
+              "ai.analysis"
+            ],
+            "id": "select-object",
+            "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, decision, candidate, models}, the artifact and provenance mask.add-model takes. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "points",
+                "name": "point",
+                "notes": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+                "points_max": 1,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "positive",
+                "notes": "positions on the object",
+                "points_max": 16,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "negative",
+                "notes": "positions off the object",
+                "points_max": 16,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "box",
+                "notes": "a box around the object: its top-left and bottom-right corners",
+                "points_max": 2,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "stroke",
+                "notes": "a brush stroke's path over one or more objects",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "radius",
+                "notes": "the stroke's brush radius; required with stroke",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 63,
+                "min": 0,
+                "name": "candidate",
+                "notes": "the candidate position query.pick-object answered for the same prompt; default the decision's one object",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "profile": false,
+            "reads": "repair-output",
+            "title": "Select object",
+            "uses": [
+              "run-segmenter-l0-encoder",
+              "run-segmenter-l0-decoder"
             ]
           }
         ],
@@ -11578,6 +11906,112 @@
           "unit": null
         }
       },
+      "query.pick-object": {
+        "mutates": false,
+        "notes": "the objects one prompt picks on this photograph, from the segmenter's cached analysis of it as it is now; not-ready naming task.analyse (data.requirements kind analysis) when it is not analysed. Answered by the host's query worker, one running and one waiting: a newer request replaces the waiting one, which is answered cancelled. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Offered only while the ai.analysis flag is on. Result: {decision (one, several or nothing), chosen (candidate positions), candidates [{candidate, prompt, index, predicted_iou, stability, stroke_coverage, object_coverage, area, bounds (normalized), preview {width, height, codes (base64 8-bit coverage over bounds, at most 65536 pixels)}}], analysis {input, models}}",
+        "optional": {
+          "box": "a box around the object: its top-left and bottom-right corners",
+          "entry_id": "entry to ask about; default the session's selection",
+          "negative": "positions off the object",
+          "point": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+          "positive": "positions on the object",
+          "previews": "which candidates carry a coverage preview",
+          "radius": "the stroke's brush radius; required with stroke",
+          "stroke": "a brush stroke's path over one or more objects"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "points",
+            "name": "point",
+            "notes": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+            "points_max": 1,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "positive",
+            "notes": "positions on the object",
+            "points_max": 16,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "negative",
+            "notes": "positions off the object",
+            "points_max": 16,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "box",
+            "notes": "a box around the object: its top-left and bottom-right corners",
+            "points_max": 2,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "stroke",
+            "notes": "a brush stroke's path over one or more objects",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "radius",
+            "notes": "the stroke's brush radius; required with stroke",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": "chosen",
+            "kind": "enum",
+            "name": "previews",
+            "notes": "which candidates carry a coverage preview",
+            "options": [
+              "chosen",
+              "all",
+              "none"
+            ],
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
+        ]
+      },
       "query.sample-curve": {
         "mutates": false,
         "notes": "257 samples of the curve through the submitted points",
@@ -11628,6 +12062,17 @@
         ],
         "sources": [
           "raw"
+        ]
+      },
+      "task.analyse": {
+        "mutates": true,
+        "mutation": "request",
+        "notes": "Runs the segmenter's image encoder over this photograph, so query.pick-object can answer. Result: {cached, input, guide, models}. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "optional": {},
+        "parameters": [],
+        "required": [
+          "mutation",
+          "asset_id"
         ]
       },
       "task.fill-generative": {
@@ -11745,6 +12190,110 @@
           "selection-points",
           "selection-radius",
           "model"
+        ]
+      },
+      "task.select-object": {
+        "mutates": true,
+        "mutation": "request",
+        "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, decision, candidate, models}, the artifact and provenance mask.add-model takes. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "optional": {
+          "box": "a box around the object: its top-left and bottom-right corners",
+          "candidate": "the candidate position query.pick-object answered for the same prompt; default the decision's one object",
+          "negative": "positions off the object",
+          "point": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+          "positive": "positions on the object",
+          "radius": "the stroke's brush radius; required with stroke",
+          "stroke": "a brush stroke's path over one or more objects"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "points",
+            "name": "point",
+            "notes": "one position, as hover or a click names it, in the content stage's normalized coordinates",
+            "points_max": 1,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "positive",
+            "notes": "positions on the object",
+            "points_max": 16,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "negative",
+            "notes": "positions off the object",
+            "points_max": 16,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "box",
+            "notes": "a box around the object: its top-left and bottom-right corners",
+            "points_max": 2,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "stroke",
+            "notes": "a brush stroke's path over one or more objects",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "radius",
+            "notes": "the stroke's brush radius; required with stroke",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 63,
+            "min": 0,
+            "name": "candidate",
+            "notes": "the candidate position query.pick-object answered for the same prompt; default the decision's one object",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "mutation",
+          "asset_id"
         ]
       }
     }

@@ -30,6 +30,12 @@ pub const AI_GENERATIVE: &str = "ai.generative";
 /// takes and how the editor draws meanwhile, never what an accepted patch renders.
 pub const AI_GENERATIVE_GPU_SHARING: &str = "ai.generative-gpu-sharing";
 
+/// The analysis and object picking experiment (`docs/design/ai-editing.md`, "Analysis and the
+/// per-photo cache"): whether the analysis tasks, `query.pick-object` and `task.select-object` are
+/// offered and the desktop draws the hover overlay. It gates what is offered, never how a stored
+/// selection renders.
+pub const AI_ANALYSIS: &str = "ai.analysis";
+
 /// The update check follows the `prerelease` channel as well as the default one, so release
 /// candidates are offered: how they are qualified (`docs/design/auto-update.md`). Off, a
 /// pre-release is never offered.
@@ -162,6 +168,14 @@ const FLAGS: &[FlagSpec] = &[
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
         requires: Some(AI_GENERATIVE),
+    },
+    FlagSpec {
+        id: AI_ANALYSIS,
+        title: "AI object picking",
+        description: "Analyses the photo with the installed segmenter so the pointer can pick objects in Remove, and offers the analysis and object selection tasks; nothing renders differently either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+        requires: None,
     },
     FlagSpec {
         id: PRERELEASE_CHANNEL,
@@ -633,6 +647,7 @@ mod tests {
                 RANGE_MASKS,
                 AI_GENERATIVE,
                 AI_GENERATIVE_GPU_SHARING,
+                AI_ANALYSIS,
                 PRERELEASE_CHANNEL
             ]
         );
@@ -643,6 +658,7 @@ mod tests {
                 RANGE_MASKS,
                 AI_GENERATIVE,
                 AI_GENERATIVE_GPU_SHARING,
+                AI_ANALYSIS,
                 PRERELEASE_CHANNEL,
                 "proof.choice",
                 "proof.number"
@@ -679,7 +695,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][5]["options"][1],
+            text["flags"][6]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -718,7 +734,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][5]["id"], "proof.choice",
+            listed["flags"][6]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -726,7 +742,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][5]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][6]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

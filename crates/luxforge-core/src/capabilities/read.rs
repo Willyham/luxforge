@@ -67,6 +67,32 @@ impl std::fmt::Debug for StagePlan {
     }
 }
 
+/// What an analysis is keyed by: the asset, its source identity and the repair stage's output
+/// identity, with the content stage's size, as the owner found them when a task or a worker query
+/// was requested. Read from the catalog row and the stack in `O(layers)`; no pixel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StageIdentity {
+    pub(crate) asset: crate::AssetId,
+    pub(crate) source: String,
+    pub(crate) prefix: String,
+    pub(crate) size: Stage,
+}
+
+impl StageIdentity {
+    /// The identity of `asset`'s repair stage whose new top correction's input is `input`.
+    pub(crate) fn of(asset: &crate::AssetId, input: &RepairInput) -> Self {
+        Self {
+            asset: asset.clone(),
+            source: input.source.clone(),
+            prefix: crate::modules::corrections_selection_prefix(input),
+            size: Stage {
+                width: input.dimensions[0],
+                height: input.dimensions[1],
+            },
+        }
+    }
+}
+
 /// One rectangle of a planned stage, as linear sRGB values.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StageRead {

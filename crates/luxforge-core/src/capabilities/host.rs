@@ -35,11 +35,13 @@ use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 mod permissions;
+mod queries;
 mod resources;
 mod runtime;
 mod tasks;
 
 pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
+pub(crate) use queries::WorkerQuery;
 pub(crate) use resources::{InstallParams, ResourceParams};
 pub(crate) use runtime::{LoadParams, UnloadParams};
 pub use tasks::TASK_PREFIX;
@@ -317,6 +319,9 @@ pub(crate) enum RequirementKind {
     Runtime,
     /// A flag that gates the task is off ([`crate::TaskNeeds::flags`]).
     Flag,
+    /// A query needs an analysis of the photograph as it is now, which the task its `id` names
+    /// computes.
+    Analysis,
 }
 
 impl RequirementKind {
@@ -326,6 +331,7 @@ impl RequirementKind {
             Self::Profile => "profile",
             Self::Runtime => "runtime",
             Self::Flag => "flag",
+            Self::Analysis => "analysis",
         }
     }
 }
@@ -355,6 +361,8 @@ pub(crate) struct CapabilityHost {
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
     resources: Option<ResourceStore>,
+    /// Which resources are installed, as their markers were last read.
+    installed: resources::InstalledMemo,
     transport: Arc<dyn Transport>,
     /// Queued and running tasks, at most one lane's worth.
     tasks: HashMap<JobId, tasks::TaskRun>,
@@ -362,25 +370,40 @@ pub(crate) struct CapabilityHost {
     runtime: Runtime,
     /// The admission of tasks' stage readers.
     reads: Arc<ModuleReads>,
+    /// What modules' analysis tasks computed, shared with every task and worker query.
+    analysis: Arc<super::analysis::AnalysisCache>,
+    /// The worker that answers modules' worker queries, started by the first.
+    queries: queries::QueryWorker,
     permissions: super::permission_watch::PermissionObserver,
 }
 
 impl CapabilityHost {
     pub(crate) fn new(config: HostConfig) -> Self {
+        let runtime = Runtime::new(
+            config.inference.clone(),
+            config.runtime_idle,
+            config.runtime_budget_bytes,
+        );
+        let queries = queries::QueryWorker::default();
+        // A release of a module's models, on whichever thread (an idle unload on the owner's loop,
+        // the memory signal from the desktop), stops the query worker that served it.
+        runtime.on_release({
+            let queries = queries.clone();
+            Arc::new(move |modules: &[String]| queries.released(modules))
+        });
         Self {
             preferences: crate::preferences::PreferenceStore::new(config.preferences_dir.clone()),
             themes: crate::theme::ThemeStore::new(config.preferences_dir.clone()),
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),
+            installed: resources::InstalledMemo::default(),
             transport: config.transport.clone(),
             tasks: HashMap::new(),
-            runtime: Runtime::new(
-                config.inference.clone(),
-                config.runtime_idle,
-                config.runtime_budget_bytes,
-            ),
+            runtime,
             reads: Arc::default(),
+            analysis: Arc::default(),
+            queries,
             permissions: super::permission_watch::PermissionObserver::new(
                 config.config_dir.clone(),
             ),
@@ -491,6 +514,13 @@ impl CapabilityHost {
         let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
+        // An install or a removal changed what is on disk: the next admission reads its marker.
+        if matches!(done.record.kind, JobKind::Install | JobKind::Remove)
+            && let (Some(module_id), Some(resource_id)) =
+                (&done.record.module_id, &done.record.resource_id)
+        {
+            self.installed.forget(module_id, resource_id);
+        }
         // A finished task publishes no more candidates; a cancelled one's are released. A job the
         // table forgot to make room for this one takes its candidates with it.
         let candidates = service.candidates();
@@ -882,16 +912,20 @@ impl CapabilityHost {
             let mut runtime = self.runtime.budget();
             runtime["available"] = json!(self.runtime.configured().is_ok());
             runtime["models"] = json!(self.runtime.status(&descriptor.id));
+            runtime["analysis_cache"] = self.analysis.status();
+            runtime["query_worker"] = json!(self.queries.running());
             status["runtime"] = runtime;
         }
         Ok(status)
     }
 }
 
-/// The owner stopping releases every loaded model and ends the idle thread.
+/// The owner stopping releases every loaded model, ends the idle thread and stops the query
+/// worker, whether or not it served a model that was resident.
 impl Drop for CapabilityHost {
     fn drop(&mut self) {
         self.runtime.shutdown();
+        self.queries.stop();
     }
 }
 

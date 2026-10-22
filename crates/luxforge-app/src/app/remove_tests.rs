@@ -1409,3 +1409,127 @@ fn a_candidate_the_owner_refuses_leaves_the_photograph_unfilled_and_says_why() {
     assert_eq!(filling.shown(), Some((second, 0)));
     assert_eq!(filling.model().notice, None);
 }
+
+/// Hover picking in Remove: with `ai.analysis` on and the fake segmenter installed, a pointer move
+/// is the `query.pick-object` an API client sends for it; the first is refused for want of an
+/// analysis, which the desktop runs once and then asks again; the answer's chosen object is drawn
+/// over its bounds from a preview within the cap; a move while a pick runs only changes what is
+/// asked next, and leaving the photograph clears the overlay.
+#[test]
+#[slow]
+fn hovering_in_remove_picks_the_object_under_the_pointer_after_one_analysis() {
+    use super::remove_hover::{PICK, pick, pick_params, queue_analysis};
+    let mut filling = Filling::opened();
+    filling.api("flags.set", json!({"flag": "ai.analysis", "value": true}));
+    testing::read_flags(&mut filling.editor);
+    for resource in ["fake-segmenter-encoder", "fake-segmenter-decoder"] {
+        filling.install(resource);
+    }
+    assert!(filling.editor.hover_picking());
+    let (owner, client) = (filling.owner(), filling.editor.client);
+    let asset = filling.asset.clone();
+    let revision = filling.editor.document.state.as_ref().unwrap().revision;
+    let point = [0.5, 0.5];
+
+    // The move sends exactly what an API client sends.
+    filling.remove(RemoveMessage::Hover(Some(point)));
+    let params = filling
+        .editor
+        .remove_reads
+        .hover
+        .last_request
+        .clone()
+        .unwrap();
+    assert_eq!(params, pick_params(&asset, point));
+    assert_eq!(filling.editor.remove_reads.hover.asking, Some(point));
+    // A second move while it runs is only remembered.
+    filling.remove(RemoveMessage::Hover(Some([0.52, 0.5])));
+    filling.remove(RemoveMessage::Hover(Some(point)));
+    assert_eq!(
+        filling.editor.remove_reads.hover.last_request,
+        Some(params.clone())
+    );
+
+    // Not analysed yet: the desktop runs the analysis once.
+    let refused = pick(&owner, client, params.clone()).unwrap_err();
+    assert_eq!(refused.code, "not-ready");
+    filling.remove(RemoveMessage::Picked {
+        asset: asset.clone(),
+        revision,
+        point,
+        result: Err(refused.clone()),
+    });
+    assert_eq!(
+        filling.editor.remove_reads.hover.analysing,
+        Some((asset.clone(), revision))
+    );
+    let job = queue_analysis(&owner, client, &asset).unwrap();
+    assert_eq!(filling.finished(&job)["status"], "ready");
+    filling.remove(RemoveMessage::Analysed {
+        asset: asset.clone(),
+        revision,
+        result: Ok(()),
+    });
+    assert_eq!(filling.editor.remove_reads.hover.asking, Some(point));
+    // Refused again for the same revision, the pick is shown refused and nothing is analysed
+    // again: one analysis a revision, whatever it answered.
+    filling.remove(RemoveMessage::Picked {
+        asset: asset.clone(),
+        revision,
+        point,
+        result: Err(refused),
+    });
+    assert_eq!(filling.editor.remove_reads.hover.analysing, None);
+    assert_eq!(filling.editor.remove_reads.hover.analyses, 1);
+    assert_eq!(filling.editor.remove_reads.hover.asking, None);
+    filling.remove(RemoveMessage::Hover(Some([0.51, 0.5])));
+    filling.remove(RemoveMessage::Hover(Some(point)));
+
+    // The answer is drawn: the chosen candidate's coverage over its bounds, within the cap.
+    let answer = pick(&owner, client, params.clone()).unwrap();
+    assert_eq!(answer.decision, "one");
+    let (width, height, rgba) = answer.image.clone().unwrap();
+    assert!(width * height <= 1 << 16);
+    assert_eq!(rgba.len() as u32, width * height * 4);
+    let independent = call(&owner, filling.agent, PICK, params.clone()).unwrap().0;
+    assert_eq!(independent["decision"], "one");
+    filling.remove(RemoveMessage::Picked {
+        asset: asset.clone(),
+        revision,
+        point,
+        result: Ok(answer.clone()),
+    });
+    let canvas = filling.editor.remove_canvas().unwrap();
+    assert!(canvas.picking);
+    let overlay = canvas.hover.expect("the hovered object is drawn");
+    assert_eq!(Some(overlay.bounds), answer.bounds);
+    assert_eq!(filling.editor.remove_reads.hover.answered, 1);
+
+    // Leaving the photograph clears it; leaving Remove stops picking.
+    filling.remove(RemoveMessage::Hover(None));
+    assert!(filling.editor.remove_canvas().unwrap().hover.is_none());
+    filling.update(Message::Corrections(CorrectionMessage::Kind("heal".into())));
+    assert!(!filling.editor.hover_picking());
+}
+
+#[test]
+fn a_hovered_object_is_outlined_whatever_its_colour() {
+    use super::remove_hover::highlight;
+    // A 4 x 4 square of full coverage in a 6 x 6 preview.
+    let mut codes = vec![0u8; 36];
+    for y in 1..5 {
+        for x in 1..5 {
+            codes[y * 6 + x] = 255;
+        }
+    }
+    let rgba = highlight(&codes, 6, 6);
+    let at = |x: usize, y: usize| &rgba[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4];
+    // The edge of the object is opaque white, whatever the photograph's colour under it.
+    assert_eq!(at(1, 1), [255, 255, 255, 255]);
+    assert_eq!(at(4, 2), [255, 255, 255, 255]);
+    // Inside, a white wash that takes no hue from the object.
+    assert_eq!(at(2, 2), [255, 255, 255, 89]);
+    // Outside the outline a translucent dark under-stroke, and nothing beyond it.
+    assert_eq!(at(0, 2), [0, 0, 0, 115]);
+    assert_eq!(at(0, 0)[3], 0);
+}
