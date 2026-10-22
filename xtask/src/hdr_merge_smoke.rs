@@ -747,7 +747,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let words: Vec<Value> = rows
         .iter()
         .skip(1)
-        .map(|row| row["exposure"].clone())
+        .map(|row| row["footer"].clone())
         .collect();
     let offsets = rows
         .iter()
@@ -764,10 +764,17 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && rows[0]["item"]["asset_id"] == result
             && rows[0]["expansion"] == "expanded"
             && rows[0]["badge"] == json!(["HDR \u{b7} 3 exposures", "HDR \u{b7} 3", true])
+            && rows[0]["footer"] == "Merged"
             && rows.iter().skip(1).all(|row| row["role"] == "original")
             && words == vec![json!("0 EV"), json!("\u{2212}2 EV"), json!("+2 EV")]
             && offsets,
         format!("expanded: the stack shows {rows:?}"),
+    )?;
+    // The grid frames the result and its originals as one group, which Collapse closes.
+    let framed = &select(expanded)["headers"]["stacks"];
+    ensure(
+        *framed == json!([[0, "HDR merge", "3 exposures", FRAMES + 1, "Collapse"]]),
+        format!("expanded: the grid frames the stacks {framed}"),
     )?;
     ensure(
         select(expanded)["merge"]["stack"]["expansion"] == "expanded",

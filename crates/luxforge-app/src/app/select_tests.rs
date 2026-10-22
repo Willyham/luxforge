@@ -124,6 +124,7 @@ fn summary(count: u32) -> ViewSummary {
                 len: 3,
                 picked: 0,
             }],
+            stacks: Vec::new(),
         },
         library_sequence: LibraryChangeSeq(1),
         index_revision: 1,

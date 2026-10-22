@@ -16,6 +16,8 @@ fn header(kind: MomentKind) -> MomentHeader {
             MomentKind::Burst => "Burst".into(),
             MomentKind::Bracket => "Bracket".into(),
             MomentKind::Panorama => "Panorama".into(),
+            MomentKind::HdrStack => "HDR merge".into(),
+            MomentKind::PanoramaStack => "Panorama merge".into(),
         },
         detail: "frames".into(),
         evidence: None,
