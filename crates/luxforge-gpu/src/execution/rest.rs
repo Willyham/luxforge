@@ -1158,12 +1158,8 @@ impl Executor {
                 // The budget holds this tile once what the tiles before it released has retired,
                 // their slots refitted to another window's size: it is drawn a frame later, as a
                 // tick waits for the slot it replaces.
-                Err(GpuFallback::BudgetExceeded { .. })
-                    if self
-                        .figures
-                        .retirement_pending
-                        .load(std::sync::atomic::Ordering::Acquire)
-                        > 0 =>
+                Err(refused @ GpuFallback::BudgetExceeded { .. })
+                    if self.retiring_since(&refused) =>
                 {
                     slot.waiting = true;
                     slot.retirement_waits += 1;
