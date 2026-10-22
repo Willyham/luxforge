@@ -361,12 +361,17 @@ pub enum ReadBoundary {
     /// content coordinates, which a fill reads its crop from. Its input identity is a new top
     /// correction's.
     RepairInput,
+    /// The repair layer's output: the developed, oriented photograph with its repairs applied,
+    /// before Detail, colour and geometry, in upright content coordinates, which an analysis reads.
+    /// Its identity is the source and the repair stage's output identity a model selection records.
+    RepairOutput,
 }
 
 impl ReadBoundary {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::RepairInput => "repair-input",
+            Self::RepairOutput => "repair-output",
         }
     }
 }

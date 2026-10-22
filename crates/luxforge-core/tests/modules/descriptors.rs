@@ -305,6 +305,12 @@ fn schema_list_names_developer_only_methods_only_in_developer_mode() {
         generated.contains(&"edit.set-controls".to_owned()),
         "{generated:?}"
     );
+    // A developer run's luxforge.ai also declares the scene and depth analyses: until their models
+    // are qualified, only the developer fakes serve them.
+    generated.extend([
+        "task.analyse-scene".to_owned(),
+        "task.analyse-depth".to_owned(),
+    ]);
     for method in &generated {
         assert!(
             !ordinary.contains_key(method),

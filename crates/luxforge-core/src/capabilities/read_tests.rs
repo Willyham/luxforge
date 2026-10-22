@@ -373,6 +373,20 @@ fn a_read_is_the_reference_renderers_own_and_reports_the_identity_accept_checks(
     }
     assert_ne!(before_input["earlier"], after_input["earlier"]);
     owner.stop();
+    // With a repair layer, the repair stage's output is the stage after it, named by the same
+    // identity as its input.
+    {
+        let service = fixture.service();
+        let plan = |boundary| service.stage_plan(&fixture.asset, boundary).unwrap();
+        let (input, output) = (
+            plan(ReadBoundary::RepairInput),
+            plan(ReadBoundary::RepairOutput),
+        );
+        assert!(matches!(input.stage, ReadStage::Before { layer: 0, .. }));
+        assert!(matches!(output.stage, ReadStage::Before { layer: 1, .. }));
+        assert_eq!(output.input, input.input);
+        assert_eq!(output.size, input.size);
+    }
 
     // Undone, the read again answers what it answered first, and the reference renderer's own read
     // of the same stage of an independently bound entry holds exactly the same values.
@@ -397,6 +411,11 @@ fn a_read_is_the_reference_renderers_own_and_reports_the_identity_accept_checks(
         panic!("the repair stage's input is the stage before a layer");
     };
     assert_eq!(layer, 0, "the repair stage comes before the Basic layer");
+    // Without a repair layer its output is its input.
+    let output = service
+        .stage_plan(&fixture.asset, ReadBoundary::RepairOutput)
+        .unwrap();
+    assert!(matches!(output.stage, ReadStage::Before { layer: 0, .. }));
     assert_eq!(
         result["stage"],
         json!([plan.input.dimensions[0], plan.input.dimensions[1]])

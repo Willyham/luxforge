@@ -385,8 +385,24 @@ fn nothing_loads_until_asked_and_a_loaded_model_is_kept_between_tasks() {
         assert!(methods.get(method).is_some(), "schema.list lists {method}");
     }
     let status = owner.status(MODULE);
+    let mut runtime = status["runtime"].clone();
+    // The analysis cache and the query worker are the host's, reported beside the resident set.
+    let cache = runtime
+        .as_object_mut()
+        .unwrap()
+        .remove("analysis_cache")
+        .unwrap();
+    assert_eq!(cache["entries"], 0, "{cache}");
     assert_eq!(
-        status["runtime"],
+        cache["budget_bytes"],
+        crate::capabilities::descriptor::ANALYSIS_CACHE_BYTES
+    );
+    assert_eq!(
+        runtime.as_object_mut().unwrap().remove("query_worker"),
+        Some(json!(false))
+    );
+    assert_eq!(
+        runtime,
         json!({"held_bytes": 0, "budget_bytes": fixture.budget, "available": true, "models": []})
     );
     owner.install(FILL);

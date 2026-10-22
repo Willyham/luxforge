@@ -350,6 +350,8 @@ impl CapabilityHost {
             .collect();
         if !held.is_empty() {
             self.unload_models(jobs, &descriptor.id, &held, announce);
+            // What the removed model computed can no longer be recomputed or answered as current.
+            self.analysis.forget_module(&descriptor.id);
         }
         let answer = |job: Option<&JobRecord>, state: ResourceState| {
             let mut value = json!({

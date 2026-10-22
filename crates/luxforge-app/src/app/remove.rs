@@ -122,6 +122,8 @@ pub(crate) struct Remove {
     /// The photograph's revision a candidate was accepted into: the status bar says so until the
     /// photograph moves or a new selection is painted.
     accepted: Option<u64>,
+    /// Hover picking ([`super::remove_hover`]).
+    pub(crate) hover: super::remove_hover::Hover,
 }
 
 /// The candidate previews the strip and the canvas draw, borrowed so each handle keeps its id and
@@ -153,6 +155,10 @@ pub(crate) struct RemoveCanvas<'a> {
     pub(crate) progress: Option<Option<f64>>,
     /// A candidate is shown in the photograph, so the selection is neither tinted nor outlined.
     pub(crate) shown: bool,
+    /// Hover picking is on: a pointer move over the photograph is a pick.
+    pub(crate) picking: bool,
+    /// The hovered object, drawn while no stroke is painted and no candidate is shown.
+    pub(crate) hover: Option<&'a super::remove_hover::HoverOverlay>,
 }
 
 /// A standard base64 string (with padding) as its bytes.
@@ -586,6 +592,18 @@ impl Editor {
                 self.remove.notice = None;
             }
             RemoveMessage::Accept => return self.remove_accept(),
+            RemoveMessage::Hover(point) => return self.hover_moved(point),
+            RemoveMessage::Picked {
+                asset,
+                revision,
+                point,
+                result,
+            } => return self.hover_picked(asset, revision, point, result),
+            RemoveMessage::Analysed {
+                asset,
+                revision,
+                result,
+            } => return self.hover_analysed(asset, revision, result),
             RemoveMessage::Setup(action) => {
                 return self.dispatch(Message::Capability(
                     super::message::capability::CapabilityMessage::from(action),
@@ -1276,7 +1294,13 @@ impl Editor {
         let shown = self
             .core_gesture()
             .is_some_and(|gesture| gesture.candidate().is_some() && gesture.draft.drafted());
+        let picking = self.hover_picking();
+        let hover = self
+            .hover_overlay()
+            .filter(|_| picking && !shown && self.remove_reads.painting.is_none());
         Some(RemoveCanvas {
+            picking,
+            hover,
             selection: selection.map(|selection| selection.points.as_slice()),
             live: self
                 .remove_reads
@@ -1306,6 +1330,8 @@ impl Editor {
             || self.remove_reads.starting.is_some()
             || self.remove.accepting.is_some()
             || !self.remove_reads.reading.is_empty()
+            || self.remove_reads.hover.asking.is_some()
+            || self.remove_reads.hover.analysing.is_some()
             || reading_tiers
         {
             return false;
@@ -1370,6 +1396,7 @@ impl Editor {
             "painting": self.remove_reads.painting.is_some(),
             "lock": self.generation_lock(),
             "last_request": self.remove_reads.last_request.as_ref().map(|(method, params)| json!({"method": method, "params": redact_params(method, params)})),
+            "hover": self.hover_record(),
         })
     }
 }
@@ -1387,6 +1414,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         editor.remove_reads.asked_tiers = false;
         editor.remove_reads.painting = None;
         editor.remove_reads.yielded = false;
+    }
+    if !editor.hover_picking() {
+        editor.hover_reset();
     }
     tasks.push(editor.reconcile_candidate());
     let Some((asset, revision)) = editor
