@@ -19,7 +19,7 @@ One sheet, read top to bottom in under a minute. No pages, no coach marks pointi
 
 | Step | Drawing | Text | Where |
 | --- | --- | --- | --- |
-| 1 **Browse** | A card and a folder flowing into three event rows | Open a camera card or any folder. Luxforge sorts it into events by date and place, and keeps each burst, bracket and panorama together as one moment. | Cards, Events and On disk, on the left |
+| 1 **Browse** | A card and a folder flowing into three day rows | Open a camera card or any folder. Luxforge groups it by day and camera, and keeps each burst, bracket and panorama together as one moment. | Cards and On disk, on the left |
 | 2 **Pick** | A moment of four frames, one picked with the accent check | Step through each moment, check focus at 100%, and pick the frames worth developing. Picks are kept as you go, even across a restart. | `Space` look · `Z` 100% · `P` pick · `↓` next moment |
 | 3 **Develop** | A catalog folder `2026 › Konstanz · Sep 2026 › 12 Sep` with **Develop 18** | Develop brings your picks into the catalog, filed by year, place and day, and opens them for editing. | Develop N, top right · `⌘↵` |
 

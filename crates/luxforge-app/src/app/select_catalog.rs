@@ -450,13 +450,13 @@ impl Editor {
                 let state = &mut self.select.state.catalog;
                 state.metadata = !state.metadata;
             }
+            // Only a view of the catalog has a search field.
             CatalogAction::FocusSearch => {
-                let field = if self.select.state.over_catalog() {
-                    crate::view::select_catalog::SEARCH_FIELD
-                } else {
-                    crate::view::select::SEARCH_FIELD
-                };
-                return iced::widget::operation::focus(iced::widget::Id::from(field));
+                if self.select.state.over_catalog() {
+                    return iced::widget::operation::focus(iced::widget::Id::from(
+                        crate::view::select_catalog::SEARCH_FIELD,
+                    ));
+                }
             }
             CatalogAction::ApplyPreset { id, name } => {
                 self.close_catalog_menus();

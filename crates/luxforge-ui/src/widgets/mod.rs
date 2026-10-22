@@ -198,7 +198,7 @@ pub use segmented::{filter_segment, filter_segment_track, keyed_segment};
 pub use select_strip::{STRIP_SLIDER_WIDTH, SelectStripModel, select_strip};
 pub use source_list::{
     SourceCount, SourceHeadingModel, SourceRowModel, Volume, source_heading, source_month,
-    source_row, source_tag,
+    source_row, source_rule, source_tag,
 };
 pub use title_actions::{DevelopButtonModel, WorkspaceTab, develop_button, workspace_switch};
 // -- end Select: chrome's exports.

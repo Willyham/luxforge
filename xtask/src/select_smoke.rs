@@ -5,12 +5,12 @@
 //! --images 120`, seed 1) into `generated/`: an index of files with no image data behind them,
 //! and a folder of real JPEGs. The desktop draws no previews yet, so every cell is the placeholder
 //! at its photograph's shape. The run asks the core for its own answers over a pristine copy
-//! before the editor touches it: the event list, the event "Konstanz · 12–13 Sep" viewed as the
+//! before the editor touches it: the indexed folder `Pictures` viewed with its subfolders as the
 //! desktop first shows it and grouped by Day, the rows of both, and the folder of real images read
 //! and viewed. The editor then opens that catalog with nothing
-//! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, its events
-//! listed; `D` explaining that a catalog folder is needed before browsing; the event
-//! opened from the sources panel (the grouped grid, the Info panel, the status line); the first cell
+//! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, On disk open
+//! with its indexed folders; `D` explaining that a catalog folder is needed before browsing; the
+//! indexed folder opened from On disk (the grouped grid, the Info panel, the status line); the first cell
 //! made active with `→`, then the next, then the selection extended with
 //! Shift+`→`; the Group chip set to Day; an agent's `pick.set` through a second client, which the
 //! desktop reads through its own event sync and answers by evaluating its view again; the grouping
@@ -84,10 +84,10 @@ const ASSETS: u32 = 3000;
 /// Real generated JPEGs, with EXIF and embedded thumbnails, and their ground truth in
 /// `images/manifest.json`: the folder browsed on disk.
 const IMAGES: u32 = 120;
-/// The event the run opens, as `event.list` names it, and as the sources panel and the title bar
-/// label it.
-const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
-const EVENT_LABEL: &str = "Konstanz";
+/// The indexed folder the run views, as On disk lists it and the title bar names it, and where
+/// the generated index has it (`generate_catalog`'s internal disk).
+const FOLDER: &str = "Pictures";
+const FOLDER_PATH: &str = "/Users/generated/Pictures";
 const DEVELOP_GUIDANCE: &str = "Choose a catalog folder to develop";
 /// The actor the evidence driver's second client picks as.
 const AGENT: &str = "evidence-agent";
@@ -106,7 +106,7 @@ const ADD_FOLDER_FILES: usize = 6;
 
 /// The picks the run makes, from the core's answers before it: the agent's, a file of the
 /// Day-grouped view the core said was not picked, on the first screen; the desktop's own `P`, an
-/// unpicked single file of the event as first shown, on the first screen, with its name; and the
+/// unpicked single file of the folder as first shown, on the first screen, with its name; and the
 /// bracket Pick all picks, by its first frame's position, and the frames it picks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picks {
@@ -139,8 +139,8 @@ pub fn plan(
             Step::new("select-empty", script::Step::key("g")),
             Step::new("develop-empty", script::Step::key("d")).status(DEVELOP_GUIDANCE),
             select("select", SelectStep::Switch(SelectWorkspace::Select)),
-            select("event", SelectStep::Source(EVENT.into()))
-                .status(format!("{EVENT_LABEL} \u{b7} {count} in view")),
+            select("viewed", SelectStep::Source(FOLDER.into()))
+                .status(format!("{FOLDER} \u{b7} {count} in view")),
             select("right", arrow(ArrowKey::Right, false)),
             select("right-again", arrow(ArrowKey::Right, false)),
             select("extended", arrow(ArrowKey::Right, true)),
@@ -161,7 +161,7 @@ pub fn plan(
                 },
             )
             .status(format!(
-                "{EVENT_LABEL} changed elsewhere and was read again \u{b7} {count} in view"
+                "{FOLDER} changed elsewhere and was read again \u{b7} {count} in view"
             )),
             select(
                 "regrouped",
@@ -383,8 +383,8 @@ fn sources_drawn(block: &Value) -> Value {
     })
 }
 
-/// The core's answers before the run: the events, the event as the desktop first views it and
-/// grouped by Day, where the items the arrows select move to under Day, the file the agent picks,
+/// The core's answers before the run: the indexed folders, the indexed folder `Pictures` as the
+/// desktop first views it and grouped by Day, where the items the arrows select move to under Day, the file the agent picks,
 /// and the folder of real images as the index lane reads it and the view it gives, beside the
 /// moments its manifest records.
 fn expect(generated: &Path) -> Result<Value> {
@@ -399,15 +399,8 @@ fn expect(generated: &Path) -> Result<Value> {
         .filter_map(|file| file["moment"].as_str())
         .collect();
     over_copy(generated, "expected", |owner, client| {
-        let list = ask(owner, client, "event.list", json!({}))?;
-        let events = list["events"]
-            .as_array()
-            .ok_or("event.list lists no events")?;
-        let event = events
-            .iter()
-            .find(|event| event["name"] == EVENT)
-            .ok_or_else(|| format!("the generated catalog has no event {EVENT}"))?;
-        let source = json!({"kind": "event", "event_id": event["id"]});
+        let indexed = ask(owner, client, "index.folders", json!({}))?;
+        let source = json!({"kind": "folder", "path": FOLDER_PATH, "subfolders": true});
         let first = ask(owner, client, "browse.view", json!({"source": source}))?;
         let first_rows = ask(
             owner,
@@ -452,10 +445,10 @@ fn expect(generated: &Path) -> Result<Value> {
                         .is_some_and(|at| (3..30).contains(&at))
             })
             .ok_or("the Day view's first screen has no unpicked file")?;
-        // The desktop's own pick: an unpicked single file of the event as first shown, on the first
+        // The desktop's own pick: an unpicked single file of the folder as first shown, on the first
         // screen, not the agent's; and the first bracket not all picked whose frames the first
         // block of rows holds and neither pick names.
-        let event_moments = first["groups"]["moments"]
+        let first_moments = first["groups"]["moments"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -464,7 +457,7 @@ fn expect(generated: &Path) -> Result<Value> {
             start..start + moment["len"].as_u64().unwrap_or(0)
         };
         let in_moment = |at: u64| {
-            event_moments
+            first_moments
                 .iter()
                 .any(|moment| span(moment).contains(&at))
         };
@@ -478,9 +471,9 @@ fn expect(generated: &Path) -> Result<Value> {
                     && (3..30).contains(&at)
                     && !in_moment(at)
             })
-            .ok_or("the event's first screen has no unpicked single file")?;
+            .ok_or("the folder's first screen has no unpicked single file")?;
         let file_at = |at: u64| first_rows.iter().find(|row| row["position"] == at);
-        let bracket = event_moments
+        let bracket = first_moments
             .iter()
             .find(|moment| {
                 let frames = span(moment);
@@ -493,7 +486,7 @@ fn expect(generated: &Path) -> Result<Value> {
                         })
                     })
             })
-            .ok_or("the event's first rows hold no bracket to pick")?;
+            .ok_or("the folder's first rows hold no bracket to pick")?;
         let bracket_files: Vec<Value> = span(bracket)
             .filter_map(file_at)
             .map(|row| json!({"file_id": row["file_id"], "path": row["path"], "picked": row["picked"]}))
@@ -501,7 +494,6 @@ fn expect(generated: &Path) -> Result<Value> {
         let cards = ask(owner, client, "card.list", json!({}))?;
         let volumes = ask(owner, client, "volume.list", json!({}))?;
         let info = ask(owner, client, "catalog.info", json!({}))?;
-        let undated = events.iter().any(|event| event["undated"] == true);
         // The folder of real images, read as the desktop reads it and viewed with its subfolders.
         let started = ask(
             owner,
@@ -535,9 +527,9 @@ fn expect(generated: &Path) -> Result<Value> {
                 "view": view_record(&folder),
                 "manifest": {"images": files.len(), "moments": moments.len()},
             },
-            "event": {"id": event["id"], "name": event["name"], "count": event["count"]},
-            "events": events.len(),
-            "months": list["months"].as_array().map_or(0, Vec::len) + usize::from(undated),
+            "viewed": {"source": source},
+            "indexed": indexed["folders"].as_array().into_iter().flatten()
+                .map(|folder| folder["path"].clone()).collect::<Vec<_>>(),
             "first": view_record(&first),
             "day": view_record(&day),
             "day_selection": moved,
@@ -553,7 +545,7 @@ fn expect(generated: &Path) -> Result<Value> {
                 "name": own["file_name"],
             },
             "bracket": {
-                "index": event_moments.iter().position(|moment| moment == bracket),
+                "index": first_moments.iter().position(|moment| moment == bracket),
                 "start": bracket["start"],
                 "len": bracket["len"],
                 "picked": bracket["picked"],
@@ -629,7 +621,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         let checked = plan.check(&evidence)?;
         (scenario.verify)(run, std::slice::from_ref(&checked))?;
         run.sources_unchanged()?;
-        run.record("backend", checked.at("event")?.state()["backend"].clone());
+        run.record("backend", checked.at("viewed")?.state()["backend"].clone());
         Ok(())
     })
 }
@@ -886,7 +878,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         select(active_develop)["shown"] == "select"
             && active_develop.state()["status"] == DEVELOP_GUIDANCE,
-        "D opened Develop from an event without a catalog folder",
+        "D opened Develop from a folder on disk without a catalog folder",
     )?;
     for key in ["selection", "picked", "library"] {
         ensure(
@@ -896,37 +888,41 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     }
     ensure(
         select(launch.at("select-again")?)["shown"] == "select",
-        "Select was not preserved after D with an active event frame",
+        "Select was not preserved after D with an active frame on disk",
     )?;
     checks.note(
         active_develop,
-        "D preserves the active event frame and asks for a catalog folder or grid development",
+        "D preserves the active frame on disk and asks for a catalog folder or grid development",
         json!({"selection": selected["selection"], "picked": selected["picked"]}),
     );
 
-    // `G`: Select, its events listed by month.
+    // `G`: Select, On disk open with the indexed folders the core lists.
     let shown = launch.at("select")?;
     let block = select(shown);
     ensure(block["shown"] == "select", "G did not show Select")?;
+    ensure(block["on_disk_open"] == true, "On disk is not open")?;
+    let indexed: Vec<Value> = block["source_rows"]["indexed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|row| row["name"].clone())
+        .collect();
+    let named: Vec<Value> = expected["indexed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.as_str())
+        .map(|path| {
+            json!(
+                Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+            )
+        })
+        .collect();
     ensure(
-        block["events"] == expected["events"],
-        format!(
-            "Select lists {} events, the core {}",
-            block["events"], expected["events"]
-        ),
-    )?;
-    let months = block["listed"].as_array().ok_or("No sources recorded")?;
-    ensure(
-        months.len() as u64 == expected["months"].as_u64().unwrap_or(0),
-        format!("The sources panel shows {} month headings", months.len()),
-    )?;
-    ensure(
-        months.iter().any(|month| {
-            month["events"]
-                .as_array()
-                .is_some_and(|events| events.iter().any(|event| event == EVENT_LABEL))
-        }),
-        format!("The sources panel lists no {EVENT_LABEL}"),
+        indexed == named && indexed.contains(&json!(FOLDER)),
+        format!("On disk lists the indexed folders {indexed:?}, index.folders {named:?}"),
     )?;
     let drawn = sources_drawn(block);
     ensure(
@@ -938,22 +934,22 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         shown,
-        "Select with the events, cards, volumes and catalog counts listed",
-        json!({"events": months, "source_rows": drawn}),
+        "Select with the cards, volumes, indexed folders and catalog counts listed",
+        json!({"indexed": indexed, "source_rows": drawn}),
     );
 
-    // The event opened: the grouped grid, the title bar, the status line and the Info panel.
-    let event = launch.at("event")?;
-    let block = select(event);
+    // The indexed folder opened: the grouped grid, the title bar, the status line and the Info
+    // panel.
+    let viewed = launch.at("viewed")?;
+    let block = select(viewed);
     ensure(
-        block["source"]["kind"] == "event"
-            && block["source"]["event_id"] == expected["event"]["id"],
-        format!("The view is of {}, not the event", block["source"]),
+        block["source"] == expected["viewed"]["source"],
+        format!("The view is of {}, not {FOLDER}", block["source"]),
     )?;
-    let first = view_is(event, "event", &expected["first"])?;
+    let first = view_is(viewed, "viewed", &expected["first"])?;
     ensure(
-        block["grouping"] == "day-camera-moment" && block["title"]["name"] == EVENT_LABEL,
-        format!("The event's title or grouping: {block}"),
+        block["grouping"] == "day-camera-moment" && block["title"]["name"] == FOLDER,
+        format!("The folder's title or grouping: {block}"),
     )?;
     let picked = expected["first"]["picked"].as_u64().unwrap_or(0);
     ensure(
@@ -973,9 +969,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "The Info panel describes an item before one is selected",
     )?;
     checks.note(
-        event,
-        "the event's grouped grid, as the core laid it out",
-        json!({"view": first, "grid": grid_drawn(event)?, "owner": event["step"]["owner_browse"]}),
+        viewed,
+        "the indexed folder's grouped grid, as the core laid it out",
+        json!({"view": first, "grid": grid_drawn(viewed)?, "owner": viewed["step"]["owner_browse"]}),
     );
 
     // The arrows: the first cell active, the next, then the selection extended with Shift.
@@ -1280,7 +1276,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             owner,
             client,
             "browse.view",
-            json!({"source": {"kind": "event", "event_id": expected["event"]["id"]}, "grouping": "day"}),
+            json!({"source": expected["viewed"]["source"], "grouping": "day"}),
         )?;
         let indexed = ask(owner, client, "index.folders", json!({}))?;
         ensure(

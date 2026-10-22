@@ -143,11 +143,10 @@ mod tests {
     #[slow]
     fn a_grid_scroll_moves_the_grid_once_per_frame_and_records_what_each_draws() {
         let (mut editor, catalog) = selecting();
-        let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
-            .press
-            .clone()
+        let Some(SourcePress::View(source)) =
+            editor.workspace.select.sources.indexed[0].press.clone()
         else {
-            panic!("an event row views its event");
+            panic!("an indexed folder row views its folder");
         };
         let _ = editor.update(Message::Select(SelectMessage::Source(source)));
         let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(

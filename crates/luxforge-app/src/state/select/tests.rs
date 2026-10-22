@@ -6,8 +6,8 @@ use luxforge_core::{
     AssetId,
     catalog_types::{
         BrowseSession, CameraGroup, DayGroup, Dimensions, EventId, ExifOrientation, FacetValue,
-        GroupLayout, LibraryChangeSeq, MomentRef, MonthCount, PositionRange, Thresholds,
-        ViewFilter, ViewSelection, ViewSort,
+        GroupLayout, LibraryChangeSeq, MomentRef, PositionRange, Thresholds, ViewFilter,
+        ViewSelection, ViewSort,
     },
 };
 use std::collections::BTreeMap;
@@ -675,104 +675,16 @@ fn the_select_sources_panel_lists_cards_volumes_folders_and_counts() {
     assert_eq!(sources(&none_missing).catalog[2].count, Count::None);
 }
 
-fn listed(name: &str, months: Vec<Month>, count: u32, picked: u32, offline: u32) -> Event {
-    Event {
-        id: EventId::new(),
-        name: name.into(),
-        // As the core labels it: the name without its dates, or the whole of an Undated one.
-        label: if months.is_empty() {
-            name.into()
-        } else {
-            name.split(" \u{b7} ").next().unwrap_or(name).into()
-        },
-        place: None,
-        first_day: months.first().map(|month| day(month.year, month.month, 12)),
-        last_day: months.last().map(|month| day(month.year, month.month, 13)),
-        undated: months.is_empty(),
-        months,
-        cameras: vec!["Leica Q2".into(), "Nikon Z 8".into()],
-        count,
-        picked,
-        offline,
-        roots: vec!["/Users/w/Pictures".into(), "/Volumes/NIKON Z 8".into()],
-        volumes: Vec::new(),
-    }
-}
-
-fn month(year: i32, month: u32) -> Month {
-    Month { year, month }
-}
-
-fn month_count(at: Month) -> MonthCount {
-    MonthCount {
-        month: at,
-        events: 1,
-        files: 1,
-        picked: 0,
-    }
-}
-
-/// Events by month, newest first, with picks over the total, a hollow dot when files are offline,
-/// an event spanning two months under both, the Undated at the end, and the chosen event selected.
+/// Before the volumes are read On disk offers the folder dialog alone and Catalog its four views;
+/// a folder browsed on disk is listed and selected while it is viewed; and On disk collapses.
 #[test]
-fn the_select_sources_panel_lists_events_by_month() {
-    let konstanz = listed("Konstanz", vec![month(2026, 9)], 1042, 18, 0);
-    let reichenau = listed(
-        "Reichenau",
-        vec![month(2026, 8), month(2026, 9)],
-        212,
-        0,
-        212,
-    );
-    let undated = listed("Undated", Vec::new(), 4, 0, 0);
+fn the_select_sources_panel_lists_on_disk_and_the_catalog() {
     let state = SelectState {
         shown: Shown::Select,
-        events: Some(EventList {
-            events: vec![konstanz.clone(), reichenau.clone(), undated],
-            months: vec![month_count(month(2026, 9)), month_count(month(2026, 8))],
-        }),
-        query: Some(ViewQuery::of(ViewSource::Event {
-            event_id: konstanz.id.clone(),
-        })),
         ..SelectState::default()
     };
     let model = sources(&state);
     let names = |rows: &[SourceRow]| rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>();
-    assert_eq!(
-        model
-            .months
-            .iter()
-            .map(|month| (month.label.clone(), names(&month.rows)))
-            .collect::<Vec<_>>(),
-        vec![
-            (
-                "September 2026".into(),
-                vec!["Konstanz".to_owned(), "Reichenau".into()]
-            ),
-            ("August 2026".into(), vec!["Reichenau".to_owned()]),
-            ("Undated".into(), vec!["Undated".to_owned()]),
-        ]
-    );
-    let first = &model.months[0].rows[0];
-    assert!(first.selected && first.dot.is_none());
-    assert_eq!(first.secondary.as_deref(), Some("12\u{2013}13 Sep"));
-    assert_eq!(
-        first.count,
-        Count::Picks {
-            picked: "18".into(),
-            total: "1,042".into()
-        }
-    );
-    assert_eq!(
-        first.press,
-        Some(SourcePress::View(ViewSource::Event {
-            event_id: konstanz.id.clone()
-        }))
-    );
-    let second = &model.months[0].rows[1];
-    assert!(second.dot == Some(Dot::Offline) && !second.selected);
-    assert_eq!(second.count, Count::Total("212".into()));
-    assert_eq!(model.events_note, None);
     // Before the volumes are read On disk offers the folder dialog alone; Catalog its four views,
     // Removed dimmed, counts blank until `catalog.info` answers; no Cards heading without a card.
     assert!(model.cards.is_empty());
@@ -811,37 +723,17 @@ fn the_select_sources_panel_lists_events_by_month() {
     let model = sources(&folder);
     assert_eq!(model.on_disk[0].name, "Dumps");
     assert!(model.on_disk[0].selected);
-    assert!(
-        model
-            .months
-            .iter()
-            .all(|month| month.rows.iter().all(|row| !row.selected))
-    );
-    // Before the list arrives, when it fails and when nothing matches, the panel says so.
-    let note = |state: SelectState| sources(&state).events_note;
+    assert!(model.on_disk_open, "On disk starts open");
+    let collapsed = SelectState {
+        on_disk_open: false,
+        ..folder
+    };
+    let model = sources(&collapsed);
+    assert!(!model.on_disk_open);
     assert_eq!(
-        note(SelectState::default()).as_deref(),
-        Some("Reading events\u{2026}")
+        model.on_disk[0].name, "Dumps",
+        "its rows are kept, only hidden"
     );
-    assert_eq!(
-        note(SelectState {
-            events_error: Some("validation: unknown method event.list".into()),
-            ..SelectState::default()
-        })
-        .as_deref(),
-        Some("Events unavailable")
-    );
-    assert_eq!(
-        note(SelectState {
-            events: Some(EventList::default()),
-            search: "Konst".into(),
-            ..SelectState::default()
-        })
-        .as_deref(),
-        Some("No events match")
-    );
-    assert_eq!(events_params("  Konst "), json!({"query": "Konst"}));
-    assert_eq!(events_params(""), json!({}));
 }
 
 /// A base query with a condition of every kind set, so a change that touched another part would
@@ -1466,27 +1358,21 @@ fn the_select_info_panel_describes_the_active_item() {
 /// in view; with Develop shown nothing is derived.
 #[test]
 fn the_select_title_and_status_line_sum_up_the_view() {
-    let konstanz = listed("Konstanz", vec![month(2026, 9)], 1042, 18, 0);
-    let source = ViewSource::Event {
-        event_id: konstanz.id.clone(),
+    let source = ViewSource::Folder {
+        path: "/Users/w/Pictures/Dumps".into(),
+        subfolders: true,
     };
     let mut state = SelectState {
         shown: Shown::Select,
-        events: Some(EventList {
-            events: vec![konstanz],
-            months: vec![month_count(month(2026, 9))],
-        }),
         query: Some(ViewQuery::of(source.clone())),
         home: Some("/Users/w".into()),
         ..SelectState::default()
     };
-    // Before the view is read: the event's own count, and the centre says it is reading.
+    // Before the view is read: the folder's name and where it is, and the centre says it is
+    // reading.
     let model = model(&state, &BrowseSession::default(), "Ready", Some(1), false);
-    assert_eq!(model.title.name, "Konstanz");
-    assert_eq!(
-        model.title.summary,
-        "12\u{2013}13 Sep 2026 \u{b7} 1,042 photographs \u{b7} Leica Q2, Nikon Z 8 \u{b7} from ~/Pictures and /Volumes/NIKON Z 8"
-    );
+    assert_eq!(model.title.name, "Dumps");
+    assert_eq!(model.title.summary, "~/Pictures/Dumps");
     assert_eq!(model.title.picks, 0);
     assert_eq!(model.note.as_deref(), Some("Reading the view\u{2026}"));
     assert_eq!(model.status.line, "Camera previews \u{b7} auto-organized");
@@ -1499,7 +1385,10 @@ fn the_select_title_and_status_line_sum_up_the_view() {
     read.picked = 18;
     state.summary = Some(read);
     let model = super::model(&state, &session(7, &[(0, 2)], Some(0)), "", None, false);
-    assert!(model.title.summary.contains("1,040 photographs"));
+    assert_eq!(
+        model.title.summary,
+        "1,040 photographs \u{b7} ~/Pictures/Dumps"
+    );
     assert_eq!(model.title.picks, 18);
     assert_eq!(model.note, None);
     assert_eq!(
@@ -1518,21 +1407,12 @@ fn the_select_title_and_status_line_sum_up_the_view() {
     assert_eq!(model.title.picks, 0);
     assert_eq!(model.status.line, "9 in view \u{b7} 5 selected");
     assert!(model.catalog_cells);
-    // A folder: its name and where it is.
-    state.query = Some(ViewQuery::of(ViewSource::Folder {
-        path: "/Users/w/Pictures/Dumps".into(),
-        subfolders: true,
-    }));
-    state.summary = None;
-    let model = super::model(&state, &BrowseSession::default(), "", None, false);
-    assert_eq!(model.title.name, "Dumps");
-    assert_eq!(model.title.summary, "~/Pictures/Dumps");
     // Nothing chosen yet; and Develop shown derives nothing.
     state.query = None;
     let model = super::model(&state, &BrowseSession::default(), "", None, false);
     assert_eq!(
         model.note.as_deref(),
-        Some("Choose an event, a folder on disk or a catalog view")
+        Some("Choose a card, a folder on disk or a catalog view")
     );
     assert!(!model.filter.enabled && !model.strip.enabled);
     state.shown = Shown::Develop;
@@ -1566,39 +1446,6 @@ fn select_bursts_and_cell_widths() {
     assert_eq!(state.catalog_cell_width, CELL_WIDTH_MIN);
     assert_eq!(state.files_cell_width, CELL_WIDTH_MAX);
     assert_eq!(clamp_cell_width(f32::NAN), FILES_CELL_WIDTH);
-}
-
-/// An event's row and title name it by the core's label, the name without its dates, which they
-/// show beside it; an Undated event by its folder under the Undated heading; and one whose name is
-/// its dates alone by that name.
-#[test]
-fn a_select_event_is_labelled_without_the_dates_it_is_shown_with() {
-    let labelled = |name: &str, label: &str, first: Option<LocalDay>| Event {
-        name: name.into(),
-        label: label.into(),
-        first_day: first,
-        last_day: first,
-        undated: first.is_none(),
-        ..listed(name, Vec::new(), 1, 0, 0)
-    };
-    let twelve = Some(day(2026, 9, 12));
-    assert_eq!(
-        event_label(&labelled(
-            "Konstanz \u{b7} 12\u{2013}13 Sep",
-            "Konstanz",
-            twelve
-        )),
-        "Konstanz"
-    );
-    assert_eq!(
-        event_label(&labelled(
-            "Undated \u{b7} From Anna",
-            "Undated \u{b7} From Anna",
-            None
-        )),
-        "From Anna"
-    );
-    assert_eq!(event_label(&labelled("12 Sep", "", twelve)), "12 Sep");
 }
 
 /// `P` clears only a selection the desktop has read whole and every one picked, and otherwise
@@ -1849,11 +1696,7 @@ fn the_select_sources_panel_lists_the_indexed_folders_with_their_state() {
     state.forget = Some("/Users/w/Card dumps".into());
     let sheet = forget_sheet(&state).unwrap();
     assert_eq!(sheet.title, "Remove Card dumps from indexed folders?");
-    assert!(
-        sheet
-            .note
-            .starts_with("~/Card dumps is no longer organized into events")
-    );
+    assert!(sheet.note.starts_with("~/Card dumps is no longer indexed"));
     assert!(sheet.note.contains("Nothing on disk changes"));
     assert_eq!(sheet.confirm, "Remove");
     // What Add a folder… and Remove from indexed folders… send, as an agent writes them.
@@ -1924,7 +1767,7 @@ fn a_card_connected_while_select_runs_is_offered_by_its_notice() {
     });
     assert_eq!(
         card_notice(&state).unwrap().body,
-        "612 photographs, organized into 3 events. Nothing is copied or changed."
+        "612 photographs. Nothing is copied or changed."
     );
     // Taken out: the notice goes with it.
     state.take_cards(Cards {

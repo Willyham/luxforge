@@ -43,17 +43,15 @@ use iced::{
 use luxforge_ui::{
     ButtonSize, ButtonTone, CatalogSheetModel, CellAvailability, CellStack, CellView, ChipEnd,
     FilterChipModel, FilterOption, FilterSegmentsModel, GridCell, GridLayout, Icon,
-    IconButtonModel, LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SearchFieldModel,
-    SelectStripModel, SourceCount, SourceHeadingModel, SourceRowModel, Tone as NoticeTone, Volume,
-    WorkspaceTab, caption, catalog_sheet, filter_bar, filter_chip, filter_segments,
-    header_icon_button, labelled_button, menu_list, notice_card, popover, search_field,
-    select_strip, source_heading, source_month, source_row, theme, thumbnail_grid,
-    title_bar_icon_button, truncated_text, with_tooltip, workspace_switch,
+    IconButtonModel, LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SelectStripModel,
+    SourceCount, SourceHeadingModel, SourceRowModel, Tone as NoticeTone, Volume, WorkspaceTab,
+    caption, catalog_sheet, filter_bar, filter_chip, filter_segments, header_icon_button,
+    labelled_button, menu_list, notice_card, popover, select_strip, source_heading, source_month,
+    source_row, source_rule, theme, thumbnail_grid, title_bar_icon_button, truncated_text,
+    with_tooltip, workspace_switch,
 };
 use luxforge_ui::{Derived, Element, Theme, Token};
 
-/// The sources panel's search field, as a focus target.
-pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
 /// The sources panel's scrolling list, as a scroll target.
 pub(crate) const SOURCES_SCROLL: &str = "luxforge.select.sources";
 
@@ -377,54 +375,23 @@ fn title_bar<'a>(
 
 // -- Sources panel ---------------------------------------------------------------------------------
 
-/// The search field, Cards when one is mounted, Events by month, On disk and Catalog scrolling
-/// above a rule, and the Performance section pinned under it, as in Develop.
+/// Cards when one is mounted, On disk and Catalog, a rule between each, scrolling above a rule,
+/// and the Performance section pinned under it, as in Develop.
 fn sources<'a>(
     model: &'a SourcesModel,
     catalog: &'a crate::state::select_catalog::CatalogSources,
     performance: &'a PerformanceModel,
     can_interact: bool,
 ) -> Element<'a, Message> {
-    let search = container(search_field(
-        &SearchFieldModel {
-            id: Some(SEARCH_FIELD.into()),
-            placeholder: "Search places, dates, cameras".into(),
-            value: model.search.clone(),
-            key_hint: None,
-            compact: true,
-        },
-        |text| Message::Select(SelectMessage::Search(text)),
-        None,
-    ))
-    .padding([0.0, 2.0]);
-    let mut events = Column::new()
-        .spacing(theme::SOURCE_LIST_SPACING)
-        .width(Length::Fill)
-        .push(source_heading(
-            &SourceHeadingModel {
-                label: "Events".into(),
-                tag: Some("auto".into()),
-                add: None,
-            },
-            None::<Message>,
-        ));
-    for month in &model.months {
-        events = events.push(source_month(&month.label));
-        for row in &month.rows {
-            events = events.push(source(row));
-        }
-    }
-    if let Some(note) = &model.events_note {
-        events =
-            events.push(container(caption(note.clone())).padding([2.0, theme::SOURCE_ROW_PADDING]));
-    }
-    let mut content = column![search];
+    let mut content = Column::new();
     if !model.cards.is_empty() {
-        content = content.push(section("Cards", &model.cards));
+        content = content
+            .push(section("Cards", &model.cards))
+            .push(source_rule());
     }
     let content = content
-        .push(events)
-        .push(on_disk(&model.on_disk, &model.indexed))
+        .push(on_disk(model))
+        .push(source_rule())
         .push(crate::view::select_catalog::catalog_section(
             &model.catalog,
             catalog,
@@ -452,17 +419,23 @@ fn sources<'a>(
     .into()
 }
 
-/// On disk: its heading with the `+` that adds a folder, the volumes and their open folders, the
-/// folder Browse a folder… chose, the indexed folders under their own label, then Browse a folder….
-fn on_disk<'a>(rows: &'a [SourceRow], indexed: &'a [SourceRow]) -> Element<'a, Message> {
+/// On disk: its heading with the `+` that adds a folder and the chevron that collapses it, then,
+/// while it is open, the volumes and their open folders, the folder Browse a folder… chose, the
+/// indexed folders under their own label, then Browse a folder….
+fn on_disk(model: &SourcesModel) -> Element<'_, Message> {
     let heading = source_heading(
         &SourceHeadingModel {
             label: "On disk".into(),
-            tag: None,
             add: Some("Add a folder\u{2026} (\u{2318}O)".into()),
+            expanded: Some(model.on_disk_open),
         },
         Some(Message::Select(SelectMessage::AddFolder)),
+        Some(Message::Select(SelectMessage::ToggleOnDisk)),
     );
+    if !model.on_disk_open {
+        return heading;
+    }
+    let (rows, indexed) = (model.on_disk.as_slice(), model.indexed.as_slice());
     // Browse a folder… stays last.
     let (body, browse) = match rows.split_last() {
         Some((last, body)) if last.press == Some(SourcePress::BrowseFolder) => (body, Some(last)),
@@ -487,10 +460,11 @@ fn section<'a>(label: &str, rows: &'a [SourceRow]) -> Element<'a, Message> {
     let heading = source_heading(
         &SourceHeadingModel {
             label: label.into(),
-            tag: None,
             add: None,
+            expanded: None,
         },
         None::<Message>,
+        None,
     );
     Column::with_children(std::iter::once(heading).chain(rows.iter().map(source)))
         .spacing(theme::SOURCE_LIST_SPACING)
@@ -501,7 +475,7 @@ fn section<'a>(label: &str, rows: &'a [SourceRow]) -> Element<'a, Message> {
 pub(crate) fn source(model: &SourceRow) -> Element<'_, Message> {
     let row = SourceRowModel {
         icon: match model.icon {
-            SourceIcon::Event | SourceIcon::AllPhotographs => Icon::Photos,
+            SourceIcon::AllPhotographs => Icon::Photos,
             SourceIcon::Folder => Icon::Folder,
             SourceIcon::Drive => Icon::Drive,
             SourceIcon::Recent => Icon::Clock,
@@ -519,10 +493,6 @@ pub(crate) fn source(model: &SourceRow) -> Element<'_, Message> {
         count: match &model.count {
             Count::None => SourceCount::None,
             Count::Total(total) => SourceCount::Total(total.clone()),
-            Count::Picks { picked, total } => SourceCount::Picks {
-                picked: picked.clone(),
-                total: total.clone(),
-            },
             Count::Unavailable(count) => SourceCount::Unavailable(count.clone()),
         },
         selected: model.selected,
