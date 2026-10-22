@@ -314,3 +314,202 @@ fn scene_and_depth_analyses_run_once_their_models_are_installed() {
     );
     owner.stop();
 }
+
+fn current_entry(owner: &Owner, asset: &AssetId) -> Value {
+    owner.ok("asset.state", json!({"asset_id": asset}))["current_entry"]["id"].clone()
+}
+
+#[test]
+#[slow]
+fn a_pick_answers_about_the_current_entry_the_analysis_reads() {
+    let fixture = Fixture::new("analysis-entries");
+    let [asset, _] = fixture.assets.clone();
+    let owner = segmenter_ready(&fixture);
+    let point = json!({"asset_id": asset, "point": [[0.5, 0.5]]});
+    // The refusal names the input the analysis must be of, and the analysis says which it is.
+    let refused = owner.pick(point.clone()).unwrap_err();
+    let data = refused.data.clone().unwrap();
+    assert_eq!(data["task"], "task.analyse", "{data}");
+    let job = owner.task(ANALYSE, json!({"asset_id": asset}));
+    let analysed = &job["result"]["result"]["analysed"];
+    assert_eq!(analysed, &data["analysis"], "{job}");
+    // A correction moves the repair stage on; the entry before it is analysed no longer.
+    let before = current_entry(&owner, &asset);
+    let revision = owner.edit_revision(&asset);
+    owner.ok(
+        "edit.add-correction",
+        json!({"asset_id": asset, "mutation": mutation_json(revision, "heal"),
+               "points": [[0.1, 0.1], [0.12, 0.1]], "radius": 0.02,
+               "source-x": 0.3, "source-y": 0.3}),
+    );
+    owner.task(ANALYSE, json!({"asset_id": asset}));
+    let current = current_entry(&owner, &asset);
+    assert_eq!(owner.pick(point.clone()).unwrap()["decision"], "one");
+    // Previewing the entry before it, or naming it, is refused by name, never `not-ready`: the
+    // analysis a task can run is of the current entry, so asking for it again would not help.
+    owner.ok_as(
+        owner.edit,
+        "preview.select",
+        json!({"asset_id": asset, "entry_id": before}),
+    );
+    for params in [
+        point.clone(),
+        with(point.clone(), json!({"entry_id": before})),
+    ] {
+        let error = owner.pick(params).unwrap_err();
+        assert_eq!(error.code, "validation", "{error:?}");
+        let data = error.data.unwrap();
+        assert_eq!(data["current_entry_id"], current, "{data}");
+        assert_eq!(data["entry_id"], before, "{data}");
+    }
+    // Naming the current entry answers while the session previews another.
+    let named = owner
+        .pick(with(point.clone(), json!({"entry_id": current})))
+        .unwrap();
+    assert_eq!(named["decision"], "one");
+    owner.ok_as(owner.edit, "preview.return-current", json!({}));
+    assert_eq!(owner.pick(point).unwrap(), named);
+    owner.stop();
+}
+
+#[test]
+#[slow]
+fn the_query_worker_stops_whenever_its_models_are_released() {
+    let fixture = Fixture::new("analysis-worker");
+    let [asset, _] = fixture.assets.clone();
+    let mut host = fixture.host(true);
+    host.runtime_idle = Duration::from_millis(150);
+    let owner = Owner::start(
+        &fixture.root.join("catalog.sqlite"),
+        registry(&fixture.gate),
+        host,
+    );
+    owner.analysis_flag(true);
+    owner.install(&FAKE_SEGMENTER_ENCODER.file);
+    owner.install(&FAKE_SEGMENTER_DECODER.file);
+    owner.task(ANALYSE, json!({"asset_id": asset}));
+    let point = json!({"asset_id": asset, "point": [[0.5, 0.5]]});
+    let worker = |owner: &Owner| owner.status(AI_MODULE)["runtime"]["query_worker"] == true;
+    let held =
+        |owner: &Owner| owner.status(AI_MODULE)["runtime"]["analysis_cache"]["held_bytes"].clone();
+    // A pick starts the worker and leaves the cache its working copy of the embedding.
+    owner.pick(point.clone()).unwrap();
+    assert!(worker(&owner));
+    assert_eq!(held(&owner), json!(4 << 20));
+    // The idle unload releases the decoder and stops the worker; the analysis stays.
+    wait_for("the idle decoder to stop the worker", || {
+        Some(()).filter(|_| !worker(&owner))
+    });
+    owner.pick(point.clone()).unwrap();
+    assert!(worker(&owner));
+    // So does the memory signal, from another thread.
+    assert!(owner.handle.memory_signal() > 0);
+    assert!(!worker(&owner));
+    owner.pick(point.clone()).unwrap();
+    // And an unload of one of the module's models.
+    owner.ok(
+        "module.runtime.unload",
+        json!({"module_id": AI_MODULE, "resource_id": FAKE_SEGMENTER_DECODER.file.resource}),
+    );
+    assert!(!worker(&owner));
+    owner.pick(point).unwrap();
+    // Removing a model stops it and forgets the analysis with its working copy.
+    owner.ok(
+        "module.resource.remove",
+        json!({"module_id": AI_MODULE, "resource_id": FAKE_SEGMENTER_ENCODER.file.resource}),
+    );
+    assert!(!worker(&owner));
+    assert_eq!(held(&owner), json!(0));
+    owner.stop();
+}
+
+#[test]
+#[slow]
+fn admission_reads_install_markers_once_and_loads_only_under_the_flag() {
+    let fixture = Fixture::new("analysis-admission");
+    let [asset, _] = fixture.assets.clone();
+    let owner = segmenter_ready(&fixture);
+    owner.analysis_flag(false);
+    // An analysis model loads only while its flag is on, as its tasks run only then.
+    let load = json!({"module_id": AI_MODULE, "resource_id": FAKE_SEGMENTER_DECODER.file.resource});
+    let refused = owner.fail("module.runtime.load", load.clone());
+    assert_eq!(refused.code, "not-ready", "{refused:?}");
+    assert_eq!(requirement_kinds(&refused), ["flag ai.analysis"]);
+    owner.analysis_flag(true);
+    owner.ok("module.runtime.load", load);
+    owner.task(ANALYSE, json!({"asset_id": asset}));
+    let point = json!({"asset_id": asset, "point": [[0.5, 0.5]]});
+    owner.pick(point.clone()).unwrap();
+    // A pick reads no marker: with the decoder's marker gone behind the editor's back, picks are
+    // still admitted from what the host read before ...
+    let marker = fixture
+        .root
+        .join("resources")
+        .join(AI_MODULE)
+        .join(FAKE_SEGMENTER_DECODER.file.resource)
+        .join(FAKE_SEGMENTER_DECODER.file.version)
+        .join(crate::capabilities::resources::INSTALLED_FILE);
+    fs::remove_file(&marker).unwrap();
+    for _ in 0..3 {
+        owner.pick(point.clone()).unwrap();
+    }
+    // ... until a read of the disk, here the resource list, finds it gone.
+    owner.ok("module.resource.list", json!({"module_id": AI_MODULE}));
+    let error = owner.pick(point).unwrap_err();
+    assert_eq!(
+        requirement_kinds(&error),
+        [format!("resource {}", FAKE_SEGMENTER_DECODER.file.resource)]
+    );
+    owner.stop();
+}
+
+#[test]
+#[slow]
+fn a_changed_original_is_never_analysed_or_selected_from() {
+    let fixture = Fixture::new("analysis-changed");
+    // A copy of a fixture the catalog does not hold yet, so the test can change it.
+    let original = fixture.root.join("original.jpg");
+    fs::copy(
+        luxforge_testbase::paths::fixture("s0/orientation-3.jpg"),
+        &original,
+    )
+    .unwrap();
+    let asset = EditorService::open_with(
+        &fixture.root.join("catalog.sqlite"),
+        registry(&fixture.gate),
+    )
+    .unwrap()
+    .import(&original)
+    .unwrap()
+    .asset
+    .id;
+    let owner = segmenter_ready(&fixture);
+    let job = owner.task(ANALYSE, json!({"asset_id": asset}));
+    assert_eq!(job["status"], "ready", "{job}");
+    let point = json!({"asset_id": asset, "point": [[0.5, 0.5]]});
+    assert_eq!(owner.pick(point.clone()).unwrap()["decision"], "one");
+    // Other bytes at the original's path: every task reads the original through the host-planned
+    // read, which verifies it, so none answers from the analysis of the bytes it had.
+    fs::copy(
+        luxforge_testbase::paths::fixture("s0/jpeg-scan-444-interleaved.jpg"),
+        &original,
+    )
+    .unwrap();
+    for (method, params) in [
+        (ANALYSE, json!({"asset_id": asset})),
+        (SELECT, point.clone()),
+    ] {
+        let response = owner.call(owner.edit, method, params);
+        let error = match response.error {
+            Some(error) if error.code == "preparation-required" => {
+                let job = owner.finished(&json!(error.job_id.expect("a preparation job")));
+                assert_eq!(job["status"], "failed", "{method}: {job}");
+                job["error"]["code"].as_str().unwrap().to_owned()
+            }
+            Some(error) => error.code,
+            None => panic!("{method} was queued over a changed original"),
+        };
+        assert_eq!(error, "source-unavailable", "{method}");
+    }
+    owner.stop();
+}

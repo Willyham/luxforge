@@ -54,7 +54,8 @@ pub(super) fn runtime_capability<'a>(
 
 impl CapabilityHost {
     /// The load a `local-runtime` capability names, with its installed resource's file; `None`
-    /// with the unmet requirement when the resource is not installed. Stats only.
+    /// with the unmet requirement when the resource is not installed. Asks only the resources the
+    /// capability names, of the install memo, which reads a marker only the first time.
     pub(super) fn load_request(
         &self,
         jobs: &Jobs,
@@ -75,8 +76,8 @@ impl CapabilityHost {
                 capability.id
             )));
         };
-        let rows = self.resource_rows(jobs, descriptor);
-        // The installed file of one declared resource, or the requirement it leaves unmet.
+        // The installed file of one declared resource, or the requirement it leaves unmet: the
+        // memo's state, so an admission reads no marker it has read before.
         let installed = |id: &String| -> Result<Result<ModelFile, Requirement>, Error> {
             let declared = descriptor.resource(id).ok_or_else(|| {
                 Error::internal(format!(
@@ -84,25 +85,19 @@ impl CapabilityHost {
                     capability.id
                 ))
             })?;
-            let row = rows.iter().find(|row| &row.id == id);
-            Ok(match row {
-                Some(row) if row.state == ResourceState::Installed && row.path.is_some() => {
-                    Ok(ModelFile::new(
-                        ModelIdentity {
-                            id: id.clone(),
-                            version: declared.version.clone(),
-                            sha256: declared.sha256.clone(),
-                        },
-                        row.path.clone().unwrap_or_default(),
-                    ))
-                }
-                row => Err(Requirement {
+            Ok(match self.resource_state(jobs, descriptor, declared) {
+                (ResourceState::Installed, Some(path)) => Ok(ModelFile::new(
+                    ModelIdentity {
+                        id: id.clone(),
+                        version: declared.version.clone(),
+                        sha256: declared.sha256.clone(),
+                    },
+                    path,
+                )),
+                (state, _) => Err(Requirement {
                     kind: RequirementKind::Resource,
                     id: id.clone(),
-                    state: row
-                        .map_or(ResourceState::NotInstalled, |row| row.state)
-                        .name()
-                        .into(),
+                    state: state.name().into(),
                 }),
             })
         };
@@ -149,6 +144,23 @@ impl CapabilityHost {
             )));
         }
         let capability = runtime_capability(descriptor, &request.resource_id)?;
+        // A model of a feature behind an experiment flag loads only while the flag is on, as its
+        // tasks and queries run only then.
+        if let Some(flag) = descriptor
+            .resource(&request.resource_id)
+            .and_then(|resource| resource.flag.as_deref())
+            && !crate::flags::live_toggle(&self.preferences, self.launch_flags(), flag)
+        {
+            return Err(Error::not_ready(format!(
+                "model {} is not ready: flag {flag} is off",
+                request.resource_id
+            ))
+            .with_data(json!({"requirements": [Requirement {
+                kind: RequirementKind::Flag,
+                id: flag.to_owned(),
+                state: "off".into(),
+            }]})));
+        }
         let answer = |state: &str, job: Option<(&JobId, crate::JobStatus)>| {
             let mut value = json!({
                 "module_id": descriptor.id,
@@ -251,11 +263,9 @@ impl CapabilityHost {
             }
         };
         let (unloaded, cancelled) = self.unload_models(jobs, &descriptor.id, &resources, announce);
-        // Unloading every model of the module ends the tool that queried them: its query worker
-        // stops with them.
-        if request.resource_id.is_none() {
-            self.queries.stop();
-        }
+        // Unloading the module's models ends the tool that queried them: a query worker that
+        // served the module stops with them, whether or not a model was resident.
+        self.queries.released(std::slice::from_ref(&descriptor.id));
         if !unloaded.is_empty() || !cancelled.is_empty() {
             announce_once(announce, origin);
         }

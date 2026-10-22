@@ -9,7 +9,7 @@ use super::{
     },
     generative,
     models::{DEVELOPER_MODELS, GenerativeModel, ModelFile, PRODUCT_MODELS},
-    objects::{self, Current, MAX_PROMPT_POINTS},
+    objects::{self, MAX_PROMPT_POINTS},
     selection::{EFFECT_POINTS, EFFECT_RADIUS, SELECTION_POINTS, SELECTION_RADIUS, Selection},
 };
 use crate::{
@@ -135,8 +135,6 @@ pub(crate) struct AiModule {
     descriptor: ModuleDescriptor,
     models: &'static [GenerativeModel],
     analysis: AnalysisModels,
-    /// The query worker's held embedding ([`Current`]).
-    current: Current,
     #[cfg(test)]
     pub(crate) gate: Option<std::sync::Arc<luxforge_testbase::Gate>>,
 }
@@ -263,7 +261,6 @@ impl AiModule {
             },
             models,
             analysis,
-            current: Current::default(),
             #[cfg(test)]
             gate: None,
         }
@@ -430,8 +427,25 @@ impl CapabilityModule for AiModule {
         parameters: &Map<String, Value>,
         admission: &TaskAdmission,
     ) -> Result<(), Error> {
-        // An analysis reads the stage a band at a time and holds outputs of fixed bounds.
+        // An analysis has no region: it reads the whole stage a band at a time and holds outputs
+        // bounded by construction (the input at most 3 MiB, the guide 16 MiB, an embedding
+        // 4 MiB), so the fill's region and candidate checks do not apply. A selection's prompt is
+        // checked here against the analysis input the stage reduces to, so a malformed one is
+        // refused before anything is queued; its artifact binds through `mask.create-model`, which
+        // checks the stack's artifact budget as for any artifact.
         if self.analysis_models(task_id).is_some() {
+            if task_id == SELECT_OBJECT {
+                let stage = admission
+                    .stage
+                    .ok_or_else(|| Error::internal("a selection is admitted with its stage"))?;
+                objects::Request::parse(
+                    parameters,
+                    super::analysis::reduced_size(
+                        (stage.width, stage.height),
+                        super::analysis::ANALYSIS_SIDE,
+                    ),
+                )?;
+            }
             return Ok(());
         }
         let request = self.request(task_id, parameters)?;
@@ -501,7 +515,7 @@ impl CapabilityModule for AiModule {
         if query_id != PICK_OBJECT {
             return Err(Error::validation(format!("unknown query {query_id}")));
         }
-        objects::pick_object(context, &self.analysis, &self.current, parameters)
+        objects::pick_object(context, &self.analysis, parameters)
     }
 
     /// `fill_tiers`: each tier the module has, whether it is offered now and why not, and its

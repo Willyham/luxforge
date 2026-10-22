@@ -19,7 +19,69 @@ use crate::{
     jobs::{JobControl, JobKind, JobRecord, JobStatus, Jobs, NewJob, Work},
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex, PoisonError},
+};
+
+/// Which resources are installed, as the host last read them from their markers: a model's
+/// admission (a worker query's on every hover move, a load's, a task's) asks this, not the disk.
+/// An entry is read once, refreshed whenever the resource list reads the disk, and forgotten when
+/// an install or a removal of the resource is queued or ends, so the next admission reads its
+/// marker again. A file deleted behind the editor's back is found when its model is opened.
+#[derive(Default)]
+pub(crate) struct InstalledMemo {
+    /// The installed file by module, resource and version; `None` for a resource read as not
+    /// installed.
+    entries: Mutex<HashMap<(String, String, String), Option<PathBuf>>>,
+}
+
+impl InstalledMemo {
+    fn key(module_id: &str, resource: &ResourceDescriptor) -> (String, String, String) {
+        (
+            module_id.to_owned(),
+            resource.id.clone(),
+            resource.version.clone(),
+        )
+    }
+
+    /// The installed file of `resource`, from the memo or read from its marker once.
+    pub(crate) fn path(
+        &self,
+        store: &transfer::ResourceStore,
+        module_id: &str,
+        resource: &ResourceDescriptor,
+    ) -> Option<PathBuf> {
+        let key = Self::key(module_id, resource);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(path) = entries.get(&key) {
+            return path.clone();
+        }
+        let path = store
+            .installed(module_id, resource)
+            .map(|_| store.file_path(module_id, resource));
+        entries.insert(key, path.clone());
+        path
+    }
+
+    /// What a read of the disk found of `resource`.
+    fn record(&self, module_id: &str, resource: &ResourceDescriptor, path: Option<PathBuf>) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(Self::key(module_id, resource), path);
+    }
+
+    /// Forget every version of `resource_id` of `module_id`: an install or removal of it was
+    /// queued or ended.
+    pub(crate) fn forget(&self, module_id: &str, resource_id: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(module, resource, _), _| module != module_id || resource != resource_id);
+    }
+}
 
 host_params! {
     /// `module.resource.remove`.
@@ -97,6 +159,15 @@ impl CapabilityHost {
                         .installed(&descriptor.id, resource)
                         .map(|marker| (store, marker))
                 });
+                if let Some(store) = &self.resources {
+                    self.installed.record(
+                        &descriptor.id,
+                        resource,
+                        installed
+                            .as_ref()
+                            .map(|_| store.file_path(&descriptor.id, resource)),
+                    );
+                }
                 if let Some((store, marker)) = installed {
                     row.state = ResourceState::Installed;
                     row.path = Some(store.file_path(&descriptor.id, resource));
@@ -123,6 +194,38 @@ impl CapabilityHost {
                 row
             })
             .collect()
+    }
+
+    /// The state of one declared resource as a model's admission needs it, and its installed
+    /// file: installed by the memo ([`InstalledMemo`]), installing or failed by its jobs, otherwise
+    /// not installed. Reads the disk only for a resource the memo does not hold.
+    pub(super) fn resource_state(
+        &self,
+        jobs: &Jobs,
+        descriptor: &ModuleDescriptor,
+        resource: &ResourceDescriptor,
+    ) -> (ResourceState, Option<PathBuf>) {
+        if let Some(path) = self
+            .resources
+            .as_ref()
+            .and_then(|store| self.installed.path(store, &descriptor.id, resource))
+        {
+            return (ResourceState::Installed, Some(path));
+        }
+        let state = if jobs
+            .live(JobKind::Install, &descriptor.id, Some(&resource.id))
+            .is_some()
+        {
+            ResourceState::Installing
+        } else if jobs
+            .last_finished(JobKind::Install, &descriptor.id, Some(&resource.id))
+            .is_some_and(|job| job.status == JobStatus::Failed)
+        {
+            ResourceState::Failed
+        } else {
+            ResourceState::NotInstalled
+        };
+        (state, None)
     }
 
     /// `module.resource.list`: the declared resources and the storage they share.
@@ -348,10 +451,13 @@ impl CapabilityHost {
                 _ => None,
             })
             .collect();
+        self.installed.forget(&descriptor.id, &resource.id);
         if !held.is_empty() {
             self.unload_models(jobs, &descriptor.id, &held, announce);
-            // What the removed model computed can no longer be recomputed or answered as current.
+            // What the removed model computed can no longer be recomputed or answered as current,
+            // and the query worker that served the module stops with it.
             self.analysis.forget_module(&descriptor.id);
+            self.queries.released(std::slice::from_ref(&descriptor.id));
         }
         let answer = |job: Option<&JobRecord>, state: ResourceState| {
             let mut value = json!({

@@ -16,8 +16,15 @@ pub(crate) const MASKS: &str = "masks";
 pub(crate) const IOU: &str = "iou_predictions";
 /// The embedding's shape: 256 channels over a 64² grid.
 pub(crate) const EMBEDDING_SHAPE: [u64; 4] = [1, 256, 64, 64];
-/// Prompts per decoder call; bounds the `(B, 1, 256, 256)` output at 16 MiB.
+/// Prompts per decoder call. The decoder's output is `(B, M, 256, 256)` in `f32`, `M` masks a
+/// prompt: EfficientViT-SAM L0 answers one, so a call's output is at most 16 MiB; the developer
+/// fake answers three. An answer of more than [`MAX_MASKS_PER_PROMPT`] masks a prompt is refused,
+/// so no call's output exceeds 64 MiB.
 const MAX_BATCH: usize = 64;
+/// The most masks a decoder may answer for one prompt.
+const MAX_MASKS_PER_PROMPT: u64 = 4;
+/// The most a decoder's mask may measure on a side: SAM's 256² low-resolution logits.
+const MASK_SIDE: u64 = 256;
 
 /// An analysis input's encoder output, reusable for every prompt on that input: what the analysis
 /// cache holds for the segmenter. The tensor is held as the decoder takes it, so a decode moves it
@@ -209,7 +216,13 @@ fn decode_batch(
             masks.shape()
         )));
     };
-    if batch != b || iou.shape() != [b, m] || m == 0 || h == 0 || w == 0 {
+    if batch != b
+        || iou.shape() != [b, m]
+        || m == 0
+        || m > MAX_MASKS_PER_PROMPT
+        || !(1..=MASK_SIDE).contains(&h)
+        || !(1..=MASK_SIDE).contains(&w)
+    {
         return Err(Error::incompatible(format!(
             "the segmenter answered masks {:?} and scores {:?} for {b} prompts",
             masks.shape(),

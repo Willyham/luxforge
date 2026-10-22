@@ -8,11 +8,15 @@
 //! first and the last. The owner's query worker does the same with requests from every client. The
 //! answer's chosen candidate carries its coverage over its bounds, at most
 //! `PREVIEW_PIXELS` (65,536) pixels however large the photograph, which is decoded and tinted off
-//! the update loop into one image the canvas draws over the bounds.
+//! the update loop into one image the canvas draws over the bounds: Corrections' overlay treatment,
+//! which takes no hue from the photograph, so it reads on an object of any colour — the coverage
+//! washed white, inside a white outline over a translucent dark under-stroke.
 //!
-//! A pick of a photograph not analysed as it is now is refused `not-ready` naming `task.analyse`;
-//! the desktop then runs that task once for the photograph's revision and asks again when it ends.
-//! An analysis that fails is not asked again until the photograph moves.
+//! A pick answers about the photograph's current entry, so hover picks only while the current
+//! state is on screen, as an edit needs. A pick of a photograph not analysed as it is now is
+//! refused `not-ready` naming `task.analyse`; the desktop then runs that task at most once for the
+//! photograph's revision (which names its current entry), whatever it answers, and asks again when
+//! it ends. A pick refused again for the same revision is shown as refused, not analysed again.
 use super::{
     Editor,
     decoded_handles::image_handle,
@@ -31,9 +35,15 @@ pub(crate) const ANALYSE: &str = "task.analyse";
 /// The picker's query and the analysis task, without their prefixes.
 const PICK_QUERY: &str = "pick-object";
 const ANALYSE_TASK: &str = "analyse";
-/// The tint of a hovered object: the selection's, at full coverage.
-const TINT: [u8; 3] = [255, 69, 69];
-const TINT_ALPHA: f32 = 0.38;
+/// The wash over a fully covered pixel of the hovered object: white, translucent enough that the
+/// object stays readable under it. A wash in a hue would vanish over an object of that hue.
+const WASH: [u8; 3] = [255, 255, 255];
+const WASH_ALPHA: f32 = 0.35;
+/// The outline, opaque white, and the under-stroke outside it, Corrections' translucent dark ink.
+const OUTLINE: [u8; 4] = [255, 255, 255, 255];
+const UNDER_STROKE: [u8; 4] = [0, 0, 0, 115];
+/// The coverage code at and above which a preview pixel is inside the object.
+const INSIDE: u8 = 128;
 /// The most times one analysis waits through a source preparation.
 const PREPARATION_RETRIES: usize = 4;
 
@@ -66,8 +76,11 @@ pub(crate) struct Hover {
     pub(crate) asking: Option<[f64; 2]>,
     /// The analysis in flight, by photograph and revision.
     pub(crate) analysing: Option<(AssetId, u64)>,
-    /// The photograph and revision whose analysis failed, not asked again until it moves.
-    refused: Option<(AssetId, u64)>,
+    /// The photograph and revision last analysed for the picker, whatever the analysis answered:
+    /// not analysed again until it moves.
+    analysed: Option<(AssetId, u64)>,
+    /// Analyses run, for the evidence log and tests.
+    pub(crate) analyses: u64,
     /// What the canvas draws.
     pub(crate) overlay: Option<HoverOverlay>,
     /// Picks answered, for the evidence log and tests.
@@ -91,7 +104,7 @@ pub(crate) fn pick_offered(
 }
 
 /// The answer of `query.pick-object` as the overlay it draws: the first chosen candidate's bounds
-/// and its coverage tinted. `O(preview pixels)`.
+/// and its coverage, washed and outlined. `O(preview pixels)`.
 pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
     let decision = answer["decision"].as_str().unwrap_or("nothing").to_owned();
     let chosen = answer["chosen"][0].as_u64().map(|index| index as usize);
@@ -125,18 +138,55 @@ pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
             codes.len()
         ));
     }
-    let rgba = codes
-        .iter()
-        .flat_map(|&code| {
-            let alpha = (f32::from(code) * TINT_ALPHA).round() as u8;
-            [TINT[0], TINT[1], TINT[2], alpha]
-        })
-        .collect();
+    let (width, height) = (width as usize, height as usize);
     Ok(Picked {
         decision,
         bounds,
-        image: Some((width as u32, height as u32, rgba)),
+        image: Some((
+            width as u32,
+            height as u32,
+            highlight(&codes, width, height),
+        )),
     })
+}
+
+/// A coverage preview of `width × height` codes as the highlight's RGBA: each pixel washed by its
+/// coverage, an inside pixel with an outside 4-neighbour (or on the preview's edge) drawn as the
+/// outline, and an outside pixel beside the outline as the under-stroke.
+pub(crate) fn highlight(codes: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let inside = |x: isize, y: isize| {
+        x >= 0
+            && y >= 0
+            && (x as usize) < width
+            && (y as usize) < height
+            && codes[y as usize * width + x as usize] >= INSIDE
+    };
+    let edge = |x: isize, y: isize| {
+        inside(x, y)
+            && [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .iter()
+                .any(|(dx, dy)| !inside(x + dx, y + dy))
+    };
+    let mut rgba = Vec::with_capacity(codes.len() * 4);
+    for y in 0..height as isize {
+        for x in 0..width as isize {
+            let pixel = if edge(x, y) {
+                OUTLINE
+            } else if !inside(x, y)
+                && [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .any(|(dx, dy)| edge(x + dx, y + dy))
+            {
+                UNDER_STROKE
+            } else {
+                let code = codes[y as usize * width + x as usize];
+                let alpha = (f32::from(code) * WASH_ALPHA).round() as u8;
+                [WASH[0], WASH[1], WASH[2], alpha]
+            };
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    rgba
 }
 
 /// Queue `task.analyse` on `asset`, waiting through any source preparation its read asks for: its
@@ -220,9 +270,12 @@ fn needs_analysis(error: &CallError) -> bool {
 }
 
 impl Editor {
-    /// Whether hover picking is on: Remove is chosen and the picker is offered.
+    /// Whether hover picking is on: Remove is chosen, the picker is offered and the current state,
+    /// which a pick answers about, is on screen.
     pub(crate) fn hover_picking(&self) -> bool {
-        self.remove_active() && pick_offered(&self.modules, self.settings.flags.as_ref())
+        self.remove_active()
+            && pick_offered(&self.modules, self.settings.flags.as_ref())
+            && crate::state::at_current(self.document.state.as_ref(), &self.session)
     }
 
     /// The photograph on screen and its revision.
@@ -241,7 +294,7 @@ impl Editor {
             "picking": self.hover_picking(),
             "asking": hover.asking,
             "analysing": hover.analysing.is_some(),
-            "refused": hover.refused.is_some(),
+            "analyses": hover.analyses,
             "answered": hover.answered,
             "overlay": self.hover_overlay().map(|overlay| json!({"bounds": overlay.bounds})),
             "last_request": hover.last_request.as_ref().map(|params| json!({"method": PICK, "params": params})),
@@ -336,7 +389,11 @@ impl Editor {
                 };
             }
             Ok(_) => {}
-            Err(error) if current && needs_analysis(&error) => {
+            Err(error)
+                if current
+                    && needs_analysis(&error)
+                    && self.remove_reads.hover.analysed != Some((asset.clone(), revision)) =>
+            {
                 return self.hover_analyse(asset, revision);
             }
             Err(error) => {
@@ -355,13 +412,15 @@ impl Editor {
         Task::none()
     }
 
-    /// Analyse the photograph for the picker, once per revision.
+    /// Analyse the photograph for the picker, at most once per revision whatever it answers.
     fn hover_analyse(&mut self, asset: AssetId, revision: u64) -> Task<Message> {
         let key = (asset.clone(), revision);
         let hover = &mut self.remove_reads.hover;
-        if hover.refused.as_ref() == Some(&key) || hover.analysing.is_some() {
+        if hover.analysed.as_ref() == Some(&key) || hover.analysing.is_some() {
             return Task::none();
         }
+        hover.analysed = Some(key.clone());
+        hover.analyses += 1;
         hover.analysing = Some(key);
         self.event("remove_hover_analyse", || json!({"asset_id": asset}));
         let (owner, client) = (self.owner.clone(), self.client);
@@ -384,10 +443,9 @@ impl Editor {
         self.remove_reads.hover.analysing = None;
         self.event(
             "remove_hover_analysed",
-            || json!({"ok": result.is_ok(), "error": result.as_ref().err()}),
+            || json!({"asset_id": asset, "revision": revision, "ok": result.is_ok(), "error": result.as_ref().err()}),
         );
         if result.is_err() {
-            self.remove_reads.hover.refused = Some((asset, revision));
             return Task::none();
         }
         if self.hover_picking() {
