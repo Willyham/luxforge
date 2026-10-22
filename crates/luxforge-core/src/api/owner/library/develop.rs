@@ -358,7 +358,8 @@ fn commit(
                 .iter()
                 .map(|decided| {
                     let folder = develop::folder_of(catalog, decided.asset_id())?;
-                    Ok(decided.reported(folder))
+                    let chosen = decided.chosen(catalog, destination, &folder)?;
+                    Ok(decided.reported(folder, chosen))
                 })
                 .collect::<Result<_, Error>>()?;
             report.changes.extend(answer.change);
