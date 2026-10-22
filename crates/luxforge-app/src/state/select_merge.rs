@@ -964,6 +964,9 @@ fn footer_words(stack: &RowStack) -> Option<&'static str> {
     }
 }
 
+/// A result's footer in the grid, beside its originals' exposures or places.
+pub(crate) const MERGED: &str = "Merged";
+
 /// What a grid cell draws for its row's stack: a leader's badge, an original's note and footer,
 /// and the kind's icon on both.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -971,9 +974,10 @@ pub(crate) struct StackCell<'r> {
     /// A leader's badge words, long and short, and whether its originals are shown.
     pub(crate) badge: Option<(&'static str, &'static str, bool)>,
     pub(crate) note: Option<&'r str>,
-    /// An original's footer: its EV offset from the reference in an HDR stack, its place in a
-    /// panorama's ("Frame 2 of 7").
-    pub(crate) exposure: Option<&'static str>,
+    /// The cell's footer: a leader's "Merged", which sets it apart from the originals after it;
+    /// an original's EV offset from the reference in an HDR stack, its place in a panorama's
+    /// ("Frame 2 of 7").
+    pub(crate) footer: Option<&'static str>,
     /// The stack's kind's icon, for the badge and the note.
     pub(crate) icon: Option<KindIcon>,
 }
@@ -989,9 +993,11 @@ pub(crate) fn stack_cell<'r>(stack: Option<&RowStack>, reason: Option<&'r str>) 
             (long, short, expanded(stack))
         }),
         note: stack_note(stack, reason),
-        exposure: (stack.role == StackRole::Original)
-            .then(|| footer_words(stack))
-            .flatten(),
+        footer: match stack.role {
+            StackRole::Leader => Some(MERGED),
+            StackRole::Original => footer_words(stack),
+            StackRole::Separate => None,
+        },
         icon: Some(words(stack.kind).icon),
     }
 }

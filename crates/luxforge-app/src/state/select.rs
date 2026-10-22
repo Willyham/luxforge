@@ -15,10 +15,10 @@ use super::{Inputs, status::clients_text};
 use luxforge_core::{
     MutationRequest, SourceTag,
     catalog_types::{
-        BodyKey, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Event, EventList,
-        Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexFolders, IndexSource,
-        LibraryChange, LibraryItem, LocalDay, Moment, MomentEvidence, MomentKind, Month,
-        PreviewState, RowItem, SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary,
+        BodyKey, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Exposure, Facet, Facets,
+        FileAvailability, FileId, Grouping, IndexFolders, IndexSource, LibraryChange, LibraryItem,
+        LocalDay, MergeKind, Moment, MomentEvidence, MomentKind, Month, PreviewState, RowItem,
+        SortKey, StackExpansion, StackGroup, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary,
         VolumeId, Volumes,
     },
 };
@@ -124,11 +124,8 @@ pub(crate) struct SelectState {
     pub(crate) shown: Shown,
     pub(crate) sources_panel: bool,
     pub(crate) info_panel: bool,
-    /// The sources panel's search text, which is `event.list`'s `query`.
-    pub(crate) search: String,
-    /// The events as `event.list` last answered them for the search text.
-    pub(crate) events: Option<EventList>,
-    pub(crate) events_error: Option<String>,
+    /// On disk shows its volumes and folders; collapsed, only its heading.
+    pub(crate) on_disk_open: bool,
     /// The folder browsed On disk, with its subfolders.
     pub(crate) folder: Option<PathBuf>,
     /// The card or folder being read for this desktop while it waits to replace the view (not
@@ -208,9 +205,7 @@ impl Default for SelectState {
             shown: Shown::Develop,
             sources_panel: true,
             info_panel: true,
-            search: String::new(),
-            events: None,
-            events_error: None,
+            on_disk_open: true,
             folder: None,
             reading: None,
             query: None,
@@ -424,16 +419,6 @@ pub(crate) fn facets_params(query: &ViewQuery) -> Value {
         facets.push(Facet::Pick);
     }
     json!({"source": query.source, "filter": query.filter, "facets": facets})
-}
-
-/// `event.list`'s parameters for the sources panel's search text.
-pub(crate) fn events_params(search: &str) -> Value {
-    let query = search.trim();
-    if query.is_empty() {
-        json!({})
-    } else {
-        json!({ "query": query })
-    }
 }
 
 /// `browse.rows`' parameters for one window of the view at `revision`.
@@ -658,7 +643,6 @@ pub(crate) fn catalog_toast(
     only: bool,
     photos: u64,
 ) -> PickToast {
-    use luxforge_core::catalog_types::MergeKind;
     let (noun, named) = match merge {
         Some(MergeKind::Hdr) => ("HDR merge", "an HDR merge"),
         Some(MergeKind::Panorama) => ("panorama merge", "a panorama merge"),
@@ -839,6 +823,17 @@ pub(crate) enum Block {
         frames: u32,
         collapsed: bool,
     },
+    /// A merge's stack: its result and, while expanded, the originals following it, `frames`
+    /// items framed as a moment is, with its header ("HDR merge", "3 exposures") and Expand or
+    /// Collapse. `index` is the stack's in the summary's `groups.stacks`.
+    Stack {
+        index: u32,
+        kind: MergeKind,
+        title: String,
+        detail: String,
+        frames: u32,
+        action: MomentAction,
+    },
     Singles(u32),
     /// The merge this desktop is running, or one that ended without its result, as a row of its
     /// own before the frames it merges.
@@ -859,7 +854,9 @@ pub(crate) enum MomentAction {
     /// Pick all N: `pick.set` of the frames' files.
     PickAll(u32),
     /// Merge the frames: a bracket's HDR, a panorama's panorama.
-    Merge(luxforge_core::catalog_types::MergeKind),
+    Merge(MergeKind),
+    /// Show a stack this way: a collapsed stack's Expand, an expanded one's Collapse.
+    Stack(StackExpansion),
 }
 
 impl MomentAction {
@@ -867,6 +864,8 @@ impl MomentAction {
         match self {
             Self::PickAll(frames) => format!("Pick all {frames}"),
             Self::Merge(kind) => super::select_merge::words(kind).action.to_owned(),
+            Self::Stack(StackExpansion::Collapsed) => "Collapse".to_owned(),
+            Self::Stack(_) => "Expand".to_owned(),
         }
     }
 
@@ -884,16 +883,25 @@ pub(crate) struct GridContent {
 }
 
 impl GridContent {
-    /// The action `action` of the grid's moment `number`, with the moment's summary index.
-    pub(crate) fn action(&self, number: u32, action: u32) -> Option<(u32, MomentAction)> {
+    /// The blocks the grid frames, in order: moments and stacks, which it numbers together.
+    pub(crate) fn framed(&self) -> impl Iterator<Item = &Block> {
         self.blocks
             .iter()
-            .filter_map(|block| match block {
-                Block::Moment { index, actions, .. } => Some((*index, actions)),
-                _ => None,
-            })
-            .nth(number as usize)
-            .and_then(|(index, actions)| Some((index, *actions.get(action as usize)?)))
+            .filter(|block| matches!(block, Block::Moment { .. } | Block::Stack { .. }))
+    }
+
+    /// The action `action` of the grid's framed block `number`, with the block's summary index:
+    /// a moment's in `groups.moments`, a stack's in `groups.stacks`.
+    pub(crate) fn action(&self, number: u32, action: u32) -> Option<(u32, MomentAction)> {
+        match self.framed().nth(number as usize)? {
+            Block::Moment { index, actions, .. } => Some((*index, *actions.get(action as usize)?)),
+            Block::Stack {
+                index,
+                action: only,
+                ..
+            } => (action == 0).then_some((*index, *only)),
+            _ => None,
+        }
     }
 
     /// Put `pending` (a [`Block::Pending`]) where the item at `position` is drawn: before the
@@ -904,7 +912,7 @@ impl GridContent {
         let mut index = self.blocks.len();
         for (block_index, block) in self.blocks.iter().enumerate() {
             let len = match block {
-                Block::Moment { frames, .. } => *frames,
+                Block::Moment { frames, .. } | Block::Stack { frames, .. } => *frames,
                 Block::Singles(count) => *count,
                 _ => continue,
             };
@@ -926,16 +934,13 @@ impl GridContent {
         self.blocks.insert(index, pending);
     }
 
-    /// The summary's index of the grid's moment `number`: the moments counted in order, collapsed
-    /// ones included, as the grid names a header's action.
+    /// The summary's index of the grid's framed block `number` when it is a moment: the framed
+    /// blocks counted in order, collapsed moments included, as the grid names a header's action.
     pub(crate) fn moment(&self, number: u32) -> Option<u32> {
-        self.blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Moment { index, .. } => Some(*index),
-                _ => None,
-            })
-            .nth(number as usize)
+        match self.framed().nth(number as usize)? {
+            Block::Moment { index, .. } => Some(*index),
+            _ => None,
+        }
     }
 
     /// The footer label of the cell whose first item is `item`.
@@ -953,7 +958,7 @@ impl GridContent {
         self.blocks
             .iter()
             .map(|block| match block {
-                Block::Moment { frames, .. } => *frames,
+                Block::Moment { frames, .. } | Block::Stack { frames, .. } => *frames,
                 Block::Singles(count) => *count,
                 _ => 0,
             })
@@ -965,14 +970,14 @@ impl GridContent {
 /// block for each burst and bracket, and the frames between them as singles. It follows the group
 /// layout the owner answered, whatever the grouping: a view with no days has no headings, and one
 /// with no moments is all singles. A day says how many of its frames are picked, a moment how many
-/// of its frames are ("1 picked"), and a bracket of files not all picked offers Pick all.
-/// `collapsed` names the bursts drawn as one cell.
+/// of its frames are ("1 picked"), and a bracket of files not all picked offers Pick all. Each merge
+/// stack is framed whole, collapsed or expanded. `collapsed` names the bursts drawn as one cell.
 pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> GridContent {
     let count = summary.count;
     let over_files = summary.query.source.over_files();
     let groups = &summary.groups;
     let mut content = GridContent::default();
-    let (mut day, mut camera, mut moment) = (0, 0, 0);
+    let (mut day, mut camera, mut moment, mut stack) = (0, 0, 0, 0);
     let mut position = 0;
     while position < count {
         // Headings start where their groups do; anything the layout names behind the position is
@@ -998,6 +1003,13 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
         {
             moment += 1;
         }
+        while groups
+            .stacks
+            .get(stack)
+            .is_some_and(|group| group.start < position)
+        {
+            stack += 1;
+        }
         if let Some(group) = groups.days.get(day).filter(|group| group.start == position) {
             let mut detail = photographs(group.len.min(count - position));
             if group.picked > 0 {
@@ -1019,6 +1031,22 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
                 detail: thousands(group.len.min(count - position)),
             });
             camera += 1;
+        }
+        if let Some(group) = groups
+            .stacks
+            .get(stack)
+            .filter(|group| group.start == position)
+        {
+            let frames = group.len.min(count - position);
+            if frames > 0 {
+                content
+                    .blocks
+                    .push(stack_block(stack as u32, group, frames));
+                position += frames;
+                stack += 1;
+                continue;
+            }
+            stack += 1;
         }
         if let Some(group) = groups
             .moments
@@ -1063,6 +1091,7 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
             groups.days.get(day).map(|group| group.start),
             groups.cameras.get(camera).map(|group| group.start),
             groups.moments.get(moment).map(|group| group.start),
+            groups.stacks.get(stack).map(|group| group.start),
         ]
         .into_iter()
         .flatten()
@@ -1080,11 +1109,27 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
     content
 }
 
+/// A stack's framed block: its kind's merge and how many originals it has ("HDR merge", "3
+/// exposures"), and the header's Expand or Collapse.
+fn stack_block(index: u32, group: &StackGroup, frames: u32) -> Block {
+    let words = super::select_merge::words(group.kind);
+    Block::Stack {
+        index,
+        kind: group.kind,
+        title: format!("{} merge", words.title),
+        detail: format!("{} {}", thousands(group.size), words.frames),
+        frames,
+        action: MomentAction::Stack(match group.expansion {
+            StackExpansion::Collapsed => StackExpansion::Expanded,
+            StackExpansion::Expanded | StackExpansion::All => StackExpansion::Collapsed,
+        }),
+    }
+}
+
 /// A moment's header buttons over files: for a bracket or a panorama, Pick all while its frames
 /// are not all picked, then the primary merge of its kind (Merge HDR, Merge panorama) while that
 /// merge takes that many frames. A burst has none.
 fn moment_actions(kind: MomentKind, picked: u32, frames: u32) -> Vec<MomentAction> {
-    use luxforge_core::catalog_types::MergeKind;
     let merge = match kind {
         MomentKind::Bracket => MergeKind::Hdr,
         MomentKind::Panorama => MergeKind::Panorama,
@@ -1488,7 +1533,6 @@ fn aspect(row: &ViewRow) -> Option<f32> {
 /// A source row's glyph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SourceIcon {
-    Event,
     Folder,
     /// A volume or a card.
     Drive,
@@ -1504,10 +1548,6 @@ pub(crate) enum Count {
     #[default]
     None,
     Total(String),
-    Picks {
-        picked: String,
-        total: String,
-    },
     /// Photographs whose originals are unavailable, in the clipping red: Missing originals'.
     Unavailable(String),
 }
@@ -1633,21 +1673,12 @@ impl SourceRow {
     }
 }
 
-/// Events under one month label.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct MonthRows {
-    pub(crate) label: String,
-    pub(crate) rows: Vec<SourceRow>,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SourcesModel {
-    pub(crate) search: String,
     /// The mounted camera cards; the section is drawn only when there is one.
     pub(crate) cards: Vec<SourceRow>,
-    pub(crate) months: Vec<MonthRows>,
-    /// Said under Events in place of rows: reading, none, or unavailable.
-    pub(crate) events_note: Option<String>,
+    /// On disk is open: its rows are drawn under its heading.
+    pub(crate) on_disk_open: bool,
     /// The volumes, each open one's folders under it, the folder browsed with Browse a folder…
     /// when it is not among them, and Browse a folder… itself.
     pub(crate) on_disk: Vec<SourceRow>,
@@ -1879,19 +1910,6 @@ fn source(state: &SelectState) -> Option<&ViewSource> {
     state.query.as_ref().map(|query| &query.source)
 }
 
-/// The event the view's source names, from the event list.
-fn event<'a>(state: &'a SelectState, source: &ViewSource) -> Option<&'a Event> {
-    let ViewSource::Event { event_id } = source else {
-        return None;
-    };
-    state
-        .events
-        .as_ref()?
-        .events
-        .iter()
-        .find(|event| &event.id == event_id)
-}
-
 /// The summary, when it describes the source on screen.
 fn summary_of(state: &SelectState) -> Option<&ViewSummary> {
     state
@@ -1928,30 +1946,11 @@ pub(crate) fn title(state: &SelectState) -> SelectTitle {
     let count = summary.map(|summary| summary.count);
     let mut parts = Vec::new();
     let name = match source {
-        ViewSource::Event { .. } => match event(state, source) {
-            Some(event) => {
-                if let Some(dates) = dates(event.first_day, event.last_day, true) {
-                    parts.push(dates);
-                }
-                parts.push(photographs(count.unwrap_or(event.count)));
-                if !event.cameras.is_empty() {
-                    parts.push(event.cameras.join(", "));
-                }
-                if !event.roots.is_empty() {
-                    let roots: Vec<String> = event
-                        .roots
-                        .iter()
-                        .map(|root| shown_path(root, state.home.as_deref()))
-                        .collect();
-                    parts.push(format!("from {}", and_list(&roots)));
-                }
-                event_label(event)
-            }
-            None => {
-                parts.extend(count.map(photographs));
-                "Event".to_owned()
-            }
-        },
+        // The desktop lists no events; an agent's view of one is named by its kind.
+        ViewSource::Event { .. } => {
+            parts.extend(count.map(photographs));
+            "Event".to_owned()
+        }
         ViewSource::Folder { path, .. } => {
             parts.extend(count.map(photographs));
             parts.push(shown_path(path, state.home.as_deref()));
@@ -2001,53 +2000,10 @@ fn catalog_name(source: &ViewSource) -> &'static str {
 pub(crate) fn sources(state: &SelectState) -> SourcesModel {
     let selected = source(state);
     let is = |source: &ViewSource| selected == Some(source);
-    let mut months = Vec::new();
-    let mut events_note = None;
-    match (&state.events, &state.events_error) {
-        (_, Some(_)) => events_note = Some("Events unavailable".to_owned()),
-        (None, None) => events_note = Some("Reading events\u{2026}".to_owned()),
-        (Some(list), None) => {
-            for month in &list.months {
-                let rows: Vec<SourceRow> = list
-                    .events
-                    .iter()
-                    .filter(|event| event.months.contains(&month.month))
-                    .map(|event| event_row(event, &is))
-                    .collect();
-                if !rows.is_empty() {
-                    months.push(MonthRows {
-                        label: month_label(month.month),
-                        rows,
-                    });
-                }
-            }
-            let undated: Vec<SourceRow> = list
-                .events
-                .iter()
-                .filter(|event| event.months.is_empty())
-                .map(|event| event_row(event, &is))
-                .collect();
-            if !undated.is_empty() {
-                months.push(MonthRows {
-                    label: "Undated".to_owned(),
-                    rows: undated,
-                });
-            }
-            if months.is_empty() {
-                events_note = Some(if state.search.trim().is_empty() {
-                    "No events".to_owned()
-                } else {
-                    "No events match".to_owned()
-                });
-            }
-        }
-    }
     let catalog = catalog_rows(state, &is);
     SourcesModel {
-        search: state.search.clone(),
         cards: card_rows(state, &is),
-        months,
-        events_note,
+        on_disk_open: state.on_disk_open,
         on_disk: disk_rows(state, selected),
         indexed: indexed_rows(state, &is),
         catalog,
@@ -2116,9 +2072,9 @@ fn forget_sheet(state: &SelectState) -> Option<ForgetSheet> {
     Some(ForgetSheet {
         title: format!("Remove {} from indexed folders?", file_name(path)),
         note: format!(
-            "{} is no longer organized into events, and what Luxforge read from its files is \
-             forgotten. Nothing on disk changes, and picks and developed photographs stay. Undo \
-             with \u{2318}Z.",
+            "{} is no longer indexed, and what Luxforge read from its files is forgotten. \
+             Nothing on disk changes, and picks and developed photographs stay. Undo with \
+             \u{2318}Z.",
             shown_path(path, state.home.as_deref())
         ),
         confirm: "Remove".to_owned(),
@@ -2141,18 +2097,9 @@ fn card_notice(state: &SelectState) -> Option<CardNotice> {
         .first()
         .cloned()
         .unwrap_or_else(|| card.volume.label.clone());
-    let found = match (card.files, card.events) {
-        (Some(files), Some(events)) => format!(
-            "{}, organized into {}. ",
-            photographs(files),
-            if events == 1 {
-                "1 event".to_owned()
-            } else {
-                format!("{} events", thousands(events))
-            }
-        ),
-        (Some(files), None) => format!("{}. ", photographs(files)),
-        (None, _) => "Not read yet. ".to_owned(),
+    let found = match card.files {
+        Some(files) => format!("{}. ", photographs(files)),
+        None => "Not read yet. ".to_owned(),
     };
     Some(CardNotice {
         title: format!("{name} card connected"),
@@ -2361,49 +2308,6 @@ fn catalog_rows(state: &SelectState, is: &impl Fn(&ViewSource) -> bool) -> Vec<S
         )
     })
     .collect()
-}
-
-/// What an event is called in the sources panel and the title bar: its name without the dates it
-/// ends with, which the row and the summary give beside it, so "Konstanz · 12–13 Sep" reads
-/// "Konstanz", and an Undated event's without the "Undated · " its section already says. Any other
-/// name is kept whole.
-pub(crate) fn event_label(event: &Event) -> String {
-    // An Undated event is listed under Undated, so its row names its folder alone.
-    if event.undated
-        && let Some(folder) = event.label.strip_prefix("Undated \u{b7} ")
-        && !folder.trim().is_empty()
-    {
-        return folder.to_owned();
-    }
-    // A name that is its dates alone has no label: the whole name, then.
-    if event.label.trim().is_empty() {
-        return event.name.clone();
-    }
-    event.label.clone()
-}
-
-fn event_row(event: &Event, is: &impl Fn(&ViewSource) -> bool) -> SourceRow {
-    let source = ViewSource::Event {
-        event_id: event.id.clone(),
-    };
-    SourceRow {
-        secondary: dates(event.first_day, event.last_day, false),
-        count: if event.picked > 0 {
-            Count::Picks {
-                picked: thousands(event.picked),
-                total: thousands(event.count),
-            }
-        } else {
-            Count::Total(thousands(event.count))
-        },
-        dot: (event.offline > 0).then_some(Dot::Offline),
-        selected: is(&source),
-        ..SourceRow::plain(
-            SourceIcon::Event,
-            event_label(event),
-            Some(SourcePress::View(source)),
-        )
-    }
 }
 
 pub(crate) fn filter_bar(state: &SelectState) -> FilterBarModel {
@@ -2847,7 +2751,7 @@ fn split_merges(summary: &ViewSummary) -> (u32, String) {
 
 fn note(state: &SelectState) -> Option<String> {
     if state.query.is_none() {
-        return Some("Choose an event, a folder on disk or a catalog view".to_owned());
+        return Some("Choose a card, a folder on disk or a catalog view".to_owned());
     }
     if let Some(error) = &state.view_error {
         return Some(error.clone());
@@ -2971,13 +2875,4 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// `a`, `a and b`, `a, b and c`.
-fn and_list(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
 }

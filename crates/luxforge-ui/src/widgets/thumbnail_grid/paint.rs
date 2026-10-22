@@ -734,8 +734,28 @@ pub(crate) fn header_strip(frame: &Frame, metrics: &GridMetrics, scroll: f32) ->
     }
 }
 
-/// A moment's row: its surface and outline, then its header; `hovered` names the action under
-/// the pointer.
+/// The ring around a stack's result, the frame's first cell, which sets it apart from the
+/// originals after it, in content coordinates: the cell grown by the ring's width, which its
+/// ground then covers but for the ring. None for a moment.
+fn stack_ring(kind: MomentKind, frame: &Frame, metrics: &GridMetrics) -> Option<Rectangle> {
+    if !kind.is_stack() {
+        return None;
+    }
+    let ring = theme::STACK_RESULT_RING;
+    Some(Rectangle::new(
+        Point::new(
+            frame.rect.x + metrics.moment_padding - ring,
+            frame.rect.y + metrics.moment_header - ring,
+        ),
+        Size::new(
+            metrics.cell.width + 2.0 * ring,
+            metrics.cell.height + 2.0 * ring,
+        ),
+    ))
+}
+
+/// A moment's row: its surface and outline, then its header, and in a stack's the ring its
+/// result's cell is drawn in; `hovered` names the action under the pointer.
 fn paint_frame<'a>(
     layout: &GridLayout,
     frame: &Frame,
@@ -760,12 +780,20 @@ fn paint_frame<'a>(
     let GridBlock::Moment { header, .. } = layout.block(frame.block) else {
         return;
     };
+    if let Some(ring) = stack_ring(header.kind, frame, metrics) {
+        let ring = Rectangle {
+            y: ring.y - scroll,
+            ..ring
+        };
+        let radius = theme::RADIUS + theme::STACK_RESULT_RING;
+        painter.fill(Fill::flat(ring, Ink::Token(Token::TextFaint), radius));
+    }
     let strip = header_strip(frame, metrics, scroll);
     let plan = plan_header(header, strip, metrics, painter);
     let icon = match header.kind {
         MomentKind::Burst => Icon::Stack,
-        MomentKind::Bracket => Icon::Bracket,
-        MomentKind::Panorama => Icon::Panorama,
+        MomentKind::Bracket | MomentKind::HdrStack => Icon::Bracket,
+        MomentKind::Panorama | MomentKind::PanoramaStack => Icon::Panorama,
     };
     painter.icon(
         icon,

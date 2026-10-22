@@ -88,7 +88,7 @@ fn drawing<'a>(index: usize) -> Element<'a, Message> {
     }
 }
 
-/// A card and a folder flowing into three events, the first chosen.
+/// A card and a folder flowing into their days, the first chosen.
 fn browse_drawing<'a>() -> Element<'a, Message> {
     let source = |glyph, name: &'a str| {
         row![
@@ -98,7 +98,7 @@ fn browse_drawing<'a>() -> Element<'a, Message> {
         .spacing(theme::SPACING * 0.75)
         .align_y(Alignment::Center)
     };
-    let event = |name: &'a str, count: &'a str, chosen: bool| {
+    let day = |name: &'a str, count: &'a str, chosen: bool| {
         container(
             row![
                 small(name, Token::Text),
@@ -131,9 +131,9 @@ fn browse_drawing<'a>() -> Element<'a, Message> {
             .spacing(theme::SPACING * 0.75),
         icon(Icon::ChevronRight, 12.0, Token::TextTertiary),
         column![
-            event("Konstanz", "1,042", true),
-            event("Lake \u{b7} 14 Sep", "86", false),
-            event("Z\u{fc}rich", "57", false),
+            day("12 Sep", "418", true),
+            day("13 Sep", "624", false),
+            day("14 Sep", "86", false),
         ]
         .spacing(theme::SPACING * 0.6),
     ]

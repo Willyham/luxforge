@@ -54,10 +54,10 @@ fn develop_report() -> Output {
     let folder = crate::catalog_types::CatalogFolderId::new();
     Output::Value(json!({
         "developed": [
-            {"path": "/a.jpg", "asset_id": AssetId::new(), "outcome": "created", "folder_id": folder},
-            {"path": "/b.jpg", "asset_id": AssetId::new(), "outcome": "linked", "folder_id": folder},
-            {"path": "/c.jpg", "asset_id": AssetId::new(), "outcome": "relinked", "folder_id": folder},
-            {"path": "/d.jpg", "asset_id": AssetId::new(), "outcome": "created", "folder_id": folder},
+            {"path": "/a.jpg", "asset_id": AssetId::new(), "outcome": "created", "folder_id": folder, "chosen_folder_id": folder},
+            {"path": "/b.jpg", "asset_id": AssetId::new(), "outcome": "linked", "folder_id": folder, "chosen_folder_id": folder},
+            {"path": "/c.jpg", "asset_id": AssetId::new(), "outcome": "relinked", "folder_id": folder, "chosen_folder_id": folder},
+            {"path": "/d.jpg", "asset_id": AssetId::new(), "outcome": "created", "folder_id": folder, "chosen_folder_id": folder},
         ],
         "failed": [{"path": "/e.jpg", "code": "decode", "message": "no"}],
         "changes": [],

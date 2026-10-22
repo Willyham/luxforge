@@ -191,14 +191,18 @@ pub struct CameraGroup {
 }
 
 /// The group layout of an ordered view: its days, the camera groups inside days with more than one
-/// body, and its bursts and brackets. Enough for a virtualized grouped grid to lay itself out
-/// without reading a row.
+/// body, its bursts and brackets, and the merge stacks it shows. Enough for a virtualized grouped
+/// grid to lay itself out without reading a row.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GroupLayout {
     pub days: Vec<DayGroup>,
     pub cameras: Vec<CameraGroup>,
     pub moments: Vec<Moment>,
+    /// Each stack whose result the view shows, whatever the grouping. `organize::group` leaves it
+    /// empty; a view's evaluation fills it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stacks: Vec<super::StackGroup>,
 }
 
 /// An index into [`FrameTables::folders`].

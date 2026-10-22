@@ -40,10 +40,6 @@ fn startup_empty_catalog_shows_select_on_creation_and_reopen() {
     let (mut editor, startup, catalog) = boot_with(crate::Config::default());
     assert_eq!(editor.select.state.shown, Shown::Select);
     assert_eq!(editor.select.state.counts.as_ref().unwrap().photographs, 0);
-    assert!(
-        editor.select.events_read,
-        "Select must load its sources at launch"
-    );
     assert!(startup.units() > 0);
     editor.owner.stop();
     editor.owner_join.take().unwrap().join().unwrap();
@@ -124,6 +120,7 @@ fn summary(count: u32) -> ViewSummary {
                 len: 3,
                 picked: 0,
             }],
+            stacks: Vec::new(),
         },
         library_sequence: LibraryChangeSeq(1),
         index_revision: 1,
@@ -209,11 +206,6 @@ fn the_select_switch_is_refused_by_an_open_draft_and_keeps_each_workspace() {
         editor.drawn_photo().is_none(),
         "Select does not draw the photograph"
     );
-    assert!(
-        editor.select.events_read,
-        "the events are asked for once shown"
-    );
-    editor.select.state.search = "Konst".into();
     let _ = editor.update(Message::Select(SelectMessage::TogglePanel(
         SelectPanel::Info,
     )));
@@ -229,7 +221,6 @@ fn the_select_switch_is_refused_by_an_open_draft_and_keeps_each_workspace() {
         "Develop keeps its photograph"
     );
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
-    assert_eq!(editor.select.state.search, "Konst");
     assert!(!editor.select.state.info_panel, "Select keeps its panels");
     finish(editor, catalog);
 }
@@ -850,15 +841,15 @@ fn a_select_view_read_again_keeps_its_scroll() {
 }
 
 /// The owner's wake reads the session while Select is shown; a stale view is evaluated again with
-/// the query it was evaluated from, and the events read again. A wake while Develop is shown waits
+/// the query it was evaluated from, and the catalog's counts read again. A wake while Develop is shown waits
 /// for Select to be shown.
 #[test]
 fn a_stale_select_view_is_evaluated_again_after_a_wake() {
     let (mut editor, catalog) = viewing(summary(20), &[], None);
-    let _ = editor.update(Message::Select(SelectMessage::Events(Ok(
+    let _ = editor.update(Message::Select(SelectMessage::Counted(Ok(
         Default::default(),
     ))));
-    assert!(!editor.select.events.in_flight());
+    assert!(!editor.select.counts.in_flight());
     let serial = editor.select.serial;
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     assert!(editor.select.check.in_flight(), "the session is read");
@@ -875,8 +866,8 @@ fn a_stale_select_view_is_evaluated_again_after_a_wake() {
         "with the query it was evaluated from"
     );
     assert!(
-        editor.select.events.in_flight(),
-        "the events are read again"
+        editor.select.counts.in_flight(),
+        "the catalog's counts are read again"
     );
     // The same source evaluated again keeps the scroll near the active item.
     editor.select.scroll = 30.0;
@@ -899,23 +890,28 @@ fn a_stale_select_view_is_evaluated_again_after_a_wake() {
     finish(editor, catalog);
 }
 
+/// On disk's chevron collapses the section to its heading and opens it again, asking the owner
+/// for nothing.
+#[test]
+fn on_disks_chevron_collapses_and_opens_it_without_reading() {
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
+    assert!(editor.workspace.select.sources.on_disk_open);
+    owner_calls::take();
+    let _ = editor.update(Message::Select(SelectMessage::ToggleOnDisk));
+    assert!(!editor.workspace.select.sources.on_disk_open);
+    let _ = editor.update(Message::Select(SelectMessage::ToggleOnDisk));
+    assert!(editor.workspace.select.sources.on_disk_open);
+    assert!(owner_calls::take().is_empty());
+    finish(editor, catalog);
+}
+
 /// A method the owner does not have yet answers `validation`: the status bar says so, the panel and
 /// the centre say what is unavailable, and the workspace stays usable.
 #[test]
 fn select_methods_the_owner_refuses_leave_the_workspace_usable() {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
-    let _ = editor.update(Message::Select(SelectMessage::Events(Err(
-        "validation: unknown method event.list".into(),
-    ))));
-    assert_eq!(
-        editor.status.text,
-        "Events unavailable: validation: unknown method event.list"
-    );
-    assert_eq!(
-        editor.workspace.select.sources.events_note.as_deref(),
-        Some("Events unavailable")
-    );
     let _ = editor.update(Message::Select(SelectMessage::Source(
         ViewSource::AllPhotographs,
     )));

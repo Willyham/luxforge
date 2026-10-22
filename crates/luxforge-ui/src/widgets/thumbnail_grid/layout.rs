@@ -32,12 +32,22 @@ pub struct GridHeading {
     pub detail: String,
 }
 
-/// What a moment is, which picks its header's icon.
+/// What a moment is, which picks its header's icon. A merge's stack is framed as a moment is, its
+/// result first and set apart from the originals after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MomentKind {
     Burst,
     Bracket,
     Panorama,
+    HdrStack,
+    PanoramaStack,
+}
+
+impl MomentKind {
+    /// Whether the frame is a merge's stack, whose first cell is its result.
+    pub fn is_stack(self) -> bool {
+        matches!(self, Self::HdrStack | Self::PanoramaStack)
+    }
 }
 
 /// A moment row's header: its kind, its title and detail on the left ("Burst", "6 frames in

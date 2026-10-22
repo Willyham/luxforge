@@ -33,6 +33,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
+| [MCP adapter](../tasks/programmability/mcp.json) ([design](design/mcp.md)) | TASK-001 registry markers; TASK-002 client identity and connected clients; TASK-003 JSON Schema generation | Owner decisions taken while planning; the three wave-1 tasks are independent. No external inputs until the real-client qualification at the end | High tier |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [v0.1 release preparation](../tasks/project/release-v0-1.json) ([design](design/release-v0.1.md)) | TASK-002's distribution source/notice review; TASK-003 distribution advisory review | The source archive itself is built (TASK-002, in progress); the packaging tasks are listed under ready now. macOS and Linux ship together; both packaging lanes are executable after identity. Paid Apple membership is active; signing setup is reported complete with profile `luxforge-notarization`; credential validation and final native M4/Linux corpus/install evidence are late gates. `cargo xtask release TAG` checks clean synchronized main and pushes one annotated tag; owner invocation initiates automatic pre-release publication | High tier |
 
@@ -174,7 +175,7 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 **Live-session CLI** ([design](design/live-cli.md)) is implemented: `luxforge-ctl` drives the catalog the desktop has open through its live session ([feature status](features.md), [user guide](user-guide.md#the-live-session-command-line)). Operation-specific aliases wait until real use shows a need for one.
 
-**MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
+**MCP adapter** ([design](design/mcp.md), [plan](../tasks/programmability/mcp.json)). Planned, awaiting implementation authorization: `luxforge-mcp`, a dual-era stdio MCP server over the operation registry, with compact and typed tool profiles generated from `schema.list`, pictures attached inline, the running desktop or an explicit headless owner, Settings › Agents, packaging beside `luxforge-ctl`, a rendered journey and real-client qualification.
 
 **Shared editing** (future, [design](design/shared-editing.md)). One host, one invited collaborator or agent, one photograph. No milestone.
 

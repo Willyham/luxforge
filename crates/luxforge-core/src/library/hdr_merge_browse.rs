@@ -492,6 +492,38 @@ fn hdr_merge_browse_filters_act_on_each_items_own_metadata() {
             "DSC_0005.JPG"
         ]
     );
+    // A stack is a group of its view: its result alone while collapsed, then its result and the
+    // originals following it, which no moment frames apart from it.
+    let stack_group = |summary: &Value| {
+        let groups = &summary["groups"];
+        let stacks = groups["stacks"].as_array().unwrap();
+        assert_eq!(stacks.len(), 1);
+        let (start, len) = (&stacks[0]["start"], &stacks[0]["len"]);
+        let (start, len) = (start.as_u64().unwrap(), len.as_u64().unwrap());
+        for moment in groups["moments"].as_array().unwrap() {
+            let at = moment["start"].as_u64().unwrap();
+            let end = at + moment["len"].as_u64().unwrap();
+            assert!(
+                end <= start || at >= start + len,
+                "{moment} splits the stack"
+            );
+        }
+        assert_eq!(stacks[0]["merge_id"], merge.merge_id.as_str());
+        assert_eq!(
+            (&stacks[0]["kind"], &stacks[0]["size"]),
+            (&json!("hdr"), &json!(3))
+        );
+        (stacks[0]["expansion"].clone(), start, len)
+    };
+    let collapsed = ok(&live, other, "browse.view", query(json!({})));
+    assert_eq!(stack_group(&collapsed), (json!("collapsed"), 0, 1));
+    let opened = ok(
+        &live,
+        other,
+        "stack.set-expanded",
+        json!({"merge_id": merge.merge_id, "expansion": "expanded"}),
+    );
+    assert_eq!(stack_group(&opened), (json!("expanded"), 0, 4));
     let inspected = ok(
         &live,
         client,

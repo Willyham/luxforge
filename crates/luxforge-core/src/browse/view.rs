@@ -174,6 +174,7 @@ pub(crate) fn evaluate_with(
         query.filter != ViewFilter::default(),
     );
     candidates.push_inputs(provenance);
+    let stack_groups = stacks::groups(&mut facts, &stacks);
     let mut layout = cx.probe.with(cx.service, candidates.over_files, |probe| {
         organize::group(
             &facts,
@@ -183,6 +184,7 @@ pub(crate) fn evaluate_with(
             probe,
         )
     })?;
+    layout.stacks = stack_groups;
     count_picks(&mut layout, |at| candidates.extra(facts[at].item).picked);
     let (mut picked, mut in_catalog, mut unavailable) = (0, 0, 0);
     for fact in &facts {
@@ -563,6 +565,7 @@ mod tests {
             days: vec![day(0, 5), day(5, 3)],
             cameras: Vec::new(),
             moments: vec![moment(0, 3), moment(3, 2), moment(5, 2)],
+            stacks: Vec::new(),
         };
         count_picks(&mut layout, |at| picked[at]);
         let days: Vec<u32> = layout.days.iter().map(|day| day.picked).collect();

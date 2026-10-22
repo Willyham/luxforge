@@ -736,6 +736,9 @@ pub const SIZE_CELL_UNAVAILABLE: f32 = 10.0;
 pub const MOMENT_RADIUS: f32 = 9.0;
 pub const MOMENT_PADDING: f32 = 6.0;
 pub const MOMENT_HEADER_HEIGHT: f32 = 28.0;
+/// The ring of the faint text around a stack's result in its frame, which sets it apart from its
+/// originals: 2 pt, in the frame's padding and the gap after the result.
+pub const STACK_RESULT_RING: f32 = 2.0;
 /// A moment header's inset inside the row's padding, the gap between its parts and its 12 pt kind
 /// icon (`.mom .mh`); the action button's extra 6 pt margin before it.
 pub const MOMENT_HEADER_INSET: f32 = 4.0;
@@ -1053,12 +1056,13 @@ pub const SOURCE_CHEVRON_SIZE: f32 = 10.0;
 /// A source row's icon column, and the 13 pt icon centred in it, in [`Token::TextIdentity`].
 pub const SOURCE_ICON_WIDTH: f32 = 14.0;
 pub const SOURCE_ICON_SIZE: f32 = 13.0;
-/// Between a source's name and its secondary text (an event's dates).
+/// Between a source's name and its secondary text.
 pub const SOURCE_SECONDARY_SPACING: f32 = 6.0;
-/// Between the rows of one sources section, and between the panel's sections.
+/// Between the rows of one sources section, and between the panel's sections, which a
+/// [`BORDER_WIDTH`] rule in the band border divides, this far from each.
 pub const SOURCE_LIST_SPACING: f32 = 1.0;
 pub const SOURCE_SECTION_SPACING: f32 = 10.0;
-/// A month or a group label under a sources heading (`.mon`): 10.5 pt semibold capitals in
+/// A group label under a sources heading (`.mon`): 10.5 pt semibold capitals in
 /// [`Derived::SourceMonth`], a step under the section label, inset 6 pt above, 8 pt at the sides and
 /// 2 pt under.
 pub const SOURCE_MONTH_PADDING: Padding = Padding {
@@ -1067,9 +1071,8 @@ pub const SOURCE_MONTH_PADDING: Padding = Padding {
     bottom: 2.0,
     left: 8.0,
 };
-/// A neutral tag after a sources heading (`.tag`, "auto"): 10 pt secondary text on [`Token::Control`],
-/// 1 pt above and below and 6 pt at the sides, rounded 4 pt, [`SOURCE_TAG_SPACING`] after the
-/// label.
+/// A neutral tag (`.tag`, "from metadata"): 10 pt secondary text on [`Token::Control`], 1 pt above
+/// and below and 6 pt at the sides, rounded 4 pt.
 pub const SIZE_TAG: f32 = 10.0;
 pub const TAG_PADDING: Padding = Padding {
     top: 1.0,
@@ -1078,7 +1081,6 @@ pub const TAG_PADDING: Padding = Padding {
     left: 6.0,
 };
 pub const TAG_RADIUS: f32 = 4.0;
-pub const SOURCE_TAG_SPACING: f32 = 8.0;
 /// A sources heading (`sec_head`): the state panel's heading row, inset 8 pt.
 pub const SOURCE_HEADING_HEIGHT: f32 = PANEL_HEADING_HEIGHT;
 
@@ -3329,7 +3331,7 @@ mod tests {
             ),
             (6.0, 8.0, 2.0)
         );
-        assert_eq!((SIZE_TAG, TAG_RADIUS, SOURCE_TAG_SPACING), (10.0, 4.0, 8.0));
+        assert_eq!((SIZE_TAG, TAG_RADIUS), (10.0, 4.0));
         assert_eq!(
             (SEARCH_HEIGHT, SEARCH_WIDTH, SIZE_FILTER),
             (26.0, 250.0, 11.5)

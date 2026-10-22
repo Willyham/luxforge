@@ -1,18 +1,16 @@
 //! The Select workspace's sources panel, row by row, as the catalog boards draw it (`.src`,
-//! `sec_head`, `.mon`, `.tag`): a section's heading with an optional neutral tag and `+`, a month or
-//! group label under it, and the source rows — a card, an event, a volume or folder on disk, a
-//! catalog view, folder or collection.
+//! `sec_head`, `.mon`, `.tag`): a section's heading with an optional `+` and collapse chevron, a
+//! group label under it, and the source rows — a card, a volume or folder on disk, a catalog view,
+//! folder or collection.
 //!
 //! A row is one button that sends the caller's message. It draws what it is given: its icon, its
-//! name ending in an ellipsis when the panel is too narrow, an optional secondary text such as an
-//! event's dates, an optional volume dot and its count, which is plain, picks out of a total, or
-//! unavailable originals in the clipping red. A row that can open (a volume, a year of catalog
+//! name ending in an ellipsis when the panel is too narrow, an optional secondary text, an optional
+//! volume dot and its count, which is plain or unavailable originals in the clipping red. A row that can open (a volume, a year of catalog
 //! folders) carries a chevron that sends its own message. Selection is the history's current-row
 //! tint; a dimmed row (offline, Removed) is in tertiary ink.
 
 use super::icon_button::{Icon, IconButtonModel, icon, sized_icon_button};
 use super::list_row::marker_circle;
-use super::text::section_label;
 use super::truncated_text::truncated_text;
 use crate::theme;
 use crate::{Derived, Element, Theme, Token};
@@ -23,17 +21,18 @@ use iced::{Alignment, Border, Color, Font, Length, Padding};
 /// Plain data for a sources section's heading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceHeadingModel {
-    /// The section's name, drawn in capitals: `Events`, `On disk`, `Catalog`.
+    /// The section's name, drawn in capitals: `Cards`, `On disk`, `Catalog`.
     pub label: String,
-    /// A neutral tag after the label, such as `auto` after Events.
-    pub tag: Option<String>,
     /// The `+` at the heading's right and its tooltip (`Add a folder…`, `New catalog folder`);
     /// `None` draws no `+`.
     pub add: Option<String>,
+    /// `Some(expanded)` for a section that collapses: a chevron at the heading's far right, down
+    /// while its rows are shown and right while they are hidden. `None` draws no chevron.
+    pub expanded: Option<bool>,
 }
 
 /// Whether a volume is mounted, drawn as a dot before the row's count: filled green while it is
-/// mounted, a hollow tertiary ring while it is offline, which is also an event's offline marker.
+/// mounted, a hollow tertiary ring while it is offline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Volume {
     Mounted,
@@ -48,8 +47,6 @@ pub enum SourceCount {
     None,
     /// A plain count: `612`.
     Total(String),
-    /// Picks out of a total, the picks in the accent: `18 / 1,042`.
-    Picks { picked: String, total: String },
     /// Photographs whose originals are unavailable, in the clipping red: Missing originals' `212`.
     Unavailable(String),
 }
@@ -59,8 +56,8 @@ pub enum SourceCount {
 pub struct SourceRowModel {
     pub icon: Icon,
     pub name: String,
-    /// A short text after the name in tertiary ink, such as an event's dates (`12–13 Sep`). It
-    /// keeps its width; the name ends in an ellipsis first.
+    /// A short text after the name in tertiary ink. It keeps its width; the name ends in an
+    /// ellipsis first.
     pub secondary: Option<String>,
     /// Nesting depth: each level insets the row [`theme::SOURCE_INDENT`] more.
     pub indent: u8,
@@ -75,35 +72,51 @@ pub struct SourceRowModel {
     pub dimmed: bool,
 }
 
-/// Renders a sources section's heading: its capitalised label, the tag and, at the right, the `+`
-/// that publishes `on_add` (disabled when `on_add` is `None`).
+/// Renders a sources section's heading: its capitalised label, in the secondary ink a step over
+/// the group labels under it, and, at the right, the `+` that
+/// publishes `on_add` (disabled when `on_add` is `None`) and the chevron that publishes
+/// `on_toggle`.
 pub fn source_heading<'a, M: Clone + 'a>(
     model: &SourceHeadingModel,
     on_add: Option<M>,
+    on_toggle: Option<M>,
 ) -> Element<'a, M> {
-    let mut content = Row::new()
-        .push(section_label(model.label.clone()))
-        .spacing(theme::SOURCE_TAG_SPACING)
-        .align_y(Alignment::Center)
-        .height(Length::Fill);
-    if let Some(tag) = &model.tag {
-        content = content.push(source_tag(tag.clone()));
-    }
-    content = content.push(Space::new().width(Length::Fill));
-    if let Some(tooltip) = &model.add {
-        content = content.push(sized_icon_button(
+    let button = |icon, tooltip: String, on_press: Option<M>| {
+        sized_icon_button(
             &IconButtonModel {
-                icon: Icon::Plus,
-                tooltip: tooltip.clone(),
-                enabled: on_add.is_some(),
+                icon,
+                tooltip,
+                enabled: on_press.is_some(),
                 selected: false,
             },
-            on_add,
+            on_press,
             theme::HEADER_BUTTON_SIZE,
             theme::SMALL_ICON_SIZE,
             Token::TextSecondary,
             tooltip::Position::Top,
-        ));
+        )
+    };
+    let mut content = Row::new()
+        .push(
+            text(model.label.to_uppercase())
+                .size(theme::SIZE_SECTION_LABEL)
+                .font(theme::FONT_SEMIBOLD)
+                .wrapping(Wrapping::None)
+                .style(theme::ink(Token::TextSecondary)),
+        )
+        .push(Space::new().width(Length::Fill))
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
+    if let Some(tooltip) = &model.add {
+        content = content.push(button(Icon::Plus, tooltip.clone(), on_add));
+    }
+    if let Some(expanded) = model.expanded {
+        let (glyph, tooltip) = if expanded {
+            (Icon::ChevronDown, "Collapse")
+        } else {
+            (Icon::ChevronRight, "Expand")
+        };
+        content = content.push(button(glyph, tooltip.to_owned(), on_toggle));
     }
     container(content)
         .padding([0.0, theme::SOURCE_ROW_PADDING])
@@ -112,7 +125,21 @@ pub fn source_heading<'a, M: Clone + 'a>(
         .into()
 }
 
-/// A month under Events, or a group label such as Collections under Catalog: 10.5 pt semibold
+/// The hairline between two sources sections: [`theme::BORDER_WIDTH`] in the band border, inset as
+/// the rows are.
+pub fn source_rule<'a, M: 'a>() -> Element<'a, M> {
+    container(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fixed(theme::BORDER_WIDTH))
+            .style(theme::band_border_surface),
+    )
+    .padding([0.0, theme::SOURCE_ROW_PADDING])
+    .width(Length::Fill)
+    .into()
+}
+
+/// A group label such as Collections under Catalog or Indexed folders under On disk: 10.5 pt semibold
 /// capitals in [`Derived::SourceMonth`], a step under a section's own label.
 pub fn source_month<'a, M: 'a>(label: &str) -> Element<'a, M> {
     container(
@@ -128,7 +155,7 @@ pub fn source_month<'a, M: 'a>(label: &str) -> Element<'a, M> {
     .into()
 }
 
-/// A neutral tag (`auto`, `from metadata`): 10 pt secondary text on the Control surface.
+/// A neutral tag (`from metadata`): 10 pt secondary text on the Control surface.
 pub fn source_tag<'a, M: 'a>(label: String) -> Element<'a, M> {
     container(
         text(label)
@@ -291,11 +318,6 @@ pub(crate) fn count_spans(count: &SourceCount) -> Vec<(String, Token)> {
     match count {
         SourceCount::None => Vec::new(),
         SourceCount::Total(total) => vec![(total.clone(), Token::TextTertiary)],
-        SourceCount::Picks { picked, total } => vec![
-            (picked.clone(), Token::Accent),
-            (" / ".to_owned(), Token::TextFaint),
-            (total.clone(), Token::TextTertiary),
-        ],
         SourceCount::Unavailable(count) => vec![(count.clone(), Token::Error)],
     }
 }
@@ -395,17 +417,6 @@ mod tests {
             vec![("612".to_owned(), Token::TextTertiary)]
         );
         assert_eq!(
-            count_spans(&SourceCount::Picks {
-                picked: "18".into(),
-                total: "1,042".into()
-            }),
-            vec![
-                ("18".to_owned(), Token::Accent),
-                (" / ".to_owned(), Token::TextFaint),
-                ("1,042".to_owned(), Token::TextTertiary),
-            ]
-        );
-        assert_eq!(
             count_spans(&SourceCount::Unavailable("212".into())),
             vec![("212".to_owned(), Token::Error)]
         );
@@ -413,19 +424,23 @@ mod tests {
 
     #[test]
     fn every_state_builds() {
-        for (tag, add) in [(None, None), (Some("auto"), Some("Add a folder\u{2026}"))] {
-            for on_add in [None, Some(())] {
-                let _: Element<'_, ()> = source_heading(
-                    &SourceHeadingModel {
-                        label: "Events".into(),
-                        tag: tag.map(Into::into),
-                        add: add.map(Into::into),
-                    },
-                    on_add,
-                );
+        for add in [None, Some("Add a folder\u{2026}")] {
+            for expanded in [None, Some(true), Some(false)] {
+                for on_press in [None, Some(())] {
+                    let _: Element<'_, ()> = source_heading(
+                        &SourceHeadingModel {
+                            label: "On disk".into(),
+                            add: add.map(Into::into),
+                            expanded,
+                        },
+                        on_press,
+                        on_press,
+                    );
+                }
             }
         }
-        let _: Element<'_, ()> = source_month("September 2026");
+        let _: Element<'_, ()> = source_month("Indexed folders");
+        let _: Element<'_, ()> = source_rule();
         for disclosure in [None, Some(true), Some(false)] {
             for volume in [None, Some(Volume::Mounted), Some(Volume::Offline)] {
                 for (selected, dimmed) in [(false, false), (true, false), (true, true)] {

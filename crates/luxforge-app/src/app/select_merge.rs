@@ -525,6 +525,17 @@ impl Editor {
         let kind = match action {
             MomentAction::PickAll(_) => return self.pick_all(number),
             MomentAction::Merge(kind) => kind,
+            MomentAction::Stack(expansion) => {
+                let Some(group) = state
+                    .summary
+                    .as_ref()
+                    .and_then(|summary| summary.groups.stacks.get(index as usize))
+                else {
+                    return Task::none();
+                };
+                let merge_id = group.merge_id.clone();
+                return self.expand_stack(&merge_id, expansion);
+            }
         };
         let Some((summary, moment)) = state
             .summary
@@ -1146,7 +1157,7 @@ impl Editor {
             asset_id: answer.result_asset_id.clone(),
         }]);
         self.select.reveal_held = true;
-        let mut tasks = vec![self.read_events(), self.read_counts()];
+        let mut tasks = vec![self.read_counts()];
         if let Some(change) = answer.change {
             tasks.push(self.develop_library_changed(change.0));
         }

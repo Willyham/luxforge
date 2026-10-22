@@ -703,6 +703,76 @@ fn a_frame_draws_its_surface_outline_icon_and_header() {
         Op::Fill(fill) if fill.color == button && fill.radius == 6.0)));
 }
 
+/// A stack's frame draws its kind's icon and a ring around its result, the first cell, under the
+/// cell's ground, open or collapsed; a moment's frame draws none.
+#[test]
+fn a_stack_frame_sets_its_result_apart_from_its_originals() {
+    let metrics = GridMetrics::select(136.0);
+    let frame = |kind, frames| GridBlock::Moment {
+        header: moment_header(kind),
+        frames,
+        collapsed: false,
+    };
+    let layout = GridLayout::new(
+        vec![
+            frame(MomentKind::HdrStack, 4),
+            frame(MomentKind::PanoramaStack, 1),
+            frame(MomentKind::Bracket, 3),
+        ],
+        metrics,
+        900.0,
+    );
+    let mut recorder = Recorder::default();
+    paint(
+        &scene(&layout, 0.0, Size::new(900.0, 800.0)),
+        &|_| CellView::default(),
+        &mut recorder,
+    );
+    let ring = theme::STACK_RESULT_RING;
+    let rings: Vec<(usize, Rectangle)> = recorder
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(at, (_, op))| match op {
+            Op::Fill(fill) if fill.color == Ink::Token(Token::TextFaint) => {
+                assert_eq!(fill.radius, theme::RADIUS + ring);
+                Some((at, fill.rect))
+            }
+            _ => None,
+        })
+        .collect();
+    let around = |cell: u32| {
+        let rect = layout.cell(cell).rect;
+        Rectangle::new(
+            Point::new(rect.x - ring, rect.y - ring),
+            Size::new(rect.width + 2.0 * ring, rect.height + 2.0 * ring),
+        )
+    };
+    // The open HDR stack's result and the collapsed panorama stack's, the fifth cell.
+    assert_eq!(
+        rings.iter().map(|(_, rect)| *rect).collect::<Vec<_>>(),
+        [around(0), around(4)]
+    );
+    // Drawn before the cells' grounds, which leave only the ring showing.
+    let first_ground = recorder
+        .ops
+        .iter()
+        .position(|(_, op)| {
+            matches!(op, Op::Fill(fill) if fill.color == Ink::Derived(Derived::CellSurface))
+        })
+        .unwrap();
+    assert!(rings.iter().all(|(at, _)| *at < first_ground));
+    let icons: Vec<Icon> = recorder
+        .ops
+        .iter()
+        .filter_map(|(_, op)| match op {
+            Op::Icon { icon, size, .. } if *size == theme::MOMENT_ICON_SIZE => Some(*icon),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(icons, [Icon::Bracket, Icon::Panorama, Icon::Bracket]);
+}
+
 #[test]
 fn a_day_heading_puts_its_title_and_detail_on_one_baseline() {
     let metrics = GridMetrics::select(136.0);
