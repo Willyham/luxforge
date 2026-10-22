@@ -525,6 +525,17 @@ impl Editor {
         let kind = match action {
             MomentAction::PickAll(_) => return self.pick_all(number),
             MomentAction::Merge(kind) => kind,
+            MomentAction::Stack(expansion) => {
+                let Some(group) = state
+                    .summary
+                    .as_ref()
+                    .and_then(|summary| summary.groups.stacks.get(index as usize))
+                else {
+                    return Task::none();
+                };
+                let merge_id = group.merge_id.clone();
+                return self.expand_stack(&merge_id, expansion);
+            }
         };
         let Some((summary, moment)) = state
             .summary

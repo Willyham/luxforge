@@ -339,7 +339,8 @@ impl Merging {
     /// List the bracket's folder into the index, plan and create its merge into the folder the plan
     /// proposes — its year, its place (the folder on disk that names its event) and its day, which
     /// the merge makes — and wait for it: the plan, the job's result and the recorded provenance.
-    fn merge(&self) -> (Value, Value, MergeProvenance) {
+    /// List the bracket's folder into the index: every frame read.
+    fn list(&self) {
         let listed = self.ok(
             "index.refresh",
             json!({"source": {"kind": "folder", "path": self.folder}}),
@@ -347,6 +348,10 @@ impl Merging {
         let report = self.finished(&listed["job_id"]);
         assert_eq!(report["files"], json!(self.paths.len()), "{report}");
         assert_eq!(report["unreadable"], 0, "{report}");
+    }
+
+    fn merge(&self) -> (Value, Value, MergeProvenance) {
+        self.list();
         let targets = json!({"kind": "paths", "paths": self.paths});
         let plan = self.ok("merge.plan", json!({"kind": "hdr", "targets": targets}));
         assert_eq!(
@@ -530,7 +535,7 @@ fn compare_result(merging: &Merging, result: &Value, provenance: &MergeProvenanc
 }
 
 /// A bracket of three DNGs, 0, −2 and +2 EV, listed into the index, grouped as one bracket from
-/// its metadata, planned and merged through the registry with the production development: the
+/// its metadata until merged, then as the result's stack, planned and merged through the registry with the production development: the
 /// provenance has the generated exposures from metadata with the metered frame the reference,
 /// identity registration and full coverage; the result opens through `source.prepare` and holds
 /// the scene's radiance wherever some frame recorded it, above one where the metered frame
@@ -539,6 +544,18 @@ fn compare_result(merging: &Merging, result: &Value, provenance: &MergeProvenanc
 #[slow]
 fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
     let merging = Merging::new("still", &BracketSpec::default());
+    // Before the merge, Select groups the frames as one bracket, from their metadata.
+    merging.list();
+    let view = merging.ok(
+        "browse.view",
+        json!({"source": {"kind": "folder", "path": merging.folder}}),
+    );
+    let moments = view["groups"]["moments"].as_array().unwrap();
+    assert_eq!(moments.len(), 1, "{view}");
+    assert_eq!(moments[0]["kind"], "bracket", "{view}");
+    assert_eq!(moments[0]["evidence"], "metadata", "{view}");
+    assert_eq!(moments[0]["steps_ev"], json!([0.0, -2.0, 2.0]), "{view}");
+    assert_eq!(moments[0]["len"], 3);
     let (plan, result, provenance) = merging.merge();
 
     // The index read every header: one body, the frames' settings, so the plan resolves the
@@ -557,7 +574,7 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
         (&json!(1), &json!(1), &json!(3)),
         "{view}"
     );
-    // Expanded, Select groups the frames as one bracket, from their metadata.
+    // Expanded, the result and its frames are one stack group, which no bracket splits.
     merging.ok(
         "stack.set-expanded",
         json!({"merge_id": result["merge_id"], "expansion": "expanded"}),
@@ -566,12 +583,17 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
         "browse.view",
         json!({"source": {"kind": "folder", "path": merging.folder}}),
     );
-    let moments = view["groups"]["moments"].as_array().unwrap();
-    assert_eq!(moments.len(), 1, "{view}");
-    assert_eq!(moments[0]["kind"], "bracket", "{view}");
-    assert_eq!(moments[0]["evidence"], "metadata", "{view}");
-    assert_eq!(moments[0]["steps_ev"], json!([0.0, -2.0, 2.0]), "{view}");
-    assert_eq!(moments[0]["len"], 3);
+    assert_eq!(view["groups"]["moments"], json!([]), "{view}");
+    let stacks = &view["groups"]["stacks"];
+    assert_eq!(
+        (
+            &stacks[0]["start"],
+            &stacks[0]["len"],
+            &stacks[0]["expansion"]
+        ),
+        (&json!(0), &json!(4), &json!("expanded")),
+        "{view}"
+    );
 
     // The provenance: every input as decoded, the generated offsets from the settings, the
     // metered frame the reference, nothing moved and nothing lost.

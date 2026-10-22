@@ -17,8 +17,9 @@ use luxforge_core::{
     catalog_types::{
         BodyKey, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Exposure, Facet, Facets,
         FileAvailability, FileId, Grouping, IndexFolders, IndexSource, LibraryChange, LibraryItem,
-        LocalDay, Moment, MomentEvidence, MomentKind, Month, PreviewState, RowItem, SortKey,
-        Targets, ViewQuery, ViewRow, ViewSource, ViewSummary, VolumeId, Volumes,
+        LocalDay, MergeKind, Moment, MomentEvidence, MomentKind, Month, PreviewState, RowItem,
+        SortKey, StackExpansion, StackGroup, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary,
+        VolumeId, Volumes,
     },
 };
 use serde_json::{Value, json};
@@ -642,7 +643,6 @@ pub(crate) fn catalog_toast(
     only: bool,
     photos: u64,
 ) -> PickToast {
-    use luxforge_core::catalog_types::MergeKind;
     let (noun, named) = match merge {
         Some(MergeKind::Hdr) => ("HDR merge", "an HDR merge"),
         Some(MergeKind::Panorama) => ("panorama merge", "a panorama merge"),
@@ -823,6 +823,17 @@ pub(crate) enum Block {
         frames: u32,
         collapsed: bool,
     },
+    /// A merge's stack: its result and, while expanded, the originals following it, `frames`
+    /// items framed as a moment is, with its header ("HDR merge", "3 exposures") and Expand or
+    /// Collapse. `index` is the stack's in the summary's `groups.stacks`.
+    Stack {
+        index: u32,
+        kind: MergeKind,
+        title: String,
+        detail: String,
+        frames: u32,
+        action: MomentAction,
+    },
     Singles(u32),
     /// The merge this desktop is running, or one that ended without its result, as a row of its
     /// own before the frames it merges.
@@ -843,7 +854,9 @@ pub(crate) enum MomentAction {
     /// Pick all N: `pick.set` of the frames' files.
     PickAll(u32),
     /// Merge the frames: a bracket's HDR, a panorama's panorama.
-    Merge(luxforge_core::catalog_types::MergeKind),
+    Merge(MergeKind),
+    /// Show a stack this way: a collapsed stack's Expand, an expanded one's Collapse.
+    Stack(StackExpansion),
 }
 
 impl MomentAction {
@@ -851,6 +864,8 @@ impl MomentAction {
         match self {
             Self::PickAll(frames) => format!("Pick all {frames}"),
             Self::Merge(kind) => super::select_merge::words(kind).action.to_owned(),
+            Self::Stack(StackExpansion::Collapsed) => "Collapse".to_owned(),
+            Self::Stack(_) => "Expand".to_owned(),
         }
     }
 
@@ -868,16 +883,25 @@ pub(crate) struct GridContent {
 }
 
 impl GridContent {
-    /// The action `action` of the grid's moment `number`, with the moment's summary index.
-    pub(crate) fn action(&self, number: u32, action: u32) -> Option<(u32, MomentAction)> {
+    /// The blocks the grid frames, in order: moments and stacks, which it numbers together.
+    pub(crate) fn framed(&self) -> impl Iterator<Item = &Block> {
         self.blocks
             .iter()
-            .filter_map(|block| match block {
-                Block::Moment { index, actions, .. } => Some((*index, actions)),
-                _ => None,
-            })
-            .nth(number as usize)
-            .and_then(|(index, actions)| Some((index, *actions.get(action as usize)?)))
+            .filter(|block| matches!(block, Block::Moment { .. } | Block::Stack { .. }))
+    }
+
+    /// The action `action` of the grid's framed block `number`, with the block's summary index:
+    /// a moment's in `groups.moments`, a stack's in `groups.stacks`.
+    pub(crate) fn action(&self, number: u32, action: u32) -> Option<(u32, MomentAction)> {
+        match self.framed().nth(number as usize)? {
+            Block::Moment { index, actions, .. } => Some((*index, *actions.get(action as usize)?)),
+            Block::Stack {
+                index,
+                action: only,
+                ..
+            } => (action == 0).then_some((*index, *only)),
+            _ => None,
+        }
     }
 
     /// Put `pending` (a [`Block::Pending`]) where the item at `position` is drawn: before the
@@ -888,7 +912,7 @@ impl GridContent {
         let mut index = self.blocks.len();
         for (block_index, block) in self.blocks.iter().enumerate() {
             let len = match block {
-                Block::Moment { frames, .. } => *frames,
+                Block::Moment { frames, .. } | Block::Stack { frames, .. } => *frames,
                 Block::Singles(count) => *count,
                 _ => continue,
             };
@@ -910,16 +934,13 @@ impl GridContent {
         self.blocks.insert(index, pending);
     }
 
-    /// The summary's index of the grid's moment `number`: the moments counted in order, collapsed
-    /// ones included, as the grid names a header's action.
+    /// The summary's index of the grid's framed block `number` when it is a moment: the framed
+    /// blocks counted in order, collapsed moments included, as the grid names a header's action.
     pub(crate) fn moment(&self, number: u32) -> Option<u32> {
-        self.blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Moment { index, .. } => Some(*index),
-                _ => None,
-            })
-            .nth(number as usize)
+        match self.framed().nth(number as usize)? {
+            Block::Moment { index, .. } => Some(*index),
+            _ => None,
+        }
     }
 
     /// The footer label of the cell whose first item is `item`.
@@ -937,7 +958,7 @@ impl GridContent {
         self.blocks
             .iter()
             .map(|block| match block {
-                Block::Moment { frames, .. } => *frames,
+                Block::Moment { frames, .. } | Block::Stack { frames, .. } => *frames,
                 Block::Singles(count) => *count,
                 _ => 0,
             })
@@ -949,14 +970,14 @@ impl GridContent {
 /// block for each burst and bracket, and the frames between them as singles. It follows the group
 /// layout the owner answered, whatever the grouping: a view with no days has no headings, and one
 /// with no moments is all singles. A day says how many of its frames are picked, a moment how many
-/// of its frames are ("1 picked"), and a bracket of files not all picked offers Pick all.
-/// `collapsed` names the bursts drawn as one cell.
+/// of its frames are ("1 picked"), and a bracket of files not all picked offers Pick all. Each merge
+/// stack is framed whole, collapsed or expanded. `collapsed` names the bursts drawn as one cell.
 pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> GridContent {
     let count = summary.count;
     let over_files = summary.query.source.over_files();
     let groups = &summary.groups;
     let mut content = GridContent::default();
-    let (mut day, mut camera, mut moment) = (0, 0, 0);
+    let (mut day, mut camera, mut moment, mut stack) = (0, 0, 0, 0);
     let mut position = 0;
     while position < count {
         // Headings start where their groups do; anything the layout names behind the position is
@@ -982,6 +1003,13 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
         {
             moment += 1;
         }
+        while groups
+            .stacks
+            .get(stack)
+            .is_some_and(|group| group.start < position)
+        {
+            stack += 1;
+        }
         if let Some(group) = groups.days.get(day).filter(|group| group.start == position) {
             let mut detail = photographs(group.len.min(count - position));
             if group.picked > 0 {
@@ -1003,6 +1031,22 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
                 detail: thousands(group.len.min(count - position)),
             });
             camera += 1;
+        }
+        if let Some(group) = groups
+            .stacks
+            .get(stack)
+            .filter(|group| group.start == position)
+        {
+            let frames = group.len.min(count - position);
+            if frames > 0 {
+                content
+                    .blocks
+                    .push(stack_block(stack as u32, group, frames));
+                position += frames;
+                stack += 1;
+                continue;
+            }
+            stack += 1;
         }
         if let Some(group) = groups
             .moments
@@ -1047,6 +1091,7 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
             groups.days.get(day).map(|group| group.start),
             groups.cameras.get(camera).map(|group| group.start),
             groups.moments.get(moment).map(|group| group.start),
+            groups.stacks.get(stack).map(|group| group.start),
         ]
         .into_iter()
         .flatten()
@@ -1064,11 +1109,27 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
     content
 }
 
+/// A stack's framed block: its kind's merge and how many originals it has ("HDR merge", "3
+/// exposures"), and the header's Expand or Collapse.
+fn stack_block(index: u32, group: &StackGroup, frames: u32) -> Block {
+    let words = super::select_merge::words(group.kind);
+    Block::Stack {
+        index,
+        kind: group.kind,
+        title: format!("{} merge", words.title),
+        detail: format!("{} {}", thousands(group.size), words.frames),
+        frames,
+        action: MomentAction::Stack(match group.expansion {
+            StackExpansion::Collapsed => StackExpansion::Expanded,
+            StackExpansion::Expanded | StackExpansion::All => StackExpansion::Collapsed,
+        }),
+    }
+}
+
 /// A moment's header buttons over files: for a bracket or a panorama, Pick all while its frames
 /// are not all picked, then the primary merge of its kind (Merge HDR, Merge panorama) while that
 /// merge takes that many frames. A burst has none.
 fn moment_actions(kind: MomentKind, picked: u32, frames: u32) -> Vec<MomentAction> {
-    use luxforge_core::catalog_types::MergeKind;
     let merge = match kind {
         MomentKind::Bracket => MergeKind::Hdr,
         MomentKind::Panorama => MergeKind::Panorama,

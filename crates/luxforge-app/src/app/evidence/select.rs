@@ -210,18 +210,20 @@ impl Editor {
         };
         let found = state
             .content
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
+            .framed()
+            .enumerate()
+            .filter_map(|(number, block)| match block {
                 Block::Moment { index, actions, .. } => Some((
-                    *index,
-                    actions
-                        .iter()
-                        .any(|action| matches!(action, MomentAction::PickAll(_))),
+                    number,
+                    (
+                        *index,
+                        actions
+                            .iter()
+                            .any(|action| matches!(action, MomentAction::PickAll(_))),
+                    ),
                 )),
                 _ => None,
             })
-            .enumerate()
             .find(|(_, (index, _))| {
                 summary
                     .groups
