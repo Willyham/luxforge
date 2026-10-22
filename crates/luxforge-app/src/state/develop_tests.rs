@@ -319,6 +319,7 @@ fn developed(name: &str, asset: &AssetId, used: Option<&str>) -> DevelopedPick {
         asset_id: asset.clone(),
         outcome: DevelopOutcome::Created,
         folder_id: CatalogFolderId::new(),
+        chosen_folder_id: CatalogFolderId::new(),
     }
 }
 

@@ -1256,7 +1256,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: hdr_merge::SCENARIO,
-        about: "An HDR merge end to end over two generated RAW brackets: Merge HDR from the header with its pending row's progress, one collapsed HDR tile in the catalog with Select still shown, S expanding its originals with their EV offsets, an original picked, the result double-clicked in All photographs into Develop with its catalog folder in the filmstrip and one Exposure edit, Remove merge, Cmd+Z, Shift+Cmd+Z and Cmd+Z with no merge run again, a second bracket's Merge HDR, and the result reopened with its brackets offline",
+        about: "An HDR merge end to end over two generated RAW brackets: Merge HDR from the header with its pending row's progress, one collapsed HDR tile in the catalog with Select still shown, P on it picking nothing and saying it is already in the catalog, S expanding its originals with their EV offsets, an original picked, the result double-clicked in All photographs into Develop with its catalog folder in the filmstrip and one Exposure edit, Remove merge, Cmd+Z, Shift+Cmd+Z and Cmd+Z with no merge run again, a second bracket's Merge HDR, and the result reopened with its brackets offline",
         launches: &[],
         verify: hdr_merge::verify,
         source: Source::Fixtures(&[]),

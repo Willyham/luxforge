@@ -78,6 +78,8 @@ pub(crate) enum SelectMessage {
     Forget,
     /// The notice of a connected card put away without browsing it.
     DismissCard,
+    /// A pick toast's time is up: it goes, unless a newer one, by its number, has replaced it.
+    PickToastExpired(u64),
     /// A secondary press (a right-click) on a grid cell: over the catalog, the photographs' menu.
     Context(GridContext),
     /// `catalog.info` answered with the counts behind the Catalog sources.

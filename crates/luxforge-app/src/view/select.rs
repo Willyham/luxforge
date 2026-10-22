@@ -26,9 +26,9 @@ use crate::{
         select::{
             Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, CardNotice, ChipModel,
             Count, Dot, FilterBarModel, ForgetSheet, GridContent, InfoModel, ItemInfo, MenuChoice,
-            PAIR_NOTE, PickBand, PickFilter, QueryChange, RowCache, RowChoice, SelectMenu,
-            SelectModel, SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown, SourceIcon,
-            SourcePress, SourceRow, SourcesModel, StripModel,
+            PAIR_NOTE, PickBand, PickFilter, PickToast, QueryChange, RowCache, RowChoice,
+            SelectMenu, SelectModel, SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown,
+            SourceIcon, SourcePress, SourceRow, SourcesModel, StripModel,
         },
         select_merge,
     },
@@ -128,6 +128,16 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         centre = stack![
             centre,
             container(card_notice(notice))
+                .center_x(Length::Fill)
+                .padding(Padding::default().top(theme::SPACING * 2.0)),
+        ]
+        .into();
+    }
+    // Why the last `P` picked nothing, for a moment, over the grid or the loupe.
+    if let Some(toast) = &select.pick_toast {
+        centre = stack![
+            centre,
+            container(pick_toast(toast))
                 .center_x(Length::Fill)
                 .padding(Padding::default().top(theme::SPACING * 2.0)),
         ]
@@ -605,6 +615,20 @@ fn card_notice(model: &CardNotice) -> Element<'_, Message> {
     )
 }
 
+/// Why `P` picked nothing: the selection holds a photograph already in the catalog. It goes by
+/// itself.
+fn pick_toast(model: &PickToast) -> Element<'_, Message> {
+    notice_card(
+        &NoticeCardModel {
+            icon: Icon::Sliders,
+            title: model.title.clone(),
+            body: model.body.clone(),
+            tone: NoticeTone::Neutral,
+        },
+        Vec::new(),
+    )
+}
+
 // -- Centre ----------------------------------------------------------------------------------------
 
 /// The filter bar over the grid, the grid on the canvas surface, a note over it when there is
@@ -637,8 +661,9 @@ fn centre<'a>(
         Space::new().width(Length::Fill).height(Length::Fill).into()
     } else {
         let selection = &model.selection;
+        let over_files = model.catalog.filter.is_none();
         thumbnail_grid(layout, scroll, move |cell: GridCell| {
-            cell_view(cell, rows, content, selection, images)
+            cell_view(cell, rows, content, selection, images, over_files)
         })
         .on_press(|press| Message::Select(SelectMessage::Press(press)))
         .on_context(|context| Message::Select(SelectMessage::Context(context)))
@@ -715,13 +740,15 @@ fn centre<'a>(
 }
 
 /// One visible cell, from its row when it has been read and the session's selection. A collapsed
-/// burst shows its pick, or its first frame, with its frame count.
+/// burst shows its pick, or its first frame, with its frame count. Over files, what is already in
+/// the catalog says so; over the catalog everything is.
 fn cell_view<'a>(
     cell: GridCell,
     rows: &'a RowCache,
     content: &'a GridContent,
     selection: &SelectionModel,
     images: GridImages<'a>,
+    over_files: bool,
 ) -> CellView<'a> {
     let shown = rows.shown(cell.item, cell.span);
     let facts = rows.cell(shown).unwrap_or_default();
@@ -755,7 +782,7 @@ fn cell_view<'a>(
         picked: facts.picked,
         selected: selection.selected(cell.item, cell.span),
         active: selection.active_in(cell.item, cell.span),
-        in_catalog: facts.in_catalog,
+        in_catalog: over_files && facts.in_catalog,
         copied: facts.copied,
         availability: match facts.availability {
             Availability::Available if unreadable => CellAvailability::Unreadable,

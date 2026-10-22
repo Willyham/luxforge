@@ -10,7 +10,9 @@
 //!   job progresses on the activity board; its end is heard through the owner's own answer that the
 //!   job ended ([`OwnerHandle::wait_source`], which answers for the library lane's jobs too), never
 //!   a timer, and its record read with `job.read`. Then Develop opens on the first photograph it
-//!   developed, and the deepest catalog folder holding every one of them becomes the Develop folder.
+//!   developed, and the deepest catalog folder holding every folder its choices named
+//!   (`developed[].chosen_folder_id`: a place, not the day folder inside it) becomes the Develop
+//!   folder, so photographs developed into the same place before are in its filmstrip.
 //!   A failed or cancelled Develop says so; what it committed stays in the catalog, as the core
 //!   keeps it.
 //! - **The Develop folder** is the catalog folder Develop holds, the catalog's own view state
@@ -418,9 +420,9 @@ pub(crate) fn common_folder(
 }
 
 /// The folder Develop holds for photographs just developed or opened, by the catalog folders their
-/// Develop's report named (`developed[].folder_id`), read with its filmstrip through a client of
-/// its own: the deepest catalog folder holding every one of them, or the first one's own folder
-/// when they share none. `None` for no folders.
+/// Develop's choices named (`developed[].chosen_folder_id`), read with its filmstrip through a
+/// client of its own: the deepest catalog folder holding every one of them, or the first one when
+/// they share none. `None` for no folders.
 pub(crate) fn developed_folder_now(
     owner: &OwnerHandle,
     filed: &[CatalogFolderId],
@@ -774,11 +776,11 @@ impl Editor {
         if photos.is_empty() {
             return Task::none();
         }
-        // The folders the report filed each photograph in, in its order, each once.
+        // The folders the report says its choices named, in its order, each once.
         let mut filed: Vec<CatalogFolderId> = Vec::with_capacity(report.developed.len());
         for developed in &report.developed {
-            if !filed.contains(&developed.folder_id) {
-                filed.push(developed.folder_id.clone());
+            if !filed.contains(&developed.chosen_folder_id) {
+                filed.push(developed.chosen_folder_id.clone());
             }
         }
         self.develop.strip_serial += 1;

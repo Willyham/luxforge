@@ -55,18 +55,18 @@ The desktop holds one **Develop folder**, its own view state like the shown work
 - **What chooses it.**
   - Viewing a catalog folder in Select.
   - A double-click on a photograph in any catalog view: that photograph's own folder, opening on it.
-  - Develop N: the deepest folder holding every photograph it developed, or the first one's own folder when they share none. It opens on the first.
-  - Opening a file: its folder.
+  - Develop N: the deepest folder holding every folder its choices named, or the first of them when they share none. It opens on the first photograph it developed. A choice names its place folder ("2026 › Kawaguchiko"), its existing folder or its new folder, never the day folder inside it, so photographs an earlier Develop put in the same place are in the filmstrip with the new ones. A linked or relinked photograph names its own folder.
+  - Opening a file: the folder its Develop's choice named, its place folder rather than its day folder.
 - **What keeps it.** Browsing files, events, other catalog views and Missing originals leaves it as it was. A merge of the folder makes it the folder it went into. Deleting the folder clears it.
 - **The filmstrip** holds the folder's photographs with its subfolders, captured oldest first, removed photographs excepted. It is read through a client of its own, so Select's view and selection are untouched, in `browse.rows` windows of at most 1,000, with at most 100,000 photographs. Its header is the folder's path ("2026 › Konstanz") with the active photograph's place in it ("3 of 18"). It is read again after any library change that reaches the desktop, its own or another client's, keeping the open photograph's place. An open photograph that left the folder stays open, with no cell outlined.
 - **`D` and the Develop tab** open Develop on the Develop folder: on the photograph already open when it is in the folder, otherwise on the folder's first photograph. A photograph opened with nothing chosen, from Missing originals' Locate for example, is shown without a filmstrip. With neither, the tab is disabled and `D` says "Choose a catalog folder to develop". An empty folder says it has no photographs.
-- **Agent equivalent.** An agent reads what Develop holds as the folder's view, `browse.view` of `{kind: catalog-folder, folder_id, subfolders: true}`. There is no separate set to replace or append to.
+- **Agent equivalent.** An agent reads what Develop holds as the folder's view, `browse.view` of `{kind: catalog-folder, folder_id, subfolders: true}`. There is no separate set to replace or append to. `pick.develop`'s report names each photograph's `folder_id`, the folder it is in, and `chosen_folder_id`, the folder its choice named: the place or existing folder over the day folder it was filed in, else `folder_id`.
 
 ### Merging
 
 - **Actions.** A bracket header offers Pick all N and **Merge HDR**. The selection menu's HDR group offers Merge HDR… ("Merge the frames into one HDR photograph in the catalog"). It opens the [merge preview](hdr-merge.md#in-the-desktop) first, with Cancel and Merge; ⌥-click merges at once with the last settings. The result is made in its folder, and the person stays in Select.
 - **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day. The folders it makes are recorded as their own library change (`folder.create`, the request's actor and identity) just before the publication's, in the same transaction, so undoing the merge leaves them: the result it keeps in Removed is still in them. The preview sheet's folder control shows the plan's proposal and sends it, or `{kind: existing, folder_id}` for a folder the person picks; the desktop never sends `folder.create` first.
-- **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked.
+- **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked: it carries the "In the catalog" badge, and `P` on it picks nothing and says so over the grid ([HDR merges](hdr-merge.md#in-the-desktop)).
 
 ### Catalog format
 
@@ -101,7 +101,7 @@ The Develop N confirmation shows one field per event for the place's name, with 
   - pressing a year folder views every photograph under it and makes it Develop's folder;
   - `D` opens on it;
   - another client's Develop into it reaches the filmstrip;
-  - Develop N opens on the common folder;
+  - Develop N opens on the common folder of the folders its choices named, so a later Develop into the same place holds the place with every photograph in it;
   - a double-click in All photographs opens the photograph's folder;
   - Merge HDR leaves the person in Select with the result in the plan's day folder.
 - **Verification.** The rendered scenarios cover these. The quick tier passes. Its verification is the quick tier only; rendered and timing runs are reported as not run.
