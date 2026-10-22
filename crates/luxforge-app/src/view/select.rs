@@ -803,7 +803,7 @@ fn cell_view<'a>(
         None if facts.paired => (Some(PAIR_NOTE), Some(Icon::Copy)),
         None => (None, icon),
     };
-    let exposure = stack.exposure;
+    let footer = stack.footer;
     CellView {
         // The decoded preview while the cache holds it; the placeholder at the photograph's shape
         // while it loads.
@@ -821,11 +821,12 @@ fn cell_view<'a>(
             Availability::Unreadable => CellAvailability::Unreadable,
         },
         count: (cell.span > 1).then_some(cell.span),
-        // A bracket frame's exposure step; a photograph drawn from an approximate rendered preview
-        // says so, quietly, as the loupe does.
+        // A bracket frame's exposure step, a stack's "Merged" or an original's exposure; a
+        // photograph drawn from an approximate rendered preview says so, quietly, as the loupe
+        // does.
         label: content
             .label(cell.item)
-            .or(exposure)
+            .or(footer)
             .or_else(|| images.approximate(shown).then_some(APPROXIMATE)),
         edited: facts.edited,
         stack: badge,

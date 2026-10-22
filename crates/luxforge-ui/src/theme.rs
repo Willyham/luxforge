@@ -736,6 +736,9 @@ pub const SIZE_CELL_UNAVAILABLE: f32 = 10.0;
 pub const MOMENT_RADIUS: f32 = 9.0;
 pub const MOMENT_PADDING: f32 = 6.0;
 pub const MOMENT_HEADER_HEIGHT: f32 = 28.0;
+/// The ring of the faint text around a stack's result in its frame, which sets it apart from its
+/// originals: 2 pt, in the frame's padding and the gap after the result.
+pub const STACK_RESULT_RING: f32 = 2.0;
 /// A moment header's inset inside the row's padding, the gap between its parts and its 12 pt kind
 /// icon (`.mom .mh`); the action button's extra 6 pt margin before it.
 pub const MOMENT_HEADER_INSET: f32 = 4.0;
