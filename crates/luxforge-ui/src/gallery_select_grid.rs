@@ -550,6 +550,27 @@ fn badge(expanded: bool) -> Option<CellStack<'static>> {
     })
 }
 
+/// An HDR stack's frame of `frames` cells, its result first: Expand while collapsed, Collapse
+/// while its originals follow.
+fn hdr_stack(frames: u32) -> GridBlock {
+    GridBlock::Moment {
+        header: MomentHeader {
+            kind: MomentKind::HdrStack,
+            title: "HDR merge".into(),
+            detail: "3 exposures".into(),
+            evidence: None,
+            picked: None,
+            actions: vec![HeaderAction::new(if frames > 1 {
+                "Collapse"
+            } else {
+                "Expand"
+            })],
+        },
+        frames,
+        collapsed: false,
+    }
+}
+
 /// The header's merges beside Pick all, over a bracket of files.
 static MERGE_HEADER: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
@@ -595,13 +616,15 @@ fn merge_pending() -> Element<'static, ()> {
     whole(&MERGE_PENDING, |grid| exposure(grid.item as usize))
 }
 
-/// The result published: active, leading its collapsed stack with its badge, never shown picked,
-/// between the frames before and after the bracket.
+/// The result published: active, framed alone as its collapsed stack with its badge, never shown
+/// picked, between the frames before and after the bracket.
 static MERGE_RESULT: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
         vec![
             GridBlock::Day(heading("Saturday 12 September 2026", "4 photographs")),
-            GridBlock::Singles(4),
+            GridBlock::Singles(1),
+            hdr_stack(1),
+            GridBlock::Singles(2),
         ],
         compact(GridMetrics::select(theme::CELL_SIZE.width)),
         WIDTH,
@@ -615,6 +638,7 @@ fn merge_result() -> Element<'static, ()> {
             selected: true,
             active: true,
             stack: badge(false),
+            label: Some("Merged"),
             ..CellView::default()
         },
         item => CellView {
@@ -646,11 +670,12 @@ fn merge_failed() -> Element<'static, ()> {
     whole(&MERGE_FAILED, |grid| exposure(grid.item as usize))
 }
 
-/// Show all 3 originals under the Picked filter: the result open, its originals after it with
-/// their exposures, the one picked with its check and the two the filter left out labelled so.
+/// Show all 3 originals under the Picked filter: the result open and set apart in its stack's
+/// frame, its originals after it with their exposures, the one picked with its check and the two
+/// the filter left out labelled so.
 static MERGE_EXPANDED: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
-        vec![GridBlock::Singles(5)],
+        vec![hdr_stack(4), GridBlock::Singles(1)],
         compact(GridMetrics::select(theme::CELL_SIZE.width)),
         WIDTH,
     )
@@ -661,6 +686,7 @@ fn merge_expanded() -> Element<'static, ()> {
         0 => CellView {
             image: Some(&EXPOSURES[1]),
             stack: badge(true),
+            label: Some("Merged"),
             ..CellView::default()
         },
         1..4 => {
@@ -682,7 +708,7 @@ fn merge_expanded() -> Element<'static, ()> {
 }
 
 /// The smallest cells in a narrow grid: the header's actions give way from Pick all, the primary
-/// Merge HDR last; the result's badge is short.
+/// Merge HDR last; the result's badge is short, and its stack's header gives way to its cell.
 static MERGE_NARROW: LazyLock<GridLayout> = LazyLock::new(|| {
     GridLayout::new(
         vec![
@@ -694,7 +720,8 @@ static MERGE_NARROW: LazyLock<GridLayout> = LazyLock::new(|| {
                 false,
             ),
             bracket_with_merges(Some("1 picked")),
-            GridBlock::Singles(2),
+            hdr_stack(1),
+            GridBlock::Singles(1),
         ],
         compact(GridMetrics::select(SMALLEST_CELL)),
         NARROW,
@@ -711,6 +738,7 @@ fn merge_narrow() -> Element<'static, ()> {
             3 => CellView {
                 image: Some(&EXPOSURES[1]),
                 stack: badge(false),
+                label: Some("Merged"),
                 ..CellView::default()
             },
             _ => CellView {

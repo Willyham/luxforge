@@ -66,8 +66,8 @@ use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
         Cards, CatalogCounts, CatalogInfo, DiskFolders, Facets, IndexFolderAnswer, IndexFolders,
-        ItemRef, LibraryAnswer, LibraryChange, LibraryJournal, RowItem, Targets, ViewQuery,
-        ViewRows, ViewSource, ViewSummary, Volumes,
+        ItemRef, LibraryAnswer, LibraryChange, LibraryJournal, MergeKind, RowItem, Targets,
+        ViewQuery, ViewRows, ViewSource, ViewSummary, Volumes,
     },
 };
 use luxforge_ui::{
@@ -318,6 +318,28 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 },
                 frames: *frames,
                 collapsed: *collapsed,
+            },
+            Block::Stack {
+                kind,
+                title,
+                detail,
+                frames,
+                action,
+                ..
+            } => GridBlock::Moment {
+                header: MomentHeader {
+                    kind: match kind {
+                        MergeKind::Hdr => MomentKind::HdrStack,
+                        MergeKind::Panorama => MomentKind::PanoramaStack,
+                    },
+                    title: title.clone(),
+                    detail: detail.clone(),
+                    evidence: None,
+                    picked: None,
+                    actions: vec![HeaderAction::new(action.label())],
+                },
+                frames: *frames,
+                collapsed: false,
             },
             Block::Singles(count) => GridBlock::Singles(*count),
             Block::Pending {
@@ -2196,7 +2218,7 @@ impl Editor {
             "pick_all": state.content.blocks.iter().filter_map(|block| match block {
                 Block::Moment { index, actions, .. } => actions.iter().find_map(|action| match action {
                     model::MomentAction::PickAll(_) => Some(json!([index, action.label()])),
-                    model::MomentAction::Merge(_) => None,
+                    model::MomentAction::Merge(_) | model::MomentAction::Stack(_) => None,
                 }),
                 _ => None,
             }).collect::<Vec<_>>(),
@@ -2204,6 +2226,12 @@ impl Editor {
                 Block::Moment { index, actions, .. } if !actions.is_empty() => Some(json!([
                     index,
                     actions.iter().map(|action| action.label()).collect::<Vec<_>>(),
+                ])),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "stacks": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Stack { index, title, detail, frames, action, .. } => Some(json!([
+                    index, title, detail, frames, action.label(),
                 ])),
                 _ => None,
             }).collect::<Vec<_>>(),
@@ -2323,7 +2351,7 @@ impl Editor {
                     "ordinal": stack.ordinal,
                     "offset_ev": stack.offset_ev,
                     "badge": cell.badge.map(|(long, short, open)| json!([long, short, open])),
-                    "exposure": cell.exposure,
+                    "footer": cell.footer,
                     "note": cell.note,
                 }))
             })

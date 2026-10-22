@@ -619,7 +619,7 @@ fn panorama_merge_menu_and_sheet_requests_are_a_json_clients() {
             let row = editor.select.state.rows.row(at + offset).unwrap();
             let stack = row.stack.as_ref().expect("an original of the stack");
             assert_eq!(stack.role, StackRole::Original);
-            stack_cell(Some(stack), None).exposure.unwrap()
+            stack_cell(Some(stack), None).footer.unwrap()
         })
         .collect();
     assert_eq!(footers, ["Frame 1 of 3", "Frame 2 of 3", "Frame 3 of 3"]);
