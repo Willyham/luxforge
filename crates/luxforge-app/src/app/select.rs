@@ -695,6 +695,16 @@ impl Editor {
                 return self.library_now(LibraryGesture::RemoveFolder, params);
             }
             SelectMessage::DismissCard => self.select.state.card_notice = None,
+            SelectMessage::PickToastExpired(number) => {
+                let state = &mut self.select.state;
+                if state
+                    .pick_toast
+                    .as_ref()
+                    .is_some_and(|(shown, _)| *shown == number)
+                {
+                    state.pick_toast = None;
+                }
+            }
             SelectMessage::Context(context) => return self.context_menu(context),
             SelectMessage::Pick => return self.pick_selection(),
             SelectMessage::PickAll(number) => return self.pick_all(number),
@@ -1877,12 +1887,19 @@ impl Editor {
         if self.select.state.summary.is_none() {
             return Task::none();
         }
-        if self.select.state.over_catalog() {
-            self.status.text =
-                "Only files are picked: a developed photograph is already in the catalog".into();
+        let selection = self.selection();
+        // A photograph is already in the catalog: `P` picks nothing, not a merge's originals
+        // either, and says so over the grid.
+        let refused = model::pick_toast(&selection, &self.select.state.rows).or_else(|| {
+            self.select
+                .state
+                .over_catalog()
+                .then(|| model::catalog_toast(None, true, u64::from(selection.count.max(1))))
+        });
+        if let Some(toast) = refused {
+            self.show_pick_toast(toast);
             return Task::none();
         }
-        let selection = self.selection();
         if selection.count == 0 {
             self.status.text = "Select a photograph to pick".into();
             return Task::none();
@@ -1890,6 +1907,14 @@ impl Editor {
         let picked = model::pick_value(&selection, &self.select.state.rows);
         let params = model::pick_params(&Targets::Selection, picked, &request());
         self.library_now(LibraryGesture::Pick { picked }, params)
+    }
+
+    /// Show `toast` over the grid in place of any other; [`subscription`] clears it once its time
+    /// is up.
+    fn show_pick_toast(&mut self, toast: model::PickToast) {
+        let state = &mut self.select.state;
+        state.pick_toasts += 1;
+        state.pick_toast = Some((state.pick_toasts, toast));
     }
 
     /// A bracket header's Pick all: `pick.set` of its frames' files, as an agent names them.
@@ -1940,10 +1965,9 @@ impl Editor {
                 return Task::none();
             };
             let RowItem::File { file_id } = row.item else {
-                self.status.text =
-                    "Only files are picked: a developed photograph is already in the catalog"
-                        .into();
+                let merge = row.stack.as_ref().map(|stack| stack.kind);
                 self.loupe_picked(positions, picked, false);
+                self.show_pick_toast(model::catalog_toast(merge, positions.len() == 1, 1));
                 return Task::none();
             };
             file_ids.push(file_id);
@@ -2332,6 +2356,10 @@ impl Editor {
                 "title": notice.title,
                 "body": notice.body,
             })),
+            "pick_toast": model.pick_toast.as_ref().map(|toast| json!({
+                "title": toast.title,
+                "body": toast.body,
+            })),
             "catalog": self.catalog_summary(),
             "merge": self.merge_summary(),
             "stacks": self.stacks_summary(),
@@ -2339,8 +2367,8 @@ impl Editor {
     }
 
     /// The rows the desktop holds that are in an HDR stack, as their cells draw them: the item,
-    /// its role and place in the stack, the leader's badge words, an original's EV offset and
-    /// note. At most the first [`STACK_ROWS`]
+    /// its role and place in the stack, whether its cell says it is in the catalog, the leader's
+    /// badge words, an original's EV offset and note. At most the first [`STACK_ROWS`]
     /// positions are looked at.
     fn stacks_summary(&self) -> Value {
         let state = &self.select.state;
@@ -2356,6 +2384,7 @@ impl Editor {
                     "item": row.item,
                     "file_name": row.file_name,
                     "picked": row.picked,
+                    "in_catalog": !state.over_catalog() && model::cell_facts(row).in_catalog,
                     "merge_id": stack.merge_id,
                     "role": stack.role,
                     "kind": stack.kind,
@@ -2407,11 +2436,18 @@ fn previews_message(message: SelectPreviewMessage) -> Message {
 
 /// The grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits for
 /// it. Authoritative job readers retain catalog completion interests independently of this
-/// presentation subscription.
+/// presentation subscription. While a pick toast is shown, its timeout, keyed by its number, so a
+/// newer toast starts its own full time rather than inheriting the older one's.
 pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
-    if editor.select_shown() {
-        crate::app::select_previews::subscription().map(previews_message)
-    } else {
-        iced::Subscription::none()
+    if !editor.select_shown() {
+        return iced::Subscription::none();
     }
+    let previews = crate::app::select_previews::subscription().map(previews_message);
+    let Some((number, _)) = &editor.select.state.pick_toast else {
+        return previews;
+    };
+    let toast = iced::time::every(model::PICK_TOAST_DURATION)
+        .with(*number)
+        .map(|(number, _)| Message::Select(SelectMessage::PickToastExpired(number)));
+    iced::Subscription::batch([previews, toast])
 }
