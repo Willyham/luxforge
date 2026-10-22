@@ -6,7 +6,11 @@
 //!
 //! - A session declares one `f32` input, `input`, of rank four with every dimension free, and one
 //!   output of the same shape, `output`, each element `tanh(w x + b)` with `w` and `b` taken from
-//!   the model's SHA-256, rounded through half floats when it was opened at `fp16`.
+//!   the model's SHA-256, rounded through half floats when it was opened at `fp16`. A model file
+//!   whose first line is `LFFAKE1 <kind>` opens instead as that analysis model
+//!   ([`super::fake_analysis`]): the segmenter's encoder or decoder, the semantic, salient-subject
+//!   or people model, or the depth model, each with its real counterpart's tensor names and
+//!   shapes.
 //! - A generator fills a crop's masked pixels with 8-pixel blocks, each block's colour half the
 //!   unmasked context's mean colour and half a colour drawn from a SplitMix64 stream keyed by the
 //!   model's hash, the seed, the step count and the prompt or embedding, so different seeds give

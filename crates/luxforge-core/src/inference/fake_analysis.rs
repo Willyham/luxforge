@@ -268,8 +268,11 @@ fn decode(
     ])
 }
 
+/// A grid's size, `(height, width)` in cells, and each cell's mean colour, row by row.
+type Cells = ((usize, usize), Vec<[f32; 3]>);
+
 /// Each 8 × 8 cell's mean colour of a `[1, 3, h, w]` input, with the grid's size.
-fn cells(input: &Tensor, cancel: &Cancel) -> Result<((usize, usize), Vec<[f32; 3]>), Error> {
+fn cells(input: &Tensor, cancel: &Cancel) -> Result<Cells, Error> {
     let shape = input.shape();
     if shape.len() != 4 || shape[0] != 1 || shape[1] != 3 || shape[2] == 0 || shape[3] == 0 {
         return Err(Error::validation(format!(

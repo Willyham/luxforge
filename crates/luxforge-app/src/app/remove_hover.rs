@@ -15,12 +15,13 @@
 //! An analysis that fails is not asked again until the photograph moves.
 use super::{
     Editor,
+    decoded_handles::image_handle,
     message::{Message, remove::RemoveMessage},
     remove::decode_base64,
     tasks::{self, CallError, owner_task},
 };
 use iced::{Task, widget::image::Handle};
-use luxforge_core::{AssetId, ClientId, OwnerHandle};
+use luxforge_core::{AssetId, ClientId, DecodedPreview, OwnerHandle};
 use serde_json::{Value, json};
 
 /// `query.pick-object`.
@@ -325,7 +326,11 @@ impl Editor {
                         asset,
                         revision,
                         bounds,
-                        handle: Handle::from_rgba(width, height, rgba),
+                        handle: image_handle(DecodedPreview {
+                            width,
+                            height,
+                            rgba,
+                        }),
                     }),
                     _ => None,
                 };

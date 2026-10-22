@@ -513,6 +513,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                     json!("developer"),
                     json!("masks.range-selections"),
                     json!("ai.generative"),
+                    json!("ai.analysis"),
                     json!("updates.prerelease-channel"),
                     json!("proof.choice"),
                     json!("proof.number"),
@@ -621,7 +622,8 @@ fn models_tab(frame: &Frame) -> &Value {
 }
 
 /// The proof model's one row and the `module.status` resource row it was drawn from. A developer
-/// run lists `luxforge.ai`'s models only with `ai.generative` on, which the scenario leaves off.
+/// run lists `luxforge.ai`'s models only with `ai.generative` or `ai.analysis` on, which the scenario
+/// leaves off.
 fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
     let tab = models_tab(frame);
     let row = tab["rows"]
