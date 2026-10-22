@@ -13,7 +13,7 @@ use crate::{
     filmstrip, filmstrip_capacity, filter_action, filter_bar, filter_chip, filter_segments,
     focus_box, focus_inset, frame_strip, key_hints, labelled_button, loupe_info_bar, menu_list,
     popover, progress_sheet, region_box, search_field, source_heading, source_month, source_row,
-    status_job, theme, visible_window, work_row, workspace_switch,
+    source_rule, status_job, theme, visible_window, work_row, workspace_switch,
 };
 use crate::{Element, Theme};
 use iced::widget::{Column, Space, column, container, image, row, stack};
@@ -51,14 +51,15 @@ fn section(rows: Vec<Element<'static, ()>>) -> Element<'static, ()> {
         .into()
 }
 
-fn heading(label: &str, tag: Option<&str>, add: Option<&str>) -> Element<'static, ()> {
+fn heading(label: &str, add: Option<&str>, expanded: Option<bool>) -> Element<'static, ()> {
     source_heading(
         &SourceHeadingModel {
             label: label.into(),
-            tag: tag.map(Into::into),
             add: add.map(Into::into),
+            expanded,
         },
         add.map(|_| ()),
+        expanded.map(|_| ()),
     )
 }
 
@@ -81,33 +82,14 @@ fn total(count: &str) -> SourceCount {
     SourceCount::Total(count.into())
 }
 
-fn event(name: &str, dates: &str, count: SourceCount) -> SourceRowModel {
-    SourceRowModel {
-        secondary: Some(dates.into()),
-        ..source(Icon::Photos, name, count)
-    }
-}
-
 fn row_of(model: SourceRowModel) -> Element<'static, ()> {
     let toggle = model.disclosure.map(|_| ());
     source_row(&model, Some(()), toggle)
 }
 
-/// The sources panel over files: the search field, a card, the events by month with picks and
-/// offline events, and the volumes on disk.
+/// The sources panel over files: a card, then On disk's volumes with its chevron, a rule between
+/// them, and On disk collapsed to its heading.
 fn sources_over_files() -> Element<'static, ()> {
-    let search = container(search_field(
-        &SearchFieldModel {
-            id: None,
-            placeholder: "Search places, dates, cameras".into(),
-            value: String::new(),
-            key_hint: None,
-            compact: true,
-        },
-        |_| (),
-        None,
-    ))
-    .padding([0.0, 2.0]);
     let cards = section(vec![
         heading("Cards", None, None),
         row_of(source(
@@ -116,38 +98,8 @@ fn sources_over_files() -> Element<'static, ()> {
             total("612"),
         )),
     ]);
-    let events = section(vec![
-        heading("Events", Some("auto"), None),
-        source_month("September 2026"),
-        row_of(event("Sa Pa", "14 Sep", total("86"))),
-        row_of(SourceRowModel {
-            selected: true,
-            ..event(
-                "Konstanz",
-                "12\u{2013}13 Sep",
-                SourceCount::Picks {
-                    picked: "18".into(),
-                    total: "1,042".into(),
-                },
-            )
-        }),
-        row_of(event("Brighton", "10 Sep", total("420"))),
-        source_month("August 2026"),
-        row_of(SourceRowModel {
-            volume: Some(Volume::Offline),
-            ..event(
-                "Reichenau-Niederzell and Mittelzell",
-                "22\u{2013}24 Aug",
-                total("212"),
-            )
-        }),
-        row_of(SourceRowModel {
-            volume: Some(Volume::Offline),
-            ..event("Z\u{fc}rich", "3 Aug", total("57"))
-        }),
-    ]);
     let on_disk = section(vec![
-        heading("On disk", None, Some("Add a folder\u{2026}")),
+        heading("On disk", Some("Add a folder\u{2026}"), Some(true)),
         row_of(SourceRowModel {
             disclosure: Some(false),
             volume: Some(Volume::Mounted),
@@ -159,8 +111,9 @@ fn sources_over_files() -> Element<'static, ()> {
             ..source(Icon::Drive, "Photos SSD", SourceCount::None)
         }),
     ]);
+    let collapsed = heading("On disk", Some("Add a folder\u{2026}"), Some(false));
     panel(
-        column![search, cards, events, on_disk]
+        column![cards, source_rule(), on_disk, source_rule(), collapsed]
             .spacing(theme::SOURCE_SECTION_SPACING)
             .into(),
         PANEL_WIDTH,
@@ -178,7 +131,7 @@ fn sources_over_the_catalog() -> Element<'static, ()> {
         })
     };
     let catalog = section(vec![
-        heading("Catalog", None, Some("New catalog folder")),
+        heading("Catalog", Some("New catalog folder"), None),
         row_of(source(Icon::Photos, "All photographs", total("842"))),
         row_of(source(Icon::Clock, "Recently developed", total("18"))),
         row_of(SourceRowModel {
@@ -212,38 +165,24 @@ fn sources_over_the_catalog() -> Element<'static, ()> {
     panel(catalog, PANEL_WIDTH)
 }
 
-/// The search fields empty and typed: the sources panel's, and the catalog filter bar's with its
-/// key.
+/// The catalog filter bar's search field, empty and typed, with its key.
 fn search_fields() -> Element<'static, ()> {
-    let search = |placeholder: &str, value: &str, compact: bool| {
+    let search = |value: &str| {
         search_field(
             &SearchFieldModel {
                 id: None,
-                placeholder: placeholder.into(),
+                placeholder: "Search photographs".into(),
                 value: value.into(),
-                key_hint: (!compact).then(|| "\u{2318}F".into()),
-                compact,
+                key_hint: Some("\u{2318}F".into()),
+                compact: false,
             },
             |_| (),
             Some(()),
         )
     };
-    column![
-        row![
-            container(search("Search places, dates, cameras", "", true))
-                .width(Length::Fixed(PANEL_WIDTH - 2.0 * theme::PANEL_PADDING_X)),
-            container(search("Search places, dates, cameras", "Konst", true))
-                .width(Length::Fixed(PANEL_WIDTH - 2.0 * theme::PANEL_PADDING_X)),
-        ]
-        .spacing(theme::SPACING),
-        row![
-            search("Search photographs", "", false),
-            search("Search photographs", "Summilux", false),
-        ]
-        .spacing(theme::SPACING),
-    ]
-    .spacing(theme::SPACING)
-    .into()
+    row![search(""), search("Summilux")]
+        .spacing(theme::SPACING)
+        .into()
 }
 
 fn chip(label: &str, icon: Option<Icon>, set: bool, end: ChipEnd) -> Element<'static, ()> {

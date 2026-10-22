@@ -41,10 +41,14 @@ use std::sync::Arc;
 const SIDE: u32 = 96;
 
 /// This host's adapter the tests open their devices on, by backend and name: the first wgpu
-/// offers of the renderer's backends that is not a software rasterizer, or else the first. `None`,
-/// having printed that `test` was skipped, without one.
+/// offers of the renderer's backends that is not a software rasterizer, or else the first; never
+/// one of wgpu's OpenGL backend, on which the launch refuses the GPU stage
+/// ([`adapters::is_gl`]). `None`, having printed that `test` was skipped, without one.
 pub(super) fn host_adapter(test: &str) -> Option<(String, String)> {
-    let offered = adapters::enumerate(adapters::renderer_backends());
+    let offered: Vec<_> = adapters::enumerate(adapters::renderer_backends())
+        .into_iter()
+        .filter(|adapter| !adapters::is_gl(&adapter.backend))
+        .collect();
     let Some(adapter) = offered
         .iter()
         .find(|adapter| adapter.device_type != "Cpu")

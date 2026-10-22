@@ -91,8 +91,9 @@ pub(crate) struct Refresh {
     /// its answer carried it (`analysis`): what an analysis action's tooltip shows, with no query
     /// of its own. Empty for every other change.
     pub(crate) analysis: BTreeMap<String, Value>,
-    /// The catalog folder a file opened was filed in, as its Develop's report named it
-    /// (`developed[].folder_id`): what becomes the Develop folder. `None` for every other refresh.
+    /// The catalog folder a file opened was filed under, as its Develop's report named it
+    /// (`developed[].chosen_folder_id`): what becomes the Develop folder. `None` for every other
+    /// refresh.
     pub(crate) folder: Option<luxforge_core::catalog_types::CatalogFolderId>,
 }
 
@@ -1039,8 +1040,8 @@ pub(crate) fn queue_import(
 }
 
 /// The photograph a Develop of one file brought in — created, linked to the photograph that
-/// already has its bytes, or relinked — and the catalog folder its report says it is in, once its
-/// job ends, or why it brought none.
+/// already has its bytes, or relinked — and the catalog folder its report says its choice named,
+/// once its job ends, or why it brought none.
 pub(crate) fn developed_photograph(
     owner: &OwnerHandle,
     client: ClientId,
@@ -1063,7 +1064,7 @@ pub(crate) fn developed_photograph(
     let developed = &report["developed"][0];
     Ok((
         parse(developed["asset_id"].clone())?,
-        parse(developed["folder_id"].clone())?,
+        parse(developed["chosen_folder_id"].clone())?,
     ))
 }
 

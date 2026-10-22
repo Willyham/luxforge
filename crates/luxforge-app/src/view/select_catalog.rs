@@ -119,12 +119,13 @@ pub(crate) fn catalog_section<'a>(
         source_heading(
             &SourceHeadingModel {
                 label: "Catalog".into(),
-                tag: None,
                 add: Some("New folder or collection".into()),
+                expanded: None,
             },
             Some(act(CatalogAction::Menu(
                 (!open).then_some(CatalogMenu::Add),
             ))),
+            None,
         ),
         model.add_menu.as_deref().map(menu),
         close(),

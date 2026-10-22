@@ -1125,6 +1125,21 @@ pub enum StackRole {
     Separate,
 }
 
+/// A stack in a view's group layout (`groups.stacks`): its result at `start`, followed by the
+/// originals it shows, `start..start + len` of the view's order. A collapsed stack is its result
+/// alone; an expanded one is a group of its own, as a moment is, so no heading and no moment splits
+/// it. `size` is the stack's originals, N.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackGroup {
+    pub merge_id: MergeId,
+    pub kind: MergeKind,
+    pub size: u32,
+    pub expansion: StackExpansion,
+    pub start: u32,
+    pub len: u32,
+}
+
 /// A view row's stack (`browse.rows`' `stack`): the stack it belongs to, its kind, its role there
 /// and the stack's size; for a leader, how many originals it stands for in this view and how the
 /// client shows it; for an original, its place and, in an HDR stack, its EV offset, and whether

@@ -6,7 +6,7 @@
 //! the owner holds the view and the selection, and this seam keeps only what it last read, what is
 //! in flight, and the grid's own layout, scroll and viewport.
 //!
-//! - `event.list`, `browse.view` (with the session read after it), `browse.facets` and
+//! - `browse.view` (with the session read after it), `browse.facets` and
 //!   `browse.rows` are owner tasks, off the gesture path. Each answer names what it answers — the
 //!   evaluation's number, the view revision a window of rows belongs to — and an overtaken one is
 //!   dropped. Rows are read in aligned blocks near the screen, one request in flight, into a bounded
@@ -27,7 +27,7 @@
 //!   selection names the selection on screen, which the next arrow key's synchronous
 //!   `browse.select` would otherwise overtake. The owner's work is one catalog transaction. What
 //!   the change leaves is read as another client's change is: the view evaluated again, the
-//!   events and the catalog's counts read again, and the change's label from the journal said in
+//!   catalog's counts read again, and the change's label from the journal said in
 //!   the status bar, as owner tasks.
 //! - The sources panel reads the cards and volumes (`card.list`, `volume.list`) and the catalog's
 //!   counts (`catalog.info`) each time Select is shown, the counts again after a library change,
@@ -65,8 +65,8 @@ use iced::{Size, Task};
 use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        Cards, CatalogCounts, CatalogInfo, DiskFolders, EventList, Facets, IndexFolderAnswer,
-        IndexFolders, ItemRef, LibraryAnswer, LibraryChange, LibraryJournal, RowItem, Targets,
+        Cards, CatalogCounts, CatalogInfo, DiskFolders, Facets, IndexFolderAnswer, IndexFolders,
+        ItemRef, LibraryAnswer, LibraryChange, LibraryJournal, MergeKind, RowItem, Targets,
         ViewQuery, ViewRows, ViewSource, ViewSummary, Volumes,
     },
 };
@@ -101,10 +101,6 @@ pub(crate) struct Select {
     /// The owner, already holding the next evaluation, would refuse a selection naming the view on
     /// screen, and the click would be lost; its position may name another item in the new view.
     pub(crate) held_click: Option<Vec<ItemRef>>,
-    /// `event.list`: one in flight, the newest search text waiting.
-    pub(crate) events: Coalesce<String>,
-    /// The events have been asked for since Select was first shown.
-    pub(crate) events_read: bool,
     /// The staleness check after a wake: one in flight, one waiting.
     pub(crate) check: Coalesce<()>,
     /// The owner woke the desktop while Develop was shown, so showing Select checks once.
@@ -228,8 +224,6 @@ impl Default for Select {
             viewport: Size::ZERO,
             anchor: None,
             serial: 0,
-            events: Coalesce::default(),
-            events_read: false,
             check: Coalesce::default(),
             check_on_show: false,
             facets_answered: 0,
@@ -325,6 +319,28 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 frames: *frames,
                 collapsed: *collapsed,
             },
+            Block::Stack {
+                kind,
+                title,
+                detail,
+                frames,
+                action,
+                ..
+            } => GridBlock::Moment {
+                header: MomentHeader {
+                    kind: match kind {
+                        MergeKind::Hdr => MomentKind::HdrStack,
+                        MergeKind::Panorama => MomentKind::PanoramaStack,
+                    },
+                    title: title.clone(),
+                    detail: detail.clone(),
+                    evidence: None,
+                    picked: None,
+                    actions: vec![HeaderAction::new(action.label())],
+                },
+                frames: *frames,
+                collapsed: false,
+            },
             Block::Singles(count) => GridBlock::Singles(*count),
             Block::Pending {
                 kind,
@@ -362,16 +378,6 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 
 // -- The owner calls, each the body of one owner task (or, for `browse.select`, the one synchronous
 // call), so a test runs exactly what a task would against a real owner. --
-
-/// `event.list` for the sources panel's search text.
-pub(crate) fn events_now(
-    owner: &OwnerHandle,
-    client: ClientId,
-    search: &str,
-) -> Result<EventList, String> {
-    let (list, _) = call(owner, client, "event.list", model::events_params(search))?;
-    parse(list)
-}
 
 /// `browse.view` with the whole query, then `session.state` for the selection the owner carried
 /// over to the new evaluation.
@@ -523,25 +529,6 @@ impl Editor {
     pub(crate) fn select_update(&mut self, message: SelectMessage) -> Task<Message> {
         match message {
             SelectMessage::Switch(shown) => return self.switch_workspace(shown),
-            SelectMessage::Search(text) => {
-                self.select.state.search = text.clone();
-                self.select.events.offer(text);
-                return self.start_events();
-            }
-            SelectMessage::Events(result) => {
-                self.select.events.answered();
-                match result {
-                    Ok(list) => {
-                        self.select.state.events = Some(list);
-                        self.select.state.events_error = None;
-                    }
-                    Err(error) => {
-                        self.status.text = format!("Events unavailable: {error}");
-                        self.select.state.events_error = Some(error);
-                    }
-                }
-                return self.start_events();
-            }
             SelectMessage::Source(source) => {
                 self.usage_interaction(luxforge_core::usage::Feature::BrowseView, false);
                 self.select.state.menu = None;
@@ -603,6 +590,9 @@ impl Editor {
                 return self.reading_answered(result);
             }
             SelectMessage::Toggle(path) => return self.toggle_disk(path),
+            SelectMessage::ToggleOnDisk => {
+                self.select.state.on_disk_open = !self.select.state.on_disk_open;
+            }
             SelectMessage::Listed { path, result } => {
                 self.select.listing.remove(&path);
                 match result {
@@ -861,13 +851,11 @@ impl Editor {
         self.select_reads_quiet() && self.select.previews.settled() && self.loupe_settled()
     }
 
-    /// Nothing Select asked the owner for is in flight or still wanted: the events, the view and
-    /// its facets, a staleness check and the rows near the screen have all answered.
+    /// Nothing Select asked the owner for is in flight or still wanted: the view and its facets, a staleness check and the rows near the screen have all answered.
     pub(crate) fn select_reads_quiet(&self) -> bool {
         let select = &self.select;
         select.reading.is_none()
             && !select.state.loading
-            && select.events.idle()
             && select.check.idle()
             && select.disks.idle()
             && select.adding.is_none()
@@ -952,11 +940,7 @@ impl Editor {
             self.select.check.offer(());
         }
         // The cards and volumes, and the catalog's counts, as they are now.
-        let mut tasks = vec![yielded, self.read_disks(), self.read_counts()];
-        if !std::mem::replace(&mut self.select.events_read, true) {
-            tasks.push(self.read_events());
-        }
-        Task::batch(tasks)
+        Task::batch([yielded, self.read_disks(), self.read_counts()])
     }
 
     pub(crate) fn show_develop_workspace(&mut self) -> Task<Message> {
@@ -1163,23 +1147,6 @@ impl Editor {
                 self.reading_ended()
             }
         }
-    }
-
-    /// Ask `event.list` again for the search text.
-    pub(crate) fn read_events(&mut self) -> Task<Message> {
-        self.select.events.offer(self.select.state.search.clone());
-        self.start_events()
-    }
-
-    fn start_events(&mut self) -> Task<Message> {
-        let Some(search) = self.select.events.start() else {
-            return Task::none();
-        };
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || events_now(&owner, client, &search),
-            |result| Message::Select(SelectMessage::Events(result)),
-        )
     }
 
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
@@ -1644,7 +1611,7 @@ impl Editor {
     }
 
     /// The session read after a wake: adopt it, and evaluate a stale view again with the query it
-    /// was evaluated from, reading the events again beside it.
+    /// was evaluated from, reading the catalog's counts and the disks again beside it.
     fn checked(&mut self, result: Result<Box<ClientSession>, String>) -> Task<Message> {
         self.select.check.answered();
         let session = match result {
@@ -1658,7 +1625,6 @@ impl Editor {
         self.adopt(session);
         let mut tasks = Vec::new();
         if stale || self.select.state.summary.is_none() {
-            tasks.push(self.read_events());
             tasks.push(self.read_counts());
             tasks.push(self.read_disks());
         }
@@ -1806,8 +1772,7 @@ impl Editor {
         Task::batch([answered, self.read_disks()])
     }
 
-    /// The added folder's authoritative listing completion: the indexed folders and the events
-    /// are read again, and a listing that did not complete says so.
+    /// The added folder's authoritative listing completion: the indexed folders are read again, and a listing that did not complete says so.
     fn add_listed(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
         let Some(_) = self
             .select
@@ -1843,7 +1808,7 @@ impl Editor {
         }
         self.select.adding = None;
         self.select.state.adding = None;
-        Task::batch([self.read_disks(), self.read_events()])
+        self.read_disks()
     }
 
     /// Long-running work saw a listing of the index lane's begin or end — a card listed as it is
@@ -2012,7 +1977,7 @@ impl Editor {
 
     /// A library change answered. Nothing changed: the status bar says so and nothing is read.
     /// Otherwise the view it made stale is evaluated again (keeping the scroll and the active item),
-    /// the events and the catalog's counts are read again, and the change's label is read for the
+    /// the catalog's counts are read again, and the change's label is read for the
     /// status bar.
     pub(crate) fn library_answered(
         &mut self,
@@ -2032,7 +1997,6 @@ impl Editor {
                 move || label_now(&owner, client, sequence),
                 move |result| Message::Select(SelectMessage::Labelled { sequence, result }),
             ),
-            self.read_events(),
             self.read_counts(),
             // The Develop folder's strip, which the change may have changed.
             self.develop_library_changed(sequence),
@@ -2201,17 +2165,6 @@ impl Editor {
                 json!({"kind": "several", "count": count, "active": active})
             }
         };
-        let listed: Vec<Value> = model
-            .sources
-            .months
-            .iter()
-            .map(|month| {
-                json!({
-                    "month": month.label,
-                    "events": month.rows.iter().map(|row| &row.name).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
         // The sources panel's cards, volumes and catalog counts, as drawn.
         let row = |row: &model::SourceRow| {
             json!({
@@ -2219,7 +2172,6 @@ impl Editor {
                 "count": match &row.count {
                     model::Count::None => Value::Null,
                     model::Count::Total(total) => json!(total),
-                    model::Count::Picks { picked, total } => json!(format!("{picked}/{total}")),
                     model::Count::Unavailable(count) => json!({"unavailable": count}),
                 },
                 "dot": row.dot.map(|dot| match dot {
@@ -2266,7 +2218,7 @@ impl Editor {
             "pick_all": state.content.blocks.iter().filter_map(|block| match block {
                 Block::Moment { index, actions, .. } => actions.iter().find_map(|action| match action {
                     model::MomentAction::PickAll(_) => Some(json!([index, action.label()])),
-                    model::MomentAction::Merge(_) => None,
+                    model::MomentAction::Merge(_) | model::MomentAction::Stack(_) => None,
                 }),
                 _ => None,
             }).collect::<Vec<_>>(),
@@ -2274,6 +2226,12 @@ impl Editor {
                 Block::Moment { index, actions, .. } if !actions.is_empty() => Some(json!([
                     index,
                     actions.iter().map(|action| action.label()).collect::<Vec<_>>(),
+                ])),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "stacks": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Stack { index, title, detail, frames, action, .. } => Some(json!([
+                    index, title, detail, frames, action.label(),
                 ])),
                 _ => None,
             }).collect::<Vec<_>>(),
@@ -2316,8 +2274,6 @@ impl Editor {
                 "singles": blocks(|block| matches!(block, Block::Singles(_))),
             },
             "labels": state.content.labels.len(),
-            "events": state.events.as_ref().map(|list| list.events.len()),
-            "listed": listed,
             "facets": facets,
             "rows": state.rows.len(),
             "row_blocks": state.rows.blocks(),
@@ -2331,6 +2287,7 @@ impl Editor {
             "session_revision": self.session.browse.revision,
             "collapsed": state.collapsed,
             "sources_panel": state.sources_panel,
+            "on_disk_open": state.on_disk_open,
             "info_panel": state.info_panel,
             "cell_width": state.cell_width(),
             "previews": self.select.previews.summary(),
@@ -2394,7 +2351,7 @@ impl Editor {
                     "ordinal": stack.ordinal,
                     "offset_ev": stack.offset_ev,
                     "badge": cell.badge.map(|(long, short, open)| json!([long, short, open])),
-                    "exposure": cell.exposure,
+                    "footer": cell.footer,
                     "note": cell.note,
                 }))
             })

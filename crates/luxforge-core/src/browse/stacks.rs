@@ -27,7 +27,8 @@ use crate::{
     AssetId, EditorService, Error,
     catalog_types::{
         AssetRowId, FileAvailability, FileId, FrameFacts, MergeId, MergeKind, MergeState, RowStack,
-        StackExpansion, StackInputKey, StackInspection, StackOriginal, StackRole, ViewItem,
+        StackExpansion, StackGroup, StackInputKey, StackInspection, StackOriginal, StackRole,
+        ViewItem,
     },
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -406,6 +407,46 @@ pub(super) fn arrange(
     }
     *facts = ordered;
     (arranged, provenance)
+}
+
+/// Each stack the arranged `facts` show, as a group of the view: its result and the originals
+/// following it. The originals take their result's day and body, and link into no moment, so the
+/// grouping that follows neither heads nor frames them apart from it.
+pub(super) fn groups(facts: &mut [FrameFacts], arranged: &Arranged) -> Vec<StackGroup> {
+    let mut groups = Vec::new();
+    let mut at = 0;
+    while at < facts.len() {
+        let Some(leader) = arranged
+            .badges
+            .get(&facts[at].item)
+            .filter(|badge| badge.role == StackRole::Leader)
+        else {
+            at += 1;
+            continue;
+        };
+        let (day, body) = (facts[at].local_day, facts[at].body);
+        let mut end = at + 1;
+        while let Some(fact) = facts.get_mut(end).filter(|fact| {
+            arranged.badges.get(&fact.item).is_some_and(|badge| {
+                badge.role == StackRole::Original && badge.merge_id == leader.merge_id
+            })
+        }) {
+            fact.local_day = day;
+            fact.body = body;
+            fact.merged = true;
+            end += 1;
+        }
+        groups.push(StackGroup {
+            merge_id: leader.merge_id.clone(),
+            kind: leader.kind,
+            size: leader.size,
+            expansion: leader.expansion.unwrap_or_default(),
+            start: at as u32,
+            len: (end - at) as u32,
+        });
+        at = end;
+    }
+    groups
 }
 
 /// `stack.inspect`: a stack's identity, state and result, how `expansion` shows it, and its

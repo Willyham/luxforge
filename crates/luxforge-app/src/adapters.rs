@@ -13,7 +13,8 @@
 //! chooses its renderer ([`choose`]): wgpu's request ranks a software adapter (lavapipe, WARP)
 //! last but never leaves it out, so a host with no hardware adapter draws on the software one,
 //! and until the software adapter is adopted ([`SOFTWARE_ADAPTER_ADOPTED`]) such a launch refuses
-//! the GPU stage, as `--no-gpu-render` does, unless it asks for the software adapter.
+//! the GPU stage, as `--no-gpu-render` does, unless it asks for the software adapter. A launch whose
+//! window would draw on wgpu's OpenGL backend refuses it too ([`is_gl`]).
 //!
 //! Enumerating creates a wgpu instance, which loads the platform's drivers, and opening a device
 //! creates one too: never call either on the UI thread or in a future the UI loop polls, only on a
@@ -57,35 +58,55 @@ pub fn is_software(device_type: &str) -> bool {
     device_type == "Cpu"
 }
 
+/// Whether an adapter of `backend` (its `Debug` spelling) is one of wgpu's OpenGL backend, which
+/// cannot run the GPU stage: wgpu's GL backend has no `rg32float` storage textures and no texture
+/// view formats, both of which the stage creates, and a noise reduction drawn on it is not the same
+/// twice. A Linux host whose GPU has no Vulkan driver offers one, which ranks before a software
+/// adapter ([`offered`]).
+pub fn is_gl(backend: &str) -> bool {
+    backend == "Gl"
+}
+
 /// What the renderer's backends offer this host, as a launch finds it before its window opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Offered {
     /// Not looked for: on macOS, which has no software Metal, so every adapter is a hardware one,
     /// or for a launch that refused the GPU stage.
     NotProbed,
-    /// At least one hardware adapter, which wgpu's request ranks before any software one, so the
-    /// window draws on a hardware adapter.
+    /// The window's request lands on a hardware adapter of a backend that runs the GPU stage.
     Hardware,
     /// Only software adapters: the window's request lands on the first, which is named.
     SoftwareOnly(Adapter),
+    /// The window's request lands on an adapter of wgpu's OpenGL backend ([`is_gl`]), which is
+    /// named.
+    Gl(Adapter),
     /// No adapter at all.
     Nothing,
 }
 
-/// What `adapters`, the adapters of the renderer's backends, offer: a hardware adapter before a
-/// software one, as wgpu's request ranks them (it ranks a software adapter last but never leaves
-/// it out, so a host with nothing else draws on it).
+/// What `adapters`, the adapters of the renderer's backends in wgpu's order, offer: the one the
+/// window's request lands on, as wgpu ranks them for Iced's high-performance request, a discrete
+/// GPU, then an integrated one, then one of an unknown type, such as every adapter of the OpenGL
+/// backend, then a virtual one, then a software one last, which it never leaves out, so a host with
+/// nothing else draws on it. Adapters of one rank keep wgpu's order.
 pub fn offered(adapters: &[Adapter]) -> Offered {
-    if adapters
-        .iter()
-        .any(|adapter| !is_software(&adapter.device_type))
-    {
-        return Offered::Hardware;
+    let rank = |adapter: &Adapter| match adapter.device_type.as_str() {
+        "DiscreteGpu" => 1,
+        "IntegratedGpu" => 2,
+        "VirtualGpu" => 4,
+        "Cpu" => 5,
+        _ => 3,
+    };
+    let Some(first) = adapters.iter().min_by_key(|adapter| rank(adapter)) else {
+        return Offered::Nothing;
+    };
+    if is_gl(&first.backend) {
+        Offered::Gl(first.clone())
+    } else if is_software(&first.device_type) {
+        Offered::SoftwareOnly(first.clone())
+    } else {
+        Offered::Hardware
     }
-    adapters
-        .first()
-        .cloned()
-        .map_or(Offered::Nothing, Offered::SoftwareOnly)
 }
 
 /// What this host offers the renderer's backends, found before the window opens: an enumeration
@@ -119,6 +140,8 @@ pub enum Refusal {
     SoftwareNotAdopted,
     /// The host offers no adapter at all.
     NoAdapter,
+    /// The window draws on an adapter of wgpu's OpenGL backend ([`is_gl`]).
+    GlBackend,
 }
 
 impl LaunchRenderer {
@@ -137,13 +160,15 @@ impl LaunchRenderer {
 /// GPU stage whatever the host offers; a hardware adapter, or a host not probed, draws on the GPU;
 /// a host with only a software adapter draws on it through the GPU path when the software adapter
 /// is `adopted` or the launch asked for it (`--software-adapter`), and otherwise refuses the GPU
-/// stage, so every frame is the reference renderer's; a host with no adapter refuses it too.
+/// stage, so every frame is the reference renderer's; a window drawing on wgpu's OpenGL backend
+/// and a host with no adapter refuse it too.
 pub fn choose(refused: bool, asked: bool, adopted: bool, offered: &Offered) -> LaunchRenderer {
     match offered {
         _ if refused => LaunchRenderer::Reference(Refusal::Requested),
         Offered::NotProbed | Offered::Hardware => LaunchRenderer::Gpu { software: false },
         Offered::SoftwareOnly(_) if adopted || asked => LaunchRenderer::Gpu { software: true },
         Offered::SoftwareOnly(_) => LaunchRenderer::Reference(Refusal::SoftwareNotAdopted),
+        Offered::Gl(_) => LaunchRenderer::Reference(Refusal::GlBackend),
         Offered::Nothing => LaunchRenderer::Reference(Refusal::NoAdapter),
     }
 }
@@ -293,6 +318,47 @@ mod tests {
         assert!(Gpu { software: true }.software() && !Gpu { software: true }.refused());
         assert!(Reference(Refusal::SoftwareNotAdopted).refused());
         assert!(!Reference(Refusal::NoAdapter).software());
+    }
+
+    /// The window's request lands where wgpu ranks first for a high-performance request: a GPU of
+    /// a known type before an OpenGL adapter, whose type is unknown, and that before a software
+    /// one. A launch whose window would draw on wgpu's OpenGL backend refuses the GPU stage,
+    /// whatever it asks for, and `--no-gpu-render` says why first.
+    #[test]
+    fn a_window_drawing_on_the_gl_backend_refuses_the_gpu_stage() {
+        use LaunchRenderer::Reference;
+        let lavapipe = adapter("llvmpipe (LLVM 23.1.3, 256 bits)", "Vulkan", "Cpu");
+        let radeonsi = adapter("AMD Ryzen 9 9955HX (radeonsi)", "Gl", "Other");
+        let radv = adapter("AMD Ryzen 9 9955HX (RADV)", "Vulkan", "IntegratedGpu");
+        let gl = Offered::Gl(radeonsi.clone());
+        assert_eq!(offered(&[lavapipe.clone(), radeonsi.clone()]), gl);
+        assert_eq!(
+            offered(&[radv, lavapipe.clone(), radeonsi.clone()]),
+            Offered::Hardware,
+            "a Vulkan driver for the same GPU ranks first"
+        );
+        assert_eq!(
+            offered(&[lavapipe.clone(), adapter("llvmpipe", "Gl", "Cpu")]),
+            Offered::SoftwareOnly(lavapipe.clone()),
+            "adapters of one rank keep wgpu's order"
+        );
+        assert_eq!(
+            offered(&[adapter("llvmpipe", "Gl", "Cpu")]),
+            Offered::Gl(adapter("llvmpipe", "Gl", "Cpu")),
+            "a software rasterizer on the GL backend is still the GL backend"
+        );
+        assert!(is_gl("Gl") && !is_gl("Vulkan"));
+        for (asked, adopted) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                choose(false, asked, adopted, &gl),
+                Reference(Refusal::GlBackend)
+            );
+            assert_eq!(
+                choose(true, asked, adopted, &gl),
+                Reference(Refusal::Requested)
+            );
+        }
+        assert!(Reference(Refusal::GlBackend).refused());
     }
 
     /// The decision constant stays off until the measurement passes: a software-only session draws
