@@ -9,7 +9,8 @@ const MAX_SAFETENSORS_HEADER: u64 = 100 * 1024 * 1024;
 
 /// Whether the file at `path` opens as `format`: `gguf` (the magic and a version of 2 or 3),
 /// `safetensors` (a header length within bounds and a JSON header), `lfsdcond-1` (the
-/// conditioning's magic and version 1) or `json` (an object). Any other format is refused.
+/// conditioning's magic and version 1), `onnx` (a `ModelProto` opening with its IR version) or
+/// `json` (an object). Any other format is refused.
 pub(crate) fn check(path: &Path, format: &str) -> Result<(), String> {
     let mut head = [0_u8; 16];
     let read = File::open(path)
@@ -42,6 +43,9 @@ pub(crate) fn check(path: &Path, format: &str) -> Result<(), String> {
                 && &head[..8] == b"LFSDCOND"
                 && u32::from_le_bytes(head[8..12].try_into().unwrap()) == 1
         }
+        // An ONNX model is a protobuf `ModelProto` whose first field is `ir_version` (field 1,
+        // varint): the tag byte 0x08.
+        "onnx" => head.first() == Some(&0x08),
         "json" => head
             .iter()
             .find(|byte| !byte.is_ascii_whitespace())
@@ -77,6 +81,7 @@ mod tests {
         condition.extend(1_u32.to_le_bytes());
         condition.extend(1_u32.to_le_bytes());
         let cases = [
+            ("onnx", write("a.onnx", &[0x08, 0x08, 0x12, 0x07])),
             ("gguf", write("a.gguf", &gguf)),
             ("safetensors", write("a.safetensors", &safetensors)),
             ("lfsdcond-1", write("a.lfsdcond", &condition)),
@@ -99,7 +104,8 @@ mod tests {
         let mut c2 = b"LFSDCOND".to_vec();
         c2.extend(2_u32.to_le_bytes());
         assert!(check(&write("c2", &c2), "lfsdcond-1").is_err());
-        assert!(check(&cases[0].1, "onnx").is_err());
+        assert!(check(&cases[1].1, "onnx").is_err());
+        assert!(check(&cases[0].1, "pickle").is_err());
         assert!(check(&root.join("missing"), "gguf").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }

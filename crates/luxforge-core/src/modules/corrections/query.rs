@@ -59,6 +59,20 @@ pub(crate) fn repair_stage(
     Ok((index, actions::top_input(context, index, &payload)?))
 }
 
+/// The stage after the repair layer: the index after it, or the index a new one would take when
+/// the stack has none (so the repair stage's output is its input), with a new top correction's
+/// input identity, which names that output ([`super::selection_prefix`]). What an analysis task's
+/// host-planned read of the repair stage's output reads.
+pub(crate) fn repair_output_stage(
+    context: &StageContext<'_>,
+) -> Result<(usize, super::RepairInput), Error> {
+    let (index, exists, payload) = layer(context)?;
+    Ok((
+        index + usize::from(exists),
+        actions::top_input(context, index, &payload)?,
+    ))
+}
+
 /// Every stale frozen patch of the context's stack, in operation order; empty for a stack without
 /// one. Reads the payload and the asset's row; no pixel or stroke.
 pub(crate) fn stale_corrections(context: &StageContext<'_>) -> Result<Vec<StaleCorrection>, Error> {

@@ -6,7 +6,11 @@
 //!
 //! - A session declares one `f32` input, `input`, of rank four with every dimension free, and one
 //!   output of the same shape, `output`, each element `tanh(w x + b)` with `w` and `b` taken from
-//!   the model's SHA-256, rounded through half floats when it was opened at `fp16`.
+//!   the model's SHA-256, rounded through half floats when it was opened at `fp16`. A model file
+//!   whose first line is `LFFAKE1 <kind>` opens instead as that analysis model
+//!   ([`super::fake_analysis`]): the segmenter's encoder or decoder, the semantic, salient-subject
+//!   or people model, or the depth model, each with its real counterpart's tensor names and
+//!   shapes.
 //! - A generator fills a crop's masked pixels with 8-pixel blocks, each block's colour half the
 //!   unmasked context's mean colour and half a colour drawn from a SplitMix64 stream keyed by the
 //!   model's hash, the seed, the step count and the prompt or embedding, so different seeds give
@@ -16,6 +20,7 @@
 //! Its knobs ([`FakeControls`]) make each step slow and make an open, a run or a given step fail,
 //! and it counts what it opened, ran and generated and how many models are alive, so a test can
 //! prove a path loaded nothing or that an unload released a model.
+use super::fake_analysis::Kind;
 use super::{
     Conditioning, Device, GenerateRequest, Generated, Generator, InferenceRuntime, ModelFile,
     ModelIdentity, OpenOptions, Placement, Precision, RuntimeIdentity, Session, StepProgress,
@@ -205,11 +210,17 @@ impl InferenceRuntime for FakeInference {
             element: super::ElementType::F32,
             shape: vec![None; 4],
         };
+        let kind = Kind::of(model.path());
+        let (inputs, outputs) = match kind {
+            Some(kind) => kind.specs(),
+            None => (vec![spec(FAKE_INPUT)], vec![spec(FAKE_OUTPUT)]),
+        };
         Ok(Box::new(FakeSession {
             key: model_key(model.identity()),
+            kind,
             model: model.identity().clone(),
-            inputs: vec![spec(FAKE_INPUT)],
-            outputs: vec![spec(FAKE_OUTPUT)],
+            inputs,
+            outputs,
             live,
         }))
     }
@@ -280,6 +291,8 @@ fn model_key(model: &ModelIdentity) -> u64 {
 /// The fake session. See the [module documentation](self).
 struct FakeSession {
     key: u64,
+    /// The analysis model the file names, or `None` for the generic session.
+    kind: Option<Kind>,
     model: ModelIdentity,
     inputs: Vec<TensorSpec>,
     outputs: Vec<TensorSpec>,
@@ -305,6 +318,28 @@ impl Session for FakeSession {
 
     fn run(&self, inputs: &[Tensor], cancel: &Cancel) -> Result<Vec<Tensor>, Error> {
         cancel.check()?;
+        if let Some(kind) = self.kind {
+            let admitted = inputs.len() == self.inputs.len()
+                && inputs
+                    .iter()
+                    .zip(&self.inputs)
+                    .all(|(input, spec)| input.name() == spec.name && spec.admits(input));
+            if !admitted {
+                let names: Vec<_> = self.inputs.iter().map(|spec| spec.name.as_str()).collect();
+                return Err(Error::validation(format!(
+                    "the fake {kind:?} model takes {names:?}, not {:?}",
+                    inputs
+                        .iter()
+                        .map(|input| (input.name(), input.shape()))
+                        .collect::<Vec<_>>()
+                )));
+            }
+            if self.live.controls.fail_run.load(Ordering::SeqCst) {
+                return Err(Error::render("the fake session was told to fail"));
+            }
+            self.live.controls.runs.fetch_add(1, Ordering::SeqCst);
+            return kind.run(inputs, cancel);
+        }
         let [input] = inputs else {
             return Err(Error::validation(format!(
                 "the fake session takes one input, {FAKE_INPUT}, not {}",

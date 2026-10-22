@@ -20,6 +20,7 @@ use crate::{
     app::message::{
         Message,
         corrections::{CanvasHit, CorrectionMessage},
+        remove::RemoveMessage,
     },
     brush::{
         ContentMap, Handle, HeldOperation, Hit, Modifiers, SourceChoice, ViewPoint, cursor_rings,
@@ -28,7 +29,7 @@ use crate::{
     state::corrections::Listed,
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size, keyboard,
+    Color, Point, Rectangle, Renderer, Size, Vector, keyboard,
     mouse::{self, Cursor},
     widget::canvas::{
         self, Action, Event, Fill, Frame, Geometry, LineDash, Path, Stroke, Style, fill,
@@ -512,6 +513,35 @@ impl CorrectionsCanvas<'_> {
         stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
     }
 
+    /// The hovered object's tinted coverage over its bounds. The bounds are content coordinates,
+    /// so the image is placed by three of its corners: rotated with the crop and mirrored with a
+    /// flip.
+    fn hovered_object(&self, frame: &mut Frame, hover: &crate::app::remove_hover::HoverOverlay) {
+        let [x0, y0, x1, y1] = hover.bounds;
+        let corner = |x, y| self.placement.canvas_point_unbounded(x, y);
+        let (Some(origin), Some(across), Some(down)) =
+            (corner(x0, y0), corner(x1, y0), corner(x0, y1))
+        else {
+            return;
+        };
+        let (u, v) = (across - origin, down - origin);
+        let (width, height) = (u.x.hypot(u.y), v.x.hypot(v.y));
+        if width < 0.5 || height < 0.5 {
+            return;
+        }
+        frame.with_save(|frame| {
+            frame.translate(Vector::new(origin.x, origin.y));
+            frame.rotate(u.y.atan2(u.x));
+            if u.x * v.y - u.y * v.x < 0.0 {
+                frame.scale_nonuniform(Vector::new(1.0, -1.0));
+            }
+            frame.draw_image(
+                Rectangle::new(Point::ORIGIN, Size::new(width, height)),
+                &hover.handle,
+            );
+        });
+    }
+
     /// Remove's figures: the selection's tint while no candidate is shown in the photograph (a
     /// shown candidate is the photograph's own draft, drawn by the photo surface), the stroke being
     /// painted, and a running generation's ring at the selection's centre.
@@ -521,6 +551,9 @@ impl CorrectionsCanvas<'_> {
         remove: &crate::app::remove::RemoveCanvas<'_>,
         traces: &Traces,
     ) {
+        if let Some(hover) = remove.hover {
+            self.hovered_object(frame, hover);
+        }
         if let Some(points) = remove.selection
             && !remove.shown
         {
@@ -614,6 +647,16 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                         content: [x, y],
                     }));
                 }
+                // Hover picking: each move over the photograph is a pick.
+                if self.data.remove.is_some_and(|remove| remove.picking) {
+                    let content = cursor
+                        .position_in(bounds)
+                        .and_then(|point| self.placement.content_point(point))
+                        .map(|(x, y)| [x, y]);
+                    return Some(Action::publish(Message::Remove(RemoveMessage::Hover(
+                        content,
+                    ))));
+                }
                 let over = (!self.data.hidden && cursor.position_in(bounds).is_some())
                     .then(|| match self.hit_at(point, state.modifiers) {
                         CanvasHit::Pin(pin) => Some(pin),
@@ -642,6 +685,9 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 Some(Self::publish(CorrectionMessage::Release { view, content }))
             }
             Event::Mouse(mouse::Event::CursorLeft) => {
+                if self.data.remove.is_some_and(|remove| remove.picking) {
+                    return Some(Action::publish(Message::Remove(RemoveMessage::Hover(None))));
+                }
                 if state.hovered.take().is_some() {
                     return Some(Action::publish(Message::Corrections(
                         CorrectionMessage::HoverPin(None),
@@ -914,6 +960,8 @@ mod tests {
             radius: 0.05,
             progress: None,
             shown: false,
+            picking: false,
+            hover: None,
         };
         let pressed = Interaction {
             pressed: true,

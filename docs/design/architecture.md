@@ -474,6 +474,11 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Prepared-artifact cache | 256 MiB | `PREPARED_ARTIFACT_BYTES`, `crates/luxforge-core/src/artifacts/mod.rs` |
 | Capability worker lanes | Two, each of one running and four queued jobs | One thread per lane (`Lane::Transfer`, `Lane::Module`) and `LANE_QUEUE`, `crates/luxforge-core/src/jobs.rs` |
 | Retained finished capability jobs | 32 | `FINISHED_RECORDS`, `crates/luxforge-core/src/jobs.rs` |
+| The analysis cache (analysis inputs, guides and model outputs, keyed by source, repair prefix and model version, and one held working copy of an entry) | 256 MiB, the held copy included, and 64 entries, least recently used out first; an entry past the whole budget is refused `resource-limit`; dropped for a module whose model is removed; the held copy dropped with its entry | `ANALYSIS_CACHE_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs`; `MAX_ANALYSIS_ENTRIES`, `crates/luxforge-core/src/capabilities/analysis.rs` |
+| Worker queries (`query.pick-object`) | One thread for every module's, one running and one waiting; a newer request replaces the waiting one, answered `cancelled`; stopped when a model of a module it served is released | `QueryWorker` on `latest::Latest`, `crates/luxforge-core/src/capabilities/host/queries.rs` |
+| A pick's coverage preview, per candidate | 65,536 pixels | `PREVIEW_PIXELS`, `crates/luxforge-core/src/modules/ai/objects.rs` |
+| An analysis's reduction | One band of at most 4 Mi pixels, one row of sums per output and the outputs' 8-bit codes: at most 3 MiB of analysis input and 16 MiB of guide | `ANALYSIS_SIDE`, `GUIDE_SIDE` and `MAX_MODULE_READ_PIXELS`, `crates/luxforge-core/src/modules/ai/analysis/mod.rs` |
+| A segmenter decode's output | 64 prompts a call and at most 4 masks of 256² a prompt: 64 MiB | `MAX_BATCH`, `MAX_MASKS_PER_PROMPT` and `MASK_SIDE`, `crates/luxforge-core/src/modules/ai/segment/session.rs` |
 | Settings file | 1 MiB | `MAX_SETTINGS_BYTES`, `crates/luxforge-core/src/capabilities/settings.rs` |
 | Grants file | 2 MiB and 1024 grant records | `MAX_GRANTS_BYTES` and `MAX_GRANT_RECORDS`, `crates/luxforge-core/src/capabilities/grants.rs` |
 | Adapter request and response | 256 MiB each | `MAX_ADAPTER_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs` |

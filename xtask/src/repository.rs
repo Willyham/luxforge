@@ -1116,8 +1116,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             // The core: the source worker and the owner loop, the API transport's accept and
-            // connection threads, the job table's lanes, the latest-job worker, the reference
-            // tile worker and the analysis worker after the tile service.
+            // connection threads, the job table's lanes, the latest-job worker (which also serves
+            // the capability host's one query worker, `query.pick-object`'s hover decodes), the
+            // reference tile worker and the analysis worker after the tile service.
             "crates/luxforge-core/src/api/owner.rs",
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",

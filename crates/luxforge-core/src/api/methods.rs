@@ -124,6 +124,8 @@ pub(super) enum Planned {
     Value(Value),
     Sample(Box<PointPlan>),
     Query(Box<crate::editor::pixels::QueryPlan>),
+    /// A module's worker query, which the host's query worker answers.
+    Worker(Box<crate::capabilities::host::WorkerQuery>),
 }
 
 #[cfg(test)]
@@ -136,6 +138,10 @@ impl Planned {
             Self::Query(plan) => {
                 plan.evaluate(&crate::tiles::ReferenceReads, &crate::Cancel::never())
             }
+            Self::Worker(query) => Err(Error::internal(format!(
+                "worker query {} is answered by the host's query worker",
+                query.query_id
+            ))),
         }
     }
 }
@@ -2353,6 +2359,10 @@ fn module_query(
     let entry_id = params::take_optional(&mut parameters, "entry_id")?;
     let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
     let parameters = Value::Object(parameters);
+    // A query that runs a model is checked and bound here and answered by the query worker.
+    if let Some(query) = service.worker_query(&asset_id, &entry_id, query_id, &parameters)? {
+        return Ok(Planned::Worker(Box::new(query)));
+    }
     if service.registry().analysis_query(query_id) {
         return service
             .query_plan(&asset_id, &entry_id, query_id, parameters)
@@ -3746,7 +3756,15 @@ mod tests {
             .flat_map(|descriptor| descriptor.tasks.iter())
             .map(|task| task_method(&task.id))
             .collect();
-        assert_eq!(tasks, ["task.fill-generative", "task.generate-proof-tint"]);
+        assert_eq!(
+            tasks,
+            [
+                "task.fill-generative",
+                "task.analyse",
+                "task.select-object",
+                "task.generate-proof-tint"
+            ]
+        );
         let schema = schemas(&registry);
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
@@ -3766,21 +3784,21 @@ mod tests {
                 "{name}"
             );
         }
-        let method = find(&service, &tasks[1]).unwrap();
+        let method = find(&service, &tasks[3]).unwrap();
         // The method carries the task's identity, which the owner hands the capability host.
         assert!(matches!(method.route(), Route::Task("generate-proof-tint")));
         assert!(method.mutates(), "the request queues a job");
         assert!(method.envelope() == Envelope::Request);
-        assert_eq!(listed[&tasks[1]]["mutates"], json!(true));
-        assert_eq!(listed[&tasks[1]]["mutation"], json!("request"));
-        assert_eq!(listed[&tasks[1]]["required"][0], json!("mutation"));
+        assert_eq!(listed[&tasks[3]]["mutates"], json!(true));
+        assert_eq!(listed[&tasks[3]]["mutation"], json!("request"));
+        assert_eq!(listed[&tasks[3]]["required"][0], json!("mutation"));
         // The service never answers it: the catalog owner holds the capability host.
         let refused = method
             .serve(&mut service, &mut session, &json!({}))
             .unwrap_err();
         assert_eq!(refused.kind, ErrorKind::Internal);
         assert_eq!(
-            listed[&tasks[1]]["parameters"],
+            listed[&tasks[3]]["parameters"],
             json!([]),
             "its declared parameters"
         );

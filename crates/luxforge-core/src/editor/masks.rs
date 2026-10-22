@@ -331,6 +331,23 @@ impl EditorService {
         ))
     }
 
+    /// The repair stage identity of `entry_id`, a stack of `asset_id`: what an analysis of it is
+    /// keyed by and what a selection computed from it records ([`Self::selection_input`]), with
+    /// the content stage's size. `O(layers)`; reads no pixel.
+    pub(crate) fn repair_identity(
+        &self,
+        asset_id: &AssetId,
+        entry_id: &crate::EntryId,
+    ) -> Result<crate::capabilities::read::StageIdentity, Error> {
+        let asset = self.head(asset_id)?.asset;
+        let entry = self.entry(asset_id, entry_id)?;
+        let recipe = self.bound(&entry.snapshot.recipe)?;
+        let top = self.with_stage_context(&asset, &recipe, None, |context| {
+            crate::modules::corrections_top_input(context)
+        })?;
+        Ok(crate::capabilities::read::StageIdentity::of(asset_id, &top))
+    }
+
     /// The version a registered module now declares for the model resource `model`, when one
     /// declares it: what Recompute would run.
     pub(super) fn declared_model_version(&self, model: &str) -> Option<String> {

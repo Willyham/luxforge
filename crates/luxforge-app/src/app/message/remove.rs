@@ -80,4 +80,20 @@ pub(crate) enum RemoveMessage {
         candidate: u8,
         result: Result<Arc<DecodedPreview>, String>,
     },
+    /// The pointer over the photograph while hover picking is on, in normalized content
+    /// coordinates; `None` when it left the photograph.
+    Hover(Option<[f64; 2]>),
+    /// `query.pick-object` answered for the position it was asked at, decoded off the update loop.
+    Picked {
+        asset: luxforge_core::AssetId,
+        revision: u64,
+        point: [f64; 2],
+        result: Result<Box<crate::app::remove_hover::Picked>, CallError>,
+    },
+    /// The analysis hover picking started ended.
+    Analysed {
+        asset: luxforge_core::AssetId,
+        revision: u64,
+        result: Result<(), String>,
+    },
 }

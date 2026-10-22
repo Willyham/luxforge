@@ -26,7 +26,7 @@ pub use input::{RepairInput, StaleReason};
 pub(crate) use input::{selection_prefix, source_identity};
 pub(crate) use module::CorrectionsModule;
 pub use query::StaleCorrection;
-pub(crate) use query::{new_top_input, repair_stage, stale_corrections};
+pub(crate) use query::{new_top_input, repair_output_stage, repair_stage, stale_corrections};
 pub(crate) use stroke::{CorrectionStroke, RADIUS_MAX, RADIUS_MIN, RepairCarrier};
 
 /// The repair layer's effect.

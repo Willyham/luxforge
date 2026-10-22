@@ -160,6 +160,42 @@ pub trait CapabilityModule: ToolModule {
         let _ = view;
         Map::new()
     }
+    /// Whether the declared query `query_id` runs on the host's query worker rather than on the
+    /// catalog owner: a query that runs a model, such as a picker's decode, which no owner turn may
+    /// wait on. Such a query is answered by [`Self::run_query`], never by [`ToolModule::query`].
+    /// The default is none.
+    fn worker_query(&self, query_id: &str) -> bool {
+        let _ = query_id;
+        false
+    }
+    /// What one request of a worker query needs: the `local-runtime` capabilities it uses (`None`
+    /// uses none) and the flags that must be on. Called on the owner after the parameters were
+    /// checked; an unmet requirement is `not-ready` with `data.requirements`, as for a task.
+    fn query_needs(
+        &self,
+        query_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<TaskNeeds, Error> {
+        let _ = (query_id, parameters);
+        Ok(TaskNeeds::default())
+    }
+    /// Answer one worker query on the host's query worker: one thread with one waiting request,
+    /// which a newer request replaces (the replaced one is answered `cancelled`). `context` holds
+    /// the models the query uses, the analysis cache and the identity of the asset's repair stage
+    /// as the request found it. Never called on the owner or an interface thread. The default
+    /// refuses.
+    fn run_query(
+        &self,
+        query_id: &str,
+        parameters: &Map<String, Value>,
+        context: &ModuleContext,
+    ) -> Result<Value, Error> {
+        let _ = (parameters, context);
+        Err(Error::validation(format!(
+            "module {} answers no worker query {query_id}",
+            self.descriptor().id
+        )))
+    }
 }
 
 /// The first declaration of `descriptor` that only a [`CapabilityModule`] can serve, named for the
