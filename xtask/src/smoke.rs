@@ -1226,7 +1226,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: select::SCENARIO,
-        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, the catalog, and Develop on the catalog folder viewed last",
+        about: "The Select workspace over a generated catalog: G, an indexed folder's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, the catalog, and Develop on the catalog folder viewed last",
         launches: &[],
         verify: select::verify,
         source: Source::Fixtures(&[]),

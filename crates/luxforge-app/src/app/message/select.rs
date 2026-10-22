@@ -3,8 +3,8 @@ use crate::state::select::{QueryChange, ReadSource, SelectMenu, SelectPanel, Sho
 use luxforge_core::{
     ClientSession,
     catalog_types::{
-        Cards, CatalogCounts, DiskFolders, EventList, Facets, IndexFolders, LibraryChange,
-        ViewRows, ViewSource, ViewSummary, Volumes,
+        Cards, CatalogCounts, DiskFolders, Facets, IndexFolders, LibraryChange, ViewRows,
+        ViewSource, ViewSummary, Volumes,
     },
 };
 use luxforge_ui::{GridContext, GridPress};
@@ -26,11 +26,7 @@ pub(crate) enum Step {
 pub(crate) enum SelectMessage {
     /// Show a workspace: the title bar's switch, `G` or `D`.
     Switch(Shown),
-    /// The sources panel's search text, which `event.list` answers.
-    Search(String),
-    /// `event.list` answered.
-    Events(Result<EventList, String>),
-    /// View a source: an event, the folder browsed on disk or a catalog view.
+    /// View a source: a card, the folder browsed on disk or a catalog view.
     Source(ViewSource),
     /// Browse a folder…: the native folder dialog, and what it chose.
     BrowseFolder,
@@ -47,6 +43,8 @@ pub(crate) enum SelectMessage {
     },
     /// A volume's or a folder's chevron On disk: open it, reading its subfolders, or close it.
     Toggle(PathBuf),
+    /// On disk's chevron: collapse it to its heading, or open it again.
+    ToggleOnDisk,
     /// `disk.folders` answered for a volume or folder opened On disk.
     Listed {
         path: PathBuf,

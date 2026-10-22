@@ -1,5 +1,5 @@
-//! The Select workspace against a real owner over a seeded catalog and index: the event list and
-//! its search, a view evaluated from a source, the rows read for the visible window, a selection by
+//! The Select workspace against a real owner over a seeded catalog and index: a view evaluated
+//! from a source, the rows read for the visible window, a selection by
 //! click and arrow keys reflected from the session, a view made stale by another client's
 //! `pick.set` evaluated again without a reload, picking with `P` and Pick all, library undo and
 //! redo of this desktop's own changes and not an agent's, and the sources panel's volumes, folders
@@ -18,8 +18,8 @@ use crate::{
             sync::SyncMessage,
         },
         select::{
-            counts_now, disks_now, evaluate_now, events_now, facets_now, folders_now, label_now,
-            refresh_now, rows_now, session_now,
+            counts_now, disks_now, evaluate_now, facets_now, folders_now, label_now, refresh_now,
+            rows_now, session_now,
         },
         tasks::{call, owner_calls},
     },
@@ -29,9 +29,9 @@ use iced::Size;
 use luxforge_core::{
     ClientId, OwnerHandle, SourceTag,
     catalog_types::{
-        CameraBody, CaptureTime, Dimensions, EventList, ExifOrientation, Exposure, FileRecord,
-        FileSignature, GeoPosition, HeaderMetadata, HeaderState, IndexRoot, IndexedFolder,
-        RootKind, RowItem, ViewSource, Volume, VolumeId,
+        CameraBody, CaptureTime, Dimensions, ExifOrientation, Exposure, FileRecord, FileSignature,
+        GeoPosition, HeaderMetadata, HeaderState, IndexRoot, IndexedFolder, RootKind, RowItem,
+        ViewSource, Volume, VolumeId,
     },
     seed::{CatalogSeeder, IndexSeeder},
 };
@@ -172,16 +172,16 @@ pub(super) fn seeded_with(files: &[FileRecord]) -> PathBuf {
     catalog
 }
 
-/// The editor over the seeded catalog, with Select shown and what showing it reads — the events,
-/// the cards and volumes, and the catalog's counts — answered by the owner.
+/// The editor over the seeded catalog, with Select shown and what showing it reads — the cards,
+/// volumes and indexed folders, and the catalog's counts — answered by the owner.
 pub(super) fn selecting() -> (Editor, PathBuf) {
     selecting_over(seeded())
 }
 
 /// The editor over `catalog`, as [`selecting`] opens it. Its owner reads no mount table: a card
 /// the host mounts meanwhile, such as the core's disk-image tests attach with a `DCIM` folder of
-/// two photographs, would otherwise be listed as the catalog opens, and its event listed beside
-/// the seeded one (`OwnerHandle::read_no_host_mounts`).
+/// two photographs, would otherwise be listed as the catalog opens beside the seeded folder
+/// (`OwnerHandle::read_no_host_mounts`).
 pub(super) fn selecting_over(catalog: PathBuf) -> (Editor, PathBuf) {
     OwnerHandle::read_no_host_mounts(&catalog);
     opened(catalog)
@@ -237,13 +237,9 @@ fn opened_with(
     (editor, catalog)
 }
 
-/// Answer the events, the cards and volumes and the catalog's counts the editor has asked for, as
-/// their tasks would.
+/// Answer the cards, volumes and indexed folders and the catalog's counts the editor has asked
+/// for, as their tasks would.
 pub(super) fn answer_reads(editor: &mut Editor) {
-    if editor.select.events.in_flight() {
-        let events = events_now(&editor.owner, editor.client, &editor.select.state.search);
-        let _ = editor.update(Message::Select(SelectMessage::Events(events)));
-    }
     if editor.select.disks.in_flight() {
         let disks = disks_now(&editor.owner, editor.client);
         let _ = editor.update(Message::Select(SelectMessage::Disks(disks)));
@@ -301,35 +297,27 @@ pub(super) fn read_rows(editor: &mut Editor) {
     }
 }
 
-/// The event list and its search answer with the owner's own events; a source row viewed lays the
-/// grid out from the owner's group layout; the visible window's rows are read; a click and arrow
-/// keys select through the session; and another client's pick makes the view stale, which the
-/// wake evaluates again without a reload.
+/// The indexed folder's row On disk viewed lays the grid out from the owner's group layout; the
+/// visible window's rows are read; a click and arrow keys select through the session; and another
+/// client's pick makes the view stale, which the wake evaluates again without a reload.
 #[test]
 fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
     let (mut editor, catalog) = selecting();
-    let list: &EventList = editor
-        .select
-        .state
-        .events
-        .as_ref()
-        .expect("the events were read");
-    assert_eq!(list.events.len(), 1, "{list:?}");
-    assert_eq!(list.events[0].count, 12);
-    // The search finds the event by its camera and by its date, and nothing by another place.
-    for (query, found) in [("Z 8", 1), ("2026-09-12", 1), ("Zermatt", 0)] {
-        let answer = events_now(&editor.owner, editor.client, query).unwrap();
-        assert_eq!(answer.events.len(), found, "{query}");
-    }
-    // The sources panel lists it under September 2026; pressing it views it.
     let sources = &editor.workspace.select.sources;
-    assert_eq!(sources.months[0].label, "September 2026");
-    let row = &sources.months[0].rows[0];
-    assert_eq!(row.secondary.as_deref(), Some("12\u{2013}13 Sep"));
+    assert!(sources.on_disk_open, "On disk starts open");
+    let row = &sources.indexed[0];
+    assert_eq!(row.name, "Pictures");
+    assert_eq!(row.count, Count::Total("12".into()));
     let Some(SourcePress::View(source)) = row.press.clone() else {
-        panic!("an event row views its event");
+        panic!("an indexed folder row views its folder");
     };
-    assert!(matches!(source, ViewSource::Event { .. }));
+    assert_eq!(
+        source,
+        ViewSource::Folder {
+            path: PICTURES.into(),
+            subfolders: true
+        }
+    );
     let _ = editor.update(Message::Select(SelectMessage::Source(source.clone())));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
         1000.0, 700.0,
@@ -620,11 +608,9 @@ fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
 #[test]
 fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
     let (mut editor, catalog) = selecting();
-    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
-        .press
-        .clone()
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.indexed[0].press.clone()
     else {
-        panic!("an event row views its event");
+        panic!("an indexed folder row views its folder");
     };
     let _ = editor.update(Message::Select(SelectMessage::Source(source.clone())));
     evaluate(&mut editor);
@@ -733,11 +719,9 @@ fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
 #[test]
 fn a_select_view_read_again_keeps_the_loupes_frame_until_its_rows_arrive() {
     let (mut editor, catalog) = selecting();
-    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
-        .press
-        .clone()
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.indexed[0].press.clone()
     else {
-        panic!("an event row views its event");
+        panic!("an indexed folder row views its folder");
     };
     let _ = editor.update(Message::Select(SelectMessage::Source(source)));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
@@ -938,12 +922,9 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
     use iced::keyboard::Modifiers;
     let (mut editor, catalog) = selecting();
     let agent = editor.owner.register();
-    let source = match editor.workspace.select.sources.months[0].rows[0]
-        .press
-        .clone()
-    {
+    let source = match editor.workspace.select.sources.indexed[0].press.clone() {
         Some(SourcePress::View(source)) => source,
-        other => panic!("an event row views its event: {other:?}"),
+        other => panic!("an indexed folder row views its folder: {other:?}"),
     };
     let _ = editor.update(Message::Select(SelectMessage::Source(source)));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
@@ -1026,14 +1007,6 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
     assert_eq!(
         editor.workspace.select.title.picks, 1,
         "Develop N counts it"
-    );
-    // The event's row counts its pick, read again with the events.
-    assert_eq!(
-        editor.workspace.select.sources.months[0].rows[0].count,
-        Count::Picks {
-            picked: "1".into(),
-            total: "12".into()
-        }
     );
 
     // The Leica bracket's Pick all: one synchronous `pick.set` of its three files.
@@ -1370,19 +1343,11 @@ fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
 #[test]
 fn a_click_made_while_the_view_is_read_again_selects_its_item_once_it_lands() {
     let (mut editor, catalog) = selecting();
-    let sources: Vec<_> = editor
-        .workspace
-        .select
-        .sources
-        .months
-        .iter()
-        .flat_map(|month| month.rows.iter())
-        .filter_map(|row| match row.press.clone() {
-            Some(SourcePress::View(source)) => Some(source),
-            _ => None,
-        })
-        .collect();
-    let _ = editor.update(Message::Select(SelectMessage::Source(sources[0].clone())));
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.indexed[0].press.clone()
+    else {
+        panic!("an indexed folder row views its folder");
+    };
+    let _ = editor.update(Message::Select(SelectMessage::Source(source)));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
         1000.0, 700.0,
     ))));

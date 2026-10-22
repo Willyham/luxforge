@@ -27,7 +27,7 @@ use crate::{
     AssetId, AssetRecord, EditorService, Error,
     catalog_types::{
         AssetSourceValue, AvailabilityRow, CaptureTime, CatalogFolderId, DevelopOutcome,
-        DevelopedPick, FileAvailability, ItemFailure, LibraryItem,
+        DevelopedPick, FileAvailability, ItemFailure, LibraryItem, LocalDay,
     },
     editor::{
         NewAsset, NewPhotograph, ReadOriginal, insert_photograph, source_signature, upsert_volume,
@@ -72,8 +72,13 @@ impl Decided {
         }
     }
 
-    /// The file as a Develop's report lists it, its photograph in the catalog folder `folder_id`.
-    pub(crate) fn reported(&self, folder_id: CatalogFolderId) -> DevelopedPick {
+    /// The file as a Develop's report lists it, its photograph in the catalog folder `folder_id`
+    /// under the folder its choice named, `chosen_folder_id`.
+    pub(crate) fn reported(
+        &self,
+        folder_id: CatalogFolderId,
+        chosen_folder_id: CatalogFolderId,
+    ) -> DevelopedPick {
         let outcome = match &self.becomes {
             Becomes::Created(_) => DevelopOutcome::Created,
             Becomes::Linked(_) => DevelopOutcome::Linked,
@@ -85,7 +90,30 @@ impl Decided {
             asset_id: self.asset_id().clone(),
             outcome,
             folder_id,
+            chosen_folder_id,
         }
+    }
+
+    /// The folder `destination` named for its photograph, now in `folder`: a new photograph's
+    /// place or existing folder over the day folder it was filed in, else `folder`, as a linked or
+    /// relinked photograph keeps its own.
+    pub(crate) fn chosen(
+        &self,
+        catalog: &Connection,
+        destination: &Destination,
+        folder: &CatalogFolderId,
+    ) -> Result<CatalogFolderId, Error> {
+        match self.becomes {
+            Becomes::Created(_) => destination.named(catalog, folder, self.day()),
+            Becomes::Linked(_) | Becomes::Relinked { .. } => Ok(folder.clone()),
+        }
+    }
+
+    /// The camera-local day its file was captured on, as its header records it: what a new
+    /// photograph is filed by.
+    fn day(&self) -> Option<LocalDay> {
+        let capture = self.developed.file.header.capture.as_ref();
+        capture.map(CaptureTime::local_day)
     }
 
     /// What its Develop kept of its file ([`ReadFile::kept`](super::ReadFile::kept)), taken as
@@ -331,10 +359,7 @@ pub(crate) fn write(
     let mut filed = Vec::with_capacity(decided.len());
     for decided in decided {
         filed.push(match decided.becomes {
-            Becomes::Created(_) => {
-                let capture = decided.developed.file.header.capture.as_ref();
-                Some(filer.folder(tx, capture.map(CaptureTime::local_day))?)
-            }
+            Becomes::Created(_) => Some(filer.folder(tx, decided.day())?),
             Becomes::Linked(_) | Becomes::Relinked { .. } => None,
         });
     }

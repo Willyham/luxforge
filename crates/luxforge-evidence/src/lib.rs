@@ -2684,8 +2684,8 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// One gesture on the Select workspace, each sent through the message the control or the key table
 /// sends, and captured once nothing Select asked the owner for is still in flight.
 ///
-/// `{"switch": "select"}` presses the title bar's workspace switch. `{"source": "Konstanz · 12–13
-/// Sep"}` presses the source row showing that name, or that name and its dates. `{"arrow":
+/// `{"switch": "select"}` presses the title bar's workspace switch. `{"source": "All photographs"}`
+/// presses the On disk or Catalog row showing that name. `{"arrow":
 /// {"direction": "right", "extend": true}}` presses an arrow key through the key table, Shift held
 /// when `extend`. `{"choose": {"menu": "group", "item": "Day"}}` opens a chip's or the sort's menu
 /// and chooses the item labelled so, or presses a pick segment (`pick`). `{"click": {"position":

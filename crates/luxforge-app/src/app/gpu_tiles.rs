@@ -121,8 +121,9 @@ static LAUNCHED: OnceLock<Arc<GpuTiles>> = OnceLock::new();
 /// The launch's one worker, which the catalog owner's export lane streams every export through:
 /// waiting for the desktop to name the adapter its window draws with ([`GpuTiles::pending`]);
 /// refused for a launch with `--no-gpu-render`; and for a launch that refused the GPU stage on a
-/// host whose only adapter is a software one, not adopted, or with no adapter, answering the
-/// reference as `no-adapter` ([`GpuTiles::unavailable`]). Made once; a second call answers the
+/// host whose only adapter is a software one, not adopted, whose window draws on wgpu's OpenGL
+/// backend, or with no adapter, answering the reference as `no-adapter`
+/// ([`GpuTiles::unavailable`]). Made once; a second call answers the
 /// first's.
 pub(crate) fn launch(launch: crate::adapters::LaunchRenderer) -> Arc<GpuTiles> {
     use crate::adapters::{LaunchRenderer, Refusal};
@@ -130,9 +131,9 @@ pub(crate) fn launch(launch: crate::adapters::LaunchRenderer) -> Arc<GpuTiles> {
         Arc::new(match launch {
             LaunchRenderer::Gpu { .. } => GpuTiles::pending(false),
             LaunchRenderer::Reference(Refusal::Requested) => GpuTiles::pending(true),
-            LaunchRenderer::Reference(Refusal::SoftwareNotAdopted | Refusal::NoAdapter) => {
-                GpuTiles::unavailable(TileUnavailable::NoAdapter)
-            }
+            LaunchRenderer::Reference(
+                Refusal::SoftwareNotAdopted | Refusal::GlBackend | Refusal::NoAdapter,
+            ) => GpuTiles::unavailable(TileUnavailable::NoAdapter),
         })
     }))
 }

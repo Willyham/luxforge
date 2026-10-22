@@ -134,6 +134,24 @@ impl Destination {
             }
         }
     }
+
+    /// The folder this destination names for a photograph filed in `folder`, captured on `day`
+    /// (none with no capture time): the place or existing folder over the day folder it went
+    /// into, else `folder` itself.
+    pub(crate) fn named(
+        &self,
+        connection: &Connection,
+        folder: &CatalogFolderId,
+        day: Option<LocalDay>,
+    ) -> Result<CatalogFolderId, Error> {
+        let by_day = matches!(self, Self::Place { .. } | Self::Existing { days: true, .. });
+        if !by_day || day.is_none() {
+            return Ok(folder.clone());
+        }
+        Ok(folders::folder(connection, folder)?
+            .parent_id
+            .unwrap_or_else(|| folder.clone()))
+    }
 }
 
 /// A day folder's name: the day without a leading zero and the month in English, "3 Sep".

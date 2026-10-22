@@ -1636,22 +1636,26 @@ fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
 /// A photograph's file name and its folder's path.
 type Filed = (String, String);
 
+/// The path of the catalog folder `id` ("2026 › Konstanz › 12 Sep") among `folder.list`'s
+/// `folders`.
+fn folder_path(folders: &[Value], id: &str) -> String {
+    let mut names = Vec::new();
+    let mut at = Some(id.to_owned());
+    while let Some(id) = at {
+        let folder = folders.iter().find(|folder| folder["id"] == id).unwrap();
+        names.push(folder["name"].as_str().unwrap().to_owned());
+        at = folder["parent_id"].as_str().map(str::to_owned);
+    }
+    names.reverse();
+    names.join(" › ")
+}
+
 /// The catalog folder tree as each folder's path ("2026 › Konstanz › 12 Sep") and count, in
 /// `folder.list`'s order, and each photograph's folder path by its file name.
 fn filed(harness: &Harness) -> (Vec<(String, u64)>, Vec<Filed>) {
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();
     let folders = folders.as_array().unwrap();
-    let path_of = |id: &str| {
-        let mut names = Vec::new();
-        let mut at = Some(id.to_owned());
-        while let Some(id) = at {
-            let folder = folders.iter().find(|folder| folder["id"] == id).unwrap();
-            names.push(folder["name"].as_str().unwrap().to_owned());
-            at = folder["parent_id"].as_str().map(str::to_owned);
-        }
-        names.reverse();
-        names.join(" › ")
-    };
+    let path_of = |id: &str| folder_path(folders, id);
     let tree = folders
         .iter()
         .map(|folder| {
@@ -1671,6 +1675,24 @@ fn filed(harness: &Harness) -> (Vec<(String, u64)>, Vec<Filed>) {
         .map(|(name, folder)| (name, path_of(&folder)))
         .collect();
     (tree, photographs)
+}
+
+/// The path of the folder each developed pick's choice named (`chosen_folder_id`), by its file
+/// name, in the report's order.
+fn chosen(harness: &Harness, report: &Value) -> Vec<Filed> {
+    let folders = harness.ok("folder.list", json!({}))["folders"].clone();
+    let folders = folders.as_array().unwrap();
+    report["developed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|developed| {
+            let path = PathBuf::from(developed["path"].as_str().unwrap());
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let chosen = developed["chosen_folder_id"].as_str().unwrap();
+            (name, folder_path(folders, chosen))
+        })
+        .collect()
 }
 
 /// How many folders each change of a report made.
@@ -1826,6 +1848,23 @@ fn develop_picks_files_each_photograph_under_its_year_place_and_day() {
             at("z2.jpg", "2026 › Zürich › 18 Sep"),
         ]
     );
+    // Each names the place its choice named, over its day folder, as Develop holds it.
+    let mut places = chosen(&harness, &report);
+    places.sort();
+    assert_eq!(
+        places,
+        [
+            at("k1.jpg", "2026 › KONSTANZ"),
+            at("k2.jpg", "2026 › KONSTANZ"),
+            at("k3.jpg", "2026 › KONSTANZ"),
+            at("k4.jpg", "2026 › KONSTANZ"),
+            at("n1.jpg", "2025 › Konstanz"),
+            at("n2.jpg", "2026 › KONSTANZ"),
+            at("s1.jpg", "Undated › scans"),
+            at("z1.jpg", "2026 › Zürich"),
+            at("z2.jpg", "2026 › Zürich"),
+        ]
+    );
     // Only a place folder Develop made records an event: the one whose batch made it.
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();
     let event_of = |name: &str| {
@@ -1953,7 +1992,15 @@ fn develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_develo
             ),
         ]
     );
-    harness.develop_paths("develop-second", &[&l2, &s2]);
+    let second = harness.develop_paths("develop-second", &[&l2, &s2]);
+    // A later Develop into the place names the place, not the day folder it filed into.
+    assert_eq!(
+        chosen(&harness, &second),
+        [
+            at("l2.jpg", "2026 › Lake"),
+            at("s2.jpg", "Undated › From Anna")
+        ]
+    );
 
     // The opened file: an undated frame of its folder in the plan, filed by its header.
     let plan = harness.ok(
@@ -1970,6 +2017,7 @@ fn develop_picks_proposes_a_place_a_named_folder_or_the_folder_an_earlier_develo
         [2],
         "2026 found, Opened and 3 Mar made"
     );
+    assert_eq!(chosen(&harness, &report), [at("o1.jpg", "2026 › Opened")]);
     let (tree, photographs) = filed(&harness);
     assert_eq!(
         tree,
