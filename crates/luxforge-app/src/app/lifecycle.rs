@@ -139,8 +139,9 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     config.launch_renderer = Some(launch);
     // Refused before the window, and so before Iced creates the photo surface's pipeline, whose
     // capability check then answers unavailable: the editor runs as on a machine whose adapter
-    // cannot run the GPU stage. `--no-gpu-render` refuses it, and so does a host whose only
-    // adapter is a software one that is neither adopted nor asked for.
+    // cannot run the GPU stage. `--no-gpu-render` refuses it, and so do a host whose only
+    // adapter is a software one that is neither adopted nor asked for and a window that would draw
+    // on wgpu's OpenGL backend.
     if launch.refused() {
         luxforge_gpu::refuse_gpu_stage();
     }
