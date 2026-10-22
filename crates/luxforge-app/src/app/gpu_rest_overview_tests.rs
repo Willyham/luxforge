@@ -345,6 +345,9 @@ fn gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture() {
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     eprintln!("{test}: adapter {name} ({backend})");
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    // Each frame finds what the one before it released retired, as the desktop's do, so the least
+    // budget found below is what every later draw needs, whatever the host's load.
+    surface.settle_frames();
     let photograph = source(BoundaryFormat::Half);
     let gpu = super::gpu_tiles_tests::gpu_source(1, &photograph);
     for (family, recipe, _, planned) in families()
@@ -380,9 +383,12 @@ fn gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture() {
         // vary from draw to draw; far less than the overview's own storage.
         let least = (high << 10) + (256 << 10);
         assert!(
-            least < 512 << 20 && fits(&mut surface, &rest_of(&tiles), least).is_ok(),
+            least < 512 << 20,
             "{what}: the picture at rest fits {least} bytes"
         );
+        if let Err(fallback) = fits(&mut surface, &rest_of(&tiles), least) {
+            panic!("{what}: the picture at rest refused at {least} bytes: {fallback:?}");
+        }
         // There the overview is refused, the picture not: its storage is refused before a tile is
         // drawn, or it yields to a tile the budget refuses later.
         let picture = fits(&mut surface, &rest_of(&with), least)
