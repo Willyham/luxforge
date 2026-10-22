@@ -66,7 +66,7 @@ The desktop holds one **Develop folder**, its own view state like the shown work
 
 - **Actions.** A bracket header offers Pick all N and **Merge HDR**. The selection menu's HDR group offers Merge HDR… ("Merge the frames into one HDR photograph in the catalog"). It opens the [merge preview](hdr-merge.md#in-the-desktop) first, with Cancel and Merge; ⌥-click merges at once with the last settings. The result is made in its folder, and the person stays in Select.
 - **Choosing the folder.** `merge.plan` proposes the folder as Develop would for the reference frame. `merge.create` takes `folder?`, a folder choice as above: the plan's proposal by default, resolved for the reference frame's capture day. The folders it makes are recorded as their own library change (`folder.create`, the request's actor and identity) just before the publication's, in the same transaction, so undoing the merge leaves them: the result it keeps in Removed is still in them. The preview sheet's folder control shows the plan's proposal and sends it, or `{kind: existing, folder_id}` for a folder the person picks; the desktop never sends `folder.create` first.
-- **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked.
+- **Picks.** Over files, a bracket whose stack has an active result is decided for Moments without a pick. The Picked segment and Develop N count file picks only, and a result is never shown picked: it carries the "In the catalog" badge, and `P` on it picks nothing and says so over the grid ([HDR merges](hdr-merge.md#in-the-desktop)).
 
 ### Catalog format
 

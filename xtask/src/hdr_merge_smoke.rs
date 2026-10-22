@@ -112,6 +112,7 @@ pub fn first_plan(expected: &Value) -> Result<Plan> {
         preview("overlaid", MergePreviewStep::Overlay(true)),
         preview("merging", MergePreviewStep::Merge),
         select("merged", SelectStep::Merged),
+        key("refused", "p"),
         key("expanded", "s"),
         click("original", 1),
         key("picked", "p").status_starts("Picked "),
@@ -717,6 +718,28 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("merged: the board lists merges {:?}", merge_jobs(merged)),
     )?;
 
+    // `P` on the result picks nothing, not its originals either: no request, its cell says it is in
+    // the catalog and a notice over the grid says why.
+    let refused = first.at("refused")?;
+    ensure(
+        library(refused) == library(merged)
+            && select(refused)["title"]["picks"] == 0
+            && select(refused)["pick_toast"]["title"] == "This HDR merge is already in the catalog",
+        format!(
+            "refused: P sent {} and showed {}",
+            library(refused),
+            select(refused)["pick_toast"]
+        ),
+    )?;
+    let leader = stacks(refused)
+        .into_iter()
+        .find(|row| row["role"] == "leader")
+        .ok_or("refused: no stack leader")?;
+    ensure(
+        leader["in_catalog"] == true && leader["picked"] == false,
+        format!("refused: the result is {leader}"),
+    )?;
+
     // Expanded: the result, then its originals in capture order with their EV offsets.
     let expanded = first.at("expanded")?;
     let rows = stacks(expanded);
@@ -1032,7 +1055,7 @@ mod tests {
         let first = first_plan(&expected).unwrap();
         first.validate().unwrap();
         assert!(first.scripted());
-        assert_eq!(first.len(), 29);
+        assert_eq!(first.len(), 30);
         let second = second_plan(
             &json!({"reopen": {"path": "2026 \u{203a} Still \u{203a} 12 Jun", "position": 0}}),
         )
