@@ -247,6 +247,7 @@ fn a_launch_names_its_tile_workers_adapter_only_when_the_host_leaves_no_doubt() 
         Refusal::Requested,
         Refusal::SoftwareNotAdopted,
         Refusal::NoAdapter,
+        Refusal::GlBackend,
     ] {
         assert_eq!(
             named(
