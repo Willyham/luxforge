@@ -1,0 +1,628 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "mcp",
+  "title": "MCP adapter",
+  "objective": "Agents operate Luxforge through a standards-compliant MCP server, luxforge-mcp, over the existing operation registry: stdio, dual-era (2026-07-28 and 2025-11-25/2025-06-18), a compact default tool profile and generated typed profiles, attaching to the running desktop or an explicit headless owner, with pictures attached inline, Settings › Agents in the desktop, packaging beside luxforge-ctl, a rendered journey and real-client qualification.",
+  "context_summary": "Settled in the design and decisions: both tool shapes from one generator with compact (luxforge_methods, luxforge_describe, luxforge_call) the default and --tools all or a namespace list for one typed tool per method; preview results carry the JPEG inline by default (at most the 2048 px tier, never exports; --no-images withholds); the running desktop's live session by default, --headless --catalog PATH starting the adapter's own luxforge-json child with Edit authority; a Settings › Agents tab with the binary's path, per-client configuration snippets to copy and the connected live clients with Disconnect. Recorded defaults delegated to the implementer: stdio only, a hand-written synchronous protocol layer (rmcp only as a test client), tool names with . mapped to _, expected_revision optional for asset-revision methods, actor mcp:<client>, no resources/prompts/tasks, a 32-request queue and an 8 MiB image bound. The adapter has no feature logic: schemas come from schema.list, envelopes are built as luxforge-ctl builds them, failures are preserved, mutations are never retried. All tooling stays in Rust: wire conformance is checked against the vendored specification schemas and an independent rmcp client, not the Node conformance suite. On the Linux host, run Clippy, quick and release builds with the pinned 1.94.0 toolchain first on PATH.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Add the registry markers the adapter needs to schema.list: permission-only authority, effect markers on every mutating method, and image result fields.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "authority: \"permissions\" on methods that only permission authority may call at all: module.permission.grant, usage.prompt.claim, update.install, update.move-to-applications, catalog.empty-removed (today stated only in notes). A method needing permission authority for one argument value, such as usage.set {enabled: true}, stays unmarked and keeps its note. The marker is taken from the same place the forbidden check is made, or a test holds the two equal, so they cannot drift.",
+        "Every mutating method declares reversible: true | false (undoable through history or library undo, or a session or preference change the same operation sets back) and network: true where it can reach the network. A test refuses a mutating method, generated edit.*, mask.*, task.* and query.* included, without an explicit reversible value.",
+        "images: [field...] names result fields holding the path of a JPEG the owner wrote for display: preview.read and preview.region, and the corresponding fields of their jobs' results as job.read/job.wait report them, declared per job kind. Never export outputs.",
+        "Markers live on the static MethodSpec table and the generated method descriptors; module descriptors gain only what generated methods need. Field names are as stated in the design; their exact placement within the entry is the implementer's."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#core-additions",
+          "relevance": "The markers, their meanings and the tests that hold them"
+        },
+        {
+          "kind": "file",
+          "label": "Method table and schema.list",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "MethodSpec, METHODS and method_schema, which emit each entry"
+        },
+        {
+          "kind": "file",
+          "label": "Client authority",
+          "target": "crates/luxforge-core/src/api/mod.rs",
+          "relevance": "ClientAuthority and where forbidden is decided"
+        }
+      ],
+      "acceptance_criteria": [
+        "schema.list carries authority on exactly the permission-only methods, reversible on every mutating method and network where applicable, and images on the preview methods and their job results.",
+        "A test fails when a mutating method lacks reversible, or when the authority marker and the forbidden check disagree.",
+        "The architecture's agent contract describes the markers."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Unit tests over the built-in and developer registries for marker presence and agreement with the authority check."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core api::methods"
+        ],
+        "expected_results": [
+          "Marker tests pass for both registries."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add client identity and the connected-client list to the core: session.identify, session.clients and session.disconnect, with connections recorded in the event log; luxforge-ctl identifies itself.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "session.identify {label}: session-scoped, 1–64 characters, names the calling client; a later call replaces the label.",
+        "session.clients: the owner's other registered clients {client_id, label?, authority, transport (loopback | stdio | desktop-internal as applicable), connected_at, last_request_at?, requests}; metadata only, never request contents. The caller and the desktop's own client are excluded.",
+        "session.disconnect {client_id}: permission authority only (marked with TASK-001's authority marker if that has landed, otherwise in notes and marked at integration). Closes that client's connection; its session ends exactly as a disconnect ends it today (drafts end, clients jobs it alone wanted stop, a held wait is dropped). Refuses the caller's own id and an unknown id by name.",
+        "A connection, identification and disconnection are each recorded in the event log, so a reader such as the Agents tab follows them with events.wait and no polling.",
+        "luxforge-ctl sends session.identify {label: \"luxforge-ctl\"} after its handshake."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#core-additions",
+          "relevance": "The three methods and their contracts"
+        },
+        {
+          "kind": "file",
+          "label": "Loopback transport",
+          "target": "crates/luxforge-core/src/api/transport.rs",
+          "relevance": "Client registration, the eight-client limit and connection close"
+        },
+        {
+          "kind": "file",
+          "label": "Owner",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "Sessions, the event log and disconnect handling"
+        },
+        {
+          "kind": "file",
+          "label": "Live CLI",
+          "target": "crates/luxforge-cli/src/live/client.rs",
+          "relevance": "Where luxforge-ctl's handshake adds its identification"
+        }
+      ],
+      "acceptance_criteria": [
+        "An in-process owner with two loopback clients lists the other with its label, counts requests and records connect, identify and disconnect events.",
+        "session.disconnect from a permission-authority client closes the target, ends its drafts and stops its sole clients jobs; an Edit client is refused with forbidden.",
+        "luxforge-ctl appears as \"luxforge-ctl\" in session.clients; its process tests still pass."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Core unit tests for the methods; transport tests with real loopback clients; the luxforge-ctl process tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core session",
+          "tools/cargo-cached test -p luxforge-cli live"
+        ],
+        "expected_results": [
+          "All named tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Generate JSON Schema 2020-12 input schemas from the parameter vocabulary for every registry method, as a library module in luxforge-cli.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Input: a method's schema.list entry. Output: an object schema with properties, required and additionalProperties: false; the envelope never appears. The kind mapping is the design's: integer/number with minimum/maximum, enum, boolean, string with maxLength, text as string with its byte bound in the description (checked by the adapter, not maxLength), identity as the identifier's wire type, points/curve as arrays of pairs with minItems/maxItems, color/artifact/settings/settings-origin in their wire forms, json as {} with its notes, default copied, unit/step/soft range/precision in the description.",
+        "An unknown kind is a test failure, not a silent {}.",
+        "Also provide the request-side validation the adapter uses before sending (including text byte bounds) and the expected_revision property rules: optional for revision_of asset, required for draft and module-settings.",
+        "Add jsonschema, pinned exactly, as a development dependency only, recorded in docs/engineering/dependencies.md and passing cargo xtask audit/deny."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#schema-generation",
+          "relevance": "The mapping and the envelope rules"
+        },
+        {
+          "kind": "file",
+          "label": "Parameter vocabulary",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "ParameterKind, IdentityKind and ParameterDescriptor"
+        },
+        {
+          "kind": "file",
+          "label": "Host parameters",
+          "target": "crates/luxforge-core/src/api/params.rs",
+          "relevance": "Envelope fields and the host kind constructors"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency policy",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Pinning and recording a new dependency"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every method of the built-in and developer registries generates a schema valid against the 2020-12 metaschema.",
+        "Each kind has a mapping test; requests the registry's own tests send validate, and out-of-range, wrong-kind and unknown properties are refused with the parameter named.",
+        "jsonschema is a pinned development dependency only and the audit passes."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Unit tests over each kind and over every registry method."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli mcp::schema",
+          "tools/cargo-cached xtask audit"
+        ],
+        "expected_results": [
+          "Schema tests pass for every method; the audit passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Build luxforge-mcp: the dual-era stdio server with the compact profile, attaching to the running desktop's live session.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "A third binary in luxforge-cli reusing luxforge_cli::live; the headless-cli repository rule still holds. A reader thread and one worker; requests served in arrival order; at most 32 queued, beyond that a JSON-RPC error naming the limit; incoming lines bounded at 1 MiB.",
+        "Modern (2026-07-28): per-request _meta version, capabilities and clientInfo; serverInfo and resultType on results; server/discover; UnsupportedProtocolVersionError -32022 with supported versions; tools/list with ttlMs and cacheScope private, deterministic order; no notifications/message. Legacy (2025-11-25, 2025-06-18): initialize selects legacy semantics for the process, negotiating the client's version or answering 2025-11-25; ping; no resultType. notifications/cancelled drops a queued request or stops the adapter's own waiting at the next hold; it never cancels a Luxforge job.",
+        "Compact tools: luxforge_methods {namespace?, query?}, luxforge_describe {methods} (up to 16), luxforge_call {method, params?, expected_revision?}, with the design's annotations. Without a session, methods/describe answer from the built-in registry with source: built-in; calls return no-session or usage (several sessions) as tool errors.",
+        "Attach lazily at the first call needing the owner; send session.identify with \"<client> via MCP\"; mutations use actor mcp:<client name> (≤128 characters) or mcp. Envelopes as luxforge-ctl builds them; expected_revision used when given, otherwise asset.state read on the same connection just before the edit. Never retry; a lost connection reports connection-lost or outcome-unknown (with method and request_id); the next call rediscovers and the first result after it carries a session-replaced warning.",
+        "Results: structuredContent plus one text block of the same JSON; Luxforge failures as isError tool results preserving {code, message, data?, job_id?}; unknown tool -32602; schema failures as tool errors naming the parameter; clients-owned jobs warned as luxforge-ctl warns. Fields marked images are read and attached as image/jpeg content, refused above 8 MiB with a warning; --no-images turns attachment off. Flags: --catalog PATH, --tools (compact only in this task; other values refused until TASK-005), --no-images, --help, --version.",
+        "Vendor the 2026-07-28 and 2025-11-25 schema.json beside the tests with their source URL and licence notice; every message the adapter writes in tests validates against its era's schema."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "relevance": "Protocol versions, attaching, the compact profile, envelopes, results and bounds"
+        },
+        {
+          "kind": "url",
+          "label": "MCP 2026-07-28 versioning and dual-era rules",
+          "target": "https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle",
+          "relevance": "Modern and legacy behaviour a dual-era server must follow"
+        },
+        {
+          "kind": "url",
+          "label": "MCP 2026-07-28 tools",
+          "target": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+          "relevance": "tools/list, tools/call, content types and error reporting"
+        },
+        {
+          "kind": "file",
+          "label": "Live CLI design",
+          "target": "docs/design/live-cli.md",
+          "relevance": "Session discovery, envelopes, job ownership and error codes the adapter shares"
+        },
+        {
+          "kind": "file",
+          "label": "luxforge-ctl process tests",
+          "target": "crates/luxforge-cli/tests/live_ctl/live_session_process.rs",
+          "relevance": "The in-process owner and LocalServer pattern the adapter's process tests follow"
+        }
+      ],
+      "acceptance_criteria": [
+        "Process tests drive the real binary against an in-process owner: modern discovery, legacy initialize, version refusal, compact tools/list without and with a session, asset.state, a revision-checked edit landing in history with actor mcp:<client>, a conflict with an explicit stale expected_revision, a held job.wait to completion, preview.read attaching an image, a draft across two calls, cancellation of a queued request, queue overflow, a lost connection with outcome-unknown, no session and several sessions.",
+        "Every message written in those tests validates against the vendored schema of its era.",
+        "No path grants permission, writes the catalog directly or retries a mutation; quick passes."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Unit tests for framing, negotiation and result mapping; process tests with the real binary; wire validation in both eras."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli mcp",
+          "tools/cargo-cached xtask verify --tier quick --output target/evidence/mcp-adapter-quick"
+        ],
+        "expected_results": [
+          "All mcp tests pass with every message schema-valid; quick passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Add the typed profiles: one generated tool per method for --tools all or a namespace list, with annotations, list-change notifications and an independent rmcp client test.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Tool name: the method name with . replaced by _; title: the method name; description: the full notes; inputSchema from TASK-003. A test holds names collision-free and within 64 characters over both registries.",
+        "Annotations: readOnlyHint = !mutates, destructiveHint = !reversible, idempotentHint false, openWorldHint = network. Permission-only methods are not offered.",
+        "Without a session the list comes from the built-in registry; on attaching, a differing live registry announces a change. With a subscription (modern subscriptions/listen toolsListChanged) or after initialize (legacy), a second live connection holds events.wait and, after events from flags.set or module enablement, rereads schema.list and sends notifications/tools/list_changed when the generated list differs. In headless mode (TASK-006) the adapter rereads only after its own such calls.",
+        "rmcp, pinned exactly, is a development dependency of one integration test only, recorded in docs/engineering/dependencies.md: in both eras it lists tools, calls a read and an edit, and receives a list change after a flag change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#the-typed-profiles",
+          "relevance": "Names, annotations, filtering and list changes"
+        },
+        {
+          "kind": "url",
+          "label": "MCP 2026-07-28 subscriptions",
+          "target": "https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions",
+          "relevance": "subscriptions/listen and tagged list-change notifications"
+        },
+        {
+          "kind": "file",
+          "label": "Settings and feature flags",
+          "target": "docs/design/settings-and-flags.md",
+          "relevance": "Flags that change the registry and their event-log announcements"
+        }
+      ],
+      "acceptance_criteria": [
+        "--tools all lists every method a live client can call; --tools asset,edit lists only those namespaces; an unknown namespace is a usage error at launch.",
+        "Annotations follow the registry markers; a flag change that adds methods produces one list-change notification in each era and the next tools/list includes them.",
+        "The rmcp client test passes in both eras; all messages stay schema-valid."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Unit tests for naming and annotations; process tests for filtering and list changes; the rmcp interop test."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli mcp",
+          "tools/cargo-cached xtask audit"
+        ],
+        "expected_results": [
+          "All mcp tests, including rmcp interop in both eras, pass; the audit passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add headless mode: --headless --catalog PATH runs the adapter over its own luxforge-json child.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "The child is luxforge-json --catalog PATH from beside the adapter's own executable, with Edit authority, never --permission-authority; the adapter speaks JSON lines over the child's stdio through the same client interface as a live connection.",
+        "Refuse with a named error when the running-sessions registry names that catalog; a child that fails to start (for example the catalog's exclusive lock) is reported with its stderr, not retried.",
+        "The child lives exactly as long as the adapter: on stdin end-of-file close the child's stdin, wait a bounded time, then kill it; forward its stderr to the adapter's stderr. --headless without --catalog is a usage error.",
+        "The child is the only owner and the adapter its only client: list changes are re-read only after the adapter's own flags.set or module calls."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#attaching-to-luxforge",
+          "relevance": "Headless rules"
+        },
+        {
+          "kind": "file",
+          "label": "luxforge-json",
+          "target": "crates/luxforge-cli/src/json.rs",
+          "relevance": "The headless owner's flags and stdio service"
+        }
+      ],
+      "acceptance_criteria": [
+        "A process test starts the adapter headless over a temporary catalog, edits a photo and reads it back; stdin end-of-file leaves no child process behind.",
+        "A catalog a registered session names is refused before any child starts; a child start failure is reported with its stderr."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Process tests with the real luxforge-mcp and luxforge-json binaries."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli mcp_headless"
+        ],
+        "expected_results": [
+          "Headless tests pass and no child process outlives its adapter."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Package luxforge-mcp beside luxforge-ctl in the macOS bundle and the Linux tarball, and add luxforge-mcp config CLIENT with the core snippet generator.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Add luxforge-mcp to EXECUTABLES and everywhere the helpers are named: Contents/Helpers on macOS (signed before the app), the Linux payload, archive modes, INSTALL.txt, the ELF import record and release verification; its --version is checked against the tag like the others.",
+        "One core function produces each client's configuration from an absolute binary path: Claude Code (claude mcp add luxforge -- PATH), Claude Desktop (the mcpServers JSON block and where its file lives per platform), Codex (its config.toml block), Cursor and generic MCP JSON. Paths are quoted correctly for each format. luxforge-mcp config CLIENT [--headless --catalog PATH] prints it for its own executable path; the desktop's tab uses the same function in TASK-008."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Release executables",
+          "target": "xtask/cli/src/release_candidate.rs",
+          "relevance": "EXECUTABLES and the check-record tests that enforce it"
+        },
+        {
+          "kind": "file",
+          "label": "Release build",
+          "target": "xtask/src/release_build.rs",
+          "relevance": "executable_paths and the Helpers directory"
+        },
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#settings--agents",
+          "relevance": "The snippet set"
+        }
+      ],
+      "acceptance_criteria": [
+        "A local release rehearsal places luxforge-mcp in Contents/Helpers and the Linux payload, its version check passes and the check-record tests accept the new executable set.",
+        "Snippet tests cover each client, paths with spaces and quotes, and headless arguments; luxforge-mcp config prints the same text."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit tests for snippets and the release executable set; a local release rehearsal on the available platform."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask-cli release",
+          "tools/cargo-cached test -p luxforge-core agents"
+        ],
+        "expected_results": [
+          "Release and snippet tests pass; the rehearsal's packet lists luxforge-mcp."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Build Settings › Agents in the desktop: the bundled luxforge-mcp path, per-client configuration with Copy, and the connected live clients with Disconnect, with its boards.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "A Settings tab after Models and before Experiments, also in the palette as Settings · Agents. Draw its boards first in docs/design/mcp/ (standalone HTML and 2× PNG at 1440 × 900 logical points, like the other Settings boards), then implement to them; owner review of the boards is not a prerequisite.",
+        "The introduction sentence; the resolved luxforge-mcp beside this build (Contents/Helpers on macOS, beside the editor elsewhere) or, when absent, a line saying so with the build command; a segmented client choice showing the core snippet with Copy to the system clipboard. Never edit another application's configuration.",
+        "Connected: every other live client from session.clients with its label (Unnamed client when none), connected-for, last activity and request count, each with Disconnect (session.disconnect through the desktop's permission-authority client); one line when none. The list follows the event log while the tab is open, with no polling loop.",
+        "Framework widgets hold no logic: snippet text, client listing and disconnect all go through core."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#settings--agents",
+          "relevance": "The tab's contents and rules"
+        },
+        {
+          "kind": "file",
+          "label": "Settings sheet",
+          "target": "crates/luxforge-app/src/app/settings.rs",
+          "relevance": "SettingsTab, its shown rule and palette entries"
+        },
+        {
+          "kind": "file",
+          "label": "UI components",
+          "target": "docs/design/ui-components.md",
+          "relevance": "Segmented controls, rows and buttons the tab reuses"
+        }
+      ],
+      "acceptance_criteria": [
+        "Boards for the tab's connected, empty and missing-binary states are in the design folder and linked from the design.",
+        "Desktop tests cover the tab's states, Copy's text and Disconnect's call; a background rendered capture of each state, with correlated session.clients state and logs, matches the boards.",
+        "The tab is reachable from the gear and the palette."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Desktop unit tests; a background rendered capture of each state through the scenario harness."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app settings"
+        ],
+        "expected_results": [
+          "Desktop tests pass; captures show each state with correlated state and logs."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Add the background mcp smoke scenario to the rendered tier: a hidden desktop driven through luxforge-mcp.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Like the usage scenario that drives luxforge-ctl: launch the hidden, background-only desktop with an isolated data root over a generated JPEG and a supplied RAW, run luxforge-mcp (found beside the editor binary) against its live session as a scripted MCP client in both eras and both profiles.",
+        "Steps: list tools; read asset state; make an edit and check the history entry's actor and a changed frame readback; fetch preview.read and check the attached JPEG decodes at the large tier; capture Settings › Agents listing \"<client> via MCP\"; Disconnect it from the desktop and check the adapter's next call reports connection-lost then reattaches with session-replaced; undo the edit in the desktop and check the original's hash is unchanged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Smoke scenarios",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "SCENARIOS and the rendered() rule"
+        },
+        {
+          "kind": "file",
+          "label": "Usage scenario",
+          "target": "xtask/src/usage_smoke.rs",
+          "relevance": "The existing pattern of driving a CLI against the live session"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Tiers, evidence and background launches"
+        }
+      ],
+      "acceptance_criteria": [
+        "cargo xtask smoke --scenario mcp passes in the background on macOS with evidence (frames, captures, logs, the MCP transcript) and never takes focus.",
+        "The rendered tier includes it and passes at the integrated commit on the M4."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the scenario alone, then the rendered tier once."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario mcp --output target/evidence/mcp-smoke",
+          "tools/cargo-cached xtask verify --tier rendered --output target/evidence/mcp-rendered"
+        ],
+        "expected_results": [
+          "The scenario and the rendered tier pass with retained evidence."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Bring the documentation current with the delivered adapter.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "User guide: a section on connecting an agent (Settings › Agents, luxforge-mcp config, each client's setup, the profiles, --headless, --no-images and that an attached picture goes to the agent's model provider, which may be remote) beside the live-session command line; the Settings section gains the Agents tab.",
+        "The design's status, feature status's MCP adapter row, the architecture's agent contract, the live CLI design (session.identify), the roadmap's Programmability entry and ready list, and the task plans' README. These shared documents are the integrator's when several agents' work is merged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "locator": "#the-live-session-command-line",
+          "relevance": "Where the agent section sits"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "The MCP adapter row"
+        },
+        {
+          "kind": "file",
+          "label": "Agent quickstart",
+          "target": "docs/engineering/agent-quickstart.md",
+          "locator": "#docs",
+          "relevance": "Documentation ownership at integration"
+        }
+      ],
+      "acceptance_criteria": [
+        "Docs describe only shipped behaviour and commands that exist; repository checks pass."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review against the delivered binary's --help and the tab; run the documentation checks."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask check-repository",
+          "tools/cargo-cached xtask lint"
+        ],
+        "expected_results": [
+          "Checks pass and every documented command exists."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Qualify with real MCP clients on the owner's M4 and native Linux against a packaged build.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Needs the owner's session: Claude Code on the M4, set up from Settings › Agents' snippet against a packaged build, asked to edit a photo, look at it and leave the edit for the owner to undo in the desktop; repeated with --tools all. Also whichever of Claude Desktop and Codex are installed, and Claude Code on the Linux host.",
+        "Record each client's name and version, the protocol era it negotiated, the transcript's tool calls, the history entries with their actor and any failure, with scope; an unavailable client is reported as not run, never as passed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "MCP adapter design",
+          "target": "docs/design/mcp.md",
+          "locator": "#verification",
+          "relevance": "Real-client qualification scope"
+        },
+        {
+          "kind": "file",
+          "label": "Platforms",
+          "target": "docs/engineering/platforms.md",
+          "relevance": "Native versus VM or headless evidence"
+        }
+      ],
+      "acceptance_criteria": [
+        "Claude Code on the M4 completes edit, look and desktop undo in both profiles with the evidence recorded; other clients and Linux are recorded as passed, failed or not run."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Owner-attended sessions with each available client; evidence retained beside the qualification record."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Qualification evidence is recorded with its scope."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-010",
+        "TASK-011"
+      ]
+    }
+  ]
+}
