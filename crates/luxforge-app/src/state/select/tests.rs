@@ -110,6 +110,7 @@ fn trip() -> ViewSummary {
                     ..burst(14, 2, 300)
                 },
             ],
+            stacks: Vec::new(),
         },
     )
 }
@@ -429,6 +430,85 @@ fn a_select_panorama_moment_offers_merge_panorama() {
         why(&view.groups.moments[1]),
         "Overlapping views, measured on the previews"
     );
+}
+
+/// Each stack the view shows is a framed block of its own, its result alone while collapsed and
+/// with its originals while expanded, offering the other; the grid numbers stacks with moments, so
+/// a header's action finds its own block.
+#[test]
+fn a_select_stack_is_framed_whole_and_numbered_with_the_moments() {
+    use luxforge_core::catalog_types::{MergeKind, StackExpansion, StackGroup};
+    let stack = |kind, size, expansion, start, len| StackGroup {
+        merge_id: serde_json::from_value(json!("merge-0123456789abcdef0123456789abcdef")).unwrap(),
+        kind,
+        size,
+        expansion,
+        start,
+        len,
+    };
+    let view = summary(
+        12,
+        GroupLayout {
+            moments: vec![bracket(0, vec![-2.0, 0.0, 2.0], MomentEvidence::Metadata)],
+            stacks: vec![
+                stack(MergeKind::Hdr, 3, StackExpansion::Collapsed, 3, 1),
+                stack(MergeKind::Panorama, 5, StackExpansion::Expanded, 5, 6),
+            ],
+            ..GroupLayout::default()
+        },
+    );
+    let content = grid_content(&view, &BTreeSet::new());
+    let stack_block = |index, kind, title: &str, detail: &str, frames, expansion| Block::Stack {
+        index,
+        kind,
+        title: title.into(),
+        detail: detail.into(),
+        frames,
+        action: MomentAction::Stack(expansion),
+    };
+    assert_eq!(
+        content.blocks[1..],
+        [
+            stack_block(
+                0,
+                MergeKind::Hdr,
+                "HDR merge",
+                "3 exposures",
+                1,
+                StackExpansion::Expanded
+            ),
+            Block::Singles(1),
+            stack_block(
+                1,
+                MergeKind::Panorama,
+                "Panorama merge",
+                "5 photos",
+                6,
+                StackExpansion::Collapsed
+            ),
+            Block::Singles(1),
+        ]
+    );
+    assert_eq!(content.items(), 12);
+    assert_eq!(
+        content.action(1, 0),
+        Some((0, MomentAction::Stack(StackExpansion::Expanded)))
+    );
+    assert_eq!(content.action(1, 1), None);
+    assert_eq!(
+        MomentAction::Stack(StackExpansion::Expanded).label(),
+        "Expand"
+    );
+    assert_eq!(
+        MomentAction::Stack(StackExpansion::Collapsed).label(),
+        "Collapse"
+    );
+    assert_eq!(
+        content.action(2, 0),
+        Some((1, MomentAction::Stack(StackExpansion::Collapsed)))
+    );
+    assert_eq!(content.moment(0), Some(0));
+    assert_eq!(content.moment(1), None, "a stack is no moment");
 }
 
 #[test]
