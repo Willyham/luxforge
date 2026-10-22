@@ -798,6 +798,11 @@ impl EditorService {
                     crate::modules::corrections_repair_stage(context)
                 })?
             }
+            ReadBoundary::RepairOutput => {
+                self.with_stage_context(&asset, evaluation.recipe(), None, |context| {
+                    crate::modules::corrections_repair_output_stage(context)
+                })?
+            }
         };
         let mode =
             crate::render::MaskInputMode::for_layer(self.registry(), evaluation.recipe(), layer);

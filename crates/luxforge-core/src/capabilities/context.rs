@@ -11,10 +11,11 @@
 //! task publishes through. Every capability call checks the job's cancel flag first. Module code
 //! only ever receives what the host checked.
 use super::{
+    analysis::AnalysisCache,
     data::DisclosedData,
     descriptor::{AdapterAuth, AdapterDescriptor},
     endpoint::Endpoint,
-    read::{GrantedRead, StageReader},
+    read::{GrantedRead, StageIdentity, StageReader},
     runtime::{Loaded, RuntimeGrant},
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::{Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
@@ -118,6 +119,10 @@ pub struct ModuleContext {
     runtimes: BTreeMap<String, RuntimeGrant>,
     /// The stage a task that declares `reads` reads, as the owner planned it.
     read: Option<GrantedRead>,
+    /// The asset's repair stage as the owner found it, for a task that reads it or a worker query.
+    identity: Option<StageIdentity>,
+    /// The owner's analysis cache.
+    analysis: Option<Arc<AnalysisCache>>,
     /// The flags the task reads ([`crate::modules::capability::TaskNeeds::reads_flags`]), as
     /// they were when it was requested.
     flags: BTreeMap<&'static str, bool>,
@@ -163,6 +168,8 @@ impl ModuleContext {
             candidates: None,
             runtimes: BTreeMap::new(),
             read: None,
+            identity: None,
+            analysis: None,
             flags: BTreeMap::new(),
             control,
         }
@@ -193,6 +200,37 @@ impl ModuleContext {
     pub(crate) fn with_read(mut self, read: GrantedRead) -> Self {
         self.read = Some(read);
         self
+    }
+
+    /// The asset's repair stage as the owner found it when the job was requested.
+    pub(crate) fn with_identity(mut self, identity: StageIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// The owner's analysis cache.
+    pub(crate) fn with_analysis(mut self, analysis: Arc<AnalysisCache>) -> Self {
+        self.analysis = Some(analysis);
+        self
+    }
+
+    /// The asset's repair stage identity: its source, the repair stage's output and the content
+    /// stage's size, as the owner found them when the job was requested; `validation` for a job
+    /// that names none.
+    pub(crate) fn identity(&self) -> Result<&StageIdentity, Error> {
+        self.identity.as_ref().ok_or_else(|| {
+            Error::validation(format!(
+                "this job of module {} reads no stage of an asset",
+                self.module_id
+            ))
+        })
+    }
+
+    /// The owner's analysis cache; `internal` for a context built without it.
+    pub(crate) fn analysis(&self) -> Result<&AnalysisCache, Error> {
+        self.analysis
+            .as_deref()
+            .ok_or_else(|| Error::internal("this job was given no analysis cache"))
     }
 
     /// A flag the task reads, as it was when the task was requested.

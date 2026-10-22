@@ -67,6 +67,7 @@ mod no_gpu_render_smoke;
 mod package;
 mod panorama_merge_smoke;
 mod performance_smoke;
+mod pick_smoke;
 mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
 mod presets_smoke;

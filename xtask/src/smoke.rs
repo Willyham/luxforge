@@ -17,7 +17,7 @@ use crate::{
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     minify_smoke as minify, minimap_smoke as minimap, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
-    panorama_merge_smoke as panorama_merge, performance_smoke as performance,
+    panorama_merge_smoke as panorama_merge, performance_smoke as performance, pick_smoke as pick,
     presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
@@ -977,6 +977,22 @@ pub static SCENARIOS: &[Scenario] = &[
             ..APP
         }],
         verify: generative::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: pick::SCENARIO,
+        about: pick::ABOUT,
+        launches: &[LaunchSpec {
+            plan: pick::plan,
+            // The fake segmenter and the fake runtime are served only by a host that serves the
+            // developer modules.
+            developer: true,
+            ..APP
+        }],
+        verify: pick::verify,
         source: Source::Fixtures(&[corrections::FIXTURE]),
         window: Some(PANELLED),
         note: None,

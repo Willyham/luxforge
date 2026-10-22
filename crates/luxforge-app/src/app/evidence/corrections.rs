@@ -341,6 +341,14 @@ impl Editor {
                 }
             }
             RemoveStep::Accept => (RemoveMessage::Accept, RemoveUntil::Done),
+            RemoveStep::Hover(point) => {
+                if !self.hover_picking() {
+                    return Err(
+                        "a hover step needs the picker offered: the ai.analysis flag on".into(),
+                    );
+                }
+                (RemoveMessage::Hover(point), RemoveUntil::Done)
+            }
         };
         self.remove_reads.wait = Some(match wait {
             RemoveUntil::Progress => RemoveWait::Progress,

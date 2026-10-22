@@ -24,7 +24,7 @@ use crate::{
         },
         endpoint::Endpoint,
         grants::{GrantScope, RemoteScope},
-        read::GrantedRead,
+        read::{GrantedRead, StageIdentity},
         resources::ResourceState,
         runtime::RuntimeGrant,
         settings::{FieldRead, ProfileRead, ProfileStatus},
@@ -455,7 +455,8 @@ impl CapabilityHost {
                     effective_values(settings.as_ref()),
                     secret_fields(descriptor),
                 )
-                .with_artifacts(service.artifact_writer()?, run.outcome.clone());
+                .with_artifacts(service.artifact_writer()?, run.outcome.clone())
+                .with_analysis(self.analysis.clone());
         if let Some(sink) = sink {
             context = context.with_candidates(sink);
         }
@@ -476,6 +477,9 @@ impl CapabilityHost {
                 context.with_runtime(&capability, RuntimeGrant::new(self.runtime.clone(), load));
         }
         if let Some(plan) = plan {
+            if let Some(asset_id) = &asset_id {
+                context = context.with_identity(StageIdentity::of(asset_id, &plan.input));
+            }
             context = context.with_read(GrantedRead {
                 plan,
                 reads: self.reads.clone(),

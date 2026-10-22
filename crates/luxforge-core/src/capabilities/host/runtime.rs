@@ -251,6 +251,11 @@ impl CapabilityHost {
             }
         };
         let (unloaded, cancelled) = self.unload_models(jobs, &descriptor.id, &resources, announce);
+        // Unloading every model of the module ends the tool that queried them: its query worker
+        // stops with them.
+        if request.resource_id.is_none() {
+            self.queries.stop();
+        }
         if !unloaded.is_empty() || !cancelled.is_empty() {
             announce_once(announce, origin);
         }

@@ -3,11 +3,15 @@
 //! pipeline around a model that every fill tier shares ([`fill`]). Accepting a candidate is
 //! Corrections' `edit.accept-correction-patch`; this module adds no accept path, candidate store
 //! or repair stage of its own.
+mod analysis;
 pub(crate) mod fill;
 mod formats;
 mod generative;
 mod models;
 mod module;
+mod objects;
+mod pick;
+mod segment;
 mod selection;
 #[cfg(test)]
 mod tests;

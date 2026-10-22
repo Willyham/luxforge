@@ -2316,6 +2316,10 @@ impl Owner {
                 move |reads, cancel| plan.evaluate_steps(reads, cancel),
                 deliver,
             )),
+            Ok(Planned::Worker(query)) => {
+                self.host
+                    .worker_query(&self.jobs, &self.service, *query, Box::new(deliver));
+            }
             Ok(Planned::Value(value)) => deliver(Ok(value)),
             Err(error) => deliver(Err(error)),
         }

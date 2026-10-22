@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 mod composite;
 pub mod fake;
+pub(crate) mod fake_analysis;
 mod generator;
 mod tensor;
 #[cfg(test)]

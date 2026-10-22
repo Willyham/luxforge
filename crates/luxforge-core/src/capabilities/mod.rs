@@ -6,6 +6,7 @@
 //! (`luxforge-net`'s, in the desktop and `luxforge-json`) and its inference runtime through
 //! [`host::HostConfig`]. See
 //! `docs/design/module-capabilities.md`.
+pub(crate) mod analysis;
 #[cfg(test)]
 mod candidate_tests;
 pub mod consent;

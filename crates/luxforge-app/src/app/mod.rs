@@ -184,6 +184,7 @@ mod remembered;
 #[cfg(test)]
 mod remembered_tests;
 pub(crate) mod remove;
+pub(crate) mod remove_hover;
 #[cfg(test)]
 mod remove_tests;
 pub(crate) mod renderer;

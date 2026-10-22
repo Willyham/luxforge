@@ -32,6 +32,8 @@ use luxforge_testbase::{Gate, wait_for};
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
+mod analysis;
+
 const TASK: &str = "task.fill-generative";
 const ACCEPT: &str = "edit.accept-correction-patch";
 const READ_CANDIDATE: &str = "job.read-candidate";
@@ -827,6 +829,7 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
 
 #[test]
 fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
+    use super::analysis::models::{L0_DECODER, L0_ENCODER};
     use super::models::{
         CONDITIONING_ASSET, CONDITIONING_RELEASE_TAG, CONDITIONING_URL, KLEIN_GENERATOR,
         KLEIN_TEXT_ENCODER,
@@ -842,11 +845,24 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
     let resources: Vec<_> = descriptor.resources.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(
         resources,
-        [KLEIN_GENERATOR.resource, KLEIN_TEXT_ENCODER.resource]
+        [
+            KLEIN_GENERATOR.resource,
+            KLEIN_TEXT_ENCODER.resource,
+            L0_ENCODER.file.resource,
+            L0_DECODER.file.resource,
+        ]
     );
     // The fill task declares its experiment, so a client hides it without reading the status.
     let task = descriptor.task(FILL_GENERATIVE).unwrap();
     assert_eq!(task.flags, ["ai.generative"]);
+    // The segmenter's tasks and the picker under theirs; no scene or depth model is qualified, so
+    // neither analysis is declared.
+    for id in ["analyse", "select-object"] {
+        assert_eq!(descriptor.task(id).unwrap().flags, ["ai.analysis"], "{id}");
+    }
+    assert!(descriptor.task("analyse-scene").is_none());
+    assert!(descriptor.task("analyse-depth").is_none());
+    assert_eq!(descriptor.queries[0].id, "pick-object");
     for resource in &descriptor.resources {
         assert!(
             resource.url.starts_with("https://huggingface.co/"),
@@ -859,8 +875,13 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
             resource.url
         );
         assert_eq!(resource.license, "Apache-2.0");
-        // Offered only under the tier's experiment, which a client reads from the descriptor.
-        assert_eq!(resource.flag.as_deref(), Some("ai.generative"));
+        // Offered only under its feature's experiment, which a client reads from the descriptor.
+        let flag = if resource.id.starts_with("segmenter-") {
+            "ai.analysis"
+        } else {
+            "ai.generative"
+        };
+        assert_eq!(resource.flag.as_deref(), Some(flag), "{}", resource.id);
         assert!(resource.use_restriction.is_none());
         assert!(resource.tradeoff.is_some());
         assert_eq!(resource.sha256.len(), 64);
@@ -905,6 +926,7 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
         })
         .collect();
     const GIB: u64 = 1 << 30;
+    let onnx: Vec<String> = ["coreml", "directml", "cpu"].map(str::to_owned).to_vec();
     assert_eq!(
         runtimes,
         [
@@ -921,6 +943,20 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
                 9 * GIB,
                 vec!["metal".to_owned(), "diffusion-cpu".to_owned()],
                 vec![KLEIN_GENERATOR.resource.to_owned()]
+            ),
+            (
+                "run-segmenter-l0-encoder",
+                L0_ENCODER.file.resource,
+                384 << 20,
+                onnx.clone(),
+                vec![]
+            ),
+            (
+                "run-segmenter-l0-decoder",
+                L0_DECODER.file.resource,
+                64 << 20,
+                onnx,
+                vec![]
             ),
         ]
     );

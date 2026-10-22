@@ -35,11 +35,13 @@ use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 mod permissions;
+mod queries;
 mod resources;
 mod runtime;
 mod tasks;
 
 pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
+pub(crate) use queries::WorkerQuery;
 pub(crate) use resources::{InstallParams, ResourceParams};
 pub(crate) use runtime::{LoadParams, UnloadParams};
 pub use tasks::TASK_PREFIX;
@@ -317,6 +319,9 @@ pub(crate) enum RequirementKind {
     Runtime,
     /// A flag that gates the task is off ([`crate::TaskNeeds::flags`]).
     Flag,
+    /// A query needs an analysis of the photograph as it is now, which the task its `id` names
+    /// computes.
+    Analysis,
 }
 
 impl RequirementKind {
@@ -326,6 +331,7 @@ impl RequirementKind {
             Self::Profile => "profile",
             Self::Runtime => "runtime",
             Self::Flag => "flag",
+            Self::Analysis => "analysis",
         }
     }
 }
@@ -362,6 +368,10 @@ pub(crate) struct CapabilityHost {
     runtime: Runtime,
     /// The admission of tasks' stage readers.
     reads: Arc<ModuleReads>,
+    /// What modules' analysis tasks computed, shared with every task and worker query.
+    analysis: Arc<super::analysis::AnalysisCache>,
+    /// The worker that answers modules' worker queries, started by the first.
+    queries: queries::QueryWorker,
     permissions: super::permission_watch::PermissionObserver,
 }
 
@@ -381,6 +391,8 @@ impl CapabilityHost {
                 config.runtime_budget_bytes,
             ),
             reads: Arc::default(),
+            analysis: Arc::default(),
+            queries: queries::QueryWorker::default(),
             permissions: super::permission_watch::PermissionObserver::new(
                 config.config_dir.clone(),
             ),
@@ -882,6 +894,8 @@ impl CapabilityHost {
             let mut runtime = self.runtime.budget();
             runtime["available"] = json!(self.runtime.configured().is_ok());
             runtime["models"] = json!(self.runtime.status(&descriptor.id));
+            runtime["analysis_cache"] = self.analysis.status();
+            runtime["query_worker"] = json!(self.queries.running());
             status["runtime"] = runtime;
         }
         Ok(status)

@@ -119,8 +119,8 @@ pub(crate) use corrections::{
     source_identity as corrections_source_identity,
 };
 pub(crate) use corrections::{
-    new_top_input as corrections_top_input, repair_stage as corrections_repair_stage,
-    stale_corrections,
+    new_top_input as corrections_top_input, repair_output_stage as corrections_repair_output_stage,
+    repair_stage as corrections_repair_stage, stale_corrections,
 };
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
