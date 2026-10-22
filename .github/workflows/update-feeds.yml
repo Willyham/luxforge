@@ -29,20 +29,40 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal
       - name: Build the feed tool
         run: cargo build --locked -p xtask-cli
+      # GitHub's release list sometimes answers with no releases at all, which would publish empty
+      # feeds over the current ones. The step lists again until the list names an update record,
+      # and the triggering release's when a tag's release run started this one, and otherwise
+      # fails, leaving the published feeds as they are.
       - name: Collect the published releases and their update records
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/records"
-          gh api --paginate --slurp "repos/$GH_REPO/releases" > "$RUNNER_TEMP/published.json"
-          jq -r '.[][] | select(.draft == false and .published_at != null) | .tag_name as $tag
-            | .assets[] | select(.state == "uploaded" and (.name | test("^luxforge-[0-9A-Za-z.+-]+-updates\\.json$")))
-            | [$tag, .name] | @tsv' "$RUNNER_TEMP/published.json" |
-            while IFS=$'\t' read -r tag name; do
-              gh release download "$tag" --pattern "$name" --dir "$RUNNER_TEMP/records"
-            done
+          for attempt in 1 2 3 4 5 6; do
+            gh api --paginate --slurp "repos/$GH_REPO/releases" > "$RUNNER_TEMP/published.json"
+            jq -r '.[][] | select(.draft == false and .published_at != null) | .tag_name as $tag
+              | .assets[] | select(.state == "uploaded" and (.name | test("^luxforge-[0-9A-Za-z.+-]+-updates\\.json$")))
+              | [$tag, .name] | @tsv' "$RUNNER_TEMP/published.json" > "$RUNNER_TEMP/records.tsv"
+            if [[ ! -s "$RUNNER_TEMP/records.tsv" ]]; then
+              missing='any update record'
+            elif [[ "$RELEASE_TAG" == v* ]] && ! cut -f1 "$RUNNER_TEMP/records.tsv" | grep -qxF -- "$RELEASE_TAG"; then
+              missing="$RELEASE_TAG's update record"
+            else
+              break
+            fi
+            if (( attempt == 6 )); then
+              echo "The release list never named $missing; refusing to publish feeds without it" >&2
+              exit 1
+            fi
+            echo "The release list did not name $missing; listing again in 30 seconds"
+            sleep 30
+          done
+          while IFS=$'\t' read -r tag name; do
+            gh release download "$tag" --pattern "$name" --dir "$RUNNER_TEMP/records"
+          done < "$RUNNER_TEMP/records.tsv"
       - name: Generate the feeds and the deploy archive
         run: >-
           target/debug/xtask-cli update-feed --records "$RUNNER_TEMP/records"
