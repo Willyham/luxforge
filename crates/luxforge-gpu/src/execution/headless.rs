@@ -25,11 +25,17 @@ use std::sync::{Arc, mpsc};
 /// evidence. The default adapter is wgpu's first by rank, a hardware one before a software one;
 /// with `LUXFORGE_GPU_ADAPTER=software` it is the platform's software adapter alone (lavapipe,
 /// WARP), asked for as wgpu's fallback adapter, so a host with both measures the software one.
+/// Never one of wgpu's OpenGL backend, on which the desktop refuses the GPU stage: its instance
+/// lives as long as the device, and one of that backend holds an EGL display for that time
+/// ([`crate::adapters::open`]).
 pub fn device(
     run: &str,
     limits: wgpu::Limits,
 ) -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all() - wgpu::Backends::GL,
+        ..wgpu::InstanceDescriptor::default()
+    });
     let software = std::env::var("LUXFORGE_GPU_ADAPTER").as_deref() == Ok("software");
     let options = wgpu::RequestAdapterOptions {
         force_fallback_adapter: software,

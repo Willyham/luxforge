@@ -726,8 +726,15 @@ mod gpu_tests {
         })
     }
 
+    /// A device of this host's default adapter, never one of wgpu's OpenGL backend: an instance
+    /// of that backend holds an EGL display as long as the device lives, and a thread holding a
+    /// clone of the device may drop the last one while the test process exits
+    /// (`luxforge_gpu::adapters::open`).
     fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all() - wgpu::Backends::GL,
+            ..wgpu::InstanceDescriptor::default()
+        });
         let adapter =
             block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()

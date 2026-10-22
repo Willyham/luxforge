@@ -105,31 +105,36 @@ pub enum Unopened {
 /// Open the exact backend/name among `backends`, with the caller's limit requests in order.
 /// The instance has no flags; requests have no features, memory hints for usage, no trace and
 /// no experimental features. No other adapter is substituted. Blocking: call off the UI thread.
+///
+/// The device's instance has the backend asked for alone, as long as `backends` includes it: the
+/// instance lives as long as the device, and an instance of wgpu's OpenGL backend holds an EGL
+/// display and Mesa's GL driver for that time, which a Vulkan device never uses. The device's last
+/// clone may be dropped on a worker thread while the process exits, and tearing that display down
+/// beside the exit's own EGL teardown corrupts the heap. With no such adapter, what `backends`
+/// offers is enumerated instead, to say whether it offers none or others.
 pub fn open(
     backend: &str,
     name: &str,
     backends: wgpu::Backends,
     limits: &[wgpu::Limits],
 ) -> Result<Opened, Unopened> {
+    let alone = backends_named(backend).filter(|alone| backends.contains(*alone));
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends,
+        backends: alone.unwrap_or(backends),
         flags: wgpu::InstanceFlags::empty(),
         ..wgpu::InstanceDescriptor::default()
     });
-    let offered = instance.enumerate_adapters(backends);
-    if offered.is_empty() {
-        return Err(Unopened::NoAdapter);
-    }
+    let offered = instance.enumerate_adapters(alone.unwrap_or(backends));
     let found = offered.iter().position(|adapter| {
         let info = adapter.get_info();
         format!("{:?}", info.backend) == backend && info.name == name
     });
     let Some(adapter) = found.map(|at| &offered[at]) else {
-        return Err(Unopened::Mismatch {
-            offered: offered
-                .iter()
-                .map(|adapter| Adapter::of(adapter.get_info()))
-                .collect(),
+        let offered = enumerate(backends);
+        return Err(if offered.is_empty() {
+            Unopened::NoAdapter
+        } else {
+            Unopened::Mismatch { offered }
         });
     };
     let mut refusals = Vec::new();
