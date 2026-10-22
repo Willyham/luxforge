@@ -11,6 +11,9 @@
 //!   (lavapipe, WARP), where Iced's request lands, refuses the stage as `--no-gpu-render` does
 //!   until the software adapter is adopted, unless the launch passes `--software-adapter`; a stage
 //!   drawing on it is the GPU record with `software`, which the status bar names.
+//! - **wgpu's OpenGL backend.** A launch whose window's request would land on an adapter of wgpu's
+//!   GL backend ([`crate::adapters::is_gl`]), as on a Linux host whose GPU has no Vulkan driver,
+//!   refuses the stage the same way, whatever it asks for: the stage does not run on that backend.
 //! - **A forced launch.** `--no-gpu-render` refuses the stage before the window opens
 //!   ([`luxforge_gpu::refuse_gpu_stage`]): its capability check answers unavailable,
 //!   exactly as on a machine whose adapter cannot run it, and nothing of the stage is created. The
@@ -67,8 +70,9 @@ use std::{
 pub(crate) struct RendererReport {
     /// The renderer the launch chose before its window opened.
     launch: LaunchRenderer,
-    /// The launch refused the GPU stage: `--no-gpu-render`, or a host whose only adapter is a
-    /// software one that is neither adopted nor asked for.
+    /// The launch refused the GPU stage: `--no-gpu-render`, a host whose only adapter is a
+    /// software one that is neither adopted nor asked for, or a window drawing on wgpu's OpenGL
+    /// backend.
     refused: bool,
     /// The GPU stage draws on the platform's software adapter (`--software-adapter`, or once it is
     /// adopted), which the session and the status bar name.
@@ -199,6 +203,7 @@ pub(crate) fn launch_record(launch: LaunchRenderer) -> Value {
                 Refusal::Requested => "no-gpu-render",
                 Refusal::SoftwareNotAdopted => "software-adapter-not-adopted",
                 Refusal::NoAdapter => "no-adapter",
+                Refusal::GlBackend => "gl-backend",
             },
         }),
     }
@@ -443,6 +448,10 @@ mod tests {
         assert_eq!(
             launch_record(LaunchRenderer::Reference(Refusal::Requested)),
             json!({"renderer": "reference", "refusal": "no-gpu-render"})
+        );
+        assert_eq!(
+            launch_record(LaunchRenderer::Reference(Refusal::GlBackend)),
+            json!({"renderer": "reference", "refusal": "gl-backend"})
         );
     }
 

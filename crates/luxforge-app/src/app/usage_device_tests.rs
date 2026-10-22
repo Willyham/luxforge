@@ -59,6 +59,7 @@ fn usage_the_path_follows_the_launch_refusal_then_the_session_reason() {
         (Refusal::Requested, RendererFallback::Disabled),
         (Refusal::SoftwareNotAdopted, RendererFallback::Unsupported),
         (Refusal::NoAdapter, RendererFallback::NoAdapter),
+        (Refusal::GlBackend, RendererFallback::Unsupported),
     ] {
         assert_eq!(
             path(
