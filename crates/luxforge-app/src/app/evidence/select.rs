@@ -77,7 +77,7 @@ impl Editor {
                 let task = self.update(Message::Select(SelectMessage::AddFolderPicked(Some(
                     path.into(),
                 ))));
-                // On disk is under the events: scrolled to, as a person scrolls to the folders
+                // On disk is under the cards: scrolled to, as a person scrolls to the folders
                 // they look at, so the frame shows the indexed folders.
                 let scrolled = iced::widget::operation::scroll_to(
                     iced::widget::Id::from(crate::view::select::SOURCES_SCROLL),
@@ -116,22 +116,16 @@ impl Editor {
         }
     }
 
-    /// About how far down the sources panel On disk's heading is: every row, heading and month
-    /// label above it one row's height, with the sections' spacing.
+    /// About how far down the sources panel On disk's heading is: the Cards section above it, when
+    /// a card is mounted, each heading and row one row's height, and the rule under it.
     fn on_disk_offset(&self) -> f32 {
         use luxforge_ui::theme;
-        let sources = &self.workspace.select.sources;
-        let rows = 1
-            + usize::from(!sources.cards.is_empty()) * (1 + sources.cards.len())
-            + 1
-            + sources
-                .months
-                .iter()
-                .map(|month| 1 + month.rows.len())
-                .sum::<usize>()
-            + usize::from(sources.events_note.is_some());
+        let cards = &self.workspace.select.sources.cards;
+        if cards.is_empty() {
+            return 0.0;
+        }
         let row = theme::SOURCE_ROW_HEIGHT + theme::SOURCE_LIST_SPACING;
-        rows as f32 * row + 3.0 * theme::SOURCE_SECTION_SPACING
+        (1 + cards.len()) as f32 * row + 2.0 * theme::SOURCE_SECTION_SPACING + theme::BORDER_WIDTH
     }
 
     /// Wait for Select to settle after `task`'s message. Select's hook after this message reports
@@ -141,25 +135,18 @@ impl Editor {
         task
     }
 
-    /// Press the source row that shows `name`, or its name and its dates as `Name · dates`.
+    /// Press the On disk (a volume, a folder or an indexed folder) or Catalog row that shows `name`.
     fn source_step(&mut self, name: &str) -> Task<Message> {
         if !self.select_shown() {
             return self.fail_step("Select is not shown");
         }
         let sources = &self.workspace.select.sources;
         let found = sources
-            .months
+            .on_disk
             .iter()
-            .flat_map(|month| month.rows.iter())
-            .chain(&sources.on_disk)
+            .chain(&sources.indexed)
             .chain(&sources.catalog)
-            .find(|row| {
-                row.name == name
-                    || row
-                        .secondary
-                        .as_ref()
-                        .is_some_and(|dates| format!("{} \u{b7} {dates}", row.name) == name)
-            })
+            .find(|row| row.name == name)
             .map(|row| row.press.clone());
         match found {
             Some(Some(SourcePress::View(source))) => {

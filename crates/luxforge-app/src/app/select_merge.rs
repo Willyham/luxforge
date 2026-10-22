@@ -1146,7 +1146,7 @@ impl Editor {
             asset_id: answer.result_asset_id.clone(),
         }]);
         self.select.reveal_held = true;
-        let mut tasks = vec![self.read_events(), self.read_counts()];
+        let mut tasks = vec![self.read_counts()];
         if let Some(change) = answer.change {
             tasks.push(self.develop_library_changed(change.0));
         }
