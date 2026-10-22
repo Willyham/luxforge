@@ -325,14 +325,15 @@ fn find_folder(editor: &mut Editor, filed: &[CatalogFolderId]) {
     send(editor, DevelopMessage::FolderFound { serial, result });
 }
 
-/// The catalog folders a Develop's job record files its photographs in, as its report names them.
+/// The catalog folders a Develop's job record says its choices named, as its report names them.
 fn filed_in(record: &Value) -> Vec<CatalogFolderId> {
     record["result"]["developed"]
         .as_array()
         .expect("a Develop's report")
         .iter()
         .map(|developed| {
-            serde_json::from_value(developed["folder_id"].clone()).expect("each one's folder")
+            serde_json::from_value(developed["chosen_folder_id"].clone())
+                .expect("each one's folder")
         })
         .collect()
 }
@@ -366,7 +367,8 @@ fn developed(name: &str) -> (Scene, Vec<AssetId>) {
 /// Develop N reads the plan of the picks in view, which is what an agent's own view of the same
 /// source plans; Escape closes the confirmation and nothing changes; typing renames the proposed
 /// folder, and Develop sends the `pick.develop` an agent writes for it, whose job's end opens
-/// Develop on the first photograph it developed, in the folder confirmed as the Develop folder.
+/// Develop on the first photograph it developed, in the folder confirmed as the Develop folder. A
+/// later Develop into the same place holds the place, with the photographs developed before.
 #[test]
 #[slow]
 fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
@@ -459,20 +461,6 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         .find(|folder| folder.name == "Lake trip")
         .expect("the confirmed place")
         .clone();
-    let beneath = |folder: &CatalogFolderId| {
-        let mut at = Some(folder.clone());
-        while let Some(id) = at {
-            if id == lake.id {
-                return true;
-            }
-            at = folders
-                .folders
-                .iter()
-                .find(|held| held.id == id)
-                .and_then(|held| held.parent_id.clone());
-        }
-        false
-    };
     assert_eq!(
         scene.client.ok("pick.list", json!({}))["picks"]
             .as_array()
@@ -513,7 +501,7 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     let filed: Vec<CatalogFolderId> = report
         .developed
         .iter()
-        .map(|developed| developed.folder_id.clone())
+        .map(|developed| developed.chosen_folder_id.clone())
         .collect();
     find_folder(editor, &filed);
     let strip = editor
@@ -523,11 +511,11 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         .clone()
         .expect("the folder's strip");
     assert!(!strip.reading);
-    // The deepest folder holding all three: the place, or the day they share inside it.
+    // The place they went into, never the day folder inside it.
     let held = strip.folder.clone().expect("a folder");
     assert_eq!(editor.develop_folder(), Some(&held));
-    assert!(beneath(&held), "{:?}", strip.path);
-    assert_eq!(strip.path.get(1).map(String::as_str), Some("Lake trip"));
+    assert_eq!(held, lake.id, "{:?}", strip.path);
+    assert_eq!(strip.path.last().map(String::as_str), Some("Lake trip"));
     assert_eq!(strip.photos.len(), 3);
     assert_eq!(strip.active, strip.position(&first));
     let model = editor
@@ -550,6 +538,35 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         None,
         "the controls enable"
     );
+
+    // Another pick developed into the same place: Develop holds the place, with the photographs
+    // developed into it before.
+    drop(editor.update(Message::Select(SelectMessage::Switch(Shown::Select))));
+    let more = scene.files[3..].to_vec();
+    pick(&mut scene, &more);
+    let editor = &mut scene.editor;
+    send(editor, DevelopMessage::Open);
+    let plan = answer_plan(editor);
+    assert!(
+        matches!(
+            &plan.events[0].folder,
+            FolderChoice::Existing { folder_id, .. } if *folder_id == lake.id
+        ),
+        "{plan:?}"
+    );
+    send(editor, DevelopMessage::Confirm);
+    let record = run_develop(editor);
+    assert_eq!(record["status"], "ready", "{record}");
+    find_folder(editor, &filed_in(&record));
+    let strip = editor
+        .develop
+        .state
+        .strip
+        .clone()
+        .expect("the place's strip");
+    assert_eq!(strip.folder.as_ref(), Some(&lake.id));
+    assert_eq!(editor.develop_folder(), Some(&lake.id));
+    assert_eq!(strip.photos.len(), 4);
     finish(scene);
 }
 

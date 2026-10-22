@@ -95,7 +95,7 @@ impl Observation {
         if let LaunchRenderer::Reference(refusal) = self.launch {
             return Ok(RendererPath::Reference(Some(match refusal {
                 Refusal::Requested => RendererFallback::Disabled,
-                Refusal::SoftwareNotAdopted => RendererFallback::Unsupported,
+                Refusal::SoftwareNotAdopted | Refusal::GlBackend => RendererFallback::Unsupported,
                 Refusal::NoAdapter => RendererFallback::NoAdapter,
             })));
         }

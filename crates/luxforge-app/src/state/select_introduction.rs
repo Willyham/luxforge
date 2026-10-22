@@ -60,9 +60,9 @@ pub(crate) struct Step {
 pub(crate) const STEPS: [Step; 3] = [
     Step {
         name: "Browse",
-        body: "Open a camera card or any folder. Luxforge sorts it into events by date and place, \
-               and keeps each burst, bracket and panorama together as one moment.",
-        place: Some("Cards, Events and On disk, on the left"),
+        body: "Open a camera card or any folder. Luxforge groups it by day and camera, and keeps \
+               each burst, bracket and panorama together as one moment.",
+        place: Some("Cards and On disk, on the left"),
         keys: &[],
     },
     Step {

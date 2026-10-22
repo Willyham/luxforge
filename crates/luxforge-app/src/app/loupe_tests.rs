@@ -12,14 +12,12 @@ use luxforge_core::catalog_types::{MomentKind, ViewSource};
 use luxforge_test_macros::slow;
 use std::path::PathBuf;
 
-/// The editor with the seeded event viewed, every row read.
+/// The editor with the seeded indexed folder viewed, every row read.
 fn viewing() -> (Editor, PathBuf) {
     let (mut editor, catalog) = selecting();
-    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
-        .press
-        .clone()
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.indexed[0].press.clone()
     else {
-        panic!("an event row views its event");
+        panic!("an indexed folder row views its folder");
     };
     let _ = editor.update(Message::Select(SelectMessage::Source(source)));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
@@ -1053,11 +1051,9 @@ fn viewing_singles(count: u32) -> (Editor, PathBuf) {
         })
         .collect();
     let (mut editor, catalog) = selecting_over(seeded_with(&files));
-    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
-        .press
-        .clone()
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.indexed[0].press.clone()
     else {
-        panic!("an event row views its event");
+        panic!("an indexed folder row views its folder");
     };
     let _ = editor.update(Message::Select(SelectMessage::Source(source)));
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(

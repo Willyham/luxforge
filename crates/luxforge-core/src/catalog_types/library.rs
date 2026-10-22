@@ -664,6 +664,10 @@ pub struct DevelopedPick {
     /// The catalog folder the photograph is in after the Develop: the one it was filed in, or a
     /// linked or relinked photograph's own.
     pub folder_id: CatalogFolderId,
+    /// The catalog folder its choice named, which Develop holds after it: the place or existing
+    /// folder whose day folder it was filed in ("2026 › Konstanz" over "12 Sep"), else
+    /// `folder_id`.
+    pub chosen_folder_id: CatalogFolderId,
 }
 
 /// One pick a Develop did not bring in, with the refusal's code and words; it stays picked.
