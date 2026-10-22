@@ -124,8 +124,8 @@ fn segments(points: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
 /// clamped to `[0, limit)`.
 fn cell_span(lo: f64, hi: f64, cell: f64, limit: usize) -> (usize, usize) {
     let first = (lo / cell - 0.5).ceil().max(0.0);
-    let last = (hi / cell - 0.5).floor() + 1.0;
-    let end = last.min(limit as f64).max(0.0) as usize;
+    // One past the last centre in range: floor(hi / cell - 0.5) + 1.
+    let end = (hi / cell + 0.5).floor().min(limit as f64).max(0.0) as usize;
     ((first as usize).min(end), end)
 }
 

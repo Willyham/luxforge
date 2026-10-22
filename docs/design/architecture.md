@@ -474,6 +474,9 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Prepared-artifact cache | 256 MiB | `PREPARED_ARTIFACT_BYTES`, `crates/luxforge-core/src/artifacts/mod.rs` |
 | Capability worker lanes | Two, each of one running and four queued jobs | One thread per lane (`Lane::Transfer`, `Lane::Module`) and `LANE_QUEUE`, `crates/luxforge-core/src/jobs.rs` |
 | Retained finished capability jobs | 32 | `FINISHED_RECORDS`, `crates/luxforge-core/src/jobs.rs` |
+| The analysis cache (analysis inputs, guides and model outputs, keyed by source, repair prefix and model version) | 256 MiB and 64 entries, least recently used out first; an entry past the whole budget is refused `resource-limit`; dropped for a module whose model is removed | `ANALYSIS_CACHE_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs`; `MAX_ANALYSIS_ENTRIES`, `crates/luxforge-core/src/capabilities/analysis.rs` |
+| Worker queries (`query.pick-object`) | One thread for every module's, one running and one waiting; a newer request replaces the waiting one, answered `cancelled` | `QueryWorker` on `latest::Latest`, `crates/luxforge-core/src/capabilities/host/queries.rs` |
+| A pick's coverage preview, per candidate | 65,536 pixels | `PREVIEW_PIXELS`, `crates/luxforge-core/src/modules/ai/objects.rs` |
 | Settings file | 1 MiB | `MAX_SETTINGS_BYTES`, `crates/luxforge-core/src/capabilities/settings.rs` |
 | Grants file | 2 MiB and 1024 grant records | `MAX_GRANTS_BYTES` and `MAX_GRANT_RECORDS`, `crates/luxforge-core/src/capabilities/grants.rs` |
 | Adapter request and response | 256 MiB each | `MAX_ADAPTER_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs` |

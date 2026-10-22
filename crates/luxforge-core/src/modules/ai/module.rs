@@ -741,7 +741,7 @@ fn analysis_task_descriptors(analysis: &AnalysisModels) -> Vec<TaskDescriptor> {
         tasks.push(task(
             ANALYSE_SCENE,
             "Analyse scene",
-            "Runs the semantic model, the salient-subject model and the people detector over this photograph. Result: {cached, classes [{class, area}], subject {area}, people [{box, score}], models}.".into(),
+            "Runs the semantic model, the salient-subject model and the people detector over this photograph. Result: {cached, classes [{class, area, bounds, confidence}], subject {area, bounds, confidence}, people [{person, bounds, confidence}], models}.".into(),
             &models,
             Vec::new(),
         ));
