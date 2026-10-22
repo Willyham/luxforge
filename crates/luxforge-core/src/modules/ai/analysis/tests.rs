@@ -55,3 +55,23 @@ fn a_short_read_is_refused() {
     let error = reduce((16, 16), &mut |_| Ok(vec![[0.0; 3]; 3]), &|| Ok(())).unwrap_err();
     assert_eq!(error.kind.code(), "internal");
 }
+
+#[test]
+fn targets_hold_their_codes_and_one_row_of_sums_never_a_float_frame() {
+    // The guide at its largest is one byte a pixel, 16 MiB, beside one row of sums.
+    let stage = (12_000, 8_000);
+    let size = reduced_size((12_000, 12_000), GUIDE_SIDE);
+    let guide = Target::new((12_000, 12_000), size, Channels::Luma);
+    assert_eq!(guide.out.capacity(), 16 << 20);
+    assert_eq!(guide.sums.len(), 4096);
+    let input = Target::new(stage, reduced_size(stage, ANALYSIS_SIDE), Channels::Rgb);
+    assert_eq!(input.out.capacity(), 1024 * 683 * 3);
+    assert_eq!(input.sums.len(), 1024 * 3);
+    // Fed a whole stage, the codes fill the allocation made up front and nothing more.
+    let mut target = Target::new((64, 48), (16, 12), Channels::Luma);
+    for y in 0..48 {
+        target.add(y, &[[0.5; 3]; 64]);
+    }
+    let codes = target.finish();
+    assert_eq!((codes.len(), codes.capacity()), (16 * 12, 16 * 12));
+}

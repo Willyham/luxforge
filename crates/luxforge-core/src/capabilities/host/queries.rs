@@ -4,22 +4,26 @@
 //!
 //! # Shape
 //!
-//! The owner resolves the query, checks its parameters and reads the asset's repair stage identity
-//! from the entry the request names (`O(layers)`, no pixel), then the host checks every requirement
-//! the module names for the request ([`crate::CapabilityModule::query_needs`]: its flags, the
-//! runtime and each used model's installed resource) and refuses `not-ready` with
-//! `data.requirements` before anything is queued. A ready request becomes one job of the query
+//! The owner resolves the query, checks its parameters and reads the repair stage identity of the
+//! asset's current entry (`O(layers)`, no pixel): a worker query answers about the photograph as it
+//! is now, the stack a module task's host-planned read reads, so an entry the request names or the
+//! session previews that is not current is refused `validation`. Then the host checks every
+//! requirement the module names for the request ([`crate::CapabilityModule::query_needs`]: its
+//! flags, the runtime and each used model's installed resource, from the install memo, so a hover
+//! reads no file) and refuses `not-ready` with `data.requirements` before anything is queued. A ready request becomes one job of the query
 //! worker with a [`ModuleContext`] holding the models it uses, the analysis cache and the identity,
 //! and the module answers it there ([`crate::CapabilityModule::run_query`]); the owner's call is
 //! answered from the worker.
 //!
 //! # Bounds
 //!
-//! One thread for every module's worker queries, started by the first and stopped when its
-//! module's models are unloaded or the host stops; one running query and one waiting
-//! ([`crate::latest`]). A newer query takes the waiting slot and the query it replaced is answered
-//! `cancelled` at once, so a burst of hover moves decodes once; a running query finishes and is
-//! answered. A query never waits for the module lane, and the lane never waits for it.
+//! One thread for every module's worker queries, started by the first and stopped when a model of a
+//! module it served is released, however it is released (`module.runtime.unload`, a resource's
+//! removal, the runtime's idle unload, the memory signal), or the host stops; one running query and
+//! one waiting ([`crate::latest`]). A newer query takes the waiting slot and the query it replaced
+//! is answered `cancelled` at once, so a burst of hover moves decodes once; a running query, a
+//! decode of a few milliseconds, is not cancellable: it finishes and is answered. A query never
+//! waits for the module lane, and the lane never waits for it.
 use super::{CapabilityHost, Requirement, RequirementKind};
 use crate::{
     AssetId, EditorService, Error,
@@ -31,6 +35,10 @@ use crate::{
     latest::Latest,
 };
 use serde_json::{Map, Value, json};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 /// A worker query the owner resolved and checked, and the identity of the stage it asks about.
 #[derive(Clone, Debug)]
@@ -67,38 +75,68 @@ impl Drop for QueryJob {
     }
 }
 
-/// The host's query worker. See the [module documentation](self).
 #[derive(Default)]
-pub(crate) struct QueryWorker {
+struct WorkerState {
     latest: Option<Latest<QueryJob, ()>>,
+    /// The modules whose queries the running worker has answered.
+    served: BTreeSet<String>,
 }
 
+/// The host's query worker, shared with the runtime's release listener so a release on any thread
+/// stops it. See the [module documentation](self).
+#[derive(Clone, Default)]
+pub(crate) struct QueryWorker(Arc<Mutex<WorkerState>>);
+
 impl QueryWorker {
-    /// Hand `job` to the worker, starting it when it is stopped; the waiting query it replaces is
-    /// answered `cancelled`.
-    fn submit(&mut self, job: QueryJob) {
-        let latest = self.latest.get_or_insert_with(|| {
-            Latest::new("luxforge-queries", |mut job: QueryJob, _running| {
-                if let Some(run) = job.run.take() {
-                    let result = run();
-                    job.answer(result);
-                }
-                None
-            })
-        });
-        let requested = latest.request(job);
-        drop(requested.replaced);
+    fn lock(&self) -> std::sync::MutexGuard<'_, WorkerState> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hand `module_id`'s `job` to the worker, starting it when it is stopped; the waiting query it
+    /// replaces is answered `cancelled`.
+    fn submit(&self, module_id: &str, job: QueryJob) {
+        let replaced = {
+            let mut state = self.lock();
+            state.served.insert(module_id.to_owned());
+            let latest = state.latest.get_or_insert_with(|| {
+                Latest::new("luxforge-queries", |mut job: QueryJob, _running| {
+                    if let Some(run) = job.run.take() {
+                        let result = run();
+                        job.answer(result);
+                    }
+                    None
+                })
+            });
+            latest.request(job).replaced
+        };
+        drop(replaced);
     }
 
     /// Stop the worker: the waiting query is answered `cancelled` and the running one finishes on
     /// its own thread, which then ends.
-    pub(crate) fn stop(&mut self) {
-        self.latest = None;
+    pub(crate) fn stop(&self) {
+        let stopped = {
+            let mut state = self.lock();
+            state.served.clear();
+            state.latest.take()
+        };
+        drop(stopped);
+    }
+
+    /// Models of `modules` were released: stop the worker when it served any of them.
+    pub(crate) fn released(&self, modules: &[String]) {
+        let served = {
+            let state = self.lock();
+            modules.iter().any(|module| state.served.contains(module))
+        };
+        if served {
+            self.stop();
+        }
     }
 
     /// Whether the worker is started.
     pub(crate) fn running(&self) -> bool {
-        self.latest.is_some()
+        self.lock().latest.is_some()
     }
 }
 
@@ -126,7 +164,18 @@ impl EditorService {
             return Ok(None);
         }
         let checked = crate::modules::check_parameters(descriptor, parameters)?;
-        let identity = self.repair_identity(asset_id, entry_id)?;
+        // A worker query answers about the photograph as it is now: the stack a module task's
+        // host-planned read reads, so the analysis it answers from is one a task can prepare. An
+        // entry the client names or previews that is not current is refused, as an edit is.
+        let current = self.current_entry_id(asset_id)?;
+        if entry_id != &current {
+            return Err(Error::validation(format!(
+                "{query_id} answers about the current entry {current}, the one module tasks \
+                 read; entry {entry_id} is not current"
+            ))
+            .with_data(json!({"entry_id": entry_id, "current_entry_id": current})));
+        }
+        let identity = self.repair_identity(asset_id, &current)?;
         Ok(Some(WorkerQuery {
             module_id,
             query_id: query_id.to_owned(),
@@ -155,15 +204,19 @@ impl CapabilityHost {
                     parameters,
                     ..
                 } = query;
-                self.queries.submit(QueryJob {
-                    run: Some(Box::new(move || {
-                        let hooks = registry.capabilities(&module_id).ok_or_else(|| {
-                            Error::internal(format!("module {module_id} is not registered"))
-                        })?;
-                        hooks.run_query(&query_id, &parameters, &context)
-                    })),
-                    deliver: Some(deliver),
-                });
+                let served = module_id.clone();
+                self.queries.submit(
+                    &served,
+                    QueryJob {
+                        run: Some(Box::new(move || {
+                            let hooks = registry.capabilities(&module_id).ok_or_else(|| {
+                                Error::internal(format!("module {module_id} is not registered"))
+                            })?;
+                            hooks.run_query(&query_id, &parameters, &context)
+                        })),
+                        deliver: Some(deliver),
+                    },
+                );
             }
             Err(error) => deliver(Err(error)),
         }

@@ -1457,7 +1457,7 @@ fn hovering_in_remove_picks_the_object_under_the_pointer_after_one_analysis() {
         asset: asset.clone(),
         revision,
         point,
-        result: Err(refused),
+        result: Err(refused.clone()),
     });
     assert_eq!(
         filling.editor.remove_reads.hover.analysing,
@@ -1471,6 +1471,19 @@ fn hovering_in_remove_picks_the_object_under_the_pointer_after_one_analysis() {
         result: Ok(()),
     });
     assert_eq!(filling.editor.remove_reads.hover.asking, Some(point));
+    // Refused again for the same revision, the pick is shown refused and nothing is analysed
+    // again: one analysis a revision, whatever it answered.
+    filling.remove(RemoveMessage::Picked {
+        asset: asset.clone(),
+        revision,
+        point,
+        result: Err(refused),
+    });
+    assert_eq!(filling.editor.remove_reads.hover.analysing, None);
+    assert_eq!(filling.editor.remove_reads.hover.analyses, 1);
+    assert_eq!(filling.editor.remove_reads.hover.asking, None);
+    filling.remove(RemoveMessage::Hover(Some([0.51, 0.5])));
+    filling.remove(RemoveMessage::Hover(Some(point)));
 
     // The answer is drawn: the chosen candidate's coverage over its bounds, within the cap.
     let answer = pick(&owner, client, params.clone()).unwrap();
@@ -1497,4 +1510,26 @@ fn hovering_in_remove_picks_the_object_under_the_pointer_after_one_analysis() {
     assert!(filling.editor.remove_canvas().unwrap().hover.is_none());
     filling.update(Message::Corrections(CorrectionMessage::Kind("heal".into())));
     assert!(!filling.editor.hover_picking());
+}
+
+#[test]
+fn a_hovered_object_is_outlined_whatever_its_colour() {
+    use super::remove_hover::highlight;
+    // A 4 x 4 square of full coverage in a 6 x 6 preview.
+    let mut codes = vec![0u8; 36];
+    for y in 1..5 {
+        for x in 1..5 {
+            codes[y * 6 + x] = 255;
+        }
+    }
+    let rgba = highlight(&codes, 6, 6);
+    let at = |x: usize, y: usize| &rgba[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4];
+    // The edge of the object is opaque white, whatever the photograph's colour under it.
+    assert_eq!(at(1, 1), [255, 255, 255, 255]);
+    assert_eq!(at(4, 2), [255, 255, 255, 255]);
+    // Inside, a white wash that takes no hue from the object.
+    assert_eq!(at(2, 2), [255, 255, 255, 89]);
+    // Outside the outline a translucent dark under-stroke, and nothing beyond it.
+    assert_eq!(at(0, 2), [0, 0, 0, 115]);
+    assert_eq!(at(0, 0)[3], 0);
 }

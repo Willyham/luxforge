@@ -23,14 +23,14 @@ use crate::{
     Error,
     artifacts::{ArtifactMeta, candidates::base64},
     capabilities::{
-        analysis::AnalysisKey,
         context::ModuleContext,
         host::{Requirement, RequirementKind},
+        read::StageIdentity,
     },
     mask::guided,
 };
 use serde_json::{Map, Value, json};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 /// The most labelled points one prompt names, positive and negative each.
 pub(crate) const MAX_PROMPT_POINTS: usize = 16;
@@ -44,14 +44,6 @@ pub(crate) const OBJECT_CLASS: &str = "object";
 pub(crate) struct SegmenterAnalysis {
     pub(crate) embedding: Embedding,
 }
-
-/// The embedding the query worker decoded last, kept with the key it came from, so a hover over
-/// the same photograph moves it into each decode rather than copying it out of the cache. It is
-/// held only while the cache still holds its key: a request whose key the cache no longer holds
-/// (evicted, invalidated or forgotten with its model) drops it, so it never outlives the cache's
-/// accounting by more than one embedding.
-#[derive(Default)]
-pub(crate) struct Current(Mutex<Option<(AnalysisKey, Embedding)>>);
 
 /// One request's prompt, in analysis pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -331,59 +323,83 @@ pub(crate) fn analyse(context: &ModuleContext, models: &AnalysisModels) -> Resul
     context.progress(Some(1.0), "ready");
     Ok(json!({
         "cached": cached,
+        "analysed": analysed_value(context.identity()?),
         "input": [found.embedding.source.0, found.embedding.source.1],
         "guide": [guide.width, guide.height],
         "models": models_value(&[encoder, decoder]),
     }))
 }
 
-/// The refusal of a pick on a photograph the segmenter has not analysed as it is now.
-fn not_analysed(asset: &crate::AssetId) -> Error {
-    Error::not_ready(format!(
-        "photograph {asset} is not analysed as it is now: run task.analyse first"
-    ))
-    .with_data(json!({"requirements": [Requirement {
-        kind: RequirementKind::Analysis,
-        id: "analyse".into(),
-        state: "missing".into(),
-    }]}))
+/// The input an analysis is of, as its result and a refusal for want of it name it: the
+/// photograph, its source fingerprint and its repair prefix (the `prefix_hash` a selection
+/// records), so a client can tell whether the analysis it ran is the one a pick needs.
+fn analysed_value(identity: &StageIdentity) -> Value {
+    json!({
+        "asset_id": identity.asset,
+        "source": identity.source,
+        "prefix_hash": identity.prefix,
+    })
 }
 
-/// `query.pick-object` on the query worker: decode the request against the cached embedding,
-/// moving it into the decoder from the worker's own copy, and answer the candidates and the
-/// decision. `not-ready` naming `task.analyse` when the photograph is not analysed as it is now.
+/// The refusal of a pick on a photograph the segmenter has not analysed as it is now: the
+/// requirement, the task that meets it and the input it must analyse.
+fn not_analysed(identity: &StageIdentity) -> Error {
+    Error::not_ready(format!(
+        "photograph {} is not analysed as it is now: run task.analyse first",
+        identity.asset
+    ))
+    .with_data(json!({
+        "requirements": [Requirement {
+            kind: RequirementKind::Analysis,
+            id: "analyse".into(),
+            state: "missing".into(),
+        }],
+        "task": "task.analyse",
+        "analysis": analysed_value(identity),
+    }))
+}
+
+/// `query.pick-object` on the query worker: decode the request against the cached embedding and
+/// answer the candidates and the decision. `not-ready` naming `task.analyse` when the photograph is
+/// not analysed as it is now.
+///
+/// The decode moves the embedding into the decoder and takes it back, so the worker decodes from
+/// the cache's held copy of the entry ([`crate::capabilities::analysis`]): copied out of the entry
+/// by the first pick of a photograph, given back after each decode, and dropped by the cache with
+/// its entry, so successive hovers over one photograph copy nothing and the copy never outlives
+/// the analysis it copies.
 pub(crate) fn pick_object(
     context: &ModuleContext,
     models: &AnalysisModels,
-    current: &Current,
     parameters: &Map<String, Value>,
 ) -> Result<Value, Error> {
     let [encoder, decoder] = segmenter(models)?;
     let identity = context.identity()?;
+    let cache = context.analysis()?;
     let embedding_key = key(identity, encoder.file.resource, encoder.file.version);
-    let found = context.analysis()?.get::<SegmenterAnalysis>(&embedding_key);
-    let mut held = current.0.lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(found) = found else {
-        *held = None;
-        return Err(not_analysed(&identity.asset));
+    let Some(found) = cache.get::<SegmenterAnalysis>(&embedding_key) else {
+        drop(cache.take_held::<Embedding>(&embedding_key));
+        return Err(not_analysed(identity));
     };
-    if held.as_ref().is_none_or(|(key, _)| key != &embedding_key) {
-        *held = Some((embedding_key, found.embedding.clone()));
-    }
+    let mut embedding = cache
+        .take_held::<Embedding>(&embedding_key)
+        .unwrap_or_else(|| found.embedding.clone());
     drop(found);
-    let Some((_, embedding)) = held.as_mut() else {
-        return Err(Error::internal("the held embedding is set"));
-    };
-    let request = Request::parse(parameters, embedding.source)?;
-    let session = context.session(decoder.runtime)?;
-    let picked = pick(&*session, embedding, &request, context.cancel())?;
+    let answered = (|| {
+        let request = Request::parse(parameters, embedding.source)?;
+        let session = context.session(decoder.runtime)?;
+        pick(&*session, &mut embedding, &request, context.cancel())
+    })();
+    let source = embedding.source;
+    let bytes = embedding.bytes();
+    cache.hold(embedding_key, embedding, bytes);
     let previews = parameters
         .get("previews")
         .and_then(Value::as_str)
         .unwrap_or("chosen");
-    let mut value = picked.value(previews);
+    let mut value = answered?.value(previews);
     value["analysis"] = json!({
-        "input": [embedding.source.0, embedding.source.1],
+        "input": [source.0, source.1],
         "models": models_value(&[encoder, decoder]),
     });
     Ok(value)
@@ -482,4 +498,83 @@ pub(crate) fn select_object(
         "models": models_value(&[encoder, decoder]),
     });
     Ok(answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AssetId,
+        capabilities::{analysis::AnalysisCache, secrets::MemorySecretStore},
+        inference::{Tensor, TensorData},
+        jobs::JobControl,
+        modules::{
+            Stage,
+            ai::{analysis::models::DEVELOPER_ANALYSIS, module::AI_MODULE},
+        },
+    };
+
+    /// The picker over a context holding only the cache and the stage identity: no runtime, so a
+    /// pick that gets past the cache fails at its decoder.
+    fn context(cache: &Arc<AnalysisCache>) -> (ModuleContext, StageIdentity) {
+        let identity = StageIdentity {
+            asset: AssetId::new(),
+            source: "source".into(),
+            prefix: "prefix".into(),
+            size: Stage {
+                width: 480,
+                height: 320,
+            },
+        };
+        let context = ModuleContext::new(
+            AI_MODULE,
+            Arc::new(MemorySecretStore::new()),
+            JobControl::new(),
+        )
+        .with_analysis(cache.clone())
+        .with_identity(identity.clone());
+        (context, identity)
+    }
+
+    fn analysis() -> Arc<SegmenterAnalysis> {
+        let shape = vec![1, 256, 64, 64];
+        let values = vec![0.0; 256 * 64 * 64];
+        let tensor = Tensor::new("x", shape, TensorData::F32(values)).unwrap();
+        Arc::new(SegmenterAnalysis {
+            embedding: Embedding::new((480, 320), tensor).unwrap(),
+        })
+    }
+
+    #[test]
+    fn a_pick_answers_only_from_the_analysis_of_the_models_it_runs() {
+        let cache = Arc::new(AnalysisCache::default());
+        let (context, identity) = context(&cache);
+        let [encoder, _] = segmenter(&DEVELOPER_ANALYSIS).unwrap();
+        let point = json!({"point": [[0.5, 0.5]]});
+        let point = point.as_object().unwrap();
+        // An embedding of another version of the encoder is another key: not analysed, naming the
+        // input it needs.
+        let found = analysis();
+        let bytes = found.embedding.bytes();
+        cache
+            .insert(key(&identity, encoder.file.resource, "0"), found, bytes)
+            .unwrap();
+        let error = pick_object(&context, &DEVELOPER_ANALYSIS, point).unwrap_err();
+        assert_eq!(error.kind.code(), "not-ready", "{error:?}");
+        let data = error.data.as_deref().unwrap();
+        assert_eq!(data["task"], "task.analyse");
+        assert_eq!(data["analysis"]["prefix_hash"], "prefix");
+        assert_eq!(data["analysis"]["source"], "source");
+        // The current version's embedding is answered: the pick reaches its decoder, which this
+        // context lacks, and gives its working copy back to the cache whatever the decode answers.
+        let current = key(&identity, encoder.file.resource, encoder.file.version);
+        cache.insert(current.clone(), analysis(), bytes).unwrap();
+        let error = pick_object(&context, &DEVELOPER_ANALYSIS, point).unwrap_err();
+        assert_ne!(error.kind.code(), "not-ready", "{error:?}");
+        assert_eq!(cache.status()["held_bytes"], bytes);
+        // The entry gone, the copy goes with it.
+        cache.forget_module(AI_MODULE);
+        assert_eq!(cache.status()["held_bytes"], 0);
+        assert!(cache.take_held::<Embedding>(&current).is_none());
+    }
 }

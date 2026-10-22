@@ -6,9 +6,10 @@
 //! (which offers Remove) and `ai.analysis` (which offers the picker), and the fake segmenter's two
 //! files are granted and installed through the API. Remove is chosen, and the pointer moves over
 //! the top-left quadrant: the first pick is refused for want of an analysis, the desktop runs
-//! `task.analyse` once, asks again, and draws the picked object, tinted over its bounds. The fake
-//! decoder's masks follow colour similarity, so the object is the quadrant: the tint shows inside
-//! it and nothing changes in the quadrant beside it. A move to the top-right quadrant picks that
+//! `task.analyse` once, asks again, and draws the picked object over its bounds, washed white
+//! inside a white outline. The fake decoder's masks follow colour similarity, so the object is the
+//! quadrant: the wash shows clearly inside it, whatever its colour (red, then green), and nothing
+//! changes in the quadrant beside it. A move to the top-right quadrant picks that
 //! one, answered from the same analysis, and a move off the photograph clears the tint. No step
 //! commits anything.
 use crate::{
@@ -21,7 +22,7 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "pick";
-pub const ABOUT: &str = "Remove's hover picking on the developer fake segmenter: the picker offered once ai.analysis is on and the segmenter installed, the first hover running task.analyse once and then picking, the hovered quadrant tinted over its bounds with its neighbour unchanged, a second quadrant picked from the same analysis, and the tint cleared off the photograph";
+pub const ABOUT: &str = "Remove's hover picking on the developer fake segmenter: the picker offered once ai.analysis is on and the segmenter installed, the first hover running task.analyse exactly once and then picking, the hovered quadrant washed white and outlined over its bounds whatever its hue with its neighbour unchanged, a second quadrant picked from the same analysis, and the highlight cleared off the photograph";
 
 const AI: &str = "luxforge.ai";
 const ORIGIN: &str = "https://developer.luxforge.invalid";
@@ -29,8 +30,10 @@ const SEGMENTER: [&str; 2] = ["fake-segmenter-encoder", "fake-segmenter-decoder"
 /// The two hovered positions, in the top-left and top-right quadrants.
 const LEFT: [f64; 2] = [0.25, 0.25];
 const RIGHT: [f64; 2] = [0.75, 0.25];
-/// The tint moves a hovered patch by at least this much per channel, in 8-bit codes.
-const TINTED: f64 = 8.0;
+/// The wash moves a hovered patch by more than this per channel, in 8-bit codes: a highlight a
+/// person sees on a saturated quadrant of any hue, well clear of the JPEG margin `NEAR`, so a wash
+/// that takes the object's own hue and all but vanishes fails.
+const TINTED: f64 = 40.0;
 
 fn remove(step: RemoveStep) -> script::Step {
     correction(CorrectionStep::Remove(step))
@@ -138,7 +141,7 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         record["answered"] == json!(1)
             && record["asking"].is_null()
             && record["analysing"] == json!(false)
-            && record["refused"] == json!(false)
+            && record["analyses"] == json!(1)
             && record["last_request"]["method"] == json!("query.pick-object")
             && record["last_request"]["params"]["point"] == json!([LEFT]),
         format!("The first hover's pick: {record}"),
@@ -161,7 +164,7 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     // The second quadrant, from the same analysis.
     let right = launch.at("right")?;
     ensure(
-        hover(right)["answered"] == json!(2) && hover(right)["refused"] == json!(false),
+        hover(right)["answered"] == json!(2) && hover(right)["analyses"] == json!(1),
         format!("The second hover's pick: {}", hover(right)),
     )?;
     bounds_hold(right, RIGHT, LEFT)?;

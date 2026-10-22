@@ -178,17 +178,40 @@ impl State {
     }
 }
 
+/// What the host is told when models are released: the modules whose models went.
+pub(crate) type OnRelease = Arc<dyn Fn(&[String]) + Send + Sync>;
+
 struct Shared {
     runtime: Option<Arc<dyn InferenceRuntime>>,
     idle: Duration,
     budget: u64,
     state: Mutex<State>,
+    on_release: Mutex<Option<OnRelease>>,
 }
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         // Nothing panics while holding the lock: models are opened and dropped outside it.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tell the host which modules' models an unload, an idle release, a memory signal or a stop
+    /// released; called outside the state's lock, on the thread that released them.
+    fn released<'a>(&self, keys: impl IntoIterator<Item = &'a Key>) {
+        let mut modules: Vec<String> = keys.into_iter().map(|(module, _)| module.clone()).collect();
+        if modules.is_empty() {
+            return;
+        }
+        modules.sort();
+        modules.dedup();
+        let listener = self
+            .on_release
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener(&modules);
+        }
     }
 }
 
@@ -210,8 +233,20 @@ impl Runtime {
                 idle,
                 budget,
                 state: Mutex::new(State::default()),
+                on_release: Mutex::new(None),
             }),
         }
+    }
+
+    /// Call `listener` with the modules whose models are released by an unload, an idle release,
+    /// a memory signal or a stop, whichever thread releases them. A model evicted to make room for
+    /// another load is not reported: the module is in use.
+    pub(crate) fn on_release(&self, listener: OnRelease) {
+        *self
+            .shared
+            .on_release
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
     }
 
     /// The host's runtime, or `not-ready` when this host runs no local inference.
@@ -342,7 +377,7 @@ impl Runtime {
         let matches = |(module, resource): &Key| {
             module == module_id && resource_id.is_none_or(|wanted| wanted == resource)
         };
-        let (released, names) = {
+        let (released, keys) = {
             let mut state = self.shared.lock();
             let keys: Vec<Key> = state
                 .resident
@@ -352,20 +387,19 @@ impl Runtime {
                 .cloned()
                 .collect();
             let mut released = Vec::new();
-            let mut names: Vec<String> = Vec::new();
-            for key in keys {
-                if let Some(resident) = state.resident.remove(&key) {
+            for key in &keys {
+                if let Some(resident) = state.resident.remove(key) {
                     released.push(resident);
                 }
-                state.loading.remove(&key);
-                if !names.contains(&key.1) {
-                    names.push(key.1);
-                }
+                state.loading.remove(key);
             }
-            names.sort();
-            (released, names)
+            (released, keys)
         };
         drop(released);
+        self.shared.released(&keys);
+        let mut names: Vec<String> = keys.into_iter().map(|(_, resource)| resource).collect();
+        names.sort();
+        names.dedup();
         names
     }
 
@@ -374,13 +408,19 @@ impl Runtime {
     pub(crate) fn release_all(&self) -> usize {
         let released = {
             let mut state = self.shared.lock();
-            let count = state.resident.len() + state.loading.len();
+            let keys: Vec<Key> = state
+                .resident
+                .keys()
+                .chain(state.loading.keys())
+                .cloned()
+                .collect();
             state.loading.clear();
-            (std::mem::take(&mut state.resident), count)
+            (std::mem::take(&mut state.resident), keys)
         };
-        let (models, count) = released;
+        let (models, keys) = released;
         drop(models);
-        count
+        self.shared.released(&keys);
+        keys.len()
     }
 
     /// Release everything and refuse every later load: the owner is stopping. The idle thread ends.
@@ -391,7 +431,9 @@ impl Runtime {
             state.loading.clear();
             std::mem::take(&mut state.resident)
         };
+        let keys: Vec<Key> = models.keys().cloned().collect();
         drop(models);
+        self.shared.released(&keys);
     }
 
     /// `module.status`'s `runtime`: each of `module_id`'s resident and loading models.
@@ -460,7 +502,7 @@ impl Runtime {
     /// Release every model no task holds that has gone unused for the idle interval; answers how
     /// many. Called by the owner on its loop; the models are dropped outside the lock.
     pub(crate) fn release_idle(&self) -> usize {
-        let released: Vec<Resident> = {
+        let (released, expired): (Vec<Resident>, Vec<Key>) = {
             let mut state = self.shared.lock();
             let now = Instant::now();
             let expired: Vec<Key> = state
@@ -471,12 +513,16 @@ impl Runtime {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            expired
+            let released = expired
                 .iter()
                 .filter_map(|key| state.resident.remove(key))
-                .collect()
+                .collect();
+            (released, expired)
         };
-        released.len()
+        let count = released.len();
+        drop(released);
+        self.shared.released(&expired);
+        count
     }
 }
 

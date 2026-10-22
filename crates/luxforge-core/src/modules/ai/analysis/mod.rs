@@ -102,32 +102,54 @@ pub(crate) fn key(identity: &StageIdentity, kind: &str, version: &str) -> Analys
     }
 }
 
+/// What a [`Target`] keeps of each stage pixel: its three channels, or its luminance alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Channels {
+    Rgb,
+    Luma,
+}
+
+impl Channels {
+    fn count(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Luma => 1,
+        }
+    }
+}
+
 /// One output's accumulation: the sums of the current output row and how many stage pixels each
-/// output column takes.
+/// output column takes. A row is quantized to its 8-bit codes as it closes, so the target holds
+/// its finished codes (`width × height × channels` bytes, allocated once) and one row of sums,
+/// never a floating-point frame: the guide at its largest, 4096 × 4096, is 16 MiB of codes and
+/// 32 KiB of sums.
 struct Target {
     height: u32,
     stage: (u32, u32),
+    channels: Channels,
     /// The output column of each stage column.
     columns: Vec<u32>,
-    sums: Vec<[f64; 3]>,
+    /// The current output row's sums, `channels` per column.
+    sums: Vec<f64>,
     counts: Vec<u32>,
     row: Option<u32>,
-    out: Vec<[f64; 3]>,
+    out: Vec<u8>,
 }
 
 impl Target {
-    fn new(stage: (u32, u32), size: (u32, u32)) -> Self {
+    fn new(stage: (u32, u32), size: (u32, u32), channels: Channels) -> Self {
         let (width, height) = size;
         Self {
             height,
             stage,
+            channels,
             columns: (0..stage.0)
                 .map(|x| (u64::from(x) * u64::from(width) / u64::from(stage.0)) as u32)
                 .collect(),
-            sums: vec![[0.0; 3]; width as usize],
+            sums: vec![0.0; width as usize * channels.count()],
             counts: vec![0; width as usize],
             row: None,
-            out: Vec::with_capacity(width as usize * height as usize),
+            out: Vec::with_capacity(width as usize * height as usize * channels.count()),
         }
     }
 
@@ -139,28 +161,40 @@ impl Target {
         }
         self.row = Some(row);
         for (pixel, &column) in pixels.iter().zip(&self.columns) {
-            let sum = &mut self.sums[column as usize];
-            for (s, v) in sum.iter_mut().zip(pixel) {
-                *s += f64::from(*v);
+            let column = column as usize;
+            match self.channels {
+                Channels::Rgb => {
+                    for (s, v) in self.sums[column * 3..column * 3 + 3].iter_mut().zip(pixel) {
+                        *s += f64::from(*v);
+                    }
+                }
+                Channels::Luma => {
+                    let [r, g, b] = pixel.map(f64::from);
+                    self.sums[column] += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                }
             }
-            self.counts[column as usize] += 1;
+            self.counts[column] += 1;
         }
     }
 
-    /// Close the current output row.
+    /// Close the current output row, quantizing its means to 8-bit sRGB.
     fn flush(&mut self) {
         if self.row.take().is_none() {
             return;
         }
-        for (sum, count) in self.sums.iter_mut().zip(&mut self.counts) {
+        let quantizer = srgb::quantizer();
+        let channels = self.channels.count();
+        for (sums, count) in self.sums.chunks_exact_mut(channels).zip(&mut self.counts) {
             let n = f64::from((*count).max(1));
-            self.out.push(sum.map(|s| s / n));
-            *sum = [0.0; 3];
+            for sum in sums {
+                self.out.push(quantizer.channel(*sum / n));
+                *sum = 0.0;
+            }
             *count = 0;
         }
     }
 
-    fn finish(mut self) -> Vec<[f64; 3]> {
+    fn finish(mut self) -> Vec<u8> {
         self.flush();
         self.out
     }
@@ -168,8 +202,8 @@ impl Target {
 
 /// Reduce a stage of `stage` size, read through `read` a band of whole rows of at most
 /// [`MAX_MODULE_READ_PIXELS`] at a time, to the analysis input and the guide in one pass, calling
-/// `checkpoint` between bands. Holds one band and one output row of each target besides the
-/// outputs.
+/// `checkpoint` between bands. Holds one band, one row of sums of each target and the outputs'
+/// 8-bit codes: at most 3 MiB of input and 16 MiB of guide.
 pub(crate) fn reduce(
     stage: (u32, u32),
     read: &mut dyn FnMut(Region) -> Result<Vec<[f32; 3]>, Error>,
@@ -179,8 +213,8 @@ pub(crate) fn reduce(
         reduced_size(stage, ANALYSIS_SIDE),
         reduced_size(stage, GUIDE_SIDE),
     );
-    let mut input = Target::new(stage, input_size);
-    let mut guide = Target::new(stage, guide_size);
+    let mut input = Target::new(stage, input_size, Channels::Rgb);
+    let mut guide = Target::new(stage, guide_size, Channels::Luma);
     let band = (MAX_MODULE_READ_PIXELS / u64::from(stage.0.max(1))).max(1) as u32;
     let mut y = 0;
     while y < stage.1 {
@@ -207,17 +241,7 @@ pub(crate) fn reduce(
         y += height;
     }
     checkpoint()?;
-    let quantizer = srgb::quantizer();
-    let rgb = input
-        .finish()
-        .iter()
-        .flat_map(|pixel| pixel.map(|channel| quantizer.channel(channel)))
-        .collect();
-    let codes = guide
-        .finish()
-        .iter()
-        .map(|[r, g, b]| quantizer.channel(0.2126 * r + 0.7152 * g + 0.0722 * b))
-        .collect();
+    let (rgb, codes) = (input.finish(), guide.finish());
     Ok((
         Raster {
             width: input_size.0,
