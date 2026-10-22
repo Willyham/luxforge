@@ -69,6 +69,14 @@ Import from and alignment with Lightroom Classic.
 | Plan | Purpose |
 | --- | --- |
 
+### Programmability (`programmability/`)
+
+Programmatic access to the operation registry beyond the JSON API itself.
+
+| Plan | Purpose |
+| --- | --- |
+| [MCP adapter](programmability/mcp.json) ([design](../docs/design/mcp.md)) | Decided, not authorized: `luxforge-mcp`, a dual-era stdio MCP server with compact and generated typed tool profiles, the registry markers and client identity it needs, inline pictures, headless mode, packaging, Settings › Agents, the background `mcp` journey and real-client qualification |
+
 ### Project (`project/`)
 
 Owner decisions, release preparation, host services and repository upkeep.
