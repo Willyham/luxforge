@@ -3763,6 +3763,20 @@ impl Executor {
         self.retire_preview(Held::Slot(Box::new(slot)), bytes);
     }
 
+    /// Whether a charge refused with `refused` may fit once what is retiring has retired: a
+    /// retirement is still pending, or one has ended since the refusal, its charge returned between
+    /// the refused charge's look at what is in use and now. The worker returns a retirement's charge
+    /// before it counts the retirement ended, so with none pending what is in use is exact, and a
+    /// refusal it still exceeds is the budget's. Asking only whether one is pending would take a
+    /// retirement that ended in that moment for a budget too small.
+    fn retiring_since(&self, refused: &GpuFallback) -> bool {
+        let GpuFallback::BudgetExceeded { in_use, .. } = *refused else {
+            return false;
+        };
+        self.figures.retirement_pending.load(Ordering::Acquire) > 0
+            || self.figures.preview.in_use() < in_use
+    }
+
     /// Hand `held` to the retirement worker, still charged, as a photograph texture is handed; its
     /// scratch textures stay counted as scratch until then too.
     fn retire_preview(&self, held: Held, bytes: u64) {

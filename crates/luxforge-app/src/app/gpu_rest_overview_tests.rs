@@ -345,9 +345,6 @@ fn gpu_rest_an_exhausted_budget_refuses_the_overview_and_not_the_picture() {
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     eprintln!("{test}: adapter {name} ({backend})");
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
-    // Each frame finds what the one before it released retired, as the desktop's do, so the least
-    // budget found below is what every later draw needs, whatever the host's load.
-    surface.settle_frames();
     let photograph = source(BoundaryFormat::Half);
     let gpu = super::gpu_tiles_tests::gpu_source(1, &photograph);
     for (family, recipe, _, planned) in families()
