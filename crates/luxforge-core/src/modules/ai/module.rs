@@ -250,6 +250,7 @@ impl AiModule {
                 queries,
                 capabilities,
                 resources,
+                setups: super::setups::declared(models, &analysis),
                 ..ModuleDescriptor::default()
             },
             models,

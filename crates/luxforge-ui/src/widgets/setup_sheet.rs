@@ -30,6 +30,10 @@ pub enum SetupPicture {
     History,
     /// A selection, the prompt that describes what fills it, and the filled area.
     Describe,
+    /// The pointer over a pole, the pole washed white inside a white outline.
+    Hover,
+    /// Two picked objects, each tinted as a selection and numbered in the order picked.
+    Selected,
 }
 
 /// One step of how the feature is used.
@@ -225,6 +229,8 @@ fn fact<'a, M: 'a>(fact: &SetupFactModel) -> Element<'a, M> {
 fn picture<'a, M: 'a>(picture: SetupPicture) -> Element<'a, M> {
     match picture {
         SetupPicture::PaintOver => Scene::new(theme::SETUP_SCENE, Subject::PaintedPole).element(),
+        SetupPicture::Hover => Scene::new(theme::SETUP_SCENE, Subject::HoveredPole).element(),
+        SetupPicture::Selected => Scene::new(theme::SETUP_SCENE, Subject::Picked).element(),
         SetupPicture::Candidates => {
             let candidate = |chosen: bool| {
                 container(Scene::new(theme::SETUP_CANDIDATE, Subject::None).element())
@@ -346,6 +352,11 @@ enum Subject {
     None,
     /// A pole, painted over with a brush stroke and the brush's ring.
     PaintedPole,
+    /// A pole under the pointer's crosshair, washed white inside a white outline over a dark
+    /// under-stroke, as Object's hover draws it.
+    HoveredPole,
+    /// A pole and a rock, each tinted as a selection and numbered in the order picked.
+    Picked,
     /// The dashed selection Replace fills.
     Selection,
     /// The bicycle Replace painted into the selection, ringed.
@@ -445,6 +456,96 @@ impl<M> canvas::Program<M, Theme> for Scene {
                         .with_width(1.5),
                 );
             }
+            Subject::HoveredPole => {
+                // The pole, washed white, inside a white outline over a dark under-stroke.
+                let (pole, pole_size) = at(0.613, 0.167, 0.033, 0.738);
+                frame.fill_rectangle(pole, pole_size, theme::SETUP_SCENE_OBJECT);
+                let (arm, arm_size) = at(0.553, 0.238, 0.153, 0.036);
+                frame.fill_rectangle(arm, arm_size, theme::SETUP_SCENE_OBJECT);
+                let (outline, outline_size) = at(0.540, 0.140, 0.180, 0.790);
+                let object = canvas::Path::rounded_rectangle(outline, outline_size, 3.0.into());
+                frame.fill(
+                    &object,
+                    Color {
+                        a: 0.35,
+                        ..Color::WHITE
+                    },
+                );
+                frame.stroke(
+                    &object,
+                    canvas::Stroke::default()
+                        .with_color(Color {
+                            a: 0.6,
+                            ..Color::BLACK
+                        })
+                        .with_width(3.0),
+                );
+                frame.stroke(
+                    &object,
+                    canvas::Stroke::default()
+                        .with_color(Color::WHITE)
+                        .with_width(1.5),
+                );
+                // The pointer's crosshair beside it.
+                let centre = Point::new(0.80 * size.width, 0.45 * size.height);
+                let arm = 6.0;
+                let crosshair = canvas::Path::new(|path| {
+                    path.move_to(Point::new(centre.x - arm, centre.y));
+                    path.line_to(Point::new(centre.x + arm, centre.y));
+                    path.move_to(Point::new(centre.x, centre.y - arm));
+                    path.line_to(Point::new(centre.x, centre.y + arm));
+                });
+                frame.stroke(
+                    &crosshair,
+                    canvas::Stroke::default()
+                        .with_color(Color {
+                            a: 0.6,
+                            ..Color::BLACK
+                        })
+                        .with_width(3.0),
+                );
+                frame.stroke(
+                    &crosshair,
+                    canvas::Stroke::default()
+                        .with_color(Color::WHITE)
+                        .with_width(1.5),
+                );
+            }
+            Subject::Picked => {
+                // Two objects, each tinted as a selection, numbered in the order picked.
+                let (pole, pole_size) = at(0.613, 0.167, 0.033, 0.738);
+                frame.fill_rectangle(pole, pole_size, theme::SETUP_SCENE_OBJECT);
+                let (rock, rock_size) = at(0.200, 0.640, 0.180, 0.200);
+                let rock_path = canvas::Path::rounded_rectangle(
+                    rock,
+                    rock_size,
+                    (rock_size.height / 2.0).into(),
+                );
+                frame.fill(&rock_path, theme::SETUP_SCENE_OBJECT);
+                let tint = Color { a: 0.45, ..accent };
+                let (first, first_size) = at(0.585, 0.140, 0.090, 0.790);
+                frame.fill(
+                    &canvas::Path::rounded_rectangle(first, first_size, 3.0.into()),
+                    tint,
+                );
+                frame.fill(&rock_path, tint);
+                for (number, centre) in [
+                    ("1", Point::new(first.x + first_size.width, first.y)),
+                    ("2", Point::new(rock.x + rock_size.width, rock.y)),
+                ] {
+                    frame.fill(&canvas::Path::circle(centre, 6.0), accent);
+                    frame.fill_text(canvas::Text {
+                        content: number.into(),
+                        position: centre,
+                        color: Color::WHITE,
+                        size: 9.0.into(),
+                        font: theme::FONT_SEMIBOLD,
+                        align_x: iced::widget::text::Alignment::Center,
+                        align_y: iced::alignment::Vertical::Center,
+                        ..canvas::Text::default()
+                    });
+                }
+            }
             Subject::Selection | Subject::Bicycle => {
                 let (area, area_size) = at(0.322, 0.30, 0.311, 0.38);
                 let outline = canvas::Path::rounded_rectangle(area, area_size, 10.0.into());
@@ -532,6 +633,13 @@ mod tests {
             dismiss: "Not now".into(),
         };
         let _: Element<'_, bool> = setup_sheet(&steps, true, false);
+        let pointing = SetupSheetModel {
+            steps: [SetupPicture::Hover, SetupPicture::Selected]
+                .map(step)
+                .to_vec(),
+            ..steps.clone()
+        };
+        let _: Element<'_, bool> = setup_sheet(&pointing, true, false);
         let hero = SetupSheetModel {
             hero: Some(SetupPicture::Describe),
             steps: Vec::new(),

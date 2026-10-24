@@ -221,11 +221,13 @@ fn analyse_once_then_pick_and_select_from_the_cache() {
     assert_eq!(job["result"]["result"]["cached"], false, "{job}");
     assert_eq!(owner.pick(point.clone()).unwrap()["decision"], "one");
 
-    // Removing a model forgets everything the module computed.
-    owner.ok(
+    // Removing a model forgets everything the module computed. The pick below waits for the
+    // removal to finish, so it reads the model as removed rather than racing the transfer lane.
+    let removed = owner.ok(
         "module.resource.remove",
         json!({"module_id": AI_MODULE, "resource_id": FAKE_SEGMENTER_DECODER.file.resource}),
     );
+    owner.finished(&removed["job_id"]);
     let cache = &owner.status(AI_MODULE)["runtime"]["analysis_cache"];
     assert_eq!(cache["entries"], 0, "{cache}");
     assert_eq!(cache["bytes"], 0, "{cache}");

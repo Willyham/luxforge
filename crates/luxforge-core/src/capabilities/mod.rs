@@ -35,5 +35,8 @@ mod runtime_tests;
 pub mod secrets;
 pub mod settings;
 #[cfg(test)]
+mod setup_tests;
+pub mod setups;
+#[cfg(test)]
 pub(crate) mod testing;
 pub mod transport;

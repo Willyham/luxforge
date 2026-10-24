@@ -337,19 +337,7 @@ impl CapabilityHost {
             return Ok(answer(ResourceState::Installing, Some(&job)));
         }
         let InstallSource::Download {} = request.source.unwrap_or(InstallSource::Download {});
-        let capability = descriptor
-            .capabilities
-            .iter()
-            .find(|capability| {
-                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id, .. } if *id == resource.id)
-            })
-            .ok_or_else(|| {
-                Error::validation(format!(
-                    "module {} declares no download-artifact capability for resource {}",
-                    descriptor.id, resource.id
-                ))
-            })?;
-        let scope = GrantScope::Download(download_scope(resource)?);
+        let (capability, scope) = Self::download_capability(descriptor, resource)?;
         let (grant, denied) = self
             .grants()?
             .consent(&descriptor.id, &capability.id, &scope)?;
@@ -375,6 +363,60 @@ impl CapabilityHost {
         // however it was given, does not let a model run on a machine below its minimum.
         self.check_machine(resource)?;
         transfer::check_quota(&store, resource, self.config.resource_quota_bytes)?;
+        let record = self.queue_install(
+            jobs,
+            registry,
+            descriptor,
+            resource,
+            grant,
+            &request.mutation.actor,
+            origin,
+        )?;
+        Ok(answer(ResourceState::Installing, Some(&record)))
+    }
+
+    /// The download artifact capability that installs `resource`, and the exact scope of its
+    /// grant.
+    pub(super) fn download_capability<'a>(
+        descriptor: &'a ModuleDescriptor,
+        resource: &ResourceDescriptor,
+    ) -> Result<
+        (
+            &'a crate::capabilities::descriptor::CapabilityDescriptor,
+            GrantScope,
+        ),
+        Error,
+    > {
+        let capability = descriptor
+            .capabilities
+            .iter()
+            .find(|capability| {
+                matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: id } if *id == resource.id)
+            })
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "module {} declares no download-artifact capability for resource {}",
+                    descriptor.id, resource.id
+                ))
+            })?;
+        Ok((capability, GrantScope::Download(download_scope(resource)?)))
+    }
+
+    /// Queue one install of `resource` on the transfer lane under `grant`, every check already
+    /// made: the job is watched for the grant's revocation, and its worker streams, verifies,
+    /// prepares and publishes the resource ([`transfer::install`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn queue_install(
+        &mut self,
+        jobs: &mut Jobs,
+        registry: &Arc<ModuleRegistry>,
+        descriptor: &ModuleDescriptor,
+        resource: &ResourceDescriptor,
+        grant: crate::capabilities::grants::Grant,
+        actor: &str,
+        origin: &Origin,
+    ) -> Result<JobRecord, Error> {
+        let store = self.resources()?.clone();
         let job_id = JobId::new();
         let control = JobControl::new();
         let permission = super::super::permission_watch::PermissionGuard::new(
@@ -393,7 +435,7 @@ impl CapabilityHost {
             transport: self.transport.clone(),
             registry: registry.clone(),
             quota: self.config.resource_quota_bytes,
-            actor: request.mutation.actor.clone(),
+            actor: actor.to_owned(),
             control: control.clone(),
             permission: Some(permission),
             runtime: self.model_runtime(descriptor, &resource.id).map(|runtime| {
@@ -422,7 +464,7 @@ impl CapabilityHost {
                 Box::new(move || transfer::install(job)),
             )
             .inspect_err(|_| self.permissions.remove(&job_id))?;
-        Ok(answer(ResourceState::Installing, Some(&record)))
+        Ok(record)
     }
 
     /// `module.resource.remove`: queue the removal of the installed version, joining one already
