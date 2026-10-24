@@ -7046,6 +7046,9 @@ mod tests {
         ("vignette", "set-vignette", "amount", &[-20.0, -40.0, -60.0]),
         ("vignette", "set-vignette", "roundness", &[-100.0, 100.0]),
         ("vignette", "set-vignette", "feather", &[0.0, 100.0]),
+        ("grain", "set-grain", "amount", &[20.0, 40.0, 60.0]),
+        ("grain", "set-grain", "size", &[80.0]),
+        ("grain", "set-grain", "roughness", &[90.0]),
         // Two Temperature drags in kelvin, then the double-clicks' first presses.
         (
             "raw-panel",

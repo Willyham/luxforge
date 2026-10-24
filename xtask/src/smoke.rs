@@ -10,7 +10,7 @@ use crate::{
     detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
     filmstrip_smoke as filmstrip, gallery_smoke as gallery, generative_smoke as generative,
     gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
-    grading_smoke as grading, hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
+    grading_smoke as grading, grain_smoke as grain, hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
@@ -823,6 +823,19 @@ pub static SCENARIOS: &[Scenario] = &[
         }],
         verify: vignette::verify,
         source: Source::Fixtures(&[vignette::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "grain",
+        about: "Grain amount, size and roughness at Fit and 100%, a crop, undo and redo",
+        launches: &[LaunchSpec {
+            plan: grain::plan,
+            ..APP
+        }],
+        verify: grain::verify,
+        source: Source::Fixtures(&[grain::FIXTURE]),
         window: Some(PANELLED),
         note: None,
         own: None,

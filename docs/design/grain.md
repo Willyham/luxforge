@@ -62,7 +62,9 @@ Generated from the descriptors: `edit.set-grain` and `edit.reset-grain`, discove
 
 ## Desktop
 
-A Grain section in the tools panel, after Vignette, collapsed, one group drawn without a header: Amount (unipolar, zero 0), Size (unipolar, default 25), Roughness (unipolar, default 50) and the module's reset. Every slider drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request. The section has its accent dot when Amount is non-zero.
+A Grain section in the tools panel, after Vignette, collapsed, one group drawn without a header: Amount (unipolar, zero 0), Size (unipolar, default 25), Roughness (unipolar, default 50) and the module's reset. Every slider drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request. The section has its accent dot when Amount is non-zero. The section is the generated one, with no grain-specific widget.
+
+The rendered check is `cargo xtask smoke --scenario grain`, over the generated `fixtures/generated/grain.jpg`: a 2400 × 1600 flat mid-grey crossed by a band of black, white and four saturated patches, larger than the canvas at 100%. It drags and commits Amount at Fit, commits Size and Roughness at 100%, crops, undoes and redoes, and judges each 100% frame against the same view before any grain: grain shown and even across the view up to the canvas's edges, the grey's mean and neutrality kept, black and white untouched, each colour's mean kept, Size coarser, Roughness changing the pattern, and a crop, undo and redo keeping the grain's size and strength. Fit frames are reduced stages and are recorded, not judged.
 
 ## Resource and responsiveness constraints
 

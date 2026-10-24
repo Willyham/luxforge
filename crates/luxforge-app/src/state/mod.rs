@@ -3568,6 +3568,7 @@ mod tests {
             crate::state::testing::POINT_MODULE,
             "luxforge.presence",
             "luxforge.vignette",
+            "luxforge.grain",
         ] {
             let module = modules.iter().find(|module| module.id == id).unwrap();
             let [luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. })] =

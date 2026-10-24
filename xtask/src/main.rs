@@ -38,6 +38,7 @@ mod gpu_qualification;
 mod grade_align;
 mod grade_performance;
 mod grading_smoke;
+mod grain_smoke;
 mod hdr_merge_measure;
 mod hdr_merge_smoke;
 mod hdr_merge_view_smoke;
