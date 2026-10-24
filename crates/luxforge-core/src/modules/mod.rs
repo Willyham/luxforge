@@ -115,7 +115,8 @@ pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
 pub(crate) use corrections::{
-    CorrectionsModule, RepairCarrier, selection_prefix as corrections_selection_prefix,
+    CorrectionsModule, RADIUS_MAX as CORRECTION_RADIUS_MAX, RADIUS_MIN as CORRECTION_RADIUS_MIN,
+    RepairCarrier, selection_prefix as corrections_selection_prefix,
     source_identity as corrections_source_identity,
 };
 pub(crate) use corrections::{

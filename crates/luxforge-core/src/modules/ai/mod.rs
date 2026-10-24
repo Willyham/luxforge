@@ -9,8 +9,10 @@ mod formats;
 mod generative;
 mod models;
 mod module;
+mod object_region;
 mod objects;
 mod pick;
+mod picked;
 mod segment;
 mod selection;
 #[cfg(test)]

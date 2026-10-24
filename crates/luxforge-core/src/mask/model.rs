@@ -64,6 +64,177 @@ pub const FEATHER_DEFAULT: f64 = 100.0;
 const LABEL_MAX: usize = 64;
 const VERSION_MAX: usize = 128;
 
+/// The class a selection of a picked object records, and the one class whose component may record
+/// the prompt it was picked from.
+pub const OBJECT_CLASS: &str = "object";
+
+/// The most positions a stored prompt's stroke holds: one stored stroke's bound.
+pub const OBJECT_PROMPT_POINTS_MAX: usize = crate::path::POINTS_PER_STROKE;
+
+/// The highest candidate position a stored prompt names: a stroke's prompts' candidates.
+pub const OBJECT_PROMPT_CANDIDATE_MAX: u32 = 63;
+
+/// How `task.select-object` picked an object, in the content stage's normalized coordinates and
+/// exactly as it took them, so Recompute sends it back as that task's prompt and, for an unchanged
+/// photograph, publishes the same artifact. Serialized as the task's own fields:
+/// `{point: [[x, y]], candidate?}` for a click, `{stroke: [[x, y], …], radius, candidate?}` for a
+/// loose stroke, `candidate` the position `query.pick-object` answered for that prompt. A prompt of
+/// labelled points or a box is not stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PromptFields", into = "PromptFields")]
+pub enum ObjectPrompt {
+    Point {
+        point: [f64; 2],
+        candidate: Option<u32>,
+    },
+    Stroke {
+        stroke: Vec<[f64; 2]>,
+        /// The brush radius in content heights.
+        radius: f64,
+        candidate: Option<u32>,
+    },
+}
+
+/// Every value a prompt holds is finite, which parsing checks, so equality is an equivalence.
+impl Eq for ObjectPrompt {}
+
+/// [`ObjectPrompt`]'s fields as they are stored and sent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    point: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stroke: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    candidate: Option<u32>,
+}
+
+impl TryFrom<PromptFields> for ObjectPrompt {
+    type Error = String;
+
+    fn try_from(fields: PromptFields) -> Result<Self, String> {
+        use crate::modules::{
+            CORRECTION_RADIUS_MAX as RADIUS_MAX, CORRECTION_RADIUS_MIN as RADIUS_MIN,
+        };
+        use crate::path::{COORDINATE_MAX, COORDINATE_MIN};
+        let positions = |points: &[[f64; 2]]| {
+            points.iter().all(|point| {
+                point.iter().all(|value| {
+                    value.is_finite() && (COORDINATE_MIN..=COORDINATE_MAX).contains(value)
+                })
+            })
+        };
+        if let Some(candidate) = fields.candidate
+            && candidate > OBJECT_PROMPT_CANDIDATE_MAX
+        {
+            return Err(format!(
+                "a prompt's candidate is 0..={OBJECT_PROMPT_CANDIDATE_MAX}, not {candidate}"
+            ));
+        }
+        match (fields.point, fields.stroke) {
+            (Some(point), None) => {
+                let [point] = point.as_slice() else {
+                    return Err("a prompt's point is exactly one position".into());
+                };
+                if fields.radius.is_some() {
+                    return Err("a point prompt has no radius".into());
+                }
+                if !positions(std::slice::from_ref(point)) {
+                    return Err(format!(
+                        "a prompt's point holds two numbers within {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+                    ));
+                }
+                Ok(Self::Point {
+                    point: *point,
+                    candidate: fields.candidate,
+                })
+            }
+            (None, Some(stroke)) => {
+                if stroke.is_empty() || stroke.len() > OBJECT_PROMPT_POINTS_MAX {
+                    return Err(format!(
+                        "a prompt's stroke holds 1..={OBJECT_PROMPT_POINTS_MAX} positions, not {}",
+                        stroke.len()
+                    ));
+                }
+                if !positions(&stroke) {
+                    return Err(format!(
+                        "a prompt's stroke positions hold two numbers within {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+                    ));
+                }
+                let radius = fields
+                    .radius
+                    .ok_or_else(|| "a stroke prompt needs its radius".to_owned())?;
+                if !radius.is_finite() || !(RADIUS_MIN..=RADIUS_MAX).contains(&radius) {
+                    return Err(format!(
+                        "a stroke prompt's radius is within {RADIUS_MIN}..={RADIUS_MAX} content heights"
+                    ));
+                }
+                Ok(Self::Stroke {
+                    stroke,
+                    radius,
+                    candidate: fields.candidate,
+                })
+            }
+            _ => Err("a prompt names exactly one of point and stroke".into()),
+        }
+    }
+}
+
+impl From<ObjectPrompt> for PromptFields {
+    fn from(prompt: ObjectPrompt) -> Self {
+        match prompt {
+            ObjectPrompt::Point { point, candidate } => Self {
+                point: Some(vec![point]),
+                candidate,
+                ..Self::default()
+            },
+            ObjectPrompt::Stroke {
+                stroke,
+                radius,
+                candidate,
+            } => Self {
+                stroke: Some(stroke),
+                radius: Some(radius),
+                candidate,
+                ..Self::default()
+            },
+        }
+    }
+}
+
+impl ObjectPrompt {
+    /// The prompt a `task.select-object` request names, when it is one a component stores: its
+    /// `point` or its `stroke` with `radius`, and its `candidate`; `None` for labelled points or a
+    /// box. The request has passed the task's declared check.
+    pub(crate) fn of_request(
+        parameters: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<Self>, Error> {
+        let mut fields = serde_json::Map::new();
+        for name in ["point", "stroke", "radius", "candidate"] {
+            if let Some(value) = parameters.get(name) {
+                fields.insert(name.to_owned(), value.clone());
+            }
+        }
+        if !fields.contains_key("point") && !fields.contains_key("stroke") {
+            return Ok(None);
+        }
+        serde_json::from_value(serde_json::Value::Object(fields))
+            .map(Some)
+            .map_err(|error| Error::validation(format!("invalid prompt: {error}")))
+    }
+
+    /// The fields Recompute sends `task.select-object` beside `asset_id`.
+    pub fn request_fields(&self) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(fields)) => fields,
+            _ => serde_json::Map::new(),
+        }
+    }
+}
+
 /// The model selection's GPU coverage program (`model.wgsl`): the bilinear read of the raster
 /// packed four codes to a word in the program's storage block.
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
@@ -92,6 +263,10 @@ pub struct ModelSelection {
     pub prefix_hash: String,
     pub threshold: f64,
     pub feather: f64,
+    /// How the object was picked, for class [`OBJECT_CLASS`] alone: what Recompute sends
+    /// `task.select-object` again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<ObjectPrompt>,
 }
 
 /// What this kind declares to the API, and the whole of what makes `mask.create-model`,
@@ -148,6 +323,13 @@ pub(super) fn parameters(required: bool) -> Vec<ParameterDescriptor> {
              hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
         )
         .default(FEATHER_DEFAULT),
+        ParameterDescriptor::new("prompt", crate::ParameterKind::Json).notes(format!(
+            "how task.select-object picked the object, for class {OBJECT_CLASS} alone, in the \
+             content stage's normalized coordinates as that task took it: {{point: [[x, y]], \
+             candidate?}} or {{stroke: [[x, y], ...], radius, candidate?}}, at most \
+             {OBJECT_PROMPT_POINTS_MAX} positions and candidate 0..={OBJECT_PROMPT_CANDIDATE_MAX}; \
+             Recompute sends it back to task.select-object. Optional; null clears it"
+        )),
     ]
 }
 
@@ -171,6 +353,12 @@ pub(super) fn parse(component: &Component) -> Result<ModelSelection, Error> {
             ))
         })?;
     check_declared(component, KIND, &DECLARED, &component.payload)?;
+    if selection.prompt.is_some() && selection.class != OBJECT_CLASS {
+        return Err(Error::validation(format!(
+            "component {} {KIND} parameter prompt is recorded for class {OBJECT_CLASS} alone, not {}",
+            component.name, selection.class
+        )));
+    }
     for (field, value) in [
         ("input_fingerprint", &selection.input_fingerprint),
         ("prefix_hash", &selection.prefix_hash),
@@ -227,22 +415,54 @@ pub(crate) struct AlphaRaster {
     block: OnceLock<Arc<[u32]>>,
 }
 
+/// The non-zero rectangle of `width`-wide row-major `codes` in texels, `[x0, y0, x1, y1]`
+/// inclusive; `None` when every code is zero. One scan.
+pub(crate) fn nonzero_rect(codes: &[u8], width: u32) -> Option<[u32; 4]> {
+    let mut nonzero: Option<[u32; 4]> = None;
+    for (j, row) in codes.chunks_exact(width.max(1) as usize).enumerate() {
+        let Some(first) = row.iter().position(|&code| code != 0) else {
+            continue;
+        };
+        let last = row.iter().rposition(|&code| code != 0).unwrap_or(first);
+        let (first, last, j) = (first as u32, last as u32, j as u32);
+        nonzero = Some(match nonzero {
+            None => [first, j, last, j],
+            Some([x0, y0, x1, _]) => [x0.min(first), y0, x1.max(last), j],
+        });
+    }
+    nonzero
+}
+
+/// The stage pixels a raster's bilinear read can draw a non-zero alpha at, from its non-zero
+/// rectangle: the rectangle widened by the read's reach. `kx = width · H / W` and `ky = height`
+/// take mask space to texel coordinates ([`sample_alpha`]). A position reads texels `floor(ax)`
+/// and `floor(ax) + 1`, so it can reach `[x0, x1]` only while `x0 - 1 < ax < x1 + 1`; in stage
+/// pixels that is `px = (ax + 0.5) · H / kx - 0.5`. Empty for an all-zero raster.
+pub(crate) fn raster_support(nonzero: Option<[u32; 4]>, kx: f64, ky: f64, stage: Stage) -> Region {
+    let Some([x0, y0, x1, y1]) = nonzero else {
+        return Region::EMPTY;
+    };
+    let h = f64::from(stage.height);
+    let to_x = |ax: f64| (ax + 0.5) * h / kx - 0.5;
+    let to_y = |ay: f64| (ay + 0.5) * h / ky - 0.5;
+    let slack = |value: f64| 16.0 * f64::EPSILON * (value.abs() + 1.0);
+    let min_x = to_x(f64::from(x0) - 1.0);
+    let max_x = to_x(f64::from(x1) + 1.0);
+    let min_y = to_y(f64::from(y0) - 1.0);
+    let max_y = to_y(f64::from(y1) + 1.0);
+    region_from_bounds(
+        stage,
+        min_x - slack(min_x),
+        max_x + slack(max_x),
+        min_y - slack(min_y),
+        max_y + slack(max_y),
+    )
+}
+
 impl AlphaRaster {
     fn of(artifact: &PreparedArtifact, width: u32) -> Self {
-        let mut nonzero: Option<[u32; 4]> = None;
-        for (j, row) in artifact.bytes.chunks_exact(width as usize).enumerate() {
-            let Some(first) = row.iter().position(|&code| code != 0) else {
-                continue;
-            };
-            let last = row.iter().rposition(|&code| code != 0).unwrap_or(first);
-            let (first, last, j) = (first as u32, last as u32, j as u32);
-            nonzero = Some(match nonzero {
-                None => [first, j, last, j],
-                Some([x0, y0, x1, _]) => [x0.min(first), y0, x1.max(last), j],
-            });
-        }
         Self {
-            nonzero,
+            nonzero: nonzero_rect(&artifact.bytes, width),
             block: OnceLock::new(),
         }
     }
@@ -291,28 +511,50 @@ impl std::fmt::Debug for AlphaRaster {
     }
 }
 
-impl Compiled {
-    fn code(&self, i: usize, j: usize) -> f64 {
-        f64::from(self.artifact.bytes[j * self.width as usize + i])
-    }
+/// A `width × height` raster of `codes` at mask-space `(u, v)`, bilinear between texel centres
+/// with the edges clamped, as a fraction: `model_alpha` of the reference, with `kx = width · H / W`
+/// and `ky = height` computed once by the caller. The one read every consumer of a selection's
+/// raster shares, so the model kind's coverage and an object's removal region read the same alpha.
+#[inline]
+pub(crate) fn sample_alpha(
+    codes: &[u8],
+    width: u32,
+    height: u32,
+    kx: f64,
+    ky: f64,
+    u: f64,
+    v: f64,
+) -> f64 {
+    let code = |i: usize, j: usize| f64::from(codes[j * width as usize + i]);
+    let ax = u * kx - 0.5;
+    let ay = v * ky - 0.5;
+    let x0 = ax.floor();
+    let y0 = ay.floor();
+    let fx = ax - x0;
+    let fy = ay - y0;
+    let last_x = i64::from(width) - 1;
+    let last_y = i64::from(height) - 1;
+    let i0 = (x0 as i64).clamp(0, last_x) as usize;
+    let i1 = (x0 as i64 + 1).clamp(0, last_x) as usize;
+    let j0 = (y0 as i64).clamp(0, last_y) as usize;
+    let j1 = (y0 as i64 + 1).clamp(0, last_y) as usize;
+    let top = code(i0, j0) + fx * (code(i1, j0) - code(i0, j0));
+    let bottom = code(i0, j1) + fx * (code(i1, j1) - code(i0, j1));
+    (top + fy * (bottom - top)) / 255.0
+}
 
+impl Compiled {
     /// The raster at mask-space `(u, v)`, bilinear with the edges clamped, as a fraction.
     fn alpha(&self, u: f64, v: f64) -> f64 {
-        let ax = u * self.kx - 0.5;
-        let ay = v * self.ky - 0.5;
-        let x0 = ax.floor();
-        let y0 = ay.floor();
-        let fx = ax - x0;
-        let fy = ay - y0;
-        let last_x = i64::from(self.width) - 1;
-        let last_y = i64::from(self.height) - 1;
-        let i0 = (x0 as i64).clamp(0, last_x) as usize;
-        let i1 = (x0 as i64 + 1).clamp(0, last_x) as usize;
-        let j0 = (y0 as i64).clamp(0, last_y) as usize;
-        let j1 = (y0 as i64 + 1).clamp(0, last_y) as usize;
-        let top = self.code(i0, j0) + fx * (self.code(i1, j0) - self.code(i0, j0));
-        let bottom = self.code(i0, j1) + fx * (self.code(i1, j1) - self.code(i0, j1));
-        (top + fy * (bottom - top)) / 255.0
+        sample_alpha(
+            &self.artifact.bytes,
+            self.width,
+            self.height,
+            self.kx,
+            self.ky,
+            u,
+            v,
+        )
     }
 }
 
@@ -335,35 +577,16 @@ impl ComponentField for Compiled {
         false
     }
 
-    /// The raster's non-zero rectangle widened by the bilinear read's reach: coverage is exactly
-    /// zero wherever all four texels a position reads are zero, because a zero alpha is zero
-    /// coverage at every threshold and feather (`lo >= 0`, and the hard edge's `t >= 0.01`). A
-    /// position reads texels `floor(ax)` and `floor(ax) + 1`, so it can reach the rectangle
-    /// `[x0, x1]` only while `x0 - 1 < ax < x1 + 1`; in stage pixels that is
-    /// `px = (ax + 0.5) · H / kx - 0.5`. Inverted, coverage is non-zero outside it, so the whole
-    /// stage; an all-zero raster selects nothing.
+    /// The raster's non-zero rectangle widened by the bilinear read's reach ([`raster_support`]):
+    /// coverage is exactly zero wherever all four texels a position reads are zero, because a zero
+    /// alpha is zero coverage at every threshold and feather (`lo >= 0`, and the hard edge's
+    /// `t >= 0.01`). Inverted, coverage is non-zero outside it, so the whole stage; an all-zero
+    /// raster selects nothing.
     fn support(&self, stage: Stage, inverted: bool) -> Region {
         if inverted {
             return Region::whole(stage);
         }
-        let Some([x0, y0, x1, y1]) = self.raster.nonzero else {
-            return Region::EMPTY;
-        };
-        let height = f64::from(stage.height);
-        let to_x = |ax: f64| (ax + 0.5) * height / self.kx - 0.5;
-        let to_y = |ay: f64| (ay + 0.5) * height / self.ky - 0.5;
-        let slack = |value: f64| 16.0 * f64::EPSILON * (value.abs() + 1.0);
-        let min_x = to_x(f64::from(x0) - 1.0);
-        let max_x = to_x(f64::from(x1) + 1.0);
-        let min_y = to_y(f64::from(y0) - 1.0);
-        let max_y = to_y(f64::from(y1) + 1.0);
-        region_from_bounds(
-            stage,
-            min_x - slack(min_x),
-            max_x + slack(max_x),
-            min_y - slack(min_y),
-            max_y + slack(max_y),
-        )
+        raster_support(self.raster.nonzero, self.kx, self.ky, stage)
     }
 
     /// The narrowest transition the raster can draw: one texel, in `stage`'s pixels on the finer

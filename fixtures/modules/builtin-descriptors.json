@@ -1585,6 +1585,16 @@
                 "step": 1.0,
                 "unit": "%",
                 "zero": 100.0
+              },
+              {
+                "default": null,
+                "kind": "json",
+                "name": "prompt",
+                "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
               }
             ],
             "patch": false,
@@ -1713,6 +1723,16 @@
                 "step": 1.0,
                 "unit": "%",
                 "zero": 100.0
+              },
+              {
+                "default": null,
+                "kind": "json",
+                "name": "prompt",
+                "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
               }
             ],
             "patch": false,
@@ -1837,6 +1857,16 @@
                 "step": 1.0,
                 "unit": "%",
                 "zero": 100.0
+              },
+              {
+                "default": null,
+                "kind": "json",
+                "name": "prompt",
+                "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
               }
             ],
             "patch": true,
@@ -6632,17 +6662,17 @@
           {
             "asset": true,
             "id": "fill-generative",
-            "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}.",
+            "notes": "Fills the region a brush selection paints, or the objects task.select-object picked, on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge, joined by maximum with each picked object's removal region (its core where the selection's alpha is at least one half, dilated by half an artifact texel plus 4% of the core's shorter side and feathered over one texel); the effect stroke adds what the object casts. Each object artifact must be a selection task.select-object published of this photograph as it is now, refused conflict (data.reason stale-selection, naming the artifact) otherwise, and an unknown artifact is refused validation, before anything is queued. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance and the objects it removed ({artifact, prompt} each); accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}.",
             "parameters": [
               {
                 "default": null,
                 "kind": "points",
                 "name": "selection-points",
-                "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points",
+                "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points; required unless object-artifacts names the region",
                 "points_max": 16384,
                 "points_min": 1,
                 "precision": null,
-                "required": true,
+                "required": false,
                 "step": null,
                 "unit": null
               },
@@ -6652,11 +6682,23 @@
                 "max": 0.25,
                 "min": 0.0005,
                 "name": "selection-radius",
-                "notes": "the selection's brush radius",
+                "notes": "the selection's brush radius; required with selection-points",
                 "precision": null,
-                "required": true,
+                "required": false,
                 "step": null,
                 "unit": "content heights"
+              },
+              {
+                "artifacts_max": 8,
+                "artifacts_min": 1,
+                "default": null,
+                "kind": "artifacts",
+                "name": "object-artifacts",
+                "notes": "the objects to remove: mask-alpha artifacts task.select-object published of this photograph as it is now, instead of or beside the selection stroke",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
               },
               {
                 "default": null,
@@ -6676,7 +6718,7 @@
                 "max": 0.25,
                 "min": 0.0005,
                 "name": "effect-radius",
-                "notes": "the effect stroke's radius; default the selection's",
+                "notes": "the effect stroke's radius; default the selection's, and required without it",
                 "precision": null,
                 "required": false,
                 "step": null,
@@ -6761,7 +6803,7 @@
               "ai.analysis"
             ],
             "id": "select-object",
-            "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, decision, candidate, models}, the artifact and provenance mask.add-model takes. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on.",
+            "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. A stroke holds at most 1024 positions. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, prompt, decision, candidate, models}, the artifact and provenance mask.add-model takes; prompt is {point, candidate?} or {stroke, radius, candidate?} as this request named it (null for labelled points or a box), which a model component stores and Recompute sends back. The artifact can be removed with task.fill-generative's object-artifacts while the photograph is as it is now. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on.",
             "parameters": [
               {
                 "default": null,
@@ -6816,7 +6858,7 @@
                 "kind": "points",
                 "name": "stroke",
                 "notes": "a brush stroke's path over one or more objects",
-                "points_max": 16384,
+                "points_max": 1024,
                 "points_min": 1,
                 "precision": null,
                 "required": false,
@@ -9428,6 +9470,7 @@
         "notes": "a second, third, … model component of a mask, with its mode given explicitly rather than guessed from a modifier key",
         "optional": {
           "feather": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+          "prompt": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
           "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
         },
         "parameters": [
@@ -9549,6 +9592,16 @@
             "step": 1.0,
             "unit": "%",
             "zero": 100.0
+          },
+          {
+            "default": null,
+            "kind": "json",
+            "name": "prompt",
+            "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
           }
         ],
         "patch": false,
@@ -10034,6 +10087,7 @@
         "notes": "a new mask whose first component is an add model component; a mask never exists empty, so the initial component is required and its mode is always add",
         "optional": {
           "feather": "how soft the edge is, as a percentage of the widest band around the threshold; 0 is a hard edge, and 100 at a threshold of 50 keeps the model's own soft edge",
+          "prompt": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
           "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
         },
         "parameters": [
@@ -10129,6 +10183,16 @@
             "step": 1.0,
             "unit": "%",
             "zero": 100.0
+          },
+          {
+            "default": null,
+            "kind": "json",
+            "name": "prompt",
+            "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
           }
         ],
         "patch": false,
@@ -11432,6 +11496,7 @@
           "model": "the model resource that computed the selection",
           "model_version": "the model resource's version when the selection was computed",
           "prefix_hash": "the repair stage's output identity the selection was computed from, as lowercase hex SHA-256",
+          "prompt": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
           "threshold": "the alpha at the middle of the edge, as a percentage of full alpha"
         },
         "parameters": [
@@ -11549,6 +11614,16 @@
             "step": 1.0,
             "unit": "%",
             "zero": 100.0
+          },
+          {
+            "default": null,
+            "kind": "json",
+            "name": "prompt",
+            "notes": "how task.select-object picked the object, for class object alone, in the content stage's normalized coordinates as that task took it: {point: [[x, y]], candidate?} or {stroke: [[x, y], ...], radius, candidate?}, at most 1024 positions and candidate 0..=63; Recompute sends it back to task.select-object. Optional; null clears it",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
           }
         ],
         "patch": true,
@@ -12073,24 +12148,27 @@
       "task.fill-generative": {
         "mutates": true,
         "mutation": "request",
-        "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "notes": "Fills the region a brush selection paints, or the objects task.select-object picked, on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge, joined by maximum with each picked object's removal region (its core where the selection's alpha is at least one half, dilated by half an artifact texel plus 4% of the core's shorter side and feathered over one texel); the effect stroke adds what the object casts. Each object artifact must be a selection task.select-object published of this photograph as it is now, refused conflict (data.reason stale-selection, naming the artifact) otherwise, and an unknown artifact is refused validation, before anything is queued. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance and the objects it removed ({artifact, prompt} each); accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
         "optional": {
           "candidates": "how many candidates to generate, one after another",
           "effect-points": "the effect region: a second stroke over what the object casts, such as its shadow",
-          "effect-radius": "the effect stroke's radius; default the selection's",
+          "effect-radius": "the effect stroke's radius; default the selection's, and required without it",
+          "object-artifacts": "the objects to remove: mask-alpha artifacts task.select-object published of this photograph as it is now, instead of or beside the selection stroke",
           "prompt": "what to fill the region with instead of removing; makes the fill Replace and needs the model's text encoder; a blank prompt is none",
-          "seed": "the first candidate's seed, candidate n taking seed + n; default a new one each request"
+          "seed": "the first candidate's seed, candidate n taking seed + n; default a new one each request",
+          "selection-points": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points; required unless object-artifacts names the region",
+          "selection-radius": "the selection's brush radius; required with selection-points"
         },
         "parameters": [
           {
             "default": null,
             "kind": "points",
             "name": "selection-points",
-            "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points",
+            "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points; required unless object-artifacts names the region",
             "points_max": 16384,
             "points_min": 1,
             "precision": null,
-            "required": true,
+            "required": false,
             "step": null,
             "unit": null
           },
@@ -12100,11 +12178,23 @@
             "max": 0.25,
             "min": 0.0005,
             "name": "selection-radius",
-            "notes": "the selection's brush radius",
+            "notes": "the selection's brush radius; required with selection-points",
             "precision": null,
-            "required": true,
+            "required": false,
             "step": null,
             "unit": "content heights"
+          },
+          {
+            "artifacts_max": 8,
+            "artifacts_min": 1,
+            "default": null,
+            "kind": "artifacts",
+            "name": "object-artifacts",
+            "notes": "the objects to remove: mask-alpha artifacts task.select-object published of this photograph as it is now, instead of or beside the selection stroke",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
           },
           {
             "default": null,
@@ -12124,7 +12214,7 @@
             "max": 0.25,
             "min": 0.0005,
             "name": "effect-radius",
-            "notes": "the effect stroke's radius; default the selection's",
+            "notes": "the effect stroke's radius; default the selection's, and required without it",
             "precision": null,
             "required": false,
             "step": null,
@@ -12182,15 +12272,13 @@
         "required": [
           "mutation",
           "asset_id",
-          "selection-points",
-          "selection-radius",
           "model"
         ]
       },
       "task.select-object": {
         "mutates": true,
         "mutation": "request",
-        "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, decision, candidate, models}, the artifact and provenance mask.add-model takes. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "notes": "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. A request names exactly one prompt, in the content stage's normalized coordinates: point (hover or a click), positive and negative points with an optional box, or a brush stroke with its radius. A stroke is split into prompts along its length and its candidates scored by how much of the stroke and of themselves they share, then the decision is one object, several (each well covered and none nested in another) or nothing; any other prompt is decoded once and its candidate chosen for stability then predicted IoU, biased to the whole object. Ties break in a fixed order, so the same analysis and prompt always choose the same candidates. A stroke holds at most 1024 positions. Result: {artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, prompt, decision, candidate, models}, the artifact and provenance mask.add-model takes; prompt is {point, candidate?} or {stroke, radius, candidate?} as this request named it (null for labelled points or a box), which a model component stores and Recompute sends back. The artifact can be removed with task.fill-generative's object-artifacts while the photograph is as it is now. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
         "optional": {
           "box": "a box around the object: its top-left and bottom-right corners",
           "candidate": "the candidate position query.pick-object answered for the same prompt; default the decision's one object",
@@ -12254,7 +12342,7 @@
             "kind": "points",
             "name": "stroke",
             "notes": "a brush stroke's path over one or more objects",
-            "points_max": 16384,
+            "points_max": 1024,
             "points_min": 1,
             "precision": null,
             "required": false,

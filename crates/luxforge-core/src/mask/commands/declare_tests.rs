@@ -369,7 +369,9 @@ fn registering_a_kind_is_enough_to_make_it_creatable_addable_and_patchable() {
                     assert!(
                         matches!(
                             parameter.kind,
-                            ParameterKind::Artifact | ParameterKind::String { .. }
+                            ParameterKind::Artifact
+                                | ParameterKind::String { .. }
+                                | ParameterKind::Json
                         ),
                         "{where_}"
                     );

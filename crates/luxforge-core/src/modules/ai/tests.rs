@@ -33,6 +33,7 @@ use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 mod analysis;
+mod objects;
 
 const TASK: &str = "task.fill-generative";
 const ACCEPT: &str = "edit.accept-correction-patch";
@@ -733,6 +734,7 @@ fn admission_refuses_a_region_past_a_candidate_or_the_artifact_budget() {
             &TaskAdmission {
                 stage: Some(stage),
                 artifact_bytes,
+                identity: None,
             },
         )
     };

@@ -13,6 +13,7 @@ use super::{
 };
 use crate::{
     AssetId, Availability, EditorService, Error, JobId, ModuleDescriptor, MutationRequest,
+    ParameterKind,
     api::{Origin, params},
     artifacts::candidates::CandidateSink,
     capabilities::{
@@ -125,6 +126,71 @@ fn profile_view(descriptor: &ModuleDescriptor, profile: &ProfileRead) -> Profile
             })
             .collect(),
     }
+}
+
+/// The artifacts a task's checked parameters name, in declaration order: each `artifact`
+/// parameter's identity and each `artifacts` parameter's, which the generic check has already
+/// parsed.
+fn parameter_artifacts(
+    declared: &[crate::ParameterDescriptor],
+    checked: &serde_json::Map<String, Value>,
+) -> Vec<crate::ArtifactId> {
+    let mut ids = Vec::new();
+    for parameter in declared {
+        let values = match (&parameter.kind, checked.get(&parameter.name)) {
+            (ParameterKind::Artifact, Some(value)) => std::slice::from_ref(value),
+            (ParameterKind::Artifacts { .. }, Some(Value::Array(values))) => values.as_slice(),
+            _ => continue,
+        };
+        for id in values.iter().filter_map(Value::as_str) {
+            if let Ok(id) = crate::ArtifactId::parse(id)
+                && !ids.contains(&id)
+            {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+/// The verified bytes of the artifacts a task's parameters name, once the request is admitted.
+/// Only the source work reads an artifact for the editor, so one that is not kept ready is
+/// `preparation-required` naming the photograph's current entry with these artifacts beside what
+/// its stack needs: the owner queues that source job, and the request is sent again once it is
+/// ready. A task that names no photograph has nothing to prepare them with and is refused
+/// `validation`.
+fn ready_artifacts(
+    service: &EditorService,
+    asset_id: Option<&AssetId>,
+    bindings: Vec<(crate::ArtifactId, crate::editor::ArtifactBinding)>,
+) -> Result<Vec<Arc<crate::artifacts::PreparedArtifact>>, Error> {
+    let mut ready = Vec::with_capacity(bindings.len());
+    let mut unprepared = Vec::new();
+    for (id, binding) in bindings {
+        match binding {
+            crate::editor::ArtifactBinding::Ready(artifact) => ready.push(artifact),
+            crate::editor::ArtifactBinding::Unprepared(_) => unprepared.push(id),
+        }
+    }
+    if unprepared.is_empty() {
+        return Ok(ready);
+    }
+    let Some(asset_id) = asset_id else {
+        return Err(Error::validation(format!(
+            "artifact {} is not ready and the task names no photograph to prepare it with",
+            unprepared[0]
+        )));
+    };
+    let mut needs = service.entry_needs(asset_id, None)?;
+    for id in unprepared {
+        if !needs.artifacts.contains(&id) {
+            needs.artifacts.push(id);
+        }
+    }
+    Err(
+        Error::preparation_required("the task's artifacts are not ready")
+            .with_preparation(crate::error::Preparation::Needs(needs)),
+    )
 }
 
 /// The secret fields of a module's profile block.
@@ -406,10 +472,18 @@ impl CapabilityHost {
             (Some(boundary), Some(asset_id)) => Some(service.stage_plan(asset_id, boundary)?),
             _ => None,
         };
+        // Every artifact the task's parameters name is recorded and present before the module
+        // admits the request; the job is given their verified bytes.
+        let artifacts = service.task_artifacts(&parameter_artifacts(&task.parameters, &checked))?;
+        let identity = match (&plan, &asset_id) {
+            (Some(plan), Some(asset_id)) => Some(StageIdentity::of(asset_id, &plan.input)),
+            _ => None,
+        };
         hooks.admit_task(
             task_id,
             &checked,
             &TaskAdmission {
+                identity: identity.clone(),
                 stage: plan.as_ref().map(|plan| plan.size),
                 artifact_bytes: plan.as_ref().map_or(0, |plan| {
                     plan.evaluation
@@ -421,6 +495,7 @@ impl CapabilityHost {
                 }),
             },
         )?;
+        let artifacts = ready_artifacts(service, asset_id.as_ref(), artifacts)?;
 
         let run = TaskRun {
             control: JobControl::new(),
@@ -465,9 +540,12 @@ impl CapabilityHost {
             context =
                 context.with_runtime(&capability, RuntimeGrant::new(self.runtime.clone(), load));
         }
+        for artifact in artifacts {
+            context = context.with_task_artifact(artifact);
+        }
         if let Some(plan) = plan {
-            if let Some(asset_id) = &asset_id {
-                context = context.with_identity(StageIdentity::of(asset_id, &plan.input));
+            if let Some(identity) = identity {
+                context = context.with_identity(identity);
             }
             context = context.with_read(GrantedRead {
                 plan,

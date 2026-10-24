@@ -200,6 +200,16 @@ pub enum ParameterKind {
     /// One derived artifact published in this catalog, as its opaque `artifact-…` identity. The
     /// generic check validates the identity's syntax; the commit checks that the artifact exists.
     Artifact,
+    /// A set of `artifacts_min..=artifacts_max` distinct derived artifacts published in this
+    /// catalog, as a JSON array of their identities. Only a task declares one: the host checks
+    /// that every artifact a task's parameters name is recorded (`validation: unknown artifact
+    /// <id>` otherwise) before the task is queued, and the job reads them on its lane
+    /// ([`crate::capabilities::context::ModuleContext::artifact`]). A task's single
+    /// [`Self::Artifact`] parameter is bound the same way.
+    Artifacts {
+        artifacts_min: usize,
+        artifacts_max: usize,
+    },
     /// Ordered [x, y] fractions. Interpolation belongs to the module.
     Curve {
         points_min: usize,
@@ -338,6 +348,9 @@ pub(super) const MAX_ENDPOINT_BYTES: usize = 4096;
 /// The longest secret a module may declare, in characters.
 pub(crate) const MAX_SECRET_LENGTH: usize = 4096;
 
+/// The most artifacts one [`ParameterKind::Artifacts`] parameter may declare it takes.
+pub(crate) const MAX_ARTIFACTS_PARAMETER: usize = 16;
+
 impl ParameterKind {
     /// The kind's tag as it is serialized, for messages.
     pub fn name(&self) -> &'static str {
@@ -349,6 +362,7 @@ impl ParameterKind {
             Self::Boolean => "boolean",
             Self::Points { .. } => "points",
             Self::Artifact => "artifact",
+            Self::Artifacts { .. } => "artifacts",
             Self::Curve { .. } => "curve",
             Self::String { .. } => "string",
             Self::Settings => "settings",
@@ -365,6 +379,12 @@ impl ParameterKind {
     /// [`Self::Secret`].
     pub(crate) fn setting_only(&self) -> bool {
         matches!(self, Self::Endpoint { .. } | Self::Secret { .. })
+    }
+
+    /// Whether only a module's task declares this kind: see [`Self::Artifacts`], which the host
+    /// binds at a task's admission and no other declaration reads.
+    pub(crate) fn task_only(&self) -> bool {
+        matches!(self, Self::Artifacts { .. })
     }
 
     /// Whether only the host declares this kind, for its own objects' commands and its own
@@ -491,6 +511,21 @@ impl ParameterDescriptor {
 
     pub(crate) fn artifact(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Artifact)
+    }
+
+    /// A task's set of `artifacts_min..=artifacts_max` distinct artifacts.
+    pub(crate) fn artifacts(
+        name: impl Into<String>,
+        artifacts_min: usize,
+        artifacts_max: usize,
+    ) -> Self {
+        Self::new(
+            name,
+            ParameterKind::Artifacts {
+                artifacts_min,
+                artifacts_max,
+            },
+        )
     }
 
     /// A non-monotone curve with no fixed `x`s; chain [`Self::monotone`] to make it monotone.
