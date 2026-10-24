@@ -1352,6 +1352,8 @@ fn the_select_info_panel_describes_the_active_item() {
         panic!("one item");
     };
     assert_eq!(frame.name, "DSC_0002.NEF");
+    // Its preview is its cell's: the grid preview held for view position 2.
+    assert_eq!(frame.position, 2);
     assert_eq!(frame.aspect, Some(4024.0 / 6048.0), "turned upright");
     // A picked file's Pick band says it is picked for Develop and what that means, with the view's
     // picks in Develop N.
