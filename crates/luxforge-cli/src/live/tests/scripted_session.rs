@@ -1,8 +1,8 @@
 //! A scripted live session for these tests: a loopback listener that writes the session file beside
 //! a scratch catalog, accepts one connection and answers each request line through a script,
 //! recording every request it read, so a test controls exactly what the client is told. The
-//! handshake's `schema.list` is answered with the built-in registry's own schema unless a test
-//! scripts it ([`Endpoint::serve_all`]).
+//! handshake's `schema.list` is answered with the built-in registry's own schema, and its
+//! `session.identify` as the owner answers it, unless a test scripts them ([`Endpoint::serve_all`]).
 use luxforge_core::{LocalSessionInfo, ModuleRegistry, PROTOCOL, live_session_file};
 use serde_json::{Value, json};
 use std::{
@@ -42,8 +42,9 @@ pub(super) struct Endpoint {
 }
 
 impl Endpoint {
-    /// Serve one connection, answering its handshake with [`schema`] and each request after it,
-    /// `n` from 0, with `script(n, request)`.
+    /// Serve one connection, answering its handshake, `schema.list` with [`schema`] and the
+    /// client's `session.identify`, and each request after it, `n` from 0, with
+    /// `script(n, request)`.
     pub fn serve(mut script: impl FnMut(usize, &Value) -> Reply + Send + 'static) -> Self {
         Self::serve_all(move |n, request| match n {
             0 => {
@@ -53,7 +54,18 @@ impl Endpoint {
                 );
                 Reply::Result(schema().clone())
             }
-            _ => script(n - 1, request),
+            1 => {
+                assert_eq!(
+                    (&request["method"], &request["params"]),
+                    (
+                        &json!("session.identify"),
+                        &json!({"label": "luxforge-ctl"})
+                    ),
+                    "the client names itself next"
+                );
+                Reply::Result(json!({"client_id": 2, "label": "luxforge-ctl"}))
+            }
+            _ => script(n - 2, request),
         })
     }
 

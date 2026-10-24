@@ -107,7 +107,10 @@ impl ApiResponse {
 /// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
 /// wrote. An event a job records — a batch it committed, and the one it records as it ends —
 /// also names the job (`job_id`), so a client tells the job's end and its progress apart by the
-/// job and reads `job.read` only for its own.
+/// job and reads `job.read` only for its own. A client's connection, identification and
+/// disconnection (`session.connect`, `session.identify`, `session.disconnect`) name the client
+/// (`client_id`) and nothing else; a connection or a disconnection no request made has an empty
+/// request identity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -124,6 +127,9 @@ pub struct ApiEvent {
     pub index_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<JobId>,
+    /// The client a connection, identification or disconnection event is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<ClientId>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -139,6 +145,8 @@ pub(crate) struct Origin {
     pub index_revision: Option<u64>,
     /// The job that recorded the change, when a job did.
     pub job_id: Option<JobId>,
+    /// The client a change to the connected clients is about.
+    pub client_id: Option<ClientId>,
 }
 
 impl Origin {
@@ -151,7 +159,14 @@ impl Origin {
             library_sequence: None,
             index_revision: None,
             job_id: None,
+            client_id: None,
         }
+    }
+
+    /// The same request, naming the client whose connection it changed.
+    pub(crate) fn client(mut self, client_id: ClientId) -> Self {
+        self.client_id = Some(client_id);
+        self
     }
 
     /// The same request, naming the job that recorded the change.
@@ -576,6 +591,17 @@ pub enum ClientAuthority {
     #[default]
     Edit,
     Permissions,
+}
+
+/// How a client reaches the owner, as `session.clients` reports it: a loopback connection to the
+/// desktop's live session, a JSON-lines stream such as `luxforge-json`'s standard input and
+/// output, or a client the host runs in its own process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientTransport {
+    Loopback,
+    Stdio,
+    DesktopInternal,
 }
 
 /// Per-client session state held by the owner. `revision` increases on every session change so a

@@ -278,8 +278,7 @@ use evidence::Evidence;
 use gesture::{CoreGesture, Starting};
 use iced::{Subscription, Task};
 use luxforge_core::{
-    ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
-    POINTER_MODE,
+    ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle, POINTER_MODE,
 };
 use luxforge_ui::Element;
 use message::{
@@ -723,7 +722,7 @@ impl Editor {
         } = boot;
         // The desktop's own client may grant module permissions: it does so only after the person
         // presses Allow in its consent notice.
-        let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
+        let client = client.unwrap_or_else(|| owner.register_desktop());
         // Decided once: a person-launched macOS release build asks to move into Applications, and
         // an evidence run asks only when told to, so the question can be captured.
         let asker = state::move_to_applications::Asker::of(

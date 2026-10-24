@@ -41,7 +41,10 @@ with the same history and undo behavior as an edit made in the desktop.
   `schema.list`, answered within five seconds and naming `luxforge-jsonl-1`, so an address that a
   stale file names and another program now holds can neither hang the CLI nor be mistaken for the
   session: a silent, closed, malformed or token-refusing answer is `stale-session`, another
-  protocol `unsupported-protocol`. After the handshake there is no deadline on an answer: a
+  protocol `unsupported-protocol`. The handshake then sends `session.identify {label:
+  "luxforge-ctl"}`, within the same five seconds, so the desktop's list of connected clients
+  (`session.clients`) names the connection for as long as it is open. After the handshake there is
+  no deadline on an answer: a
   legitimate long pixel read or held `job.wait` takes as long as it takes. A session already
   serving eight clients answers a ninth connection with one `resource-limit` failure
   (`data.max_clients`) before closing it, which the CLI keeps as answered.

@@ -271,6 +271,9 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `render.transform` | Exempt (read) | A point query. |
 | `resources.read` | Exempt (read) | Reads resource figures. |
 | `schema.list` | Exempt (read) | Discovery. |
+| `session.clients` | Exempt (read) | Lists the connected clients. |
+| `session.disconnect` | Exempt (internal) | Session administration: closes another client's connection; no registry value. |
+| `session.identify` | Exempt (internal) | Names the calling client; automatic, not a person's operation. |
 | `session.state` | Exempt (read) | Reads the session. |
 | `source.check` | Exempt (read) | Checks originals' availability; the result is a status, not an operation. |
 | `source.find` | `interaction` `originals-find` | When accepted; the search's rows are its own result. |

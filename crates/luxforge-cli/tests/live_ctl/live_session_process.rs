@@ -255,6 +255,45 @@ fn live_session_process_reads_schema_and_state_and_fails_without_a_session() {
             .unwrap()
             .contains_key("job.wait")
     );
+    // While its connection is open, luxforge-ctl is listed by the name it gave itself.
+    let mut batch = Command::new(BINARY)
+        .arg("--catalog")
+        .arg(&live.catalog)
+        .arg("batch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = batch.stdin.take().unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"id": "info", "method": "catalog.info", "params": {}})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let mut answer = String::new();
+    BufReader::new(batch.stdout.take().unwrap())
+        .read_line(&mut answer)
+        .unwrap();
+    let answer: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer["id"], "info", "{answer}");
+    let listed = live.ask("session.clients", json!({}));
+    let clients = listed["clients"].as_array().unwrap();
+    assert_eq!(clients.len(), 1, "{listed}");
+    assert_eq!(
+        (
+            &clients[0]["label"],
+            &clients[0]["transport"],
+            &clients[0]["authority"]
+        ),
+        (&json!("luxforge-ctl"), &json!("loopback"), &json!("edit")),
+        "{listed}"
+    );
+    drop(input);
+    assert_eq!(batch.wait().unwrap().code(), Some(0));
+    live.clients_gone();
     // A live client cannot grant consent: that authority is the desktop's alone.
     let refused = live
         .ctl(&[
@@ -521,7 +560,12 @@ fn live_session_process_conflicts_with_a_competing_commit_and_never_retries() {
     assert_eq!(error["error"]["code"], "conflict", "{error}");
     assert_eq!(
         forwarding.join().unwrap(),
-        ["schema.list", "asset.state", "edit.set-basic"],
+        [
+            "schema.list",
+            "session.identify",
+            "asset.state",
+            "edit.set-basic"
+        ],
         "the edit was sent once and never retried"
     );
     assert_eq!(

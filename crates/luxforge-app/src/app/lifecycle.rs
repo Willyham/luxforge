@@ -11,7 +11,7 @@ use crate::{Config, state::unsupported_catalog::Refusal};
 use iced::Task;
 use luxforge_cli::Paths;
 use luxforge_core::{
-    ClientAuthority, ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
+    ClientId, ErrorKind, HostConfig, LocalServer, ModuleRegistry, OwnerHandle,
     capabilities::{
         secrets::{MemorySecretStore, SecretStore},
         transport::Transport,
@@ -318,7 +318,7 @@ pub(crate) fn boot(
     // Queue only the first command-line file. The source worker can read and decode it while
     // Iced/AppKit initializes, without making the window thread read the image or changing the
     // normal adoption, history and error path. Evidence mode opens later files in order as usual.
-    let client = owner.register_with(ClientAuthority::Permissions);
+    let client = owner.register_desktop();
     let initial_import = config
         .files
         .front()

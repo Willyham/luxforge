@@ -10,7 +10,7 @@ mod client;
 pub mod command;
 mod session;
 
-pub use client::{CONNECT_TIMEOUT, HANDSHAKE_TIMEOUT, LiveClient, RESPONSE_LIMIT};
+pub use client::{CONNECT_TIMEOUT, HANDSHAKE_TIMEOUT, LABEL, LiveClient, RESPONSE_LIMIT};
 pub use session::{LiveSession, SESSION_FILE_LIMIT, find_session};
 
 use luxforge_core::ApiFailure;
