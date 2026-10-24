@@ -141,7 +141,7 @@
     {
       "id": "TASK-003",
       "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the too-small line, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
