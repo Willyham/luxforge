@@ -57,6 +57,7 @@ mod mask_acceptance;
 mod mask_brush_smoke;
 mod mask_combine_smoke;
 mod mask_interactions_smoke;
+mod mask_object_smoke;
 mod mask_panel_smoke;
 mod mask_range_smoke;
 mod mask_smoke;

@@ -1071,6 +1071,13 @@ fn plan_sample(
     })
 }
 
+/// A component a geometry method adds, as its history label says it: its kind (`linear`), or for a
+/// model selection the class it selected and that a model selected it (`object (model)`), so a
+/// picked object's entry reads `Add object (model)` and a sky's `Add sky (model)`.
+fn spoken_geometry(kind: &str, parameters: &Map<String, Value>) -> String {
+    crate::mask::model::spoken_selection(kind, parameters).unwrap_or_else(|| spoken(kind))
+}
+
 /// The one label rule: the command's own text, prefixed with the mask's name whenever the resulting
 /// stack carries more than one mask, because a history list shared with every other module cannot
 /// afford `Update Linear 1` alone.
@@ -1078,16 +1085,6 @@ fn plan_sample(
 /// It is evaluated on the *resulting* mask table, so the mask a `mask.create` just made is counted;
 /// and a command whose text already names its mask — rename, duplicate, reorder and the destructive
 /// delete — is not prefixed with it twice.
-/// A component a geometry method adds, as its history label says it: its kind (`linear`), or for a
-/// model selection the class it selected and that a model selected it (`object (model)`), so a
-/// picked object's entry reads `Add object (model)` and a sky's `Add sky (model)`.
-fn spoken_geometry(kind: &str, parameters: &Map<String, Value>) -> String {
-    match parameters.get("class").and_then(Value::as_str) {
-        Some(class) if kind == crate::mask::model::KIND => format!("{class} (model)"),
-        _ => spoken(kind),
-    }
-}
-
 fn mask_label(base: String, names_mask: bool, mask: Option<&MaskId>, resulting: &Recipe) -> String {
     if names_mask || resulting.masks.len() < 2 {
         return base;

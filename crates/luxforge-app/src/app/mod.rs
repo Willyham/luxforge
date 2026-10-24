@@ -152,6 +152,7 @@ mod motion_tests;
 pub(crate) mod move_to_applications;
 #[cfg(test)]
 mod move_to_applications_tests;
+pub(crate) mod object_pick;
 pub(crate) mod omarchy_current;
 #[cfg(test)]
 mod omarchy_current_tests;
@@ -183,7 +184,6 @@ mod preview_read;
 mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
-pub(crate) mod object_pick;
 mod query_choice;
 pub(crate) mod range_picker;
 mod relaunch;

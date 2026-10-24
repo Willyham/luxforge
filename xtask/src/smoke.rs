@@ -14,8 +14,9 @@ use crate::{
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
-    mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    minify_smoke as minify, minimap_smoke as minimap, mixer_smoke as mixer,
+    mask_object_smoke as mask_object, mask_panel_smoke as mask_panel,
+    mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
+    minimap_smoke as minimap, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     panorama_merge_smoke as panorama_merge, performance_smoke as performance, pick_smoke as pick,
     presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
@@ -1017,6 +1018,22 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[corrections::FIXTURE]),
         window: Some(PANELLED),
         note: Some(ai_setup::NOTE),
+        own: None,
+    },
+    Scenario {
+        name: mask_object::SCENARIO,
+        about: mask_object::ABOUT,
+        launches: &[LaunchSpec {
+            plan: mask_object::plan,
+            // The fake segmenter, its setup and the fake runtime are served only by a host that
+            // serves the developer modules.
+            developer: true,
+            ..APP
+        }],
+        verify: mask_object::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
         own: None,
     },
     Scenario {

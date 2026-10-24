@@ -36,7 +36,6 @@ use luxforge_core::{
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 
-
 /// `query.pick-object`.
 pub(crate) const PICK: &str = "query.pick-object";
 /// `task.analyse`.
@@ -94,6 +93,39 @@ pub(crate) fn select_module<'a>(
     })
 }
 
+/// A setup a picking tool needs, by the id its module declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SetupId {
+    /// Masks › Object: the object finder.
+    MaskObject,
+}
+
+impl SetupId {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::MaskObject => crate::state::fill_setup::MASK_OBJECT,
+        }
+    }
+}
+
+/// The line of `setup` (one of `fill_setup`'s ids, such as [`fill_setup::MASK_OBJECT`]) a picking
+/// tool needs, from the available module that declares it, as the setup flow derives it from the
+/// module's last-read status: installed, checking (`state` is `None`), or what to press.
+///
+/// [`fill_setup::MASK_OBJECT`]: crate::state::fill_setup::MASK_OBJECT
+pub(crate) fn setup_line(
+    modules: &[ModuleDescriptor],
+    capabilities: &crate::state::capabilities::CapabilityStore,
+    setup: &str,
+) -> Option<crate::state::fill_setup::SetupLine> {
+    modules
+        .iter()
+        .filter(|module| module.is_available())
+        .find_map(|module| {
+            crate::state::fill_setup::group(module, capabilities.module(&module.id), setup)
+        })
+}
+
 /// The hovered object as the canvas draws it: an image over its bounds in normalized content
 /// coordinates, for the photograph and revision it was picked on.
 #[derive(Clone, Debug)]
@@ -105,13 +137,16 @@ pub(crate) struct HoverOverlay {
     pub(crate) handle: Handle,
 }
 
+/// A candidate's highlight, decoded off the update loop: its width, height and RGBA bytes.
+pub(crate) type Highlight = (u32, u32, Vec<u8>);
+
 /// One point pick's answer, decoded off the update loop: the overlay of its chosen candidate, or
 /// none when it chose nothing.
 #[derive(Clone, Debug)]
 pub(crate) struct Picked {
     pub(crate) decision: String,
     pub(crate) bounds: Option<[f64; 4]>,
-    pub(crate) image: Option<(u32, u32, Vec<u8>)>,
+    pub(crate) image: Option<Highlight>,
 }
 
 /// The answer of `query.pick-object` as the overlay it draws: the first chosen candidate's bounds
@@ -135,7 +170,7 @@ pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
 }
 
 /// One candidate's bounds and, when its preview was sent, the highlight drawn from it.
-fn candidate_image(candidate: &Value) -> Result<(Option<[f64; 4]>, Option<(u32, u32, Vec<u8>)>), String> {
+fn candidate_image(candidate: &Value) -> Result<(Option<[f64; 4]>, Option<Highlight>), String> {
     let bounds = candidate["bounds"].as_array().and_then(|bounds| {
         let values: Vec<f64> = bounds.iter().filter_map(Value::as_f64).collect();
         <[f64; 4]>::try_from(values).ok()
@@ -256,7 +291,11 @@ pub(crate) fn click_prompt(point: [f64; 2]) -> ObjectPrompt {
 
 /// The prompt a loose stroke selects with: the decision's one object without a candidate, or one
 /// of several by its position.
-pub(crate) fn stroke_prompt(stroke: &[[f64; 2]], radius: f64, candidate: Option<u32>) -> ObjectPrompt {
+pub(crate) fn stroke_prompt(
+    stroke: &[[f64; 2]],
+    radius: f64,
+    candidate: Option<u32>,
+) -> ObjectPrompt {
     ObjectPrompt::Stroke {
         stroke: stroke.to_vec(),
         radius,
@@ -362,7 +401,7 @@ pub(crate) struct FoundCandidate {
     pub(crate) position: u32,
     pub(crate) bounds: [f64; 4],
     /// Its highlight, decoded off the update loop.
-    pub(crate) image: Option<(u32, u32, Vec<u8>)>,
+    pub(crate) image: Option<Highlight>,
 }
 
 /// A loose stroke's answer, decoded off the update loop.
@@ -507,6 +546,9 @@ pub(crate) struct ObjectPick {
     /// The hover position wanted next, and the one whose pick is in flight.
     pub(crate) want: Option<[f64; 2]>,
     pub(crate) asking: Option<[f64; 2]>,
+    /// The hover position last sent and the revision it was sent for: not sent again until the
+    /// pointer or the photograph moves, or an analysis lands.
+    pub(crate) asked_for: Option<([f64; 2], u64)>,
     /// What the canvas draws of the object under the pointer.
     pub(crate) overlay: Option<HoverOverlay>,
     /// Point picks answered.
@@ -539,6 +581,7 @@ impl ObjectPick {
             loads: Vec::new(),
             want: None,
             asking: None,
+            asked_for: None,
             overlay: None,
             answered: 0,
             press: None,
@@ -702,14 +745,20 @@ mod tests {
     /// holds more positions than a stored prompt may.
     #[test]
     fn object_pick_a_loose_stroke_is_thinned_and_bounded() {
-        let dense: Vec<[f64; 2]> = (0..=100).map(|i| [0.4 + f64::from(i) * 0.0001, 0.5]).collect();
+        let dense: Vec<[f64; 2]> = (0..=100)
+            .map(|i| [0.4 + f64::from(i) * 0.0001, 0.5])
+            .collect();
         let thin = thinned(&dense, 0.02);
         assert_eq!(thin.first(), Some(&[0.4, 0.5]));
         assert_eq!(thin.last(), dense.last());
         assert!(thin.len() < 4, "{thin:?}");
         let long: Vec<[f64; 2]> = (0..5000).map(|i| [f64::from(i) * 0.01, 0.5]).collect();
         let bounded = thinned(&long, 0.0004);
-        assert!(bounded.len() <= OBJECT_PROMPT_POINTS_MAX, "{}", bounded.len());
+        assert!(
+            bounded.len() <= OBJECT_PROMPT_POINTS_MAX,
+            "{}",
+            bounded.len()
+        );
         assert_eq!(bounded.last(), long.last());
     }
 
@@ -733,7 +782,11 @@ mod tests {
             json!({"asset_id": asset, "point": [[0.25, 0.5]], "mutation": mutation})
         );
         assert_eq!(
-            select_request(&asset, &stroke_prompt(&stroke, 0.03, Some(2)), mutation.clone()),
+            select_request(
+                &asset,
+                &stroke_prompt(&stroke, 0.03, Some(2)),
+                mutation.clone()
+            ),
             json!({"asset_id": asset, "stroke": stroke, "radius": 0.03, "candidate": 2, "mutation": mutation})
         );
         // A stored prompt asks the picker again as the gesture that made it did.
@@ -802,9 +855,11 @@ mod tests {
         assert!(selects.idle());
         for _ in 0..SELECTION_LIMIT {
             assert!(selects.room());
-            selects
-                .queued
-                .push_back((SelectFor::Pick(PickUse::Mask), asset.clone(), click_prompt([0.5, 0.5])));
+            selects.queued.push_back((
+                SelectFor::Pick(PickUse::Mask),
+                asset.clone(),
+                click_prompt([0.5, 0.5]),
+            ));
         }
         assert!(!selects.room());
         let (mask, component) = (MaskId::new(), ComponentId::new());
@@ -815,6 +870,10 @@ mod tests {
             click_prompt([0.5, 0.5]),
         ));
         assert_eq!(selects.drop_for(PickUse::Mask), SELECTION_LIMIT - 1);
-        assert_eq!(selects.queued.len(), 1, "a Recompute is not the tool's to drop");
+        assert_eq!(
+            selects.queued.len(),
+            1,
+            "a Recompute is not the tool's to drop"
+        );
     }
 }

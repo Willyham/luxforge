@@ -415,6 +415,17 @@ pub(crate) struct AlphaRaster {
     block: OnceLock<Arc<[u32]>>,
 }
 
+/// How a history label speaks of a `kind` component with these parameters when it is a model
+/// selection: the class it selected and that a model selected it (`object (model)`); `None` for
+/// every other kind.
+pub(crate) fn spoken_selection(
+    kind: &str,
+    parameters: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let class = parameters.get("class")?.as_str()?;
+    (kind == KIND).then(|| format!("{class} (model)"))
+}
+
 /// The non-zero rectangle of `width`-wide row-major `codes` in texels, `[x0, y0, x1, y1]`
 /// inclusive; `None` when every code is zero. One scan.
 pub(crate) fn nonzero_rect(codes: &[u8], width: u32) -> Option<[u32; 4]> {

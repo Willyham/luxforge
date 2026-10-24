@@ -22,6 +22,7 @@ use super::{
     decoded_handles::image_handle,
     message::{
         Message,
+        capability::CapabilityMessage,
         object_pick::{ObjectPickMessage, ObjectPointer},
     },
     tasks::{self, CallError, owner_task},
@@ -29,45 +30,32 @@ use super::{
 use crate::{
     brush::ContentMap,
     object_pick::{
-        self as pick, ANALYSE, Decision, Found, HoverOverlay, NOTHING_FOUND,
-        NOTHING_TO_SELECT, ObjectPick, PICK, Picked, Pin, Pins, PickUse, RUNTIME_LOAD, SELECT,
-        SelectFor,
+        self as pick, ANALYSE, Decision, Found, HoverOverlay, NOTHING_FOUND, NOTHING_TO_SELECT,
+        ObjectPick, PICK, PickUse, Picked, Pin, Pins, RUNTIME_LOAD, SELECT, SelectFor,
     },
-    state::capabilities::Operation,
+    state::{
+        capabilities::Operation,
+        fill_setup::{SetupAction, SetupLine},
+    },
 };
 use iced::Task;
-use luxforge_core::{
-    AssetId, ClientId, DecodedPreview, OwnerHandle, capabilities::resources::ResourceState,
-    mask::ObjectPrompt,
-};
+use luxforge_core::{AssetId, ClientId, DecodedPreview, OwnerHandle, mask::ObjectPrompt};
 use serde_json::{Value, json};
 
 /// The most times one request waits through a source preparation.
 const PREPARATION_RETRIES: usize = 4;
 
-/// A setup a tool opens when its models are missing, by the id its module declares.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SetupId {
-    /// Masks › Object: the object finder.
-    MaskObject,
-}
+pub(crate) use crate::object_pick::SetupId;
 
-impl SetupId {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::MaskObject => "mask-object",
-        }
-    }
-}
-
-/// Whether a setup's resources are all installed, as the module's status last read them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Whether a setup is installed, as the setup flow last derived it from the module's status.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SetupReady {
     /// Every resource of every part is installed.
     Installed,
-    /// This resource of the setup is not installed: the first in declared order.
-    Missing { module: String, resource: String },
-    /// The module's status has not been read yet.
+    /// The setup is not installed: missing, installing, failed or unable to run here. Its line
+    /// says which, and what pressing it sends.
+    Missing(Box<SetupLine>),
+    /// The module's status, and so the setup's state, has not been read yet.
     Unread { module: String },
     /// No available module declares the setup.
     Undeclared,
@@ -205,48 +193,45 @@ impl Editor {
     /// Whether `setup` is installed, from the status the desktop last read of the module that
     /// declares it.
     pub(crate) fn setup_ready(&self, setup: SetupId) -> SetupReady {
-        let Some((module, declared)) = self
+        let Some(module) = self
             .modules
             .iter()
             .filter(|module| module.is_available())
-            .find_map(|module| Some((module, module.setup(setup.as_str())?)))
+            .find(|module| module.setup(setup.as_str()).is_some())
         else {
             return SetupReady::Undeclared;
         };
-        let Some(status) = &self.capabilities.module(&module.id).status else {
-            return SetupReady::Unread {
+        match pick::setup_line(&self.modules, &self.capabilities, setup.as_str()) {
+            Some(line) if line.installed => SetupReady::Installed,
+            Some(line) if line.state.is_some() => SetupReady::Missing(Box::new(line)),
+            _ => SetupReady::Unread {
                 module: module.id.clone(),
-            };
-        };
-        match declared.resources().find(|resource| {
-            !status
-                .resources
-                .iter()
-                .any(|row| row.id == *resource && row.state == ResourceState::Installed)
-        }) {
-            None => SetupReady::Installed,
-            Some(resource) => SetupReady::Missing {
-                module: module.id.clone(),
-                resource: resource.to_owned(),
             },
         }
     }
 
-    /// The setup hook: open the setup sheet for what `setup` is missing.
+    /// The setup hook: open the setup flow for `setup` when it is not installed.
     ///
-    /// The delivered sheet opens when a download the desktop started is refused for want of
-    /// consent and its resource's setup introduces it, so this starts the first missing resource's
-    /// install exactly as the capability block's own Download does; Allow on the sheet grants that
-    /// scope and retries it. Each further missing resource is set up by choosing the tool again.
+    /// The setup's line holds what its own button sends: `SetupAction::Install` while it is
+    /// missing, paused or failed, which is the whole flow (`module.setup.install`, the setup sheet
+    /// when a grant is missing, its jobs tracked, Cancel, Resume and Try again on the line). While
+    /// it installs, or when it cannot run here, the line's words go to the status bar instead.
+    /// Before the status is read it asks for it.
     pub(crate) fn open_setup(&mut self, setup: SetupId) -> Task<Message> {
         match self.setup_ready(setup) {
-            SetupReady::Missing { module, resource } => {
-                self.event(
-                    "setup_opened",
-                    || json!({"setup": setup.as_str(), "module": module, "resource": resource}),
-                );
-                self.capability_op(&module, Operation::Install { resource })
-            }
+            SetupReady::Missing(line) => match line.action {
+                Some((_, action @ SetupAction::Install { .. })) => {
+                    self.event(
+                        "setup_opened",
+                        || json!({"setup": setup.as_str(), "module": action.module_id()}),
+                    );
+                    self.dispatch(Message::Capability(CapabilityMessage::from(action)))
+                }
+                _ => {
+                    self.status.text = line.text;
+                    Task::none()
+                }
+            },
             SetupReady::Unread { module } => {
                 if self.capabilities.module(&module).pending > 0 {
                     return Task::none();
@@ -297,9 +282,10 @@ impl Editor {
         let mut session = ObjectPick::new(purpose, asset.clone(), radius);
         session.loads = resources.clone();
         self.object_pick = Some(session);
-        self.event("object_pick_entered", || {
-            json!({"purpose": purpose.as_str(), "asset_id": asset, "loads": resources})
-        });
+        self.event(
+            "object_pick_entered",
+            || json!({"purpose": purpose.as_str(), "asset_id": asset, "loads": resources}),
+        );
         let mut tasks: Vec<Task<Message>> = resources
             .into_iter()
             .map(|resource| {
@@ -328,9 +314,10 @@ impl Editor {
             return;
         };
         let dropped = self.object_selects.drop_for(session.purpose);
-        self.event("object_pick_left", || {
-            json!({"purpose": session.purpose.as_str(), "reason": reason, "dropped": dropped})
-        });
+        self.event(
+            "object_pick_left",
+            || json!({"purpose": session.purpose.as_str(), "reason": reason, "dropped": dropped}),
+        );
         match session.purpose {
             PickUse::Mask => self.mask_object_left(),
         }
@@ -366,8 +353,7 @@ impl Editor {
                 self.leave_object_pick(reason);
             } else {
                 let entry = self.displayed_entry();
-                if session.entry != entry || (session.map.is_none() && session.request.is_none())
-                {
+                if session.entry != entry || (session.map.is_none() && session.request.is_none()) {
                     let asset = session.asset.clone();
                     let id = self.next_gesture();
                     let session = self.object_pick.as_mut().expect("the armed session");
@@ -447,6 +433,10 @@ impl Editor {
         let Some(point) = session.want else {
             return Task::none();
         };
+        if session.asked_for == Some((point, revision)) {
+            return Task::none();
+        }
+        session.asked_for = Some((point, revision));
         session.asking = Some(point);
         let params = pick::point_query(&asset, point);
         session.last_request = Some(params.clone());
@@ -500,9 +490,10 @@ impl Editor {
             return false;
         }
         let (purpose, asset) = (session.purpose, session.asset.clone());
-        self.event("object_pick_queued", || {
-            json!({"purpose": purpose.as_str(), "prompt": prompt.request_fields()})
-        });
+        self.event(
+            "object_pick_queued",
+            || json!({"purpose": purpose.as_str(), "prompt": prompt.request_fields()}),
+        );
         self.object_selects
             .queued
             .push_back((SelectFor::Pick(purpose), asset, prompt));
@@ -556,7 +547,10 @@ impl Editor {
         self.object_selects.last_request = Some(params.clone());
         self.object_selects.running = Some((purpose.clone(), params.clone()));
         self.object_selects.sent += 1;
-        self.event("object_select", || json!({"method": SELECT, "params": params}));
+        self.event(
+            "object_select",
+            || json!({"method": SELECT, "params": params}),
+        );
         let (owner, client) = (self.owner.clone(), self.client);
         Task::perform(select(owner, client, params), move |result| {
             Message::ObjectPick(ObjectPickMessage::Selected { purpose, result })
@@ -571,7 +565,12 @@ impl Editor {
             .as_ref()
             .filter(|press| press.dragging)
             .map(|press| press.points.as_slice())
-            .or_else(|| session.finding.as_ref().map(|(stroke, _)| stroke.as_slice()))
+            .or_else(|| {
+                session
+                    .finding
+                    .as_ref()
+                    .map(|(stroke, _)| stroke.as_slice())
+            })
             .or(session.nothing.as_deref())
             .or_else(|| session.pins.as_ref().map(|pins| pins.stroke.as_slice()))
     }
@@ -664,6 +663,8 @@ impl Editor {
             } => {
                 if let Some(session) = self.object_pick.as_mut() {
                     session.analysing = None;
+                    // The pick refused for want of this analysis is asked again.
+                    session.asked_for = None;
                     session.analysis_error = result.as_ref().err().cloned();
                 }
                 self.event("object_pick_analysed", || {
@@ -838,10 +839,16 @@ impl Editor {
                     pick::Gesture::Click(point) => {
                         if self.object_overlay().is_none() {
                             self.status.text = NOTHING_TO_SELECT.into();
-                            self.event("object_pick_click", || json!({"point": point, "outlined": false}));
+                            self.event(
+                                "object_pick_click",
+                                || json!({"point": point, "outlined": false}),
+                            );
                             return Task::none();
                         }
-                        self.event("object_pick_click", || json!({"point": point, "outlined": true}));
+                        self.event(
+                            "object_pick_click",
+                            || json!({"point": point, "outlined": true}),
+                        );
                         self.object_enqueue(pick::click_prompt(point));
                         self.flush_selects()
                     }
@@ -926,7 +933,11 @@ impl Editor {
 
     /// Return or Use N: select each chosen pin's candidate, one queued selection each.
     fn object_use(&mut self) -> Task<Message> {
-        let Some(pins) = self.object_pick.as_ref().and_then(|session| session.pins.as_ref()) else {
+        let Some(pins) = self
+            .object_pick
+            .as_ref()
+            .and_then(|session| session.pins.as_ref())
+        else {
             return Task::none();
         };
         let prompts = pins.prompts();

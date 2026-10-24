@@ -17,8 +17,7 @@ use crate::{
     view::mask_canvas::Placement,
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size, Vector,
-    alignment,
+    Color, Point, Rectangle, Renderer, Size, Vector, alignment,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, LineCap, LineDash, Path, Stroke, Text},
 };
@@ -27,11 +26,13 @@ use luxforge_ui::{Theme, theme};
 /// The dashes of a loose stroke's centre line, in logical points.
 const DASH: [f32; 2] = [4.0, 3.0];
 /// A pin's radius, and how far from its centre a press still catches it, in points.
-const PIN_RADIUS: f32 = 9.0;
-const PIN_CATCH: f32 = 12.0;
+const PIN_RADIUS: f32 = 11.0;
+const PIN_CATCH: f32 = 14.0;
 const WHITE: Color = Color::WHITE;
 const UNDER_INK: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.45);
-const PIN_FILL: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.55);
+const PIN_FILL: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.75);
+/// A chosen pin's number, dark on the accent.
+const PIN_CHOSEN_INK: Color = Color::from_rgb(0.1, 0.08, 0.05);
 /// A loose stroke's footprint while it is drawn, and once it found nothing.
 const STROKE_TINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.18);
 const NOTHING_TINT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.32);
@@ -110,7 +111,12 @@ impl<'a> ObjectPickCanvas<'a> {
 
     /// An image over content `bounds`, placed by three of its corners: rotated with the crop and
     /// mirrored with a flip.
-    fn image_over(&self, frame: &mut Frame, bounds: [f64; 4], handle: &iced::widget::image::Handle) {
+    fn image_over(
+        &self,
+        frame: &mut Frame,
+        bounds: [f64; 4],
+        handle: &iced::widget::image::Handle,
+    ) {
         let [x0, y0, x1, y1] = bounds;
         let corner = |x, y| self.placement.canvas_point_unbounded(x, y);
         let (Some(origin), Some(across), Some(down)) =
@@ -203,12 +209,15 @@ impl<'a> ObjectPickCanvas<'a> {
                     PIN_FILL
                 },
             );
-            frame.stroke(&circle, Stroke::default().with_color(WHITE).with_width(1.25));
+            frame.stroke(
+                &circle,
+                Stroke::default().with_color(WHITE).with_width(1.25),
+            );
             frame.fill_text(Text {
                 content: (index + 1).to_string(),
                 position: centre,
-                color: WHITE,
-                size: iced::Pixels(11.0),
+                color: if pin.chosen { PIN_CHOSEN_INK } else { WHITE },
+                size: iced::Pixels(13.0),
                 align_x: alignment::Horizontal::Center.into(),
                 align_y: alignment::Vertical::Center,
                 ..Text::default()
@@ -265,7 +274,9 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
                 let at = cursor
                     .position_in(bounds)
                     .and_then(|point| self.content(point));
-                Some(Action::publish(Message::ObjectPick(ObjectPickMessage::Hover(at))))
+                Some(Action::publish(Message::ObjectPick(
+                    ObjectPickMessage::Hover(at),
+                )))
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.pressed => {
                 state.pressed = false;
@@ -381,7 +392,10 @@ mod tests {
         );
         assert!(matches!(
             published(press),
-            Some(ObjectPickMessage::Pointer(ObjectPointer::Press { view: (480.0, 160.0), .. }))
+            Some(ObjectPickMessage::Pointer(ObjectPointer::Press {
+                view: (480.0, 160.0),
+                ..
+            }))
         ));
         let released = program.update(
             &mut state,
@@ -412,6 +426,9 @@ mod tests {
             bounds,
             Cursor::Available(Point::new(482.0, 161.0)),
         );
-        assert!(matches!(published(pressed), Some(ObjectPickMessage::Pin(0))));
+        assert!(matches!(
+            published(pressed),
+            Some(ObjectPickMessage::Pin(0))
+        ));
     }
 }

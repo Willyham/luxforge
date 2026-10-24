@@ -135,7 +135,7 @@ impl Editor {
                 self.mask_panel.object_choice = Some(create);
                 return self.open_setup(SetupId::MaskObject);
             }
-            super::object_pick::SetupReady::Missing { .. } => {
+            super::object_pick::SetupReady::Missing(_) => {
                 self.event("mask_object_setup", || json!({"create": create}));
                 return self.open_setup(SetupId::MaskObject);
             }
@@ -382,7 +382,11 @@ impl Editor {
             .ok_or("No photograph is open")?
             .asset
             .id;
-        let prompted = || prompt.clone().ok_or("This selection does not record how it was picked");
+        let prompted = || {
+            prompt
+                .clone()
+                .ok_or("This selection does not record how it was picked")
+        };
         Ok(match request {
             ObjectRequest::Pick => {
                 json!({"method": pick::PICK, "params": pick::prompt_query(asset, &prompted()?)})
@@ -415,7 +419,11 @@ impl Editor {
         })
     }
 
-    pub(crate) fn copy_object_request(&mut self, component: String, request: ObjectRequest) -> Task<Message> {
+    pub(crate) fn copy_object_request(
+        &mut self,
+        component: String,
+        request: ObjectRequest,
+    ) -> Task<Message> {
         match self.object_request(&component, request) {
             Ok(copied) => {
                 self.status.text = format!(

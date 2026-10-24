@@ -23,7 +23,7 @@ use super::{
 use crate::{
     Config,
     object_pick::{self as shared, Decision, Found, FoundCandidate, SelectFor},
-    state::capabilities::Operation,
+    state::{capabilities::Operation, fill_setup::SetupAction},
 };
 use iced::keyboard::{Key, Modifiers, key::Named};
 use luxforge_core::{
@@ -177,7 +177,11 @@ impl Picking {
         .unwrap();
         let session = serde_json::from_value(session).unwrap();
         self.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-        assert!(self.editor.mask_mode_active(), "{}", self.editor.status.text);
+        assert!(
+            self.editor.mask_mode_active(),
+            "{}",
+            self.editor.status.text
+        );
     }
 
     /// Run the capability operations the update function started, as the driver's tasks would,
@@ -321,14 +325,23 @@ impl Picking {
         {
             self.answer_hover();
         }
-        assert_eq!(self.editor.object_pick.as_ref().unwrap().asking, Some(point));
+        assert_eq!(
+            self.editor.object_pick.as_ref().unwrap().asking,
+            Some(point)
+        );
         self.answer_hover();
     }
 
     fn click(&mut self, at: [f64; 2]) {
         let view = ((at[0] * 1000.0) as f32, (at[1] * 1000.0) as f32);
-        self.object(ObjectPickMessage::Pointer(ObjectPointer::Press { view, at }));
-        self.object(ObjectPickMessage::Pointer(ObjectPointer::Release { view, at }));
+        self.object(ObjectPickMessage::Pointer(ObjectPointer::Press {
+            view,
+            at,
+        }));
+        self.object(ObjectPickMessage::Pointer(ObjectPointer::Release {
+            view,
+            at,
+        }));
     }
 
     /// Run the selection the desktop is running, as its task would, and hand back its answer.
@@ -340,7 +353,12 @@ impl Picking {
             .clone()
             .expect("a selection is running");
         let queued = loop {
-            match tasks::call_detailed(&self.owner(), self.editor.client, shared::SELECT, params.clone()) {
+            match tasks::call_detailed(
+                &self.owner(),
+                self.editor.client,
+                shared::SELECT,
+                params.clone(),
+            ) {
                 Ok(queued) => break queued,
                 Err(error) if error.code == "preparation-required" => {
                     let job = error.job_id.unwrap();
@@ -384,7 +402,9 @@ impl Picking {
             None,
         )
         .unwrap();
-        self.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refreshed)))));
+        self.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refreshed,
+        )))));
     }
 
     /// Every mask entry's label, oldest first.
@@ -473,18 +493,26 @@ fn mask_object_is_listed_in_the_select_group_while_the_experiment_is_on() {
     assert!(picking.editor.workspace.masks.select.is_empty());
 }
 
-/// Without the object finder, Object… opens the setup sheet: the first missing resource's
-/// download is asked for, and its refusal for want of consent is the sheet.
+/// Without the object finder, Object… sends what its setup line's Set up sends,
+/// `module.setup.install` of `mask-object`, through the setup flow, whose refusal for want of
+/// consent opens the setup sheet.
 #[test]
 #[slow]
 fn mask_object_without_the_object_finder_opens_the_setup_sheet() {
     let mut picking = Picking::opened();
+    let SetupReady::Missing(line) = picking.editor.setup_ready(SetupId::MaskObject) else {
+        panic!("the object finder is missing");
+    };
     assert_eq!(
-        picking.editor.setup_ready(SetupId::MaskObject),
-        SetupReady::Missing {
-            module: AI.into(),
-            resource: ENCODER.into()
-        }
+        line.action.map(|(_, action)| action),
+        Some(SetupAction::Install {
+            module_id: AI.into(),
+            setup: "mask-object".into()
+        })
+    );
+    assert_eq!(
+        picking.editor.workspace.masks.select[0].tag,
+        "set up\u{2026}"
     );
     picking.mask(MaskMessage::ChooseObject(KindMenu::New));
     assert!(picking.editor.object_pick.is_none(), "nothing picks yet");
@@ -492,17 +520,19 @@ fn mask_object_without_the_object_finder_opens_the_setup_sheet() {
         picking.editor.capability_started,
         vec![(
             AI.to_owned(),
-            Operation::Install {
-                resource: ENCODER.into()
+            Operation::InstallSetup {
+                setup: "mask-object".into()
             }
         )]
     );
     picking.answer_capabilities();
-    assert!(picking.editor.capabilities.consent.is_some());
-    assert!(
-        picking.editor.workspace.setup_sheet.is_some(),
-        "the consent introduces a setup, so it is the sheet"
-    );
+    let sheet = picking
+        .editor
+        .workspace
+        .setup_sheet
+        .clone()
+        .expect("the setup sheet");
+    assert!(!sheet.title.is_empty());
 }
 
 /// Entering loads both models and analyses the photograph at once, saying Finding objects…
@@ -549,7 +579,10 @@ fn mask_object_each_pick_commits_one_entry_into_the_same_mask() {
     picking.install();
     picking.choose(KindMenu::New);
     picking.hover(LEFT);
-    assert!(picking.editor.object_overlay().is_some(), "the object is outlined");
+    assert!(
+        picking.editor.object_overlay().is_some(),
+        "the object is outlined"
+    );
     picking.click(LEFT);
     let (_, sent) = picking.editor.object_selects.running.clone().unwrap();
     assert_eq!(
@@ -747,7 +780,10 @@ fn mask_object_a_model_row_goes_stale_and_recompute_and_keep_answer_it() {
         .clone()
         .unwrap();
     assert_eq!(model.stale, None);
-    assert!(model.reasons.is_empty(), "recomputed against the photograph now");
+    assert!(
+        model.reasons.is_empty(),
+        "recomputed against the photograph now"
+    );
 }
 
 /// A model component's menu copies its pick, select and commit exactly as Recompute sends them.
@@ -762,16 +798,29 @@ fn mask_object_a_model_component_copies_its_pick_select_and_commit() {
     let id = component.id.as_str();
     let prompt = shared::click_prompt(LEFT);
     assert_eq!(
-        picking.editor.object_request(id, ObjectRequest::Pick).unwrap(),
+        picking
+            .editor
+            .object_request(id, ObjectRequest::Pick)
+            .unwrap(),
         json!({"method": shared::PICK, "params": shared::point_query(&picking.asset, LEFT)})
     );
-    let select = picking.editor.object_request(id, ObjectRequest::Select).unwrap();
+    let select = picking
+        .editor
+        .object_request(id, ObjectRequest::Select)
+        .unwrap();
     assert_eq!(select["method"], shared::SELECT);
     assert_eq!(
         identified(select["params"].clone()),
-        identified(shared::select_request(&picking.asset, &prompt, json!(request())))
+        identified(shared::select_request(
+            &picking.asset,
+            &prompt,
+            json!(request())
+        ))
     );
-    let commit = picking.editor.object_request(id, ObjectRequest::Commit).unwrap();
+    let commit = picking
+        .editor
+        .object_request(id, ObjectRequest::Commit)
+        .unwrap();
     assert_eq!(commit["method"], "mask.set-model");
     assert_eq!(commit["params"]["artifact"], component.payload["artifact"]);
     assert_eq!(commit["params"]["prompt"], json!({"point": [LEFT]}));
@@ -803,4 +852,24 @@ fn mask_object_turning_the_experiment_off_leaves_picking() {
         .clone()
         .unwrap();
     assert!(model.recompute_reason.is_some());
+}
+
+/// A hover is asked once: the same position on the same revision sends nothing again, so its
+/// answer does not ask again, while a new position does.
+#[test]
+#[slow]
+fn mask_object_a_hover_is_asked_once_per_position_and_revision() {
+    let mut picking = Picking::opened();
+    picking.install();
+    picking.choose(KindMenu::New);
+    picking.hover(LEFT);
+    let session = picking.editor.object_pick.as_ref().unwrap();
+    assert_eq!((session.asking, session.answered), (None, 1));
+    picking.object(ObjectPickMessage::Hover(Some(LEFT)));
+    assert_eq!(picking.editor.object_pick.as_ref().unwrap().asking, None);
+    picking.object(ObjectPickMessage::Hover(Some(RIGHT)));
+    assert_eq!(
+        picking.editor.object_pick.as_ref().unwrap().asking,
+        Some(RIGHT)
+    );
 }
