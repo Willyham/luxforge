@@ -341,10 +341,11 @@
     {
       "id": "TASK-006",
       "description": "Record a real network setup of the published removal conditioning: install the remove setup through the real transport from an empty data root on the M4 and generate once.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "The conditioning klein-4b-removal-conditioning-ba26d15a.lfsdcond (SHA-256 ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141, 15,728,691 bytes) is published on the release models-generative-1 and the module's pinned URL answers it (checked on 2026-10-24 by length, hash and header). What remains is the native run: the remove setup through the real transport from an empty data root on the M4, then one generation, recorded as evidence with the host's load. Nothing else waits on this task."
+        "The conditioning klein-4b-removal-conditioning-ba26d15a.lfsdcond (SHA-256 ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141, 15,728,691 bytes) is published on the release models-generative-1 and the module's pinned URL answers it (checked on 2026-10-24 by length, hash and header).",
+        "Done on the M4 on 2026-10-24 (evidence in the main checkout's private/object-removal/evidence/ai-tools/, report.md and task-006/): headless luxforge-json with a data root that did not exist installed the remove setup through the real transport under one consent and one grant, all four klein files at their pinned lengths with the conditioning from models-generative-1, in 170 s, and generated one 1024 px candidate on Metal in 128 s, with the host's load recorded (1-minute load 0.95 to 3.35). Looked at as images, seed 1 puts the boy on the bridge back and seed 0 removes him, as in TASK-013 of the AI editing plan. The object finder's 133 MB set up over the network through the desktop's setup sheet in a background launch. The corpus's bridge and kayaks JPEGs are Display P3, which the editor refuses, so the runs open their RAWs."
       ],
       "context_links": [
         {
@@ -374,14 +375,16 @@
     {
       "id": "TASK-007",
       "description": "Qualify the AI tools natively on the M4 with the pinned segmenter and klein, measure hover, analysis-ready, select and combined residency against their budgets, and hand off the shared documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004",
         "TASK-005"
       ],
       "extra_context": [
         "Run the Object journey and mask Object on corpus photographs (the bridge, the kayaks, the road) at 24 to 60 MP and on a qualified RAW, with the models staged or downloaded: hover pointer-to-overlay against p50 20 ms and p95 33 ms, analysis ready after entering Object against 300 ms at 24 MP and 500 ms at 60 MP, task.select-object against 2 s, and the resident set with the segmenter and klein loaded together; record the host's load. Timing runs once, here.",
-        "Hand-off for the integrator: features.md, the user guide (Remove, Object, Masks › Object, setup, Settings › Models, the ai.analysis experiment's new scope), the roadmap, the tasks README and ai-editing.md's desktop surface and recorded defaults."
+        "Hand-off for the integrator: features.md, the user guide (Remove, Object, Masks › Object, setup, Settings › Models, the ai.analysis experiment's new scope), the roadmap, the tasks README and ai-editing.md's desktop surface and recorded defaults.",
+        "Run on the M4 on 2026-10-24 with the pinned segmenter and klein (evidence in the main checkout's private/object-removal/evidence/ai-tools/, report.md and task-007/; background evidence launches with the network-installed resources cloned into each run, the 1-minute load recorded every half second, 0.8 to 6.5). The ai-setup, object-remove, mask-object and pick smokes pass on the M4. Within budget: hover, pointer to the pick's answer applied in the desktop (120 warm hovers on seven photographs from 14 to 60 MP); task.select-object; the combined resident set (the module holds 448 MiB and 5 GiB, the whole editor peaks at 6.1 GB physical footprint during a removal and 7.8 GB at most). Missed and published: analysis ready after entering Object with the models loaded (443 to 636 ms at 24 MP against 300 ms, 944 to 952 ms at 60 MP against 500 ms); pointer to drawn overlay is not instrumented, and the captured frame, which includes the harness's screenshot readback, is 35.7 ms at p95 against 33 ms. Looked at as images: the boy on the bridge is removed (the bag he carries is left floating); the road is redrawn rather than removed; the kayaks are not removed.",
+        "Open before this task can complete: the analysis budgets (faster analysis, or a budget the owner raises with this measurement); a measured pointer-to-drawn-overlay figure; removal of the corpus road and kayaks; a small picked object's empty removal region (a kayak's artifact peaks at alpha 130 of 255, so the fill's alpha-one-half core is empty and Generate fails after the job starts with 'the selection covers no pixel of the photograph', though admission and the hover accepted it); a point on a small object picking the surrounding water, after which Generate is refused with resource-limit and its technical message reaches the status bar; the status bar keeping the previous kind's line when Object is chosen until an object is selected; the removed object's hover outline drawn over the candidate draft while the pointer stays over it. Harness: an agent host step sent while Masks › Object is idle never settles."
       ],
       "context_links": [
         {
