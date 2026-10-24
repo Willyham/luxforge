@@ -78,8 +78,9 @@ pub(crate) enum RemoveWait {
 /// The mode's own bookkeeping beside its view state ([`crate::state::remove::RemovePanel`]).
 #[derive(Debug, Default)]
 pub(crate) struct Remove {
-    /// The stroke being painted, and its path as posted at the selection's radius so far.
-    painting: Option<(BrushGesture, Vec<[f64; 2]>)>,
+    /// The stroke being painted (Remove's selection, or Object's shadow), and its path as posted
+    /// at the selection's radius so far.
+    pub(super) painting: Option<(BrushGesture, Vec<[f64; 2]>)>,
     /// Where the last selection stroke ended, for `⇧`-click.
     last_end: Option<[f64; 2]>,
     /// Decoded previews, oldest first: one handle per candidate, kept while it is in the strip.
@@ -114,8 +115,6 @@ pub(crate) struct Remove {
     /// The photograph's revision a candidate was accepted into: the status bar says so until the
     /// photograph moves or a new selection is painted.
     accepted: Option<u64>,
-    /// Hover picking ([`super::remove_hover`]).
-    pub(crate) hover: super::remove_hover::Hover,
 }
 
 /// The candidate previews the strip and the canvas draw, borrowed so each handle keeps its id and
@@ -147,10 +146,6 @@ pub(crate) struct RemoveCanvas<'a> {
     pub(crate) progress: Option<Option<f64>>,
     /// A candidate is shown in the photograph, so the selection is neither tinted nor outlined.
     pub(crate) shown: bool,
-    /// Hover picking is on: a pointer move over the photograph is a pick.
-    pub(crate) picking: bool,
-    /// The hovered object, drawn while no stroke is painted and no candidate is shown.
-    pub(crate) hover: Option<&'a super::remove_hover::HoverOverlay>,
 }
 
 /// A standard base64 string (with padding) as its bytes.
@@ -316,7 +311,7 @@ pub(crate) fn fill_reads(reader: &Reader<String>) -> BoxStream<'static, Message>
 
 /// A seed for a new selection: different each time, and far enough below the request's range that
 /// every Regenerate of it fits.
-fn draw_seed(serial: u64) -> u64 {
+pub(super) fn draw_seed(serial: u64) -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos() as u64);
@@ -341,6 +336,11 @@ impl Editor {
     /// offered, a chosen Remove gives way to the kind the band chose before it, Heal or Clone; a
     /// running generation keeps running, since only a new one is refused.
     pub(crate) fn remove_follow_flags(&mut self) {
+        // Object without `ai.analysis` is Remove again, with Remove's empty selection.
+        if self.remove.object && self.object_select_module().is_none() {
+            self.remove.object = false;
+            self.clear_other_kind();
+        }
         if self.remove.chosen && fill_module(&self.modules, self.settings.flags.as_ref()).is_none()
         {
             self.remove.chosen = false;
@@ -393,10 +393,11 @@ impl Editor {
         let model = tier
             .installed_model()
             .ok_or("The tier's model is not installed")?;
-        let selection = self
-            .remove
-            .selection_on(&asset)
-            .ok_or("Paint over what to remove first")?;
+        let selection = self.remove.filled_on(&asset).ok_or(if self.remove.object {
+            "Point at an object first"
+        } else {
+            "Paint over what to remove first"
+        })?;
         let seed = if regenerate {
             self.remove
                 .newest(&asset)
@@ -413,14 +414,30 @@ impl Editor {
                 .join(" "),
         )
         .filter(|prompt| !prompt.is_empty());
-        let mut params = json!({
-            "asset_id": asset,
-            "selection-points": selection.points,
-            "selection-radius": selection.radius,
-            "model": model.model,
-            "seed": seed,
-            "mutation": tasks::request(),
-        });
+        let mut params = if selection.objects.is_empty() {
+            json!({
+                "asset_id": asset,
+                "selection-points": selection.points,
+                "selection-radius": selection.radius,
+            })
+        } else {
+            // Object: the published artifacts in pick order, and the painted shadow beside them.
+            let artifacts = selection
+                .objects
+                .iter()
+                .map(|object| object.artifact.clone())
+                .collect::<Option<Vec<String>>>()
+                .ok_or("Selecting objects\u{2026}")?;
+            let mut params = json!({"asset_id": asset, "object-artifacts": artifacts});
+            if let Some(effect) = &selection.effect {
+                params["effect-points"] = json!(effect.points);
+                params["effect-radius"] = json!(effect.radius);
+            }
+            params
+        };
+        params["model"] = json!(model.model);
+        params["seed"] = json!(seed);
+        params["mutation"] = json!(tasks::request());
         if let Some(prompt) = &prompt {
             params["prompt"] = json!(prompt);
         }
@@ -539,6 +556,8 @@ impl Editor {
                 .map(|(method, params, _, _)| (method, params))?,
             RemoveRequest::Cancel => self.remove_cancel_request()?,
             RemoveRequest::Preview => self.preview_request()?,
+            RemoveRequest::Pick => return self.object_pick_copy(),
+            RemoveRequest::Select => return self.object_select_copy(),
         };
         let params = redact_params(&method, &params);
         Ok(json!({"method": method, "params": params}))
@@ -560,18 +579,19 @@ impl Editor {
     /// One Remove message.
     pub(crate) fn remove_message(&mut self, message: RemoveMessage) -> Task<Message> {
         match message {
-            RemoveMessage::Choose => {
+            RemoveMessage::Choose | RemoveMessage::ChooseObject => {
                 // No fill task is offered, so there is no Remove to choose.
                 if fill_module(&self.modules, self.settings.flags.as_ref()).is_none() {
                     return Task::none();
                 }
                 self.view_state.menu = None;
-                self.remove.chosen = true;
+                let task = self.choose_fill_kind(matches!(message, RemoveMessage::ChooseObject));
                 self.remove_reads.yielded = false;
                 self.correction_reads.line = None;
                 self.corrections.selected = None;
-                return self.remove_refresh_tiers();
+                return Task::batch([task, self.remove_refresh_tiers()]);
             }
+            RemoveMessage::Shadow => self.object_shadow(),
             RemoveMessage::Tier(tier) => self.remove.tier = Some(tier),
             RemoveMessage::Prompt(text) => {
                 let max = self
@@ -596,18 +616,6 @@ impl Editor {
                 self.remove.notice = None;
             }
             RemoveMessage::Accept => return self.remove_accept(),
-            RemoveMessage::Hover(point) => return self.hover_moved(point),
-            RemoveMessage::Picked {
-                asset,
-                revision,
-                point,
-                result,
-            } => return self.hover_picked(asset, revision, point, result),
-            RemoveMessage::Analysed {
-                asset,
-                revision,
-                result,
-            } => return self.hover_analysed(asset, revision, result),
             RemoveMessage::Setup(action) => {
                 return self.dispatch(Message::Capability(
                     super::message::capability::CapabilityMessage::from(action),
@@ -620,10 +628,17 @@ impl Editor {
                 self.view_state.menu = None;
                 return match self.remove_copy_request(request) {
                     Ok(copied) => {
-                        self.status.text = format!(
-                            "Copied the {} request",
-                            copied["method"].as_str().unwrap_or_default()
-                        );
+                        let first = copied.as_array().and_then(|all| all.first());
+                        self.status.text = match first {
+                            Some(first) => format!(
+                                "Copied the {} requests",
+                                first["method"].as_str().unwrap_or_default()
+                            ),
+                            None => format!(
+                                "Copied the {} request",
+                                copied["method"].as_str().unwrap_or_default()
+                            ),
+                        };
                         let text = serde_json::to_string_pretty(&copied).unwrap_or_default();
                         self.remove_reads.last_copied = Some(copied);
                         iced::clipboard::write(text)
@@ -794,7 +809,7 @@ impl Editor {
     }
 
     /// Cancel the generation running on the photograph on screen.
-    fn remove_cancel(&mut self) -> Task<Message> {
+    pub(super) fn remove_cancel(&mut self) -> Task<Message> {
         let (method, params) = match self.remove_cancel_request() {
             Ok(request) => request,
             Err(reason) => {
@@ -1129,6 +1144,11 @@ impl Editor {
             self.status.text = reason;
             return Task::none();
         }
+        // Object picks; only Paint shadow paints there.
+        if self.remove.object && !self.remove.shadow {
+            self.status.text = self.object_unarmed_reason();
+            return Task::none();
+        }
         // A new stroke starts a new selection: the candidate shown over the last one goes.
         let yielded = self.yield_candidate();
         if let Some(reason) = self.gesture_refusal(Starting::Correction) {
@@ -1201,6 +1221,10 @@ impl Editor {
             return Task::none();
         }
         self.remove_reads.last_end = path.last();
+        if self.remove.object {
+            self.object_shadow_painted(points, radius);
+            return Task::none();
+        }
         self.remove.clear_draft();
         self.remove.serial += 1;
         let serial = self.remove.serial;
@@ -1209,11 +1233,8 @@ impl Editor {
             || json!({"points": points.len(), "radius": radius}),
         );
         self.remove.selection = Some(RemoveSelection {
-            asset,
             points,
-            radius,
-            seed: draw_seed(serial),
-            serial,
+            ..RemoveSelection::empty(asset, serial, draw_seed(serial), radius)
         });
         let action = if self.remove.prompt.trim().is_empty() {
             "Generate"
@@ -1239,12 +1260,18 @@ impl Editor {
         if self.generation_lock().is_some() {
             return Some(self.remove_cancel());
         }
+        if std::mem::take(&mut self.remove.shadow) {
+            self.status.text = "Paint shadow put down".into();
+            return Some(Task::none());
+        }
         let asset = self.document.state.as_ref()?.asset.id.clone();
         let drafted = self.remove.selection_on(&asset).is_some()
             || self.remove.notice.is_some()
             || self.remove.strip_jobs(&asset).next().is_some();
         if drafted {
             self.remove.clear_draft();
+            self.object_selects
+                .drop_for(crate::object_pick::PickUse::Object);
             self.status.text = "Selection cleared".into();
             return Some(Task::none());
         }
@@ -1257,7 +1284,16 @@ impl Editor {
         if !self.remove_active() {
             return false;
         }
-        if self.remove_reads.painting.is_some() || self.generation_lock().is_some() {
+        if self.remove_reads.painting.is_some()
+            || self.generation_lock().is_some()
+            || self.remove.shadow
+        {
+            return true;
+        }
+        if self.object_pick.as_ref().is_some_and(|session| {
+            session.purpose == crate::object_pick::PickUse::Object
+                && (session.pins.is_some() || session.nothing.is_some() || session.press.is_some())
+        }) {
             return true;
         }
         self.document.state.as_ref().is_some_and(|state| {
@@ -1298,13 +1334,7 @@ impl Editor {
         let shown = self
             .core_gesture()
             .is_some_and(|gesture| gesture.candidate().is_some() && gesture.draft.drafted());
-        let picking = self.hover_picking();
-        let hover = self
-            .hover_overlay()
-            .filter(|_| picking && !shown && self.remove_reads.painting.is_none());
         Some(RemoveCanvas {
-            picking,
-            hover,
             selection: selection.map(|selection| selection.points.as_slice()),
             live: self
                 .remove_reads
@@ -1335,8 +1365,6 @@ impl Editor {
             || self.remove.starting.is_some()
             || self.remove.accepting.is_some()
             || !self.remove_reads.reading.is_empty()
-            || self.remove_reads.hover.asking.is_some()
-            || self.remove_reads.hover.analysing.is_some()
             || reading_tiers
         {
             return false;
@@ -1393,7 +1421,8 @@ impl Editor {
                 "fraction": job.fraction,
                 "candidates": job.candidates.iter().map(|row| json!({"candidate": row.candidate, "state": row.state, "label": row.label, "rect": row.rect})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "selection": self.remove.selection.as_ref().map(|selection| json!({"points": selection.points.len(), "radius": selection.radius, "seed": selection.seed})),
+            "selection": self.remove.selection.as_ref().map(|selection| json!({"points": selection.points.len(), "radius": selection.radius, "seed": selection.seed, "serial": selection.serial, "objects": selection.objects.len(), "effect": selection.effect.is_some()})),
+            "object": self.object_tool_summary(),
             "candidate": self.remove.candidate,
             "shown": self.shown_candidate().map(|(key, _)| key),
             "unshown": self.remove_reads.unshown.as_ref().map(|(key, _)| key),
@@ -1401,7 +1430,6 @@ impl Editor {
             "painting": self.remove_reads.painting.is_some(),
             "lock": self.generation_lock(),
             "last_request": self.remove_reads.last_request.as_ref().map(|(method, params)| json!({"method": method, "params": redact_params(method, params)})),
-            "hover": self.hover_record(),
         })
     }
 }
@@ -1410,7 +1438,7 @@ impl Editor {
 /// that left it, read the tiers on entering, and keep the candidate draft on the candidate Remove
 /// wants shown.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
-    let mut tasks = Vec::new();
+    let mut tasks = vec![editor.follow_object_tool()];
     let active = editor.remove_active();
     let fill = fill_module(&editor.modules, editor.settings.flags.as_ref())
         .map(|module| module.id.clone())
@@ -1432,9 +1460,6 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         editor.remove_reads.asked_tiers = false;
         editor.remove_reads.painting = None;
         editor.remove_reads.yielded = false;
-    }
-    if !editor.hover_picking() {
-        editor.hover_reset();
     }
     tasks.push(editor.reconcile_candidate());
     let Some((asset, revision)) = editor

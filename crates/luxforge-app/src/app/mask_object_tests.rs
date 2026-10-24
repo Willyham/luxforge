@@ -304,7 +304,7 @@ impl Picking {
         let params = session.last_request.clone().unwrap();
         assert_eq!(params, shared::point_query(&self.asset, point));
         let revision = self.editor.document.state.as_ref().unwrap().revision;
-        let result = pick(&self.owner(), self.editor.client, params);
+        let result = pick(&self.owner(), self.editor.client, params, false);
         self.object(ObjectPickMessage::Hovered {
             asset: self.asset.clone(),
             revision,
@@ -337,6 +337,7 @@ impl Picking {
         self.object(ObjectPickMessage::Pointer(ObjectPointer::Press {
             view,
             at,
+            modifiers: crate::brush::Modifiers::default(),
         }));
         self.object(ObjectPickMessage::Pointer(ObjectPointer::Release {
             view,
@@ -647,6 +648,7 @@ fn mask_object_a_loose_drag_with_several_objects_puts_up_pins() {
     picking.object(ObjectPickMessage::Pointer(ObjectPointer::Press {
         view: view(stroke[0]),
         at: stroke[0],
+        modifiers: crate::brush::Modifiers::default(),
     }));
     for at in &stroke[1..] {
         picking.object(ObjectPickMessage::Pointer(ObjectPointer::Move {
@@ -678,11 +680,13 @@ fn mask_object_a_loose_drag_with_several_objects_puts_up_pins() {
                 position: 0,
                 bounds: [0.0, 0.0, 0.5, 0.5],
                 image: None,
+                tinted: None,
             },
             FoundCandidate {
                 position: 2,
                 bounds: [0.5, 0.0, 1.0, 0.5],
                 image: None,
+                tinted: None,
             },
         ],
     };

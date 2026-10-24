@@ -18,9 +18,10 @@ use crate::{
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
     minimap_smoke as minimap, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
-    panorama_merge_smoke as panorama_merge, performance_smoke as performance, pick_smoke as pick,
-    presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
-    raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
+    object_remove_smoke as object_remove, panorama_merge_smoke as panorama_merge,
+    performance_smoke as performance, pick_smoke as pick, presence_smoke as presence,
+    presets_smoke as presets, range_corpus_smoke as range_corpus, raw_panel_smoke as raw_panel,
+    resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_introduction_smoke as select_introduction, select_smoke as select,
     settings_smoke as settings, theme_smoke as theme,
@@ -1050,6 +1051,24 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[corrections::FIXTURE]),
         window: Some(PANELLED),
         note: None,
+        own: None,
+    },
+    Scenario {
+        name: object_remove::SCENARIO,
+        about: object_remove::ABOUT,
+        launches: &[LaunchSpec {
+            plan: object_remove::plan,
+            // The fake segmenter and generator, their setup and the fake runtime are served only
+            // by a host that serves the developer modules; the paced downloads let the setup's
+            // progress be captured.
+            developer: true,
+            paced_downloads: true,
+            ..APP
+        }],
+        verify: object_remove::verify,
+        source: Source::Fixtures(&[object_remove::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(object_remove::NOTE),
         own: None,
     },
     Scenario {

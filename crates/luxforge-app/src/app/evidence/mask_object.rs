@@ -1,16 +1,20 @@
-//! Evidence steps on Masks › Object: each gesture sent through the message its menu item, canvas,
-//! key or row button sends, and captured once nothing it started is in flight: no pick, analysis,
-//! model load, selection, commit or capability round trip, and the newest frame on screen
-//! ([`Settle::MaskObject`]).
+//! Evidence steps on object picking, for Masks › Object and Corrections › Object alike: each gesture
+//! sent through the message its menu item, canvas, key or row button sends, and captured once
+//! nothing it started is in flight: no pick, analysis, model load, selection, commit or capability
+//! round trip, and the newest frame on screen ([`Settle::MaskObject`]).
 use super::Settle;
-use crate::app::{
-    Editor,
-    message::{
-        Message,
-        mask::{KindMenu, MaskMessage},
-        object_pick::{ObjectPickMessage, ObjectPointer},
+use crate::{
+    app::{
+        Editor,
+        message::{
+            Message,
+            mask::{KindMenu, MaskMessage},
+            object_pick::{ObjectPickMessage, ObjectPointer},
+        },
+        object_pick::SetupId,
     },
-    object_pick::SetupId,
+    brush::Modifiers,
+    object_pick::PickUse,
 };
 use iced::Task;
 use luxforge_evidence::{KindMenuStep, ObjectStep};
@@ -22,10 +26,33 @@ fn view(at: [f64; 2]) -> (f32, f32) {
     ((at[0] * 1000.0) as f32, (at[1] * 1000.0) as f32)
 }
 
+/// A press and its release at one position, with `modifiers` held: a click.
+fn click(at: [f64; 2], modifiers: Modifiers) -> Vec<Message> {
+    vec![
+        Message::ObjectPick(ObjectPickMessage::Pointer(ObjectPointer::Press {
+            view: view(at),
+            at,
+            modifiers,
+        })),
+        Message::ObjectPick(ObjectPickMessage::Pointer(ObjectPointer::Release {
+            view: view(at),
+            at,
+        })),
+    ]
+}
+
 impl Editor {
-    /// One Masks › Object step.
+    /// One object picking step: choosing Object… and a model row's buttons need Mask mode, and the
+    /// gestures need a tool picking, Masks › Object or Corrections › Object.
     pub(super) fn mask_object_step(&mut self, step: ObjectStep) -> Task<Message> {
         let picking = self.object_pick.is_some();
+        let masks = matches!(
+            step,
+            ObjectStep::Choose(_) | ObjectStep::Recompute(_) | ObjectStep::Keep(_)
+        );
+        if masks && !self.mask_mode_active() {
+            return self.fail_step("a mask step needs Mask mode");
+        }
         let messages: Vec<Message> = match step {
             ObjectStep::Choose(menu) => {
                 if self.workspace.masks.select.is_empty() {
@@ -55,16 +82,21 @@ impl Editor {
             },
             _ if !picking => return self.fail_step("no tool is picking objects"),
             ObjectStep::Hover(at) => vec![Message::ObjectPick(ObjectPickMessage::Hover(at))],
-            ObjectStep::Click(at) => vec![
-                Message::ObjectPick(ObjectPickMessage::Pointer(ObjectPointer::Press {
-                    view: view(at),
-                    at,
-                })),
-                Message::ObjectPick(ObjectPickMessage::Pointer(ObjectPointer::Release {
-                    view: view(at),
-                    at,
-                })),
-            ],
+            ObjectStep::Click(at) => click(at, Modifiers::default()),
+            ObjectStep::ShiftClick(at) => click(
+                at,
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+            ),
+            ObjectStep::AltClick(at) => click(
+                at,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            ),
             ObjectStep::Drag(points) => {
                 let (first, rest) = points.split_first().expect("a validated drag has points");
                 let last = *rest.last().expect("a validated drag has two points");
@@ -72,6 +104,7 @@ impl Editor {
                     ObjectPointer::Press {
                         view: view(*first),
                         at: *first,
+                        modifiers: Modifiers::default(),
                     },
                 ))];
                 messages.extend(rest.iter().map(|at| {
@@ -101,6 +134,7 @@ impl Editor {
             }
             ObjectStep::Use => vec![Message::ObjectPick(ObjectPickMessage::Use)],
             ObjectStep::Escape => vec![Message::ObjectPick(ObjectPickMessage::Escape)],
+            ObjectStep::Done => vec![Message::ObjectPick(ObjectPickMessage::Done)],
         };
         self.await_step(Settle::MaskObject);
         let tasks: Vec<Task<Message>> = messages
@@ -110,6 +144,7 @@ impl Editor {
         self.note_step(json!({
             "masks": self.workspace.masks.summary(),
             "object_pick": self.object_pick_record(),
+            "remove": self.remove_summary(),
         }));
         self.settle_mask_object();
         Task::batch(tasks)
@@ -127,6 +162,15 @@ impl Editor {
             .object_pick
             .as_ref()
             .is_none_or(|session| session.map.is_some());
+        // Corrections › Object's fill, its candidates and their draft are Remove's.
+        let removing = self
+            .object_pick
+            .as_ref()
+            .is_some_and(|session| session.purpose == PickUse::Object)
+            || self.object_active();
+        if removing && !self.remove_settled() {
+            return false;
+        }
         !self.busy
             && !self.mask_panel.command_in_flight
             && self.mask_panel.object_choice.is_none()

@@ -2428,7 +2428,8 @@ pub enum MaskStep {
     /// `Escape` or `Return` key step puts it away again.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Help,
-    /// Masks › Object: choose it, pick with it, or recompute or keep a model component.
+    /// Object picking: choose Masks › Object, pick with whichever tool is picking (Masks › Object
+    /// or Corrections › Object), or recompute or keep a model component.
     Object(ObjectStep),
 }
 
@@ -2513,6 +2514,10 @@ pub enum ObjectStep {
     Hover(Option<[f64; 2]>),
     /// A press and its release at one position: a click, which selects the outlined object.
     Click([f64; 2]),
+    /// A click with `⇧` held: Corrections › Object adds the outlined object to its selection.
+    ShiftClick([f64; 2]),
+    /// A click with `⌥` held: Corrections › Object takes the selected object there away.
+    AltClick([f64; 2]),
     /// A press, a move through each position and a release: a loose drag, whose stroke the picker
     /// decides One, Several or Nothing about.
     Drag(Vec<[f64; 2]>),
@@ -2524,6 +2529,10 @@ pub enum ObjectStep {
     /// Escape while picking.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Escape,
+    /// Return while picking with no pins up: Corrections › Object hands a stroke that found nothing
+    /// to Remove, or generates.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Done,
     /// Recompute on that model component's row.
     Recompute(Reference),
     /// Keep on that model component's row.
@@ -2533,7 +2542,10 @@ pub enum ObjectStep {
 impl ObjectStep {
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Hover(Some(point)) | Self::Click(point) => content_point(*point, "object point"),
+            Self::Hover(Some(point))
+            | Self::Click(point)
+            | Self::ShiftClick(point)
+            | Self::AltClick(point) => content_point(*point, "object point"),
             Self::Drag(points) => {
                 if points.len() < 2 {
                     return Err("an object drag needs at least two points".into());

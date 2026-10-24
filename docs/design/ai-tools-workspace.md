@@ -11,10 +11,10 @@ Board: [ai-tools-workspace/board.html](ai-tools-workspace/board.html): the Objec
 | Today (delivered) | Proposed |
 | --- | --- |
 | Remove is listed by default; hover picking only with the `ai.analysis` experiment, and a press still paints | Remove is listed wherever the run can run its fill; Object, and mask Object, while `ai.analysis` is on, wherever the run can run the fill and the segmenter respectively |
-| One Remove kind that paints, with a hover highlight that does nothing | Two kinds. **Remove** paints exactly what to fill, with no hover. **Object** points: hover outlines, a click selects, a loose drag finds |
+| One Remove kind that paints, with a hover highlight that does nothing | Delivered: two kinds. **Remove** paints exactly what to fill, with no hover. **Object** points: hover outlines, a click selects, a loose drag finds |
 | Remove and Replace set themselves up from their group, and the segmenter from Settings › Models' Download… or an API client | Each tool sets itself up on first use, from its own group, through one sheet for everything it lacks |
 | A sheet per **setup**: a module-declared group of resources a tool needs, installed under one answer | Delivered |
-| `query.pick-object` and `task.select-object` reach no gesture | Object removal fills a set of picked objects; New mask › Object makes a stored `model` selection with Recompute |
+| `query.pick-object` and `task.select-object` reach no gesture | Delivered: object removal fills a set of picked objects; New mask › Object makes a stored `model` selection with Recompute |
 | Settings › Models lists each setup's parts, captioned with the tools that use them | Delivered |
 
 ## Principles
@@ -44,9 +44,20 @@ There is no brush in hand. Over the photograph the cursor is a crosshair, and th
 - **Loose drag** (3 pt or more): paints a dashed stroke at the band's Size. On release the desktop asks `query.pick-object {stroke, radius, previews: all}` and acts on the picker's decision. **One**: selects it as a click would, `⇧` adding. **Several**: a numbered pin on each candidate's bounds; clicking a pin toggles it, Return or **Use N** sends `task.select-object` with the stroke and each chosen `candidate`, Escape cancels. **Nothing**: the painted footprint stays tinted under `Nothing found here · Remove the painted area ↵ · Cancel`; Return switches the kind to Remove with that stroke as its selection.
 - **The selection** is up to 8 objects (a recorded default; the ninth is refused in the status bar). Each is tinted as Remove's selection is and numbered in the order picked; the tint is drawn from the pick's held preview at once and needs no read of the artifact. The group lists them as rows (`1 Object · ⌥-click to remove`) and offers **Paint shadow**, which arms the brush for one stroke sent as the fill's effect region (`effect-points`, `effect-radius`), drawn in the same tint with a dashed edge.
 - **Generate** sends `task.fill-generative` with `object-artifacts` in place of a painted selection ([API](#api)). Everything after (progress, Cancel, the candidate draft in the photograph, Regenerate, Replace, Accept, the lock) is the delivered workflow.
-- **Escape** cancels a running generation, then dismisses pins or the Nothing notice, then clears the selection, then leaves the mode.
+- **Escape** cancels a running generation, then puts an armed Paint shadow down, then dismisses pins or the Nothing notice, then clears the selection, then leaves the mode.
 
-The status bar names the gesture as the Corrections band does: `Corrections · Object · click to select the person · drag loosely to find an object · ⇧ adds · ⌥ takes away`. The object is named only when the picker names a class; today it says `the object`.
+The status bar names the gesture as the Corrections band does: `Corrections · Object · click to select the object · drag loosely to find an object · ⇧ adds · ⌥ takes away`, then `2 objects selected · ⇧-click adds · ⌥-click takes away · Generate ↵ fills them · Esc clears them`. The object is named only when the picker names a class; today it says `the object`.
+
+Implemented (`app/object_remove.rs` over the shared picker, `crates/luxforge-app/src/object_pick.rs`), on the recorded defaults below, with these settled details:
+
+- Object is armed while it is the chosen kind on screen with its `object` setup installed and nothing compared; the session loads only the object finder's two models, and the fill's model loads when Generate runs. Turning `ai.analysis` off, choosing another kind or leaving the mode ends it; an object whose selection had not started goes with it.
+- Return with no pins or Nothing notice up generates a selection that is ready, as Generate does.
+- `⇧`-click on an object already selected, and a second pick that publishes an artifact already held, are refused with `That object is already selected`; a pick, a loose drag and Paint shadow are refused while the photograph's generation runs.
+- Any change to the objects or the shadow is a new selection, with a new seed and strip, as a new stroke is in Remove; a select's answer only fills in its object's artifact. Generate waits (`Selecting objects…`) while a selected object's artifact is still coming.
+- **Paint shadow** toggles: pressed again or `Escape` puts the brush down; a second stroke replaces the shadow (`Paint shadow again`).
+- The line under the kind control is shown for Remove and Object only.
+- Pins and the selected objects' numbers are dark discs ringed white over a dark halo, with white semibold numerals in the interface's bundled face, so they read on any photograph and on a host with no system fonts; a chosen pin takes the accent. A selected object's number sits just inside the top right of its bounds.
+- Each frame of `state.json` records the kind, the selected objects (number, prompt, artifact, bounds), the shadow, the session's pins and Nothing stroke, the selections waiting and the last pick and select requests.
 
 ## Object in the Masks panel
 
@@ -81,7 +92,7 @@ A developer run declares the same setups over its fake resources. A setup's mach
 
 ### The group's lines
 
-Each tool's group shows its setup's state where Set up would be, as the delivered Remove setup does ([board 3](ai-tools-workspace/board.html)). Implemented for Remove and Replace, and derived for every setup by id (`state/fill_setup.rs`), so Object draws the same line once its group exists; mask Object, which has no group, reads its line to mark its menu entry and to send its Set up. Finding objects… is built for mask Object; Object's and the Mask mode hint below are not yet. A kind whose setup is not installed carries a small download glyph (↓) in the kind control:
+Each tool's group shows its setup's state where Set up would be, as the delivered Remove setup does ([board 3](ai-tools-workspace/board.html)). Implemented for Remove, Replace and Object, derived for every setup by id (`state/fill_setup.rs`); mask Object, which has no group, reads its line to mark its menu entry and to send its Set up. Finding objects… and the Mask mode note below are implemented. A kind whose setup is not installed carries a small download glyph (↓) in the kind control:
 
 | State | Line | Action |
 | --- | --- | --- |
@@ -136,7 +147,7 @@ Parity: every gesture above sends a request `Copy as JSON request` shows (the �
 ## Acceptance
 
 - **Core, exact.** Setup declaration validation, status derivation for every state, install ordering, lane-room refusal, the combined consent; the object removal region against its reference; a fill from object artifacts byte-identical outside its coverage; stale and unknown artifact refusals; the stored prompt and Recompute through `luxforge-json`.
-- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate, Accept, Escape order); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object and `settings` for the flag's new description; `ai-setup` (delivered: missing, the sheet and a decline, one answer granting every scope, a paced download's progress, Cancel and Resume, a failed part resumed, the object finder's part installing both files under one progress and removed, and a forced too-small machine).
+- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (implemented, over the generated twelve-patch fixture: the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate's progress and Escape's cancel, Generate, Accept, Escape order; passing under Xvfb on Linux, its M4 run open); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object (implemented); `settings` pins no flag description, so it is unchanged; `ai-setup` (delivered: missing, the sheet and a decline, one answer granting every scope, a paced download's progress, Cancel and Resume, a failed part resumed, the object finder's part installing both files under one progress and removed, and a forced too-small machine).
 - **Native, real models.** On the M4 with the pinned segmenter and klein: the Object journey on corpus photographs (the bridge, the kayaks, the road), hover and analysis latencies against their budgets, the set-up download over the network, the combined residency; recorded with the host's load.
 
 ## Decisions

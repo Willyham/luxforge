@@ -260,6 +260,8 @@ pub(crate) enum NoticeAction {
     UseObjects,
     /// Put a loose stroke's pins or its Nothing found away, as Escape does.
     DismissObjects,
+    /// Corrections › Object's Nothing found: Remove the painted area, as Return does.
+    RemovePainted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -713,11 +715,13 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
 
 /// What a tool picking objects says over the canvas: `Finding objects…` until the photograph is
 /// analysed, the numbered pins' question while a loose stroke found several, and `Nothing found
-/// here` while one found none.
+/// here` while one found none, which Corrections › Object offers to remove as painted.
 fn object_notice(inputs: &Inputs<'_>) -> Option<Notice> {
+    use crate::object_pick::PickUse;
     let session = inputs.object_pick?;
     let shown = match session.purpose {
-        crate::object_pick::PickUse::Mask => inputs.session.workspace.mode == MASK_MODE,
+        PickUse::Mask => inputs.session.workspace.mode == MASK_MODE,
+        PickUse::Object => inputs.remove.chosen && inputs.remove.object,
     };
     if !shown {
         return None;
@@ -736,20 +740,35 @@ fn object_notice(inputs: &Inputs<'_>) -> Option<Notice> {
         return Some(Notice {
             tone: NoticeTone::Neutral,
             icon: NoticeIcon::Information,
-            title: format!("{} objects here", pins.pins.len()),
-            body: "Click the numbered objects to use, then press Return.".into(),
+            title: format!("{} objects found", pins.pins.len()),
+            body: "Click the numbers to choose, then press Return.".into(),
             actions: vec![
                 (format!("Use {chosen}"), NoticeAction::UseObjects),
                 ("Cancel".into(), NoticeAction::DismissObjects),
             ],
         });
     }
+    let removes = session.purpose == PickUse::Object;
     session.nothing.as_ref().map(|_| Notice {
         tone: NoticeTone::Neutral,
         icon: NoticeIcon::Triangle,
         title: crate::object_pick::NOTHING_FOUND.into(),
-        body: "Click the object, or draw loosely around it again.".into(),
-        actions: vec![("Cancel".into(), NoticeAction::DismissObjects)],
+        body: if removes {
+            "Remove the painted area as it is, or draw loosely around the object again.".into()
+        } else {
+            "Click the object, or draw loosely around it again.".into()
+        },
+        actions: if removes {
+            vec![
+                (
+                    "Remove the painted area \u{21b5}".into(),
+                    NoticeAction::RemovePainted,
+                ),
+                ("Cancel".into(), NoticeAction::DismissObjects),
+            ]
+        } else {
+            vec![("Cancel".into(), NoticeAction::DismissObjects)]
+        },
     })
 }
 

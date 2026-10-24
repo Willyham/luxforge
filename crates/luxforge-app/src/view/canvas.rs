@@ -361,6 +361,9 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::DismissObjects => Message::ObjectPick(
                         crate::app::message::object_pick::ObjectPickMessage::Escape,
                     ),
+                    NoticeAction::RemovePainted => Message::ObjectPick(
+                        crate::app::message::object_pick::ObjectPickMessage::Done,
+                    ),
                 },
             )
         })
