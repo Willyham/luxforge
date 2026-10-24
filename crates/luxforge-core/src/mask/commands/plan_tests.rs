@@ -1364,3 +1364,49 @@ fn a_pick_refuses_a_missing_component_and_a_component_of_another_kind() {
     .unwrap_err();
     assert_eq!(incompatible.kind, ErrorKind::Incompatible);
 }
+
+/// A model selection is labelled by the class it selected, and that a model selected it: picking an
+/// object reads `Add object (model)`, a subtracted one `Add subtract object (model)`.
+#[test]
+fn a_model_selection_is_labelled_by_its_class() {
+    let selection = |mode: Option<&str>| {
+        let mut fields = Map::new();
+        for (name, value) in [
+            ("artifact", json!(format!("artifact-{}", "c".repeat(64)))),
+            ("class", json!("object")),
+            ("model", json!("fake-segmenter-encoder")),
+            ("model_version", json!("1")),
+            ("input_fingerprint", json!("a".repeat(64))),
+            ("prefix_hash", json!("b".repeat(64))),
+            ("threshold", json!(50.0)),
+            ("feather", json!(100.0)),
+            ("prompt", json!({"point": [[0.25, 0.5]]})),
+        ] {
+            fields.insert(name.into(), value);
+        }
+        if let Some(mode) = mode {
+            fields.insert("mode".into(), json!(mode));
+        }
+        fields
+    };
+    let created = apply(
+        &Recipe::default(),
+        "mask.create-model",
+        MaskTarget::default(),
+        selection(None),
+    )
+    .unwrap();
+    assert_eq!(created.label, "Add object (model)");
+    let target = MaskTarget {
+        mask: Some(created.recipe.masks[0].id.clone()),
+        ..MaskTarget::default()
+    };
+    let added = apply(
+        &created.recipe,
+        "mask.add-model",
+        target,
+        selection(Some("subtract")),
+    )
+    .unwrap();
+    assert_eq!(added.label, "Add subtract object (model)");
+}

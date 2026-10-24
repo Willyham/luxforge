@@ -911,6 +911,15 @@ impl Editor {
             MaskMessage::Drag(edit) => self.mask_drag_edit(edit),
             MaskMessage::Key(key) => self.mask_key(key),
             MaskMessage::Transform(gesture, result) => self.mask_transform(gesture, result),
+            MaskMessage::ChooseObject(menu) => self.choose_object(menu),
+            MaskMessage::Recompute(component) => self.recompute_model(component),
+            MaskMessage::Keep(component) => {
+                self.keep_model(component);
+                Task::none()
+            }
+            MaskMessage::CopyObject { component, request } => {
+                self.copy_object_request(component, request)
+            }
         }
     }
 

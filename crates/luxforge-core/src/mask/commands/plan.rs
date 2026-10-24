@@ -386,7 +386,7 @@ fn plan_geometry(
             mask.validate()?;
             next.masks.push(mask);
             Ok(Planned {
-                label: format!("Add {}", spoken(kind)),
+                label: format!("Add {}", spoken_geometry(kind, parameters)),
                 mask: Some(mask_id),
                 component: Some(component_id),
                 ..Planned::default()
@@ -406,9 +406,13 @@ fn plan_geometry(
             // creating a selection of nothing.
             mask.validate()?;
             let base = if mode == ComponentMode::Add {
-                format!("Add {}", spoken(kind))
+                format!("Add {}", spoken_geometry(kind, parameters))
             } else {
-                format!("Add {} {}", mode.as_str(), spoken(kind))
+                format!(
+                    "Add {} {}",
+                    mode.as_str(),
+                    spoken_geometry(kind, parameters)
+                )
             };
             let id = mask.id.clone();
             Ok(Planned {
@@ -1074,6 +1078,16 @@ fn plan_sample(
 /// It is evaluated on the *resulting* mask table, so the mask a `mask.create` just made is counted;
 /// and a command whose text already names its mask — rename, duplicate, reorder and the destructive
 /// delete — is not prefixed with it twice.
+/// A component a geometry method adds, as its history label says it: its kind (`linear`), or for a
+/// model selection the class it selected and that a model selected it (`object (model)`), so a
+/// picked object's entry reads `Add object (model)` and a sky's `Add sky (model)`.
+fn spoken_geometry(kind: &str, parameters: &Map<String, Value>) -> String {
+    match parameters.get("class").and_then(Value::as_str) {
+        Some(class) if kind == crate::mask::model::KIND => format!("{class} (model)"),
+        _ => spoken(kind),
+    }
+}
+
 fn mask_label(base: String, names_mask: bool, mask: Option<&MaskId>, resulting: &Recipe) -> String {
     if names_mask || resulting.masks.len() < 2 {
         return base;

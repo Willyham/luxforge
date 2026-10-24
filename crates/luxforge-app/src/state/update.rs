@@ -528,7 +528,7 @@ pub(crate) fn last_check_text(status: &UpdateRead, now_ms: i64) -> String {
 }
 
 /// How long ago, in whole units.
-fn ago(ms: i64) -> String {
+pub(crate) fn ago(ms: i64) -> String {
     let minutes = ms / 60_000;
     let plural = |n: i64, unit: &str| {
         if n == 1 {

@@ -2416,6 +2416,8 @@ pub enum MaskStep {
     /// `Escape` or `Return` key step puts it away again.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Help,
+    /// Masks › Object: choose it, pick with it, or recompute or keep a model component.
+    Object(ObjectStep),
 }
 
 impl MaskStep {
@@ -2472,12 +2474,67 @@ impl MaskStep {
                     .try_for_each(|point| content_point(*point, "mask drag point"))
             }
             Self::Row(row) => row.validate(),
+            Self::Object(step) => step.validate(),
             Self::Release
             | Self::Apply
             | Self::Cancel
             | Self::Reapply
             | Self::Pick
             | Self::Help => Ok(()),
+        }
+    }
+}
+
+/// One Masks › Object gesture (`docs/design/ai-tools-workspace.md`, "Object in the Masks panel"):
+/// the Select group's Object… from a kind menu, a gesture on the photograph while it picks, or a
+/// model row's Recompute or Keep. Each is the message its menu item, canvas, key or button sends.
+///
+/// On the wire: `{"object": {"choose": "new-mask"}}`, `{"object": {"click": [x, y]}}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ObjectStep {
+    /// Object… from the New mask or the Add component menu: enters picking with the object finder
+    /// installed, and opens its setup sheet without.
+    Choose(KindMenuStep),
+    /// The pointer over the photograph at that position with no button down, or off it with
+    /// `null`: the object under it is outlined once its pick answers.
+    Hover(Option<[f64; 2]>),
+    /// A press and its release at one position: a click, which selects the outlined object.
+    Click([f64; 2]),
+    /// A press, a move through each position and a release: a loose drag, whose stroke the picker
+    /// decides One, Several or Nothing about.
+    Drag(Vec<[f64; 2]>),
+    /// A press on the numbered pin, counted from 1.
+    Pin(usize),
+    /// Use N, as Return does while pins are up.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Use,
+    /// Escape while picking.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Escape,
+    /// Recompute on that model component's row.
+    Recompute(Reference),
+    /// Keep on that model component's row.
+    Keep(Reference),
+}
+
+impl ObjectStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Hover(Some(point)) | Self::Click(point) => {
+                content_point(*point, "object point")
+            }
+            Self::Drag(points) => {
+                if points.len() < 2 {
+                    return Err("an object drag needs at least two points".into());
+                }
+                points
+                    .iter()
+                    .try_for_each(|point| content_point(*point, "object drag point"))
+            }
+            Self::Pin(number) if *number == 0 => Err("object pins are counted from 1".into()),
+            Self::Recompute(reference) | Self::Keep(reference) => reference.validate(),
+            _ => Ok(()),
         }
     }
 }

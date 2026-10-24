@@ -493,7 +493,10 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     }
     let armed = editor.follow_armed_brush();
     let resting = editor.follow_resting_handles();
-    Task::batch([armed, resting, editor.follow_range_picker()])
+    let picker = editor.follow_range_picker();
+    // Masks › Object follows its commits before the shared session follows its tool.
+    let object = editor.follow_mask_object();
+    Task::batch([armed, resting, picker, object, editor.follow_object_pick()])
 }
 
 /// A reorder by drag ends wherever the button comes up, inside the panel or not, so its release is

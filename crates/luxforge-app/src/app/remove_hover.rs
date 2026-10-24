@@ -17,55 +17,28 @@
 //! refused `not-ready` naming `task.analyse`; the desktop then runs that task at most once for the
 //! photograph's revision (which names its current entry), whatever it answers, and asks again when
 //! it ends. A pick refused again for the same revision is shown as refused, not analysed again.
+//!
+//! The pick, its answer's highlight and the analysis it asks for are the shared object picker's
+//! ([`crate::object_pick`], [`super::object_pick`]); this keeps only Remove's own hover state.
 use super::{
     Editor,
     decoded_handles::image_handle,
     message::{Message, remove::RemoveMessage},
-    remove::decode_base64,
-    tasks::{self, CallError, owner_task},
+    object_pick::analyse,
+    tasks::{CallError, owner_task},
 };
-use iced::{Task, widget::image::Handle};
-use luxforge_core::{AssetId, ClientId, DecodedPreview, OwnerHandle};
+pub(crate) use super::object_pick::pick;
+#[cfg(test)]
+pub(crate) use super::object_pick::queue_analysis;
+#[cfg(test)]
+pub(crate) use crate::object_pick::highlight;
+use crate::object_pick::needs_analysis;
+pub(crate) use crate::object_pick::{
+    HoverOverlay, PICK, Picked, pick_offered, point_query as pick_params,
+};
+use iced::Task;
+use luxforge_core::{AssetId, DecodedPreview};
 use serde_json::{Value, json};
-
-/// `query.pick-object`.
-pub(crate) const PICK: &str = "query.pick-object";
-/// `task.analyse`.
-pub(crate) const ANALYSE: &str = "task.analyse";
-/// The picker's query and the analysis task, without their prefixes.
-const PICK_QUERY: &str = "pick-object";
-const ANALYSE_TASK: &str = "analyse";
-/// The wash over a fully covered pixel of the hovered object: white, translucent enough that the
-/// object stays readable under it. A wash in a hue would vanish over an object of that hue.
-const WASH: [u8; 3] = [255, 255, 255];
-const WASH_ALPHA: f32 = 0.35;
-/// The outline, opaque white, and the under-stroke outside it, Corrections' translucent dark ink.
-const OUTLINE: [u8; 4] = [255, 255, 255, 255];
-const UNDER_STROKE: [u8; 4] = [0, 0, 0, 115];
-/// The coverage code at and above which a preview pixel is inside the object.
-const INSIDE: u8 = 128;
-/// The most times one analysis waits through a source preparation.
-const PREPARATION_RETRIES: usize = 4;
-
-/// The hovered object as the canvas draws it: an image over its bounds in normalized content
-/// coordinates, for the photograph and revision it was picked on.
-#[derive(Clone, Debug)]
-pub(crate) struct HoverOverlay {
-    pub(crate) asset: AssetId,
-    pub(crate) revision: u64,
-    /// `[x0, y0, x1, y1]`.
-    pub(crate) bounds: [f64; 4],
-    pub(crate) handle: Handle,
-}
-
-/// One pick's answer, decoded off the update loop: the overlay of its chosen candidate, or none
-/// when it chose nothing.
-#[derive(Clone, Debug)]
-pub(crate) struct Picked {
-    pub(crate) decision: String,
-    pub(crate) bounds: Option<[f64; 4]>,
-    pub(crate) image: Option<(u32, u32, Vec<u8>)>,
-}
 
 /// Hover picking's bookkeeping.
 #[derive(Debug, Default)]
@@ -89,185 +62,6 @@ pub(crate) struct Hover {
     pub(crate) last_request: Option<Value>,
 }
 
-/// The module that offers the picker: one declaring `query.pick-object` whose analysis task is
-/// offered under the flags as they are.
-pub(crate) fn pick_offered(
-    modules: &[luxforge_core::ModuleDescriptor],
-    flags: Option<&luxforge_core::flags::FlagList>,
-) -> bool {
-    modules.iter().filter(|m| m.is_available()).any(|module| {
-        module.queries.iter().any(|query| query.id == PICK_QUERY)
-            && module
-                .task(ANALYSE_TASK)
-                .is_some_and(|task| crate::state::settings::task_offered(flags, task))
-    })
-}
-
-/// The answer of `query.pick-object` as the overlay it draws: the first chosen candidate's bounds
-/// and its coverage, washed and outlined. `O(preview pixels)`.
-pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
-    let decision = answer["decision"].as_str().unwrap_or("nothing").to_owned();
-    let chosen = answer["chosen"][0].as_u64().map(|index| index as usize);
-    let Some(candidate) = chosen.map(|index| &answer["candidates"][index]) else {
-        return Ok(Picked {
-            decision,
-            bounds: None,
-            image: None,
-        });
-    };
-    let bounds = candidate["bounds"].as_array().and_then(|bounds| {
-        let values: Vec<f64> = bounds.iter().filter_map(Value::as_f64).collect();
-        <[f64; 4]>::try_from(values).ok()
-    });
-    let preview = &candidate["preview"];
-    let (Some(width), Some(height), Some(codes)) = (
-        preview["width"].as_u64(),
-        preview["height"].as_u64(),
-        preview["codes"].as_str(),
-    ) else {
-        return Ok(Picked {
-            decision,
-            bounds,
-            image: None,
-        });
-    };
-    let codes = decode_base64(codes)?;
-    if codes.len() as u64 != width * height {
-        return Err(format!(
-            "a {width} x {height} preview carried {} codes",
-            codes.len()
-        ));
-    }
-    let (width, height) = (width as usize, height as usize);
-    Ok(Picked {
-        decision,
-        bounds,
-        image: Some((
-            width as u32,
-            height as u32,
-            highlight(&codes, width, height),
-        )),
-    })
-}
-
-/// A coverage preview of `width × height` codes as the highlight's RGBA: each pixel washed by its
-/// coverage, an inside pixel with an outside 4-neighbour (or on the preview's edge) drawn as the
-/// outline, and an outside pixel beside the outline as the under-stroke.
-pub(crate) fn highlight(codes: &[u8], width: usize, height: usize) -> Vec<u8> {
-    let inside = |x: isize, y: isize| {
-        x >= 0
-            && y >= 0
-            && (x as usize) < width
-            && (y as usize) < height
-            && codes[y as usize * width + x as usize] >= INSIDE
-    };
-    let edge = |x: isize, y: isize| {
-        inside(x, y)
-            && [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                .iter()
-                .any(|(dx, dy)| !inside(x + dx, y + dy))
-    };
-    let mut rgba = Vec::with_capacity(codes.len() * 4);
-    for y in 0..height as isize {
-        for x in 0..width as isize {
-            let pixel = if edge(x, y) {
-                OUTLINE
-            } else if !inside(x, y)
-                && [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                    .iter()
-                    .any(|(dx, dy)| edge(x + dx, y + dy))
-            {
-                UNDER_STROKE
-            } else {
-                let code = codes[y as usize * width + x as usize];
-                let alpha = (f32::from(code) * WASH_ALPHA).round() as u8;
-                [WASH[0], WASH[1], WASH[2], alpha]
-            };
-            rgba.extend_from_slice(&pixel);
-        }
-    }
-    rgba
-}
-
-/// Queue `task.analyse` on `asset`, waiting through any source preparation its read asks for: its
-/// job. Blocks: run it off the update loop.
-pub(crate) fn queue_analysis(
-    owner: &OwnerHandle,
-    client: ClientId,
-    asset: &AssetId,
-) -> Result<String, String> {
-    let params = json!({"asset_id": asset, "mutation": tasks::request()});
-    for _ in 0..PREPARATION_RETRIES {
-        match tasks::call_detailed(owner, client, ANALYSE, params.clone()) {
-            Ok(queued) => {
-                return queued["job_id"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "task.analyse named no job".to_owned());
-            }
-            Err(error) if error.code == "preparation-required" => {
-                let job = error.job_id.ok_or("a preparation names its job")?;
-                tasks::wait_source_job(owner, client, &job).map_err(|e| e.message)?;
-            }
-            Err(error) => return Err(error.message),
-        }
-    }
-    Err("the analysis kept asking for preparation".into())
-}
-
-/// Run `task.analyse` on `asset` and await its job's end through `job.wait`: `Ok` when it is
-/// ready.
-async fn analyse(owner: OwnerHandle, client: ClientId, asset: AssetId) -> Result<(), String> {
-    let job = tasks::off_loop({
-        let owner = owner.clone();
-        move || queue_analysis(&owner, client, &asset)
-    })
-    .await?;
-    let mut after = None;
-    loop {
-        let (change, record) = super::job_reads::wait(&owner, client, &job, after).await?;
-        match record["status"].as_str() {
-            Some("ready") => return Ok(()),
-            Some("queued" | "running") => after = Some(change),
-            _ => {
-                return Err(record["error"]["message"]
-                    .as_str()
-                    .unwrap_or("the analysis did not finish")
-                    .to_owned());
-            }
-        }
-    }
-}
-
-/// The `query.pick-object` a hover at `point` sends: what an API client sends for it.
-pub(crate) fn pick_params(asset: &AssetId, point: [f64; 2]) -> Value {
-    json!({"asset_id": asset, "point": [point]})
-}
-
-/// Send one pick and decode its answer. Blocks: run it off the update loop.
-pub(crate) fn pick(
-    owner: &OwnerHandle,
-    client: ClientId,
-    params: Value,
-) -> Result<Box<Picked>, CallError> {
-    let answer = tasks::call_detailed(owner, client, PICK, params)?;
-    picked(&answer).map(Box::new).map_err(|message| CallError {
-        code: "internal".into(),
-        message,
-        data: None,
-        job_id: None,
-    })
-}
-
-/// Whether a refusal names the analysis the pick needs.
-fn needs_analysis(error: &CallError) -> bool {
-    error.code == "not-ready"
-        && error
-            .data
-            .as_ref()
-            .and_then(|data| data["requirements"].as_array())
-            .is_some_and(|list| list.iter().any(|r| r["kind"] == "analysis"))
-}
 
 impl Editor {
     /// Whether hover picking is on: Remove is chosen, the picker is offered and the current state,
