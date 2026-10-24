@@ -184,7 +184,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 id: "palette".into(),
                 kind: CapabilityKind::DownloadArtifact {
                     resource: "palette".into(),
-                    introduction: None,
                 },
                 purpose: "Install the tint palette.".into(),
             },
@@ -254,7 +253,6 @@ pub(crate) fn lifecycle_descriptor(palette_url: &str, swatch_url: &str) -> Modul
         id: "swatches".into(),
         kind: CapabilityKind::DownloadArtifact {
             resource: "swatch".into(),
-            introduction: None,
         },
         purpose: "Install the swatch.".into(),
     });

@@ -197,7 +197,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
                     IntroductionPicture::PaintOver => vec![hint("[ ]", "brush size")],
                     IntroductionPicture::Candidates => vec![hint("Esc", "cancels")],
                     IntroductionPicture::History => vec![hint(&undo, "undoes it")],
-                    IntroductionPicture::Describe => Vec::new(),
+                    IntroductionPicture::Describe | IntroductionPicture::Hover => Vec::new(),
+                    IntroductionPicture::Selected => {
+                        vec![hint("\u{21e7}", "adds"), hint("\u{2325}", "takes away")]
+                    }
                 },
             })
             .collect(),

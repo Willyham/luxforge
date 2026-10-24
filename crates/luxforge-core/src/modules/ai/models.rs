@@ -23,8 +23,7 @@ use crate::{
     Error,
     capabilities::{
         descriptor::{
-            CapabilityDescriptor, CapabilityKind, Introduction, IntroductionPicture,
-            IntroductionStep, ModelKind, ResourceDescriptor, ResourceFile,
+            CapabilityDescriptor, CapabilityKind, ModelKind, ResourceDescriptor, ResourceFile,
         },
         transport::{Method, SendOptions, Transport, TransportRequest, TransportResponse},
     },
@@ -44,59 +43,6 @@ const GENERATOR_PURPOSE: &str = "Set up AI editing: this downloads the model tha
 /// A text encoder's install purpose: Replace, the add-on that reads a prompt.
 const TEXT_ENCODER_PURPOSE: &str = "Add Replace: this downloads the model that reads what you \
     describe, so Replace can fill with it. It runs on this computer, so your photos stay on it";
-
-/// What setting up a generator says of the feature: Remove, in three steps.
-fn generator_introduction() -> Introduction {
-    let step = |title: &str, body: &str, picture| IntroductionStep {
-        title: title.into(),
-        body: body.into(),
-        picture,
-    };
-    Introduction {
-        eyebrow: "AI editing".into(),
-        title: "Remove anything, fill it in naturally".into(),
-        lead: "Paint over something you don't want and Luxforge fills the area in to match the \
-            rest of the photo. It runs entirely on this computer, so your photos never leave it."
-            .into(),
-        hero: None,
-        steps: vec![
-            step(
-                "Paint over it",
-                "Brush across the object, its shadow and its reflection. Cover a little more than \
-                 you think.",
-                IntroductionPicture::PaintOver,
-            ),
-            step(
-                "Generate",
-                "Generate makes a fill and Regenerate another. Compare them over the photo and \
-                 keep the best.",
-                IntroductionPicture::Candidates,
-            ),
-            step(
-                "Accept",
-                "The fill becomes one step in the photo's history. Your original file is never \
-                 changed.",
-                IntroductionPicture::History,
-            ),
-        ],
-        promise: "Your photos stay on this computer.".into(),
-    }
-}
-
-/// What adding a text encoder says of the feature: Replace, in one picture.
-fn text_encoder_introduction() -> Introduction {
-    Introduction {
-        eyebrow: "AI editing · Add-on".into(),
-        title: "Fill it with what you describe".into(),
-        lead: "Type what should be there, such as \u{201c}a red bicycle\u{201d} or \u{201c}calm \
-            water\u{201d}, and Replace paints it into the area you selected. It adds a second \
-            model, which also runs entirely on this computer."
-            .into(),
-        hero: Some(IntroductionPicture::Describe),
-        steps: Vec::new(),
-        promise: "Your photos and what you type stay on this computer.".into(),
-    }
-}
 
 /// A published file's download: its pinned URL and length.
 #[derive(Clone, Copy, Debug)]
@@ -136,8 +82,6 @@ pub(crate) struct ModelFile {
     pub(crate) provenance: &'static str,
     /// The `download-artifact` capability that installs it.
     pub(crate) download: &'static str,
-    /// What its setup says of the feature it sets up.
-    pub(crate) introduction: fn() -> Introduction,
     pub(crate) files: &'static [FurtherFile],
     pub(crate) tradeoff: Option<&'static str>,
     pub(crate) min_memory_bytes: Option<u64>,
@@ -199,7 +143,6 @@ impl ModelFile {
             id: self.download.into(),
             kind: CapabilityKind::DownloadArtifact {
                 resource: self.resource.into(),
-                introduction: Some((self.introduction)()),
             },
             purpose: self.purpose.into(),
         }
@@ -323,7 +266,6 @@ pub(crate) const FAKE_GENERATOR: ModelFile = ModelFile {
     resource: "fake-generator",
     title: "Developer fake generator",
     purpose: GENERATOR_PURPOSE,
-    introduction: generator_introduction,
     version: "1",
     bytes: b"Luxforge developer fake generator, version 1.\n",
     published: None,
@@ -343,7 +285,6 @@ pub(crate) const FAKE_TEXT_ENCODER: ModelFile = ModelFile {
     resource: "fake-text-encoder",
     title: "Developer fake text encoder",
     purpose: TEXT_ENCODER_PURPOSE,
-    introduction: text_encoder_introduction,
     version: "1",
     bytes: b"Luxforge developer fake text encoder, version 1.\n",
     published: None,
@@ -406,7 +347,6 @@ pub(crate) const KLEIN_GENERATOR: ModelFile = ModelFile {
     resource: "generative-klein-4b",
     title: "FLUX.2 klein 4B with the object removal LoRA",
     purpose: GENERATOR_PURPOSE,
-    introduction: generator_introduction,
     version: "klein-4b-q4_0-3b1f5a9d-lora-0e3f5879-cond-ba26d15a",
     bytes: &[],
     published: Some(Published {
@@ -451,7 +391,6 @@ pub(crate) const KLEIN_TEXT_ENCODER: ModelFile = ModelFile {
     resource: "generative-klein-text-encoder",
     title: "Text encoder for Replace (Qwen3-4B)",
     purpose: TEXT_ENCODER_PURPOSE,
-    introduction: text_encoder_introduction,
     version: "qwen3-4b-q4_k_m-22c9fc8a-tokenizer-e7b7dc27",
     bytes: &[],
     published: Some(Published {

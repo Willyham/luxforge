@@ -2,15 +2,16 @@
 //! covers its exact scope. Its data carries the scope a client grants and the disclosure a person
 //! decides on: who asks and why, where data goes or comes from, what and how much, where it is
 //! stored, its licence, retention and whether it may cost money. The desktop shows it as a consent
-//! notice, or as the setup sheet of a download that declares an introduction; a headless client
-//! receives the same failure.
+//! notice, or as the setup sheet of a download a setup introduces; a headless client receives the
+//! same failure. A setup install asks for every grant its missing downloads need at once
+//! ([`setup_consent_required`]).
 use super::{
     descriptor::{
-        AdapterCost, AdapterDescriptor, CapabilityDescriptor, CapabilityKind, Introduction,
-        ResourceDescriptor,
+        AdapterCost, AdapterDescriptor, CapabilityDescriptor, Introduction, ResourceDescriptor,
     },
     grants::GrantScope,
     resources::Requirements,
+    setups::SetupDisclosure,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -58,7 +59,8 @@ pub struct Disclosure {
     /// What a model needs of the machine: its backends, precision, resident size and minimum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements: Option<Requirements>,
-    /// What a download's capability says of the feature it sets up, when it declares it.
+    /// What the setup a download belongs to says of the tool it sets up: the smallest setup that
+    /// holds the resource ([`super::setups::introducing`]), when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub introduction: Option<Introduction>,
     /// This machine's memory, for a download that declares a memory minimum, when the host can
@@ -146,12 +148,56 @@ pub(crate) fn download_disclosure(
         tradeoff: resource.tradeoff.clone(),
         use_restriction: resource.use_restriction.clone(),
         requirements: Requirements::of(module, resource),
-        introduction: match &capability.kind {
-            CapabilityKind::DownloadArtifact { introduction, .. } => introduction.clone(),
-            _ => None,
-        },
+        introduction: super::setups::introducing(module, &resource.id)
+            .map(|setup| setup.introduction.clone()),
         ..Disclosure::new(module, capability, data)
     }
+}
+
+/// One grant a setup install still needs: the capability and its exact scope, as
+/// `module.permission.grant` takes them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupGrant {
+    pub capability: String,
+    pub kind: super::grants::GrantKind,
+    pub scope: GrantScope,
+    /// A denial of exactly this scope is recorded.
+    pub denied: bool,
+}
+
+/// The failure `module.setup.install` returns when any download it would start has no live
+/// grant: `consent-required` with `data.consent: {module_id, setup, grants: [{capability, kind,
+/// scope, denied}], disclosure, denied}`, every missing grant listed in declared order, so one
+/// answer grants them all. `denied` is true when a denial of any of them is recorded.
+pub(crate) fn setup_consent_required(
+    module: &ModuleDescriptor,
+    setup: &str,
+    grants: Vec<SetupGrant>,
+    disclosure: SetupDisclosure,
+) -> Error {
+    let denied = grants.iter().any(|grant| grant.denied);
+    let count = grants.len();
+    let what = if count == 1 {
+        "one download".to_owned()
+    } else {
+        format!("{count} downloads")
+    };
+    let mut detail = format!(
+        "{} needs permission for {what} to set up {}",
+        module.title, disclosure.title
+    );
+    if denied {
+        detail.push_str("; one was not allowed before");
+    }
+    Error::consent_required(detail).with_data(json!({
+        "consent": {
+            "module_id": module.id,
+            "setup": setup,
+            "grants": grants,
+            "disclosure": disclosure,
+            "denied": denied,
+        }
+    }))
 }
 
 /// `remote-image-request`: the endpoint origin, the data class in words, the exact size of the
@@ -262,7 +308,7 @@ mod tests {
         resource.tradeoff = Some("Finds smaller objects; slower to start".into());
         resource.use_restriction = Some("Non-commercial use only".into());
         resource.min_memory_bytes = Some(8 << 30);
-        // Its capability's introduction travels with it, for a client's setup sheet.
+        // The introduction of the setup that holds it travels with it, for a client's setup sheet.
         let introduction = Introduction {
             eyebrow: "Palette".into(),
             title: "Tint anything".into(),
@@ -271,10 +317,16 @@ mod tests {
             steps: Vec::new(),
             promise: "Your photos stay on this computer.".into(),
         };
-        model.capabilities[1].kind = CapabilityKind::DownloadArtifact {
-            resource: "palette".into(),
-            introduction: Some(introduction.clone()),
-        };
+        model.setups = vec![crate::capabilities::descriptor::SetupDescriptor {
+            id: "tint".into(),
+            title: "Tint".into(),
+            introduction: introduction.clone(),
+            parts: vec![crate::capabilities::descriptor::SetupPart {
+                name: "Palette".into(),
+                purpose: "The gains a tint is drawn from".into(),
+                resources: vec!["palette".into()],
+            }],
+        }];
         let disclosed = download_disclosure(
             &model,
             &model.capabilities[1],
