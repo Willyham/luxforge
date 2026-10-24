@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Add setups to the module capability contract (descriptor, module.status, module.setup.install with one combined consent) and declare the remove, object, mask-object and replace setups on luxforge.ai and its developer fakes.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "A setup is the resources one tool needs, grouped into parts named in the feature's words: descriptor setups: [{id, title, introduction, parts: [{name, purpose, resources}]}], at most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares, refused by name at descriptor validation. The introduction moves from each download-artifact capability onto the setup; the delivered sheet's introduction validation (eyebrow, title, lead, at most three steps or one hero, promise) is unchanged. Add the picture kinds Hover and Selected to IntroductionPicture.",
@@ -141,7 +141,7 @@
     {
       "id": "TASK-003",
       "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the too-small line, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
