@@ -116,6 +116,8 @@ impl Filling {
                     .unwrap()
                     .shared(),
             ),
+            // A machine with room for every developer model.
+            machine_memory_bytes: Some(16 << 30),
             ..HostConfig::unconfigured()
         };
         let (owner, join) = OwnerHandle::start_with_host(
@@ -531,7 +533,7 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
         line.detail.as_deref(),
         Some("One-time download \u{b7} 46 B")
     );
-    let Some((label, action)) = line.action else {
+    let Some((label, action)) = line.action.clone() else {
         panic!("a Set up action: {line:?}");
     };
     assert_eq!(label, "Set up");
@@ -539,8 +541,19 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
         action,
         SetupAction::Install {
             module_id: AI.into(),
-            resource: GENERATOR.into()
+            setup: "remove".into()
         }
+    );
+    assert!(
+        filling.model().needs_setup,
+        "the kind control marks Remove with the download glyph"
+    );
+    // The ⋯ menu copies exactly the request Set up sends.
+    let copied = filling.copy(RemoveRequest::Setup);
+    assert_eq!(
+        without_request_id(copied),
+        json!({"method": "module.setup.install",
+               "params": {"module_id": AI, "setup": "remove", "mutation": {"actor": "desktop"}}})
     );
     // Set up goes through the capability driver, which asks for consent before anything.
     filling.remove(RemoveMessage::Setup(action));
@@ -549,15 +562,16 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
         started,
         vec![(
             AI.to_owned(),
-            Operation::Install {
-                resource: GENERATOR.into()
+            Operation::InstallSetup {
+                setup: "remove".into()
             }
         )]
     );
-    filling.answer_capabilities();
-    // The download introduces the feature, so it asks through the setup sheet, not a notice: the
-    // feature in its own words and three pictured steps, then the download's facts; the model's
-    // name, files and storage are left to Settings › Models.
+    let sent = filling.answer_capabilities();
+    assert_eq!(sent[0]["method"], "module.setup.install");
+    // The setup asks through the setup sheet, not a notice: the tool in its own words and three
+    // pictured steps, then the facts summed over what is missing and the parts it includes; the
+    // model's name, files and storage are left to Settings › Models.
     assert!(filling.editor.workspace.canvas.notices.is_empty());
     let sheet = filling
         .editor
@@ -608,9 +622,24 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
                 "From developer.luxforge.invalid",
                 "Free \u{b7} GPL-3.0-or-later"
             ),
-        ],
-        "the fake generator declares no minimum memory, so no memory fact"
+            (
+                "Needs 2 GB of memory",
+                &*format!(
+                    "This {} has 16 GB \u{2713}",
+                    crate::state::fill_setup::this_machine()
+                )
+            ),
+        ]
     );
+    assert_eq!(
+        sheet
+            .includes
+            .iter()
+            .map(|part| (part.name.as_str(), part.size.as_str(), part.installed))
+            .collect::<Vec<_>>(),
+        [("Generative fill", "46 B", false)]
+    );
+    assert_eq!(sheet.setup, "remove");
     assert_eq!(
         sheet.notes,
         [(
@@ -631,6 +660,7 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
     filling.refresh_tiers();
     let model = filling.model();
     assert_eq!(model.unoffered, None);
+    assert!(!model.needs_setup);
     assert_eq!(
         model
             .tiers
@@ -646,8 +676,10 @@ fn remove_shows_the_setup_until_the_model_is_installed() {
     );
 }
 
-/// The setup sheet's Download grants exactly the disclosed scope and starts the install, and the
-/// sheet closes: the download's progress is the Remove group's, where Set up was.
+/// The setup sheet's Not now denies each scope it names and Set up then says so; its Download
+/// grants exactly the disclosed scopes and asks for the setup again, and the sheet closes: the
+/// download's progress is the Remove group's, where Set up was. Each sends exactly the requests the
+/// sheet records.
 #[test]
 fn the_setup_sheets_download_closes_it_and_starts_the_install() {
     let mut filling = Filling::opened();
@@ -659,7 +691,7 @@ fn the_setup_sheets_download_closes_it_and_starts_the_install() {
         .and_then(|line| line.action)
         .map(|(_, action)| action)
         .expect("Set up");
-    filling.remove(RemoveMessage::Setup(action));
+    filling.remove(RemoveMessage::Setup(action.clone()));
     filling.answer_capabilities();
     let sheet = filling
         .editor
@@ -667,7 +699,55 @@ fn the_setup_sheets_download_closes_it_and_starts_the_install() {
         .setup_sheet
         .clone()
         .expect("the setup sheet");
+    let strip = |requests: &[Value]| -> Vec<Value> {
+        requests
+            .iter()
+            .map(|request| {
+                let mut request = request.clone();
+                request["params"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("mutation");
+                request
+            })
+            .collect()
+    };
+    let deny = strip(&sheet.dismiss_requests);
+    assert_eq!(
+        deny,
+        [json!({"method": "module.permission.deny", "params": {
+            "module_id": AI, "capability": format!("download-{GENERATOR}"),
+            "scope": {"resource": GENERATOR, "version": "1", "origin": ORIGIN}}})]
+    );
+    filling.update(Message::Capability(CapabilityMessage::Consent(false)));
+    assert!(filling.editor.workspace.setup_sheet.is_none());
+    let sent = filling.answer_capabilities();
+    assert_eq!(
+        strip(&sent[..1]),
+        deny,
+        "Not now sends what the sheet records"
+    );
+    filling.remove(RemoveMessage::Setup(action));
+    filling.answer_capabilities();
+    let sheet = filling
+        .editor
+        .workspace
+        .setup_sheet
+        .clone()
+        .expect("the setup sheet again");
+    assert_eq!(
+        sheet.notes[0].0,
+        "You chose Not now before. Nothing has been downloaded."
+    );
     assert!(sheet.allow.is_some());
+    let allow = strip(&sheet.allow_requests);
+    assert_eq!(
+        allow
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["module.permission.grant", "module.setup.install"]
+    );
     // The message the sheet's Download sends.
     filling.update(Message::Capability(CapabilityMessage::Consent(
         sheet.allow.is_some(),
@@ -678,18 +758,10 @@ fn the_setup_sheets_download_closes_it_and_starts_the_install() {
     );
     assert_eq!(filling.editor.key_context().setup_sheet, None);
     let sent = filling.answer_capabilities();
-    let methods: Vec<&str> = sent
-        .iter()
-        .filter_map(|request| request["method"].as_str())
-        .collect();
-    let grant = methods
-        .iter()
-        .position(|method| *method == "module.permission.grant")
-        .expect("Download grants the disclosed scope");
     assert_eq!(
-        methods[grant + 1],
-        "module.resource.install",
-        "then starts the install: {methods:?}"
+        strip(&sent[..2]),
+        allow,
+        "Download grants the disclosed scope, then asks for the setup again"
     );
     wait_until("the install ending", || {
         filling.api("module.resource.list", json!({"module_id": AI}))["resources"]
@@ -986,7 +1058,7 @@ fn a_prompt_replaces_and_without_the_addon_generates_nothing() {
     let model = filling.model();
     assert_eq!(model.action, "Replace");
     let addon = model.addon.clone().expect("the Replace add-on");
-    assert_eq!(addon.resource.as_deref(), Some(ENCODER));
+    assert_eq!(addon.setup, "replace");
     assert_eq!(addon.text, "Add Replace to fill with what you describe.");
     assert_eq!(addon.action.map(|(label, _)| label).as_deref(), Some("Add"));
     assert_eq!(

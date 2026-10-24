@@ -54,13 +54,37 @@ pub fn segmented_fill<'a, M: Clone + 'a>(
     model: &SegmentedModel,
     on_select: impl Fn(usize) -> M + 'a,
 ) -> Element<'a, M> {
+    segmented_fill_marked(model, &[], on_select)
+}
+
+/// A [`segmented_fill`] control whose options at `marked` carry a small download glyph after
+/// their label in the tertiary ink: a Corrections kind whose setup has not run (`Remove ↓`).
+pub fn segmented_fill_marked<'a, M: Clone + 'a>(
+    model: &SegmentedModel,
+    marked: &[usize],
+    on_select: impl Fn(usize) -> M + 'a,
+) -> Element<'a, M> {
     let segments = model
         .options
         .iter()
         .enumerate()
         .map(|(index, option)| {
+            let label: Element<'a, M> = if marked.contains(&index) {
+                row![
+                    segment_label(option.clone(), theme::SIZE_CONTROL),
+                    text("\u{2193}")
+                        .size(theme::SIZE_SETUP_MARK)
+                        .wrapping(Wrapping::None)
+                        .style(theme::ink(Token::TextTertiary)),
+                ]
+                .spacing(theme::SEGMENT_CHEVRON_SPACING)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
+                segment_label(option.clone(), theme::SIZE_CONTROL).into()
+            };
             button(
-                container(segment_label(option.clone(), theme::SIZE_CONTROL))
+                container(label)
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
             )

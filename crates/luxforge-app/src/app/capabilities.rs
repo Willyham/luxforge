@@ -10,7 +10,9 @@
 //! running, and that sends the desktop a message only when a job's record changes or the job ends
 //! (see [`Editor::capability_reader_subscription`]). A `consent-required` answer opens the consent
 //! notice; Allow grants exactly the scope the core named, with this client's permission authority,
-//! and retries the refused operation once. Every request the desktop records is redacted first.
+//! and retries the refused operation once. A refused setup install opens the setup sheet instead,
+//! whose Download grants every scope it names and asks for the setup again, once. Every request
+//! the desktop records is redacted first.
 use crate::{
     app::{
         Editor,
@@ -21,10 +23,13 @@ use crate::{
     },
     state::{
         capabilities::{
-            Consent, ModuleStatus, OpenConsent, Operation, TaskPhase, TaskRun, declares,
-            introduced, task_profile,
+            Consent, ModuleStatus, OpenConsent, Operation, SetupConsent, TaskPhase, TaskRun,
+            declares, task_profile,
         },
-        fields, tools,
+        fields,
+        fill_setup::SetupAction,
+        models::ModelRequest,
+        tools,
     },
 };
 use iced::{Subscription, Task, futures::stream::BoxStream};
@@ -58,6 +63,8 @@ pub(crate) enum Outcome {
         consent: Box<Consent>,
         retry: Box<Operation>,
     },
+    /// A setup install needs grants: open the setup sheet.
+    SetupConsent(Box<SetupConsent>),
     /// A settings write met a newer revision; the settings were read again.
     Conflict(String),
     Failed(CallError),
@@ -77,6 +84,10 @@ pub(crate) struct Answer {
     pub(crate) status: Result<ModuleStatus, String>,
     /// The job the operation started, read once after it was queued.
     pub(crate) job: Option<JobRecord>,
+    /// The jobs a setup install queued, each read once.
+    pub(crate) jobs: Vec<JobRecord>,
+    /// The setup sheet's answer this round trip was, with the setup it asked for.
+    pub(crate) setup_answer: Option<(bool, String)>,
     /// Every request sent, redacted, for the event log.
     pub(crate) sent: Vec<Value>,
 }
@@ -100,6 +111,16 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 /// What a failure means for the block: consent, or a plain failure whose message is its status
 /// line (a `not-ready` answer names what is missing in its message).
 fn classify(error: CallError, retry: &Operation) -> Outcome {
+    let setup = error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("consent"))
+        .filter(|consent| consent.get("setup").is_some());
+    if error.code == "consent-required"
+        && let Some(Ok(consent)) = setup.cloned().map(parse::<SetupConsent>)
+    {
+        return Outcome::SetupConsent(Box::new(consent));
+    }
     if error.code == "consent-required"
         && let Some(Ok(consent)) = error
             .data
@@ -127,6 +148,29 @@ pub(super) fn settings_failure(error: CallError, read: impl FnOnce()) -> Outcome
     } else {
         Outcome::Failed(error)
     }
+}
+
+/// Send `requests` (`{method, params}` each) in order and answer the last one's result. With
+/// `through`, every request is sent and the first failure is answered; otherwise the first failure
+/// stops the rest.
+fn send_all(
+    owner: &OwnerHandle,
+    client: ClientId,
+    requests: Vec<Value>,
+    through: bool,
+    sent: &mut Vec<Value>,
+) -> Result<Value, CallError> {
+    let mut last = Ok(Value::Null);
+    for request in requests {
+        let method = request["method"].as_str().unwrap_or_default().to_owned();
+        let answer = call(owner, client, &method, request["params"].clone(), sent);
+        match answer {
+            Err(error) if !through => return Err(error),
+            answer if last.is_ok() => last = answer,
+            _ => {}
+        }
+    }
+    last
 }
 
 /// Run one operation's own requests and say what they came to. A settings write puts the fresh
@@ -196,6 +240,58 @@ fn perform(
             sent,
         ),
         Operation::Cancel { job } => call(owner, client, JOB_CANCEL, json!({"job_id": job}), sent),
+        // The setup group's buttons, through the requests their Copy as JSON request shows.
+        Operation::InstallSetup { setup } => send_all(
+            owner,
+            client,
+            SetupAction::Install {
+                module_id: module_id.to_owned(),
+                setup: setup.clone(),
+            }
+            .requests(|| json!(request())),
+            false,
+            sent,
+        ),
+        Operation::CancelJobs { jobs } => send_all(
+            owner,
+            client,
+            SetupAction::Cancel {
+                module_id: module_id.to_owned(),
+                setup: String::new(),
+                jobs: jobs.clone(),
+            }
+            .requests(|| json!(request())),
+            true,
+            sent,
+        ),
+        Operation::RemoveResources { resources } => send_all(
+            owner,
+            client,
+            ModelRequest::Remove.requests(module_id, resources, || json!(request())),
+            true,
+            sent,
+        ),
+        Operation::SetupConsent { allow, consent } => {
+            // Download grants every scope and asks for the setup again, exactly once: a retry that
+            // asks for consent again opens a new sheet. Not now denies each.
+            let answer = send_all(
+                owner,
+                client,
+                consent.requests(*allow, || json!(request())),
+                false,
+                sent,
+            );
+            return match answer {
+                Ok(answer) => Outcome::Done(answer),
+                Err(error) if *allow => classify(
+                    error,
+                    &Operation::InstallSetup {
+                        setup: consent.setup.clone(),
+                    },
+                ),
+                Err(error) => Outcome::Failed(error),
+            };
+        }
         Operation::RunTask {
             task,
             asset,
@@ -280,7 +376,7 @@ pub(crate) fn run(
     let outcome = perform(owner, client, &module_id, &op, &mut sent, &mut settings);
     // An answer to the notice is routed as the refused operation it answers: after Allow the
     // outcome is the retry's, and after Don't allow that operation's run ends.
-    let (routed, consent) = match &op {
+    let (routed, consent, setup_answer) = match &op {
         Operation::Consent {
             allow,
             consent,
@@ -288,8 +384,24 @@ pub(crate) fn run(
         } => (
             retry.as_deref().unwrap_or(&op).clone(),
             Some((*allow, consent.clone())),
+            None,
         ),
-        _ => (op.clone(), None),
+        // Download is routed as the setup install it asked for again.
+        Operation::SetupConsent {
+            allow: true,
+            consent,
+        } => (
+            Operation::InstallSetup {
+                setup: consent.setup.clone(),
+            },
+            None,
+            Some((true, consent.setup.clone())),
+        ),
+        Operation::SetupConsent {
+            allow: false,
+            consent,
+        } => (op.clone(), None, Some((false, consent.setup.clone()))),
+        _ => (op.clone(), None, None),
     };
     let job = match &outcome {
         Outcome::Done(answer) => answer["job_id"].as_str().and_then(|job| {
@@ -298,6 +410,21 @@ pub(crate) fn run(
                 .and_then(|record| parse::<JobRecord>(record).ok())
         }),
         _ => None,
+    };
+    // A setup install's jobs, each read once, so the reader follows them from the first frame.
+    let jobs = match (&routed, &outcome) {
+        (Operation::InstallSetup { .. }, Outcome::Done(answer)) => answer["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|queued| queued["job_id"].as_str())
+            .filter_map(|job| {
+                call(owner, client, JOB_READ, json!({"job_id": job}), &mut sent)
+                    .ok()
+                    .and_then(|record| parse::<JobRecord>(record).ok())
+            })
+            .collect(),
+        _ => Vec::new(),
     };
     let status = call(
         owner,
@@ -316,6 +443,8 @@ pub(crate) fn run(
         settings,
         status,
         job,
+        jobs,
+        setup_answer,
         sent,
     }
 }
@@ -602,23 +731,35 @@ impl Editor {
             } => return self.capability_op(&module_id, Operation::Unload { resource }),
             CapabilityMessage::CopyModelRequest {
                 module_id,
-                resource,
+                resources,
                 request: kind,
             } => {
                 self.view_state.menu = None;
-                let copied = kind.request(&module_id, &resource, json!(request()));
-                self.status.text = format!(
-                    "Copied the {} request",
-                    copied["method"].as_str().unwrap_or_default()
-                );
-                self.event("model_request_copied", || copied.clone());
-                return iced::clipboard::write(
-                    serde_json::to_string_pretty(&copied).unwrap_or_default(),
-                );
+                let copied =
+                    one_or_many(kind.requests(&module_id, &resources, || json!(request())));
+                return self.copy_requests("model_request_copied", copied);
             }
             CapabilityMessage::Cancel { module_id, job } => {
                 return self.capability_op(&module_id, Operation::Cancel { job });
             }
+            CapabilityMessage::Setup(action) => {
+                self.view_state.menu = None;
+                let module_id = action.module_id().to_owned();
+                let op = match action {
+                    SetupAction::Install { setup, .. } => Operation::InstallSetup { setup },
+                    SetupAction::Cancel { jobs, .. } => Operation::CancelJobs { jobs },
+                };
+                return self.capability_op(&module_id, op);
+            }
+            CapabilityMessage::CopySetupRequest(action) => {
+                self.view_state.menu = None;
+                let copied = one_or_many(action.requests(|| json!(request())));
+                return self.copy_requests("setup_request_copied", copied);
+            }
+            CapabilityMessage::RemoveResources {
+                module_id,
+                resources,
+            } => return self.capability_op(&module_id, Operation::RemoveResources { resources }),
             CapabilityMessage::RunTask { module_id, task } => {
                 return match self.task_operation(&module_id, &task) {
                     Ok(op) => {
@@ -687,6 +828,16 @@ impl Editor {
                 };
             }
             CapabilityMessage::Consent(allow) => {
+                if let Some(consent) = self.capabilities.setup_consent.take() {
+                    let module_id = consent.module_id.clone();
+                    return self.capability_op(
+                        &module_id,
+                        Operation::SetupConsent {
+                            allow,
+                            consent: Box::new(consent),
+                        },
+                    );
+                }
                 let Some(OpenConsent { consent, retry }) = self.capabilities.consent.take() else {
                     return Task::none();
                 };
@@ -704,6 +855,22 @@ impl Editor {
             CapabilityMessage::Polled(polled) => return self.capability_polled(polled),
         }
         Task::none()
+    }
+
+    /// Copy `copied`, one request or several in order, and say so.
+    fn copy_requests(&mut self, event: &'static str, copied: Value) -> Task<Message> {
+        let first = match &copied {
+            Value::Array(requests) => requests.first(),
+            one => Some(one),
+        };
+        self.status.text = format!(
+            "Copied the {} request",
+            first
+                .and_then(|request| request["method"].as_str())
+                .unwrap_or_default()
+        );
+        self.event(event, || copied.clone());
+        iced::clipboard::write(serde_json::to_string_pretty(&copied).unwrap_or_default())
     }
 
     /// The `task.<id>` operation a press on the task control sends right now: the open asset when
@@ -771,6 +938,8 @@ impl Editor {
             settings,
             status,
             job,
+            jobs,
+            setup_answer,
             sent,
         } = answer;
         self.event(
@@ -778,14 +947,20 @@ impl Editor {
             || json!({
                 "module_id": module_id,
                 "operation": op.name(),
-                "consent": consent.as_ref().map(|(allow, consent)| json!({"allow": allow, "capability": consent.capability})),
+                "consent": consent.as_ref().map(|(allow, consent)| json!({"allow": allow, "capability": consent.capability}))
+                    .or_else(|| setup_answer.as_ref().map(|(allow, setup)| json!({"allow": allow, "setup": setup}))),
                 "outcome": match &outcome {
                     Outcome::Done(_) => json!("done"),
                     Outcome::Consent { consent, .. } => json!({"consent-required": consent.capability}),
+                    Outcome::SetupConsent(consent) => json!({"consent-required": {
+                        "setup": consent.setup,
+                        "grants": consent.grants.iter().map(|grant| &grant.capability).collect::<Vec<_>>(),
+                    }}),
                     Outcome::Conflict(message) => json!({"conflict": message}),
                     Outcome::Failed(error) => json!({"failed": {"code": error.code, "message": error.message}}),
                 },
                 "job": job.as_ref().map(|job| json!({"job_id": job.job_id, "kind": job.kind, "status": job.status})),
+                "jobs": jobs.iter().map(|job| json!({"job_id": job.job_id, "resource_id": job.resource_id, "status": job.status})).collect::<Vec<_>>(),
                 "requests": sent,
             }),
         );
@@ -827,10 +1002,25 @@ impl Editor {
             _ => None,
         };
         match outcome {
-            Outcome::Done(_) => {
+            Outcome::Done(answer) => {
                 state.message = None;
                 if let Operation::Set { field, .. } = &op {
                     state.edits.remove(field);
+                }
+                // What this install set out to fetch is what the setup's one bar covers.
+                if let Operation::InstallSetup { setup } = &op {
+                    let queued = answer["jobs"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|queued| {
+                            Some((
+                                queued["resource_id"].as_str()?.to_owned(),
+                                queued["job_id"].as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect();
+                    state.installs.insert(setup.clone(), queued);
                 }
                 if let Some(record) = &job {
                     if let Some(run) = run {
@@ -838,15 +1028,23 @@ impl Editor {
                     }
                     state.track(record.clone(), true);
                 }
+                for record in &jobs {
+                    state.track(record.clone(), true);
+                }
             }
             Outcome::Consent { consent, retry } => {
                 if let Some(run) = run {
                     run.phase = TaskPhase::Consent;
                 }
+                self.capabilities.setup_consent = None;
                 self.capabilities.consent = Some(OpenConsent {
                     consent: *consent,
                     retry: Some(*retry),
                 });
+            }
+            Outcome::SetupConsent(consent) => {
+                self.capabilities.consent = None;
+                self.capabilities.setup_consent = Some(*consent);
             }
             Outcome::Conflict(message) => {
                 // The settings were read again: the form shows the other client's values, and the
@@ -879,6 +1077,9 @@ impl Editor {
         // read after it; nothing needs to poll for it.
         if let Some(record) = job.filter(|record| record.status.is_finished()) {
             self.job_finished(&module_id, &record);
+        }
+        for record in jobs.iter().filter(|record| record.status.is_finished()) {
+            self.job_finished(&module_id, record);
         }
         for record in &ended {
             self.job_finished(&module_id, record);
@@ -1084,18 +1285,18 @@ impl Editor {
         task
     }
 
-    /// Whether the open consent's Allow is on screen: the setup sheet's Download for a download
-    /// that introduces its feature, otherwise the consent notice's Allow or Download.
+    /// Whether the open consent's Allow is on screen: the setup sheet's Download for a setup,
+    /// otherwise the consent notice's Allow or Download.
     fn consent_allow_drawn(&self) -> bool {
-        let Some(open) = self.capabilities.consent.as_ref() else {
-            return false;
-        };
-        if introduced(&open.consent) {
+        if self.capabilities.setup_consent.is_some() {
             return self
                 .workspace
                 .setup_sheet
                 .as_ref()
                 .is_some_and(|sheet| sheet.allow.is_some());
+        }
+        if self.capabilities.consent.is_none() {
+            return false;
         }
         self.workspace.canvas.notices.iter().any(|notice| {
             notice
@@ -1103,6 +1304,19 @@ impl Editor {
                 .iter()
                 .any(|(_, action)| *action == crate::state::canvas::NoticeAction::AllowConsent)
         })
+    }
+
+    /// The Models tab's row of `module` that holds `resource`, while the tab is open.
+    fn model_row(&self, module: &str, resource: &str) -> Option<&crate::state::models::ModelRow> {
+        self.workspace
+            .settings
+            .models
+            .as_ref()?
+            .rows
+            .iter()
+            .find(|row| {
+                row.module_id == module && row.resources.iter().any(|held| held == resource)
+            })
     }
 
     /// The message one scripted gesture sends, `None` for a step that sends nothing, or why it
@@ -1116,28 +1330,33 @@ impl Editor {
         Ok(Some(match action {
             CapabilityAction::Settle => return Ok(None),
             CapabilityAction::Task(task) => CapabilityMessage::RunTask { module_id, task },
-            // The Models tab's buttons, pressed only when the tab draws them for that row.
+            // The Models tab's buttons, pressed only when the tab draws them for the row that
+            // holds the resource.
             CapabilityAction::Remove(resource) => {
-                let drawn = self
-                    .workspace
-                    .settings
-                    .models
-                    .as_ref()
-                    .and_then(|tab| {
-                        tab.rows
-                            .iter()
-                            .find(|row| row.module_id == module && row.resource_id == resource)
-                    })
-                    .is_some_and(|row| row.removable && row.enabled);
-                if !drawn {
+                let row = self
+                    .model_row(module, &resource)
+                    .filter(|row| row.removable && row.enabled);
+                let Some(row) = row else {
                     return Err(format!(
                         "the Models tab draws no Remove for {module} {resource}"
                     ));
-                }
-                CapabilityMessage::Remove {
+                };
+                CapabilityMessage::RemoveResources {
                     module_id,
-                    resource,
+                    resources: row.remove.clone(),
                 }
+            }
+            CapabilityAction::Download(resource) => {
+                let action = self
+                    .model_row(module, &resource)
+                    .filter(|row| row.enabled)
+                    .and_then(|row| row.download.clone());
+                let Some(action) = action else {
+                    return Err(format!(
+                        "the Models tab draws no Download for {module} {resource}"
+                    ));
+                };
+                CapabilityMessage::Setup(action)
             }
             CapabilityAction::Unload(resource) => {
                 let drawn = self.workspace.settings.models.as_ref().is_some_and(|tab| {
@@ -1156,12 +1375,18 @@ impl Editor {
                 }
             }
             CapabilityAction::Consent(allow) => {
-                if self
+                let open = self
                     .capabilities
-                    .consent
+                    .setup_consent
                     .as_ref()
-                    .is_none_or(|open| open.consent.module_id != module)
-                {
+                    .map(|open| open.module_id.as_str())
+                    .or_else(|| {
+                        self.capabilities
+                            .consent
+                            .as_ref()
+                            .map(|open| open.consent.module_id.as_str())
+                    });
+                if open != Some(module) {
                     return Err(format!("no consent notice is open for {module}"));
                 }
                 // Allow is pressed only where it is drawn: neither the setup sheet nor the notice
@@ -1182,6 +1407,15 @@ impl Editor {
                 CapabilityMessage::Apply { module_id, task }
             }
         }))
+    }
+}
+
+/// One request as itself, several as their array in order: what Copy as JSON request copies.
+fn one_or_many(mut requests: Vec<Value>) -> Value {
+    if requests.len() == 1 {
+        requests.remove(0)
+    } else {
+        Value::Array(requests)
     }
 }
 
