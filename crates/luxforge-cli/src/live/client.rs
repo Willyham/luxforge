@@ -19,6 +19,8 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest answer line this client reads, its newline included, so its memory stays bounded.
 pub const RESPONSE_LIMIT: usize = 64 * 1024 * 1024;
+/// What this client names itself with `session.identify` as it connects, so the desktop lists it.
+pub const LABEL: &str = "luxforge-ctl";
 
 /// One connection to a live session: one API client of the catalog owner, with edit authority, for
 /// as long as it is open. Calls are answered in order. Only the handshake has a deadline: after it,
@@ -32,7 +34,8 @@ pub struct LiveClient {
 
 impl LiveClient {
     /// Connect to `session` within [`CONNECT_TIMEOUT`] and shake hands: `schema.list` answered
-    /// within [`HANDSHAKE_TIMEOUT`] naming this client's protocol. Answers the connection and that
+    /// within [`HANDSHAKE_TIMEOUT`] naming this client's protocol, then `session.identify` naming
+    /// this client [`LABEL`], answered within the same time. Answers the connection and that
     /// schema. An address nothing answers at, or that does not answer as the session, is a stale
     /// session, never a reason to start another owner; a session that answers another protocol is
     /// [`UNSUPPORTED_PROTOCOL`]. A session that refuses another client answers why, which is kept.
@@ -72,15 +75,16 @@ impl LiveClient {
             .writer
             .set_read_timeout(Some(handshake))
             .map_err(|error| stale(error.to_string()))?;
-        let schema = client.call("schema.list", json!({})).map_err(|error| {
-            // The owner's own refusal, such as a session already serving every client it may, is
-            // an answer from the session and is kept; anything else is not the session talking.
+        // The owner's own refusal, such as a session already serving every client it may, is an
+        // answer from the session and is kept; anything else is not the session talking.
+        let answered = |error: ApiFailure| {
             if error.code == CONNECTION_LOST || error.code == PROTOCOL_ERROR {
                 stale(error.message)
             } else {
                 error
             }
-        })?;
+        };
+        let schema = client.call("schema.list", json!({})).map_err(answered)?;
         if schema["protocol"] != PROTOCOL {
             return Err(failure(
                 UNSUPPORTED_PROTOCOL,
@@ -91,6 +95,10 @@ impl LiveClient {
                 Some(json!({"catalog": session.catalog})),
             ));
         }
+        // Named in the desktop's list of connected clients for as long as the connection is open.
+        client
+            .call("session.identify", json!({"label": LABEL}))
+            .map_err(answered)?;
         client
             .writer
             .set_read_timeout(None)

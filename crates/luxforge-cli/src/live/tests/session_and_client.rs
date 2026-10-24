@@ -252,14 +252,18 @@ fn live_session_client_sends_the_token_with_new_identities_and_keeps_failures_wh
     assert_eq!(serde_json::to_value(&refused).unwrap(), failure);
     drop(client);
     let requests = endpoint.requests();
-    assert_eq!(requests.len(), 3, "the handshake and two calls");
+    assert_eq!(
+        requests.len(),
+        4,
+        "the handshake's two requests and two calls"
+    );
     for request in &requests {
         assert_eq!(request["token"], TOKEN);
         let id = uuid::Uuid::parse_str(request["id"].as_str().unwrap()).unwrap();
         assert_eq!(id.get_version_num(), 4);
     }
-    assert_ne!(requests[1]["id"], requests[2]["id"]);
-    assert_eq!(requests[2]["params"], json!({"a": 1}));
+    assert_ne!(requests[2]["id"], requests[3]["id"]);
+    assert_eq!(requests[3]["params"], json!({"a": 1}));
 }
 
 #[test]
@@ -283,8 +287,8 @@ fn live_session_client_bounds_requests_and_answers() {
     drop(client);
     assert_eq!(
         endpoint.requests().len(),
-        2,
-        "the handshake and one call: the oversized request was never written"
+        3,
+        "the handshake's two requests and one call: the oversized request was never written"
     );
 }
 
@@ -310,7 +314,7 @@ fn live_session_client_reports_lost_connections_and_foreign_answers() {
         CONNECTION_LOST
     );
     drop(client);
-    assert_eq!(endpoint.requests().len(), 4);
+    assert_eq!(endpoint.requests().len(), 5);
 }
 
 #[test]
@@ -331,6 +335,21 @@ fn live_session_client_reads_a_real_owner_and_is_refused_without_its_token() {
     assert_eq!(schema["protocol"], PROTOCOL);
     let unknown = client.call("no.such-method", json!({})).unwrap_err();
     assert_eq!(unknown.code, PROTOCOL_ERROR, "{unknown:?}");
+    // The client named itself as it connected, so another client sees it by name.
+    let (mut other, _) = LiveClient::connect(&session).unwrap();
+    let listed = other.call("session.clients", json!({})).unwrap();
+    let clients = listed["clients"].as_array().unwrap();
+    assert_eq!(clients.len(), 1, "{listed}");
+    assert_eq!(
+        (&clients[0]["label"], &clients[0]["transport"]),
+        (&json!(LABEL), &json!("loopback")),
+        "{listed}"
+    );
+    assert_eq!(
+        clients[0]["requests"], 3,
+        "its handshake's two and one call"
+    );
+    drop(other);
     drop(client);
     // The same address with another token is not this session.
     let forged = LiveSession {

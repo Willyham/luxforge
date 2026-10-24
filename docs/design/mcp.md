@@ -153,6 +153,7 @@ The registry gains the markers the adapter needs, so the adapter holds no per-me
   - `session.identify {label}` is session-scoped and names the calling client, 1–64 characters, for the desktop's list. `luxforge-ctl` identifies itself as "luxforge-ctl".
   - `session.clients` lists the owner's other registered clients: `{client_id, label?, authority, transport, connected_at, last_request_at?, requests}`. It reports metadata only, never the content of requests.
   - `session.disconnect {client_id}` closes that client's connection. Its session ends exactly as a disconnect ends it today: drafts end and `clients` jobs it alone wanted stop. Only permission authority may call it, which means the desktop. A connection or disconnection is recorded in the event log, so an open Settings tab follows it without polling.
+  - The events are `session.connect`, `session.identify` and `session.disconnect`, each naming `client_id`; the [architecture's connected clients](architecture.md#agent-contract) give the transports, refusals and how a JSON-lines stream is closed.
 
 ## Settings › Agents
 

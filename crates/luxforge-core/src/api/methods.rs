@@ -893,6 +893,26 @@ pub(super) const METHODS: &[MethodSpec] = &[
         workspace_set,
         "per-client screen preference: panels, canvas mode, the thirds guide, overlays and the view each declared tab row shows (views, keyed by module and group label path, checked against module.list's descriptors); needs no asset and changes no recipe, history or frame; a refused field writes nothing; returns the session"
     ),
+    // The connected clients (`docs/design/mcp.md`, "Core additions"), answered by the owner, which
+    // registers every client: metadata only, never what a client asked.
+    owner!(
+        "session.identify",
+        owner::clients::SessionIdentify,
+        owner::clients::identify,
+        "names the calling client for as long as it is connected, so the desktop's list of connected clients shows it (luxforge-ctl names itself luxforge-ctl); label is 1 to 64 characters, not all whitespace and without control characters; a later call replaces the label; returns {client_id, label}, client_id being this client's number as session.clients lists it; records a session.identify event naming client_id"
+    ),
+    owner!(
+        "session.clients",
+        NoParams,
+        owner::clients::list,
+        "{clients: [{client_id, label?, authority, transport, connected_at, last_request_at?, requests}]}: every other client the owner serves, in the order they connected, without the caller and the desktop's own client; label is what the client named itself with session.identify, absent until it does; authority is edit or permissions; transport is loopback (a live-session connection such as luxforge-ctl's), stdio (a JSON-lines stream such as luxforge-json's) or desktop-internal (a client the host runs in its own process); connected_at and last_request_at are milliseconds since the Unix epoch, last_request_at absent before its first request; requests counts the requests the owner has taken from it; metadata only, never what a request asked or answered; changes nothing. The log records a transport client's connection as a session.connect event and its disconnection as a session.disconnect event, each with an empty request_id and naming client_id, so a reader follows the list with events.wait"
+    ),
+    owner!(
+        "session.disconnect",
+        owner::clients::SessionDisconnect,
+        owner::clients::disconnect,
+        "permission authority only (the desktop's own client): closes another client's connection, the client_id session.clients lists; its session ends exactly as its own disconnection ends it: its draft ends, the clients jobs it alone wanted stop, and its held events.wait or job.wait is dropped; a live-session connection is closed at once, and a JSON-lines stream answers its next request protocol with data.reason disconnected and ends; an edit client is refused forbidden; the caller's own client_id, or one that is not connected (or the desktop's own), is refused validation naming the client; returns {client_id}; records a session.disconnect event under this request naming the disconnected client_id"
+    ),
     service!(
         "session.state",
         NoParams,
@@ -1485,7 +1505,8 @@ const ASSET_EDITS: &[&str] = &[
 /// The host methods whose effect lives only in the calling client's session, which ends with its
 /// connection, so a call of one on a connection of its own changes nothing that outlasts it: a
 /// draft, a previewed entry or comparison, the session's view and workspace state, a selection in
-/// its browse view or the rows of that view, and adopting its own preparation. `schema.list` marks
+/// its browse view or the rows of that view, adopting its own preparation, and the label it names
+/// itself with. `schema.list` marks
 /// each `session_scoped`, so a one-request client such as `luxforge-ctl call` can refuse it and point
 /// to a client that keeps one connection. A method that also answers something useful on its own,
 /// such as `browse.view`'s counts or `render.sample`'s pixel, is not listed.
@@ -1505,6 +1526,7 @@ const SESSION_SCOPED: &[&str] = &[
     "browse.rows",
     "stack.set-expanded",
     "job.adopt",
+    "session.identify",
 ];
 
 /// What each host method with a `revision` envelope checks its `expected_revision` against, as

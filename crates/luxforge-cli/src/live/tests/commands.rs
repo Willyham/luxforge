@@ -172,7 +172,12 @@ fn luxforge_ctl_commands_status_reads_the_session_and_the_catalog() {
     );
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "session.state", "catalog.info"]
+        [
+            "schema.list",
+            "session.identify",
+            "session.state",
+            "catalog.info"
+        ]
     );
 }
 
@@ -180,7 +185,10 @@ fn luxforge_ctl_commands_status_reads_the_session_and_the_catalog() {
 fn luxforge_ctl_commands_schema_prints_the_handshakes_list_or_one_method() {
     let endpoint = session(|request| panic!("{} was sent", request["method"]));
     assert_eq!(&ctl(&endpoint, &["schema"]).printed(), schema());
-    assert_eq!(methods(&endpoint.requests()), ["schema.list"]);
+    assert_eq!(
+        methods(&endpoint.requests()),
+        ["schema.list", "session.identify"]
+    );
     let endpoint = session(|request| panic!("{} was sent", request["method"]));
     let entry = ctl(&endpoint, &["schema", "edit.set-basic"]).printed();
     assert_eq!(entry, schema()["methods"]["edit.set-basic"]);
@@ -201,8 +209,11 @@ fn luxforge_ctl_commands_pass_a_read_through_and_refuse_what_does_not_apply() {
     .printed();
     assert_eq!(printed, json!({"read": true}));
     let requests = endpoint.requests();
-    assert_eq!(methods(&requests), ["schema.list", "asset.state"]);
-    assert_eq!(requests[1]["params"], json!({"asset_id": "a"}));
+    assert_eq!(
+        methods(&requests),
+        ["schema.list", "session.identify", "asset.state"]
+    );
+    assert_eq!(requests[2]["params"], json!({"asset_id": "a"}));
     // Each refusal is made after the handshake and before the method is sent.
     for (args, code) in [
         (&["call", "no.such"][..], "validation"),
@@ -252,7 +263,11 @@ fn luxforge_ctl_commands_pass_a_read_through_and_refuse_what_does_not_apply() {
         let endpoint = session(|request| panic!("{} was sent", request["method"]));
         let error = ctl(&endpoint, args).failed();
         assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
-        assert_eq!(methods(&endpoint.requests()), ["schema.list"], "{args:?}");
+        assert_eq!(
+            methods(&endpoint.requests()),
+            ["schema.list", "session.identify"],
+            "{args:?}"
+        );
     }
 }
 
@@ -274,8 +289,8 @@ fn luxforge_ctl_commands_read_params_inline_from_a_file_or_stdin_as_one_object()
         )
         .printed();
         let requests = endpoint.requests();
-        assert_eq!(requests[1]["params"]["name"], name);
-        assert_envelope(&requests[1]["params"]["mutation"], None);
+        assert_eq!(requests[2]["params"]["name"], name);
+        assert_envelope(&requests[2]["params"]["mutation"], None);
     }
     std::fs::remove_file(file).unwrap();
     // Parameters are checked before anything connects: there is no session here.
@@ -314,10 +329,15 @@ fn luxforge_ctl_commands_send_an_asset_edit_at_its_current_revision_and_never_re
     let requests = endpoint.requests();
     assert_eq!(
         methods(&requests),
-        ["schema.list", "asset.state", "edit.set-basic"]
+        [
+            "schema.list",
+            "session.identify",
+            "asset.state",
+            "edit.set-basic"
+        ]
     );
-    assert_eq!(requests[1]["params"], json!({"asset_id": "asset-1"}));
-    let params = &requests[2]["params"];
+    assert_eq!(requests[2]["params"], json!({"asset_id": "asset-1"}));
+    let params = &requests[3]["params"];
     assert_eq!(
         (&params["asset_id"], &params["exposure"]),
         (&json!("asset-1"), &json!(1))
@@ -337,7 +357,12 @@ fn luxforge_ctl_commands_send_an_asset_edit_at_its_current_revision_and_never_re
     assert_eq!(ran.status, EXIT_FAILURE);
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "asset.state", "edit.set-basic"],
+        [
+            "schema.list",
+            "session.identify",
+            "asset.state",
+            "edit.set-basic"
+        ],
         "sent once, never retried"
     );
 }
@@ -359,8 +384,8 @@ fn luxforge_ctl_commands_send_a_given_revision_and_a_request_envelope() {
     )
     .printed();
     let requests = endpoint.requests();
-    assert_eq!(requests[1]["params"]["values"], json!({"a": 1}));
-    assert_envelope(&requests[1]["params"]["mutation"], Some(3));
+    assert_eq!(requests[2]["params"]["values"], json!({"a": 1}));
+    assert_envelope(&requests[2]["params"]["mutation"], Some(3));
 }
 
 #[test]
@@ -375,14 +400,14 @@ fn luxforge_ctl_commands_report_an_unanswered_mutation_as_unknown_and_a_read_as_
     let requests = endpoint.requests();
     assert_eq!(
         methods(&requests),
-        ["schema.list", "preset.create"],
+        ["schema.list", "session.identify", "preset.create"],
         "never resent"
     );
     assert_eq!(error["error"]["code"], OUTCOME_UNKNOWN, "{error}");
     assert_eq!(
         error["error"]["data"],
         json!({"method": "preset.create",
-               "request_id": requests[1]["params"]["mutation"]["request_id"]})
+               "request_id": requests[2]["params"]["mutation"]["request_id"]})
     );
     let endpoint = session(|_| Reply::Close);
     let ran = ctl(&endpoint, &["call", "catalog.info"]);
@@ -437,15 +462,21 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     let requests = endpoint.requests();
     assert_eq!(
         methods(&requests),
-        ["schema.list", "export.write", "job.wait", "job.wait"]
+        [
+            "schema.list",
+            "session.identify",
+            "export.write",
+            "job.wait",
+            "job.wait"
+        ]
     );
     let hold = luxforge_core::MAX_EVENT_WAIT_MS;
     assert_eq!(
-        requests[2]["params"],
+        requests[3]["params"],
         json!({"job_id": "job-1", "timeout_ms": hold})
     );
     assert_eq!(
-        requests[3]["params"],
+        requests[4]["params"],
         json!({"job_id": "job-1", "timeout_ms": hold, "after": 1})
     );
     // Without --wait the call's own answer is printed, and a job that belongs to the catalog
@@ -455,7 +486,12 @@ fn luxforge_ctl_commands_wait_follows_a_job_to_its_end_on_one_connection() {
     assert_eq!(printed, json!({"job_id": "job-1", "status": "queued"}));
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "export.write", "job.read"]
+        [
+            "schema.list",
+            "session.identify",
+            "export.write",
+            "job.read"
+        ]
     );
 }
 
@@ -558,6 +594,7 @@ fn luxforge_ctl_commands_batch_sends_each_line_over_one_connection_and_carries_o
         methods(&requests),
         [
             "schema.list",
+            "session.identify",
             "draft.begin",
             "draft.set",
             "draft.commit",
@@ -566,8 +603,8 @@ fn luxforge_ctl_commands_batch_sends_each_line_over_one_connection_and_carries_o
         ],
         "one handshake, every request on one connection"
     );
-    assert_envelope(&requests[3]["params"]["mutation"], Some(2));
-    assert_envelope(&requests[5]["params"]["mutation"], Some(2));
+    assert_envelope(&requests[4]["params"]["mutation"], Some(2));
+    assert_envelope(&requests[6]["params"]["mutation"], Some(2));
 }
 
 #[test]
@@ -608,7 +645,10 @@ fn luxforge_ctl_commands_batch_stops_after_an_input_read_error() {
             .unwrap()
             .contains("input failed")
     );
-    assert_eq!(methods(&endpoint.requests()), ["schema.list"]);
+    assert_eq!(
+        methods(&endpoint.requests()),
+        ["schema.list", "session.identify"]
+    );
 }
 
 #[test]
@@ -653,6 +693,6 @@ fn luxforge_ctl_commands_batch_waits_warns_bounds_its_lines_and_stops_on_a_lost_
     assert_eq!(ran.status, EXIT_OUTCOME_UNKNOWN);
     assert_eq!(
         methods(&endpoint.requests()),
-        ["schema.list", "preset.create"]
+        ["schema.list", "session.identify", "preset.create"]
     );
 }

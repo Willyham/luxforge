@@ -319,8 +319,14 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
         Err(error) if luxforge_testbase::loopback_forbidden(&error.detail) => {}
         Err(error) => panic!("cannot start the live session: {error}"),
     }
+    // The live client's connection and disconnection are events of their own.
+    let methods = owner.methods();
+    let changes: Vec<&String> = methods
+        .iter()
+        .filter(|method| !method.starts_with("session."))
+        .collect();
     assert_eq!(
-        owner.methods(),
+        changes,
         [GRANT, DENY, REVOKE],
         "each change is announced once"
     );

@@ -3,8 +3,8 @@
 //! events the call announced; the owner handlers the table names live here.
 use super::response::ResponseSender;
 use super::{
-    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
-    Renderer, announce_once,
+    ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, ClientTransport,
+    EventsResult, Origin, Renderer, announce_once,
     methods::{self, Changed, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
@@ -54,6 +54,9 @@ mod artifact_tests;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+pub(super) mod clients;
+#[cfg(test)]
+mod clients_tests;
 #[cfg(test)]
 mod corrections_tests;
 #[cfg(test)]
@@ -115,7 +118,11 @@ const SOURCE_QUEUE_CAPACITY: usize = 8;
 const MAX_QUEUED_MOSAICS: usize = 1;
 
 /// Identifies one connected client; the owner keeps that client's session until it disconnects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// `session.clients` and the event log name it as a number.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, Deserialize,
+)]
+#[serde(transparent)]
 pub struct ClientId(u64);
 
 #[cfg(test)]
@@ -173,11 +180,12 @@ enum OwnerMessage {
     /// Boxed: a prepared source with its verified artifacts is several times larger than any
     /// other message, and every message on the owner's channel would otherwise carry that size.
     SourceComplete(JobId, Box<Result<SourceResult, Error>>),
-    /// A client registered with more than edit authority. Sent by `register_with` before it
-    /// returns, so the channel orders it before any call the client makes.
+    /// A client registered: its authority, how it reaches the owner and how its connection is
+    /// closed. Sent by every registration before it returns, so the channel orders it before any
+    /// call the client makes. Boxed: it carries the connection's closer.
     Register {
         client: ClientId,
-        authority: ClientAuthority,
+        enrolment: Box<clients::Enrolment>,
     },
     /// The host reports which renderer draws its picture ([`OwnerHandle::report_renderer`]),
     /// answered with the reporting client's session.
@@ -222,6 +230,9 @@ enum OwnerMessage {
     /// How many `events.wait` calls the owner holds unanswered.
     #[cfg(test)]
     EventWaits(SyncSender<usize>),
+    /// The draft the owner keeps in this client's session, if it keeps one.
+    #[cfg(test)]
+    DraftOf(ClientId, SyncSender<Option<DraftId>>),
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -1394,21 +1405,60 @@ impl OwnerHandle {
         self.render.clone()
     }
 
-    /// Allocate an edit client's identity; its session starts as default on first use.
+    /// Register an edit client the host runs in its own process; its session starts as default on
+    /// first use. `session.clients` lists it as `desktop-internal`.
     pub fn register(&self) -> ClientId {
-        ClientId(self.next_client.fetch_add(1, Ordering::Relaxed))
+        self.register_with(ClientAuthority::Edit)
     }
 
-    /// Allocate a client identity with a fixed authority. The owner learns it before any call the
-    /// client makes and forgets it when the client disconnects. Only the desktop's own client and
-    /// an explicitly started local setup process register with more than `Edit`.
+    /// Register a client the host runs in its own process with a fixed authority. The owner learns
+    /// it before any call the client makes and forgets it when the client disconnects. Only the
+    /// desktop's own client ([`Self::register_desktop`]) and an explicitly started local setup
+    /// process register with more than `Edit`.
     pub fn register_with(&self, authority: ClientAuthority) -> ClientId {
-        let client = self.register();
-        if authority != ClientAuthority::Edit {
-            let _ = self
-                .sender
-                .send(OwnerMessage::Register { client, authority });
-        }
+        self.enrol(clients::Enrolment {
+            authority,
+            transport: ClientTransport::DesktopInternal,
+            desktop: false,
+            close: None,
+        })
+    }
+
+    /// Register the desktop's own client, with permission authority: the one client
+    /// `session.clients` never lists and `session.disconnect` cannot name.
+    pub fn register_desktop(&self) -> ClientId {
+        self.enrol(clients::Enrolment {
+            authority: ClientAuthority::Permissions,
+            transport: ClientTransport::DesktopInternal,
+            desktop: true,
+            close: None,
+        })
+    }
+
+    /// Register a client a transport serves, whose connection and disconnection the event log
+    /// records. `close` closes its connection when `session.disconnect` names it; a transport that
+    /// cannot close its connection from outside passes `None`, and the client's next request is
+    /// refused instead.
+    pub(super) fn register_connection(
+        &self,
+        authority: ClientAuthority,
+        transport: ClientTransport,
+        close: Option<clients::Closer>,
+    ) -> ClientId {
+        self.enrol(clients::Enrolment {
+            authority,
+            transport,
+            desktop: false,
+            close,
+        })
+    }
+
+    fn enrol(&self, enrolment: clients::Enrolment) -> ClientId {
+        let client = ClientId(self.next_client.fetch_add(1, Ordering::Relaxed));
+        let _ = self.sender.send(OwnerMessage::Register {
+            client,
+            enrolment: Box::new(enrolment),
+        });
         client
     }
 
@@ -1462,6 +1512,16 @@ impl OwnerHandle {
         let (reply, answer) = sync_channel(1);
         self.sender
             .send(OwnerMessage::EventWaits(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
+    /// The draft the owner keeps in `client`'s session, if it keeps one.
+    #[cfg(test)]
+    pub(crate) fn draft_of(&self, client: ClientId) -> Option<DraftId> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::DraftOf(client, reply))
             .expect("the owner is running");
         answer.recv().expect("the owner answered")
     }
@@ -1727,6 +1787,7 @@ fn owner_loop(
         export_hold: None,
         sources,
         sessions: HashMap::new(),
+        clients: clients::Clients::default(),
         queue,
         activity,
         latest_preparation: HashMap::new(),
@@ -1843,11 +1904,18 @@ fn owner_loop(
                 OwnerMessage::EventWaits(reply) => {
                     let _ = reply.send(owner.event_waits.len());
                 }
+                #[cfg(test)]
+                OwnerMessage::DraftOf(client, reply) => {
+                    let draft = owner.sessions.get(&client).and_then(|session| {
+                        session.draft.as_ref().map(|draft| draft.draft_id.clone())
+                    });
+                    let _ = reply.send(draft);
+                }
                 OwnerMessage::Preview { request, response } => {
                     let _ = response.send(owner.preview(request));
                 }
-                OwnerMessage::Register { client, authority } => {
-                    owner.sessions.entry(client).or_default().authority = authority;
+                OwnerMessage::Register { client, enrolment } => {
+                    clients::register(&mut owner, client, *enrolment);
                 }
                 OwnerMessage::Renderer {
                     client,
@@ -1990,6 +2058,7 @@ impl EventLog {
             library_sequence: origin.library_sequence,
             index_revision: origin.index_revision,
             job_id: origin.job_id.clone(),
+            client_id: origin.client_id,
         });
     }
 
@@ -2079,6 +2148,8 @@ pub(super) struct Owner {
     /// The source worker's admission.
     sources: SourceQueue,
     sessions: HashMap<ClientId, ClientSession>,
+    /// Every registered client's metadata: its transport, label and request count.
+    clients: clients::Clients,
     /// The analysis worker: one running job and one replaceable pending job.
     queue: AnalysisQueue,
     activity: Arc<ActivityBoard>,
@@ -2173,6 +2244,9 @@ impl Owner {
     /// owner had now, while the owner moves on; a mutation whose plan reads a pixel is parked
     /// until the service has read it, and replayed once with it ([`Self::pixels_read`]).
     fn call(&mut self, call: OwnerCall) {
+        if let Err(refused) = clients::received(self, call.client) {
+            return self.refuse(call, refused);
+        }
         self.call_round(call, Replay::First);
     }
 
@@ -2914,7 +2988,16 @@ impl Owner {
             })
     }
 
+    /// A client's connection closed, or its host let it go: its session ends and the owner forgets
+    /// it.
     fn disconnect(&mut self, client: ClientId) {
+        self.end_session(client);
+        clients::forget(self, client);
+    }
+
+    /// End a client's session: its drafts, the `clients` jobs it alone wanted, its parked reads
+    /// and its held waits. Its committed edits and `catalog` jobs are unaffected.
+    fn end_session(&mut self, client: ClientId) {
         self.sessions.remove(&client);
         for (job_id, kind) in self.jobs.disconnect(client) {
             self.stop(&job_id, kind);

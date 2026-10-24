@@ -1,8 +1,9 @@
 //! Loopback JSON-lines transport: one line per request and response, a per-run token and a
 //! session file for discovery. The same framing serves stdin/stdout for headless use.
 use super::{
-    ApiRequest, ApiResponse, ClientAuthority, ClientId, OwnerHandle, PROTOCOL,
+    ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientTransport, OwnerHandle, PROTOCOL,
     live_sessions::{RegistryEntry, write_private},
+    owner::clients::{Closer, DISCONNECTED_REASON},
 };
 use crate::Error;
 use serde::{Deserialize, Serialize};
@@ -256,9 +257,16 @@ async fn serve_socket(
         task::Poll,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // `session.disconnect` closes the connection by shutting its socket down, which the read below
+    // sees as the client closing it.
+    let close = stream.try_clone().ok().map(|socket| -> Closer {
+        Box::new(move || {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        })
+    });
     let registration = Registration {
         owner,
-        client: owner.register(),
+        client: owner.register_connection(ClientAuthority::Edit, ClientTransport::Loopback, close),
     };
     let mut stream = tokio::net::TcpStream::from_std(stream)
         .map_err(|error| Error::protocol(error.to_string()))?;
@@ -399,9 +407,11 @@ fn serve(
     token: Option<&str>,
     authority: ClientAuthority,
 ) -> Result<(), Error> {
+    // A stream cannot be closed from outside while it is read, so a client `session.disconnect`
+    // closed is told so by its next answer, after which the stream ends.
     let registration = Registration {
         owner,
-        client: owner.register_with(authority),
+        client: owner.register_connection(authority, ClientTransport::Stdio, None),
     };
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_BYTES, writer);
@@ -442,10 +452,19 @@ fn serve(
             .write_all(b"\n")
             .and_then(|_| writer.flush())
             .map_err(|error| Error::protocol(error.to_string()))?;
-        if bytes > MAX_REQUEST_BYTES {
+        if bytes > MAX_REQUEST_BYTES || disconnected(&response) {
             return Ok(());
         }
     }
+}
+
+/// Whether `response` is the refusal of a client `session.disconnect` closed.
+fn disconnected(response: &ApiResponse) -> bool {
+    response
+        .error
+        .as_ref()
+        .and_then(|error| error.data.as_ref())
+        .is_some_and(|data| data["reason"] == DISCONNECTED_REASON)
 }
 
 #[cfg(test)]
@@ -548,8 +567,9 @@ mod tests {
         // After undo the lineage from current is only Original; the version keeps the edit reachable.
         assert_eq!(result(7)["steps"].as_array().unwrap().len(), 1);
         assert_eq!(result(7)["steps"][0]["sequence"], json!(0));
-        // The three catalog mutations advanced the sequence; source preparation did not.
-        assert_eq!(responses[5].sequence, 3);
+        // The stream's connection and the three catalog mutations advanced the sequence; source
+        // preparation did not.
+        assert_eq!(responses[5].sequence, 4);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -760,6 +780,89 @@ mod tests {
         );
         assert_eq!(big.flushes, 1);
 
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A JSON-lines stream is listed as `stdio` with its label. It cannot be closed from outside
+    /// while it is read, so once `session.disconnect` names it, its session has ended, its next
+    /// request is answered `protocol` with `data.reason` `disconnected` and the stream ends, though
+    /// its input is still open; the log records its connection and one disconnection.
+    #[test]
+    fn a_disconnected_json_lines_stream_answers_its_next_request_and_ends() {
+        let catalog = temp("stdio-disconnect.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let desktop = owner.register_desktop();
+        let (input, mut to_stream) = std::io::pipe().unwrap();
+        let (from_stream, output) = std::io::pipe().unwrap();
+        let served = std::thread::spawn({
+            let owner = owner.clone();
+            move || serve_json_lines_with(input, output, &owner, ClientAuthority::Edit)
+        });
+        let mut answers = BufReader::new(from_stream);
+        let mut ask = |id: &str, method: &str, params: Value| {
+            to_stream
+                .write_all(request(id, method, params).as_bytes())
+                .unwrap();
+            let mut line = String::new();
+            answers.read_line(&mut line).unwrap();
+            serde_json::from_str::<ApiResponse>(&line).unwrap()
+        };
+        let named = ask("name", "session.identify", json!({"label": "script"}));
+        let client = named.result.unwrap()["client_id"].clone();
+        let desktop_call = |id: &str, method: &str, params: Value| {
+            owner
+                .call(
+                    desktop,
+                    ApiRequest {
+                        id: id.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap()
+        };
+        let listed = desktop_call("list", "session.clients", json!({}))
+            .result
+            .unwrap();
+        assert_eq!(
+            listed["clients"],
+            json!([{"client_id": client, "label": "script", "authority": "edit",
+                    "transport": "stdio", "connected_at": listed["clients"][0]["connected_at"],
+                    "last_request_at": listed["clients"][0]["last_request_at"], "requests": 1}])
+        );
+        let closed = desktop_call("close", "session.disconnect", json!({"client_id": client}));
+        assert!(closed.error.is_none(), "{:?}", closed.error);
+        let refused = ask("after", "catalog.info", json!({})).error.unwrap();
+        assert_eq!(refused.code, "protocol", "{refused:?}");
+        assert_eq!(refused.data, Some(json!({"reason": "disconnected"})));
+        served.join().unwrap().unwrap();
+        let events = desktop_call("events", "events.since", json!({"after": 0}))
+            .result
+            .unwrap();
+        let session: Vec<(&str, &str)> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                assert_eq!(event["client_id"], client);
+                (
+                    event["method"].as_str().unwrap(),
+                    event["request_id"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            session,
+            [
+                ("session.connect", ""),
+                ("session.identify", "name"),
+                ("session.disconnect", "close"),
+            ]
+        );
+        drop(to_stream);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
