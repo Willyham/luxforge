@@ -92,13 +92,15 @@ fn apply_preset(
     )
 }
 
-/// A settings set over all four presettable photo modules.
+/// A settings set over the presettable photo modules Basic, Presence, the mixer, the vignette and
+/// grain.
 fn soft_film() -> Value {
     json!({
         "set-basic": {"exposure": 0.35, "contrast": 12, "temperature": 5, "tint": -3, "vibrance": 10},
         "set-presence": {"texture": 20, "clarity": -10, "dehaze": 5},
         "set-mixer": {"blue-saturation": -20, "red-hue": 10},
         "set-vignette": {"amount": -18, "midpoint": 40, "roundness": 0, "feather": 50},
+        "set-grain": {"amount": 30, "size": 40},
     })
 }
 
@@ -132,9 +134,9 @@ fn assert_refused(
 // One entry whose stack equals the individual actions.
 // -------------------------------------------------------------------------------------------
 
-/// A preset over Basic, Presence, the mixer and the vignette commits exactly one entry, stored
+/// A preset over Basic, Presence, the mixer, the vignette and grain commits exactly one entry, stored
 /// under its own identity, label and parameters, and its stack and pixels equal the same fields
-/// sent through the four `edit.set-*` actions one by one on a fresh asset.
+/// sent through the `edit.set-*` actions one by one on a fresh asset.
 #[test]
 #[slow]
 fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
@@ -205,6 +207,7 @@ fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
             luxforge_core::MIXER_EFFECT,
             luxforge_core::PRESENCE_EFFECT,
             luxforge_core::VIGNETTE_EFFECT,
+            luxforge_core::GRAIN_EFFECT,
         ],
         "each layer at the place its stage and order name"
     );

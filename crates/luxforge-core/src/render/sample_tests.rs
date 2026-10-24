@@ -95,6 +95,10 @@ pub(super) fn cases() -> Vec<Case> {
         crate::VIGNETTE_EFFECT,
         json!({"amount": -40.0, "midpoint": 30.0}),
     );
+    let grain = effect(
+        crate::GRAIN_EFFECT,
+        json!({"amount": 90.0, "size": 30.0, "roughness": 80.0}),
+    );
     // Dehaze reads a global estimate of its input, so the samples read the one the render stored.
     let presence = effect(
         crate::PRESENCE_EFFECT,
@@ -146,6 +150,10 @@ pub(super) fn cases() -> Vec<Case> {
         Case::new(
             "colour after a straightened crop's resample",
             vec![basic.clone(), crop.clone(), vignette.clone()],
+        ),
+        Case::new(
+            "grain after a vignette and a straightened crop's resample",
+            vec![basic.clone(), crop.clone(), vignette.clone(), grain.clone()],
         ),
         Case::new(
             "colour, an orientation and a resample",

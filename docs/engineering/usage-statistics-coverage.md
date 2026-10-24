@@ -117,6 +117,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `edit.reset-corrections` | `tool.commit` corrections | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-curve` | `tool.commit` curve | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-detail` | `tool.commit` detail | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
+| `edit.reset-grain` | `tool.commit` grain | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-lens-profile` | `tool.commit` lens | One commit when the lens group changed. |
 | `edit.reset-look` | `tool.commit` look | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.reset-mixer` | `tool.commit` mixer | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
@@ -127,6 +128,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `edit.set-basic` | `tool.commit` basic | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-curve` | `tool.commit` curve | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-detail` | `tool.commit` detail | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
+| `edit.set-grain` | `tool.commit` grain | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-look` | `tool.commit` look | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-mixer` | `tool.commit` mixer | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |
 | `edit.set-perspective` | `tool.commit` perspective | One commit per built-in group the committed transaction changed, with the image; a no-op, a retry or an automatic first-open entry records nothing. |

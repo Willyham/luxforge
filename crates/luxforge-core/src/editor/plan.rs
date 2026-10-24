@@ -3735,6 +3735,15 @@ mod tests {
             ),
             ("set-vignette", json!({}), "Set Vignette"),
             ("reset-vignette", json!({}), "Reset Vignette"),
+            ("set-grain", json!({"amount":40.0}), "Grain amount 40"),
+            ("set-grain", json!({"size":60.0}), "Grain size 60"),
+            (
+                "set-grain",
+                json!({"amount":20.0,"roughness":10.0}),
+                "Grain (2 fields)",
+            ),
+            ("set-grain", json!({}), "Set Grain"),
+            ("reset-grain", json!({}), "Reset Grain"),
             (
                 "transform",
                 json!({"transform":"rotate-left"}),

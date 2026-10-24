@@ -1,11 +1,12 @@
-//! The Presence, colour mixer and vignette chapter of `cargo xtask editor-acceptance`: what each of
-//! the three modules does that no other module does, driven through the JSON method table with
-//! [`OwnerHandle::call`] exactly as an independent client reaches it — Presence's place after the
-//! colour run, the mixer's order after Basic, the mixer's colour grading on the global target and a
-//! mask through history and real JPEG exports, and the vignette recentring on the stage a crop
-//! update produces.
+//! The Presence, colour mixer, vignette and grain chapter of `cargo xtask editor-acceptance`: what
+//! each of the four modules does that no other module does, driven through the JSON method table
+//! with [`OwnerHandle::call`] exactly as an independent client reaches it — Presence's place after
+//! the colour run, the mixer's order after Basic, the mixer's colour grading on the global target
+//! and a mask through history and real JPEG exports, the vignette recentring on the stage a crop
+//! update produces, and grain following the vignette whichever is committed first, its field
+//! addressed in full-resolution output pixels on the stage each crop update produces.
 //!
-//! The host behaviour the three share with every field-patch module — discovery, drafts, no-ops,
+//! The host behaviour the four share with every field-patch module — discovery, drafts, no-ops,
 //! deduplication, resets, one layer per target, history, sample equal to render on both paths, an
 //! unavailable provider and reopen — is the field-patch conformance chapter's
 //! ([`crate::conformance`]), which runs the same suite the core's own test does. Their numerics
@@ -13,9 +14,10 @@
 use crate::basic_acceptance::{FIXTURE, mutation, open, render};
 use crate::*;
 use luxforge_core::{
-    BASIC_EFFECT, ClientId, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle, PRESENCE_EFFECT,
-    SourceImage, VIGNETTE_EFFECT,
+    BASIC_EFFECT, CROP_EFFECT, ClientId, GRAIN_EFFECT, MIXER_EFFECT, ORIENTATION_EFFECT,
+    OwnerHandle, PRESENCE_EFFECT, SourceImage, VIGNETTE_EFFECT,
 };
+use luxforge_reference::{grain as grain_reference, srgb};
 use luxforge_testkit::client::{self, call};
 use std::time::Instant;
 
@@ -53,6 +55,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         None,
         vignette_recentring,
     )?;
+    let grain = section(
+        &fixture,
+        &out.join("grain-catalog.sqlite"),
+        None,
+        grain_placement,
+    )?;
     ensure(
         hash(&fixture)? == fixture_hash,
         "The original source changed",
@@ -65,6 +73,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         "mixer": mixer,
         "grading": grading,
         "vignette": vignette,
+        "grain": grain,
         "generic": "the host behaviour these modules share with every field-patch module is proved under field_patch_conformance",
         "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
     }))
@@ -689,6 +698,223 @@ fn vignette_recentring(
             "with_vignette_b_centre": with_vignette_b_centre,
             "with_vignette_b_corner": with_vignette_b_corner,
         }),
+    );
+    Ok(())
+}
+
+/// The effects of the asset's committed layers, in stack order, as `recipe.describe` reports them.
+fn described_effects(owner: &OwnerHandle, editor: ClientId, asset: &Value) -> Result<Vec<Value>> {
+    let described = call(owner, editor, "recipe.describe", json!({"asset_id": asset}))?;
+    Ok(described["layers"]
+        .as_array()
+        .ok_or("no layers")?
+        .iter()
+        .map(|layer| layer["effect"].clone())
+        .collect())
+}
+
+/// One field-patch commit through the method table at the asset's current revision.
+fn commit(
+    owner: &OwnerHandle,
+    editor: ClientId,
+    asset: &Value,
+    method: &str,
+    request: &str,
+    fields: Value,
+) -> Result {
+    let revision = client::revision(owner, editor, asset)?;
+    let mut parameters = json!({"asset_id": asset, "mutation": mutation(revision, request)});
+    for (key, value) in fields.as_object().ok_or("fields are an object")? {
+        parameters[key] = value.clone();
+    }
+    call(owner, editor, method, parameters)?;
+    Ok(())
+}
+
+/// The grain the section commits, and the reference's parameters for it.
+const GRAIN_FIELDS: (f64, f64, f64) = (80.0, 40.0, 70.0);
+
+/// Every `render.sample` of a grid over the asset's current stage within one code of the
+/// independent reference's grain at that output pixel, over the bytes of the same stack rendered
+/// without its grain layer, with the field compiled at full resolution: the grain is addressed in
+/// the output stage's own pixels at the full-resolution scale. Answers the stage and the worst
+/// difference.
+fn grain_matches_the_reference(
+    owner: &OwnerHandle,
+    editor: ClientId,
+    asset: &Value,
+    source: &SourceImage,
+) -> Result<Value> {
+    let mut recipe = client::recipe(owner, editor, asset)?;
+    ensure(
+        recipe.layers.last().map(|layer| layer.effect_id.as_str()) == Some(GRAIN_EFFECT),
+        "The grain layer is not the last layer",
+    )?;
+    recipe.layers.pop();
+    let baseline = render(source, &recipe)?;
+    let (width, height) = (baseline.width, baseline.height);
+    let (amount, size, roughness) = GRAIN_FIELDS;
+    let params = grain_reference::GrainParams {
+        amount,
+        size,
+        roughness,
+    };
+    let mut worst = 0u8;
+    let mut moved = 0;
+    let mut sampled = 0;
+    for gy in 0..8 {
+        for gx in 0..8 {
+            let (x, y) = (gx * (width - 1) / 7, gy * (height - 1) / 7);
+            let below = baseline.pixel(x, y).ok_or("a baseline pixel")?;
+            let expected = grain_reference::grain_pixel(
+                x,
+                y,
+                [below[0], below[1], below[2]].map(srgb::decode),
+                &params,
+                grain_reference::Footprint::FULL,
+            )
+            .map(srgb::code);
+            let rgba = call(
+                owner,
+                editor,
+                "render.sample",
+                json!({"asset_id": asset, "x": x, "y": y}),
+            )?["rgba"]
+                .clone();
+            let actual: Vec<u8> = serde_json::from_value(rgba)?;
+            for channel in 0..3 {
+                let difference = actual[channel].abs_diff(expected[channel]);
+                worst = worst.max(difference);
+                ensure(
+                    difference <= 1,
+                    format!(
+                        "The grain at ({x}, {y}) of the {width}x{height} stage, channel {channel}, reads {} against the reference's {}",
+                        actual[channel], expected[channel]
+                    ),
+                )?;
+            }
+            moved += usize::from(actual[..3] != below[..3]);
+            sampled += 1;
+        }
+    }
+    ensure(
+        moved * 2 > sampled,
+        format!("The grain moved only {moved} of {sampled} samples"),
+    )?;
+    Ok(
+        json!({"stage": [width, height], "samples": sampled, "moved": moved, "worst_code_difference": worst}),
+    )
+}
+
+fn grain_placement(
+    owner: &OwnerHandle,
+    editor: ClientId,
+    asset: &Value,
+    original: &Value,
+    source: &SourceImage,
+    _: Option<&Path>,
+    record: &mut dyn FnMut(&str, Value),
+) -> Result {
+    let (amount, size, roughness) = GRAIN_FIELDS;
+    let grain = json!({"amount": amount, "size": size, "roughness": roughness});
+    let vignette = json!({"amount": -40.0});
+    // Grain follows the vignette whichever is committed first, with identical bytes.
+    let mut frames = Vec::new();
+    for (case, first, second) in [
+        (
+            "grain first",
+            ("edit.set-grain", grain.clone()),
+            ("edit.set-vignette", vignette.clone()),
+        ),
+        (
+            "vignette first",
+            ("edit.set-vignette", vignette.clone()),
+            ("edit.set-grain", grain.clone()),
+        ),
+    ] {
+        restore_to_original(
+            owner,
+            editor,
+            asset,
+            original,
+            &format!("grain-{case}-restore"),
+        )?;
+        commit(owner, editor, asset, first.0, &format!("{case}-1"), first.1)?;
+        commit(
+            owner,
+            editor,
+            asset,
+            second.0,
+            &format!("{case}-2"),
+            second.1,
+        )?;
+        let effects = described_effects(owner, editor, asset)?;
+        ensure(
+            effects == [json!(VIGNETTE_EFFECT), json!(GRAIN_EFFECT)],
+            format!("{case}: the stack is {effects:?}, not the vignette then grain"),
+        )?;
+        frames.push(render(source, &client::recipe(owner, editor, asset)?)?.rgba);
+    }
+    ensure(
+        frames[0] == frames[1],
+        "Grain and the vignette render different bytes depending on which was committed first",
+    )?;
+    record(
+        "grain follows the vignette whichever is committed first, and both orders render identical bytes",
+        json!({"stack": [VIGNETTE_EFFECT, GRAIN_EFFECT]}),
+    );
+
+    // On the stage each crop produces, the grain is the full-resolution field at that output pixel:
+    // a crop update re-lays the frame and leaves the grain's scale unchanged.
+    restore_to_original(owner, editor, asset, original, "grain-crop-restore")?;
+    commit(
+        owner,
+        editor,
+        asset,
+        "edit.set-grain",
+        "grain-crop-grain",
+        grain.clone(),
+    )?;
+    let mut stages = Vec::new();
+    for (request, crop) in [
+        (
+            "grain-crop-a",
+            json!({"angle": 0.0, "x": 0.1, "y": 0.1, "width": 0.6, "height": 0.6}),
+        ),
+        (
+            "grain-crop-b",
+            json!({"angle": 0.0, "x": 0.2, "y": 0.2, "width": 0.4, "height": 0.4}),
+        ),
+    ] {
+        commit(owner, editor, asset, "edit.crop", request, crop)?;
+        let effects = described_effects(owner, editor, asset)?;
+        ensure(
+            effects == [json!(CROP_EFFECT), json!(GRAIN_EFFECT)],
+            format!("{request}: the stack is {effects:?}, not the crop then grain"),
+        )?;
+        stages.push(grain_matches_the_reference(owner, editor, asset, source)?);
+    }
+    commit(
+        owner,
+        editor,
+        asset,
+        "edit.set-vignette",
+        "grain-crop-vignette",
+        vignette,
+    )?;
+    let effects = described_effects(owner, editor, asset)?;
+    ensure(
+        effects
+            == [
+                json!(CROP_EFFECT),
+                json!(VIGNETTE_EFFECT),
+                json!(GRAIN_EFFECT),
+            ],
+        format!("A vignette after the crop update did not join before grain: {effects:?}"),
+    )?;
+    record(
+        "on the stage each crop update produces, every sampled byte is within one code of the independent reference's full-resolution grain at that output pixel, so a crop re-lays the frame without changing the grain's scale; the crop stays ahead of the vignette and grain",
+        json!({"stages": stages}),
     );
     Ok(())
 }

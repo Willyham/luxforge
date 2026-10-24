@@ -1,0 +1,10 @@
+{
+  "format": "luxforge.slider-response",
+  "version": 1,
+  "basis": "identity: no alignment round has measured grain yet, so each strength is its slider value; the Lightroom alignment round folds its fitted responses here and raises the module's payload format",
+  "responses": {
+    "amount": {"knots": [[0, 0], [100, 100]]},
+    "size": {"knots": [[0, 0], [100, 100]]},
+    "roughness": {"knots": [[0, 0], [100, 100]]}
+  }
+}

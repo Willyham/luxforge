@@ -80,6 +80,8 @@ wire_enum! {
         Curve => "curve",
         /// Sharpening and noise reduction.
         Detail => "detail",
+        /// Film grain.
+        Grain => "grain",
         /// Lens correction.
         Lens => "lens",
         /// A RAW photo's Look.
@@ -107,6 +109,7 @@ impl Tool {
             "luxforge.crop" => Self::Crop,
             "luxforge.curve" => Self::Curve,
             "luxforge.detail" => Self::Detail,
+            "luxforge.grain" => Self::Grain,
             "luxforge.lens" => Self::Lens,
             "luxforge.look" => Self::Look,
             "luxforge.mixer" => Self::Mixer,

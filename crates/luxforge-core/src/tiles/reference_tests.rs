@@ -374,7 +374,7 @@ fn stacks() -> Vec<(&'static str, Recipe)> {
     });
     vec![
         (
-            "Detail, Basic, Presence, a straightened crop and a vignette",
+            "Detail, Basic, Presence, a straightened crop, a vignette and grain",
             recipe_of(
                 vec![
                     Layer::new(
@@ -385,6 +385,10 @@ fn stacks() -> Vec<(&'static str, Recipe)> {
                     presence(),
                     crop.clone(),
                     Layer::new(VIGNETTE_EFFECT, json!({"amount": -40.0, "midpoint": 30.0})),
+                    Layer::new(
+                        crate::GRAIN_EFFECT,
+                        json!({"amount": 70.0, "size": 20.0, "roughness": 60.0}),
+                    ),
                 ],
                 Vec::new(),
             ),

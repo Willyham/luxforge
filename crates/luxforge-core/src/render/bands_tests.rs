@@ -87,6 +87,7 @@ pub(super) enum Step {
     /// Clarity, Texture and Dehaze in one Presence layer.
     Presence,
     Vignette,
+    Grain,
     Turn,
     Crop,
     Straighten,
@@ -136,6 +137,10 @@ impl Step {
                 json!({"clarity": 30.0, "texture": 15.0, "dehaze": 40.0}),
             ),
             Self::Vignette => Layer::new(crate::VIGNETTE_EFFECT, json!({"amount": -40.0})),
+            Self::Grain => Layer::new(
+                crate::GRAIN_EFFECT,
+                json!({"amount": 80.0, "size": 40.0, "roughness": 70.0}),
+            ),
             Self::Turn => turn(Transform::RotateRight),
             Self::Crop => crop(0.0),
             Self::Straighten => crop(3.0),
@@ -345,7 +350,11 @@ fn balanced() -> LinearSettings {
 #[test]
 fn reference_bands_colour_stacks_are_the_whole_frame() {
     let registry = ModuleRegistry::developer();
-    let stacks: &[&[Step]] = &[&[], &[Step::Basic, Step::Curve]];
+    let stacks: &[&[Step]] = &[
+        &[],
+        &[Step::Basic, Step::Curve],
+        &[Step::Grain, Step::Basic],
+    ];
     holds(&registry, stacks, LinearSettings::default());
     holds(&registry, stacks, balanced());
 }
@@ -399,6 +408,7 @@ fn reference_bands_geometry_stacks_are_the_whole_frame() {
             &[Step::Vignette, Step::Crop],
             &[Step::Turn, Step::Detail, Step::Straighten],
             &[Step::Lens, Step::Clarity, Step::Crop, Step::Vignette],
+            &[Step::Grain, Step::Straighten, Step::Vignette],
             &[Step::Perspective, Step::Dehaze, Step::MaskedDetail],
         ],
         LinearSettings::default(),

@@ -1,7 +1,7 @@
 //! The field-patch conformance suite: one set of checks every registered field-patch module passes.
 //!
-//! Basic, the Tone curve, Detail, the colour mixer, Presence, Perspective, the vignette and the
-//! developer controls proof
+//! Basic, the Tone curve, Detail, the colour mixer, Presence, Perspective, the vignette, grain and
+//! the developer controls proof
 //! share one implementation of everything but their field tables and their compilation
 //! (`modules/field_patch.rs`), and the host behaviour they rely on — discovery, drafts, no-ops,
 //! request deduplication, resets that keep a layer's identity, one layer per target, history,
@@ -58,7 +58,7 @@ impl Evidence {
 /// proof, whose fields are the non-numeric kinds. A new field-patch module needs no entry here to
 /// be checked; this list only makes sure a descriptor change can never drop one of these from the
 /// suite silently.
-pub const KNOWN: [&str; 8] = [
+pub const KNOWN: [&str; 9] = [
     "luxforge.basic",
     "luxforge.curve",
     "luxforge.detail",
@@ -66,6 +66,7 @@ pub const KNOWN: [&str; 8] = [
     "luxforge.mixer",
     "luxforge.perspective",
     "luxforge.vignette",
+    "luxforge.grain",
     "luxforge.controls",
 ];
 

@@ -603,6 +603,7 @@ mod tests {
                 "Colour mixer \u{00b7} HSL",
                 "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
+                "Grain \u{00b7} Grain",
             ],
             "RAW, transforms and crop declare no field patch; Perspective's patch is not presettable"
         );
