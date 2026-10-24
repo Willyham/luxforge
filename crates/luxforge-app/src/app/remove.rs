@@ -34,14 +34,14 @@ use crate::{
         MenuTarget,
         capabilities::Operation,
         remove::{
-            FillJob, FillTier, RemoveNotice, RemoveSelection, chosen_tier, fill_module,
+            FillJob, FillTier, RemoveNotice, RemoveSelection, Start, chosen_tier, fill_module,
             shown_tiers, stale,
         },
     },
 };
 use iced::{Subscription, Task, futures::stream::BoxStream, widget::image::Handle};
 use luxforge_core::{
-    AssetId, CandidateState, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
+    CandidateState, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
     jobs::{JOB_CANCEL, JOB_READ, JobRecord, JobStatus},
     redact_params,
 };
@@ -65,15 +65,6 @@ const SEED_RANGE: u64 = 1 << 40;
 /// One candidate, by its job and number.
 type CandidateKey = (String, u8);
 
-/// What a start in flight was for: the selection it fills, from which seed, with which prompt.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Start {
-    pub(crate) asset: AssetId,
-    pub(crate) serial: u64,
-    pub(crate) seed: u64,
-    pub(crate) prompt: Option<String>,
-}
-
 /// What an evidence step on Remove waits for before its frame is captured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoveWait {
@@ -91,8 +82,6 @@ pub(crate) struct Remove {
     painting: Option<(BrushGesture, Vec<[f64; 2]>)>,
     /// Where the last selection stroke ended, for `⇧`-click.
     last_end: Option<[f64; 2]>,
-    /// The start in flight.
-    pub(crate) starting: Option<Start>,
     /// Decoded previews, oldest first: one handle per candidate, kept while it is in the strip.
     pub(crate) previews: Vec<(CandidateKey, Handle)>,
     /// Preview reads in flight, and those that failed, which are not asked again.
@@ -686,7 +675,7 @@ impl Editor {
 
     /// Generate, or Regenerate from the newest job's next seed: one fill request.
     fn remove_generate(&mut self, regenerate: bool) -> Task<Message> {
-        if self.remove.pending > 0 || self.remove_reads.starting.is_some() {
+        if self.remove.pending > 0 || self.remove.starting.is_some() {
             self.status.text = crate::state::IN_FLIGHT.into();
             return Task::none();
         }
@@ -720,7 +709,7 @@ impl Editor {
         );
         self.remove.pending += 1;
         self.remove.notice = None;
-        self.remove_reads.starting = Some(start);
+        self.remove.starting = Some(start);
         self.remove_reads.last_request = Some((method.clone(), params.clone()));
         self.status.text = if regenerate {
             "Regenerating\u{2026}".into()
@@ -737,7 +726,7 @@ impl Editor {
     /// The start answered: follow its job, or show why it was refused.
     fn remove_started(&mut self, result: Result<Value, CallError>) {
         self.remove.pending = self.remove.pending.saturating_sub(1);
-        let Some(start) = self.remove_reads.starting.take() else {
+        let Some(start) = self.remove.starting.take() else {
             return;
         };
         match result {
@@ -1327,7 +1316,7 @@ impl Editor {
             && fill_module(&self.modules, self.settings.flags.as_ref())
                 .is_some_and(|module| self.capabilities.module(&module.id).pending > 0);
         if self.remove.pending > 0
-            || self.remove_reads.starting.is_some()
+            || self.remove.starting.is_some()
             || self.remove.accepting.is_some()
             || !self.remove_reads.reading.is_empty()
             || self.remove_reads.hover.asking.is_some()
