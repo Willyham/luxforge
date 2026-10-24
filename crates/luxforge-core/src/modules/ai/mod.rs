@@ -13,6 +13,7 @@ mod objects;
 mod pick;
 mod segment;
 mod selection;
+mod setups;
 #[cfg(test)]
 mod tests;
 

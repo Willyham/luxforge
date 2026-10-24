@@ -235,6 +235,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `module.settings.reset` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.settings.set` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.settings.set-secret` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
+| `module.setup.install` | Exempt (privacy) | Module capability administration: names a module, a setup and its resources, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.status` | Exempt (read) | Reads module status. |
 | `pick.develop` | `interaction` `develop-picks`; `images.added` | The interaction when accepted (opening a file is a Develop of it); the job's count of newly created photographs, when there is one, however it ended. Linked and relinked files, failures and a retry's answer add nothing. |
 | `pick.list` | Exempt (read) | Lists picks. |

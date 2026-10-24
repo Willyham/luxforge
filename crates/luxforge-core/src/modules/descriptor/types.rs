@@ -6,7 +6,8 @@ use crate::{
     Error, ErrorKind, SourceTag,
     capabilities::{
         descriptor::{
-            CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor, TaskDescriptor,
+            CapabilityDescriptor, ResourceDescriptor, SettingsDescriptor, SetupDescriptor,
+            TaskDescriptor,
         },
         endpoint::EndpointClass,
     },
@@ -1933,6 +1934,11 @@ pub struct ModuleDescriptor {
     /// Pinned files the host may install for this module.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceDescriptor>,
+    /// The resources each of the module's tools needs, grouped into named parts, which a client
+    /// installs under one consent with `module.setup.install` and `module.status` reports as one
+    /// state each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setups: Vec<SetupDescriptor>,
     /// Worker tasks, each reached through the generated `task.<id>` method. A task identity is
     /// unique across the registry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1955,6 +1961,10 @@ impl ModuleDescriptor {
         self.capabilities
             .iter()
             .find(|capability| capability.id == id)
+    }
+
+    pub fn setup(&self, id: &str) -> Option<&SetupDescriptor> {
+        self.setups.iter().find(|setup| setup.id == id)
     }
 
     pub(crate) fn resource(&self, id: &str) -> Option<&ResourceDescriptor> {

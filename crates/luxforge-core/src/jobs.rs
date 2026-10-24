@@ -1605,6 +1605,13 @@ impl Jobs {
         Ok(self.entries[&job_id].read())
     }
 
+    /// How many more jobs `lane` accepts now: its queue's free places, and one more while it is
+    /// idle, since a job submitted to an idle lane starts at once rather than waiting.
+    pub(crate) fn lane_room(&self, lane: Lane) -> usize {
+        let state = &self.lanes[lane.index()];
+        LANE_QUEUE.saturating_sub(state.waiting.len()) + usize::from(state.running.is_none())
+    }
+
     /// Start the next waiting job of an idle lane, spawning its thread on first use.
     fn dispatch(&mut self, lane: Lane) -> Result<(), Error> {
         let state = &mut self.lanes[lane.index()];

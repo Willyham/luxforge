@@ -6268,29 +6268,6 @@
         "capabilities": [
           {
             "id": "download-klein",
-            "introduction": {
-              "eyebrow": "AI editing",
-              "lead": "Paint over something you don't want and Luxforge fills the area in to match the rest of the photo. It runs entirely on this computer, so your photos never leave it.",
-              "promise": "Your photos stay on this computer.",
-              "steps": [
-                {
-                  "body": "Brush across the object, its shadow and its reflection. Cover a little more than you think.",
-                  "picture": "paint-over",
-                  "title": "Paint over it"
-                },
-                {
-                  "body": "Generate makes a fill and Regenerate another. Compare them over the photo and keep the best.",
-                  "picture": "candidates",
-                  "title": "Generate"
-                },
-                {
-                  "body": "The fill becomes one step in the photo's history. Your original file is never changed.",
-                  "picture": "history",
-                  "title": "Accept"
-                }
-              ],
-              "title": "Remove anything, fill it in naturally"
-            },
             "kind": "download-artifact",
             "purpose": "Set up AI editing: this downloads the model that removes objects and fills in parts of a photo. It runs on this computer, so your photos stay on it",
             "resource": "generative-klein-4b"
@@ -6310,13 +6287,6 @@
           },
           {
             "id": "download-klein-text-encoder",
-            "introduction": {
-              "eyebrow": "AI editing · Add-on",
-              "hero": "describe",
-              "lead": "Type what should be there, such as “a red bicycle” or “calm water”, and Replace paints it into the area you selected. It adds a second model, which also runs entirely on this computer.",
-              "promise": "Your photos and what you type stay on this computer.",
-              "title": "Fill it with what you describe"
-            },
             "kind": "download-artifact",
             "purpose": "Add Replace: this downloads the model that reads what you describe, so Replace can fill with it. It runs on this computer, so your photos stay on it",
             "resource": "generative-klein-text-encoder"
@@ -6339,24 +6309,6 @@
           },
           {
             "id": "download-segmenter-l0-encoder",
-            "introduction": {
-              "eyebrow": "AI editing",
-              "lead": "Hold the pointer over something in the photo and Luxforge outlines the whole object, ready to remove or to mask. It runs entirely on this computer, so your photos never leave it.",
-              "promise": "Your photos stay on this computer.",
-              "steps": [
-                {
-                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
-                  "picture": "paint-over",
-                  "title": "Point at it"
-                },
-                {
-                  "body": "Click to choose it, or paint across several and choose among them.",
-                  "picture": "candidates",
-                  "title": "Click or paint"
-                }
-              ],
-              "title": "Pick an object by pointing at it"
-            },
             "kind": "download-artifact",
             "purpose": "Set up object picking: this downloads the model that finds the object under the pointer. It runs on this computer, so your photos stay on it",
             "resource": "segmenter-l0-encoder"
@@ -6377,24 +6329,6 @@
           },
           {
             "id": "download-segmenter-l0-decoder",
-            "introduction": {
-              "eyebrow": "AI editing",
-              "lead": "Hold the pointer over something in the photo and Luxforge outlines the whole object, ready to remove or to mask. It runs entirely on this computer, so your photos never leave it.",
-              "promise": "Your photos stay on this computer.",
-              "steps": [
-                {
-                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
-                  "picture": "paint-over",
-                  "title": "Point at it"
-                },
-                {
-                  "body": "Click to choose it, or paint across several and choose among them.",
-                  "picture": "candidates",
-                  "title": "Click or paint"
-                }
-              ],
-              "title": "Pick an object by pointing at it"
-            },
             "kind": "download-artifact",
             "purpose": "Set up object picking: this downloads the model that finds the object under the pointer. It runs on this computer, so your photos stay on it",
             "resource": "segmenter-l0-decoder"
@@ -6626,6 +6560,140 @@
             "tradeoff": "Outlines the object the encoder found; about 16 MB",
             "url": "https://huggingface.co/mit-han-lab/efficientvit-sam/resolve/a2f0c5929196a13ef1ffc9338d3f9e482e1e0e68/onnx/l0_decoder.onnx",
             "version": "efficientvit-sam-l0-a2f0c592"
+          }
+        ],
+        "setups": [
+          {
+            "id": "remove",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Paint over something you don't want and Luxforge fills the area in to match the rest of the photo. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Brush across the object, its shadow and its reflection. Cover a little more than you think.",
+                  "picture": "paint-over",
+                  "title": "Paint over it"
+                },
+                {
+                  "body": "Generate makes a fill and Regenerate another. Compare them over the photo and keep the best.",
+                  "picture": "candidates",
+                  "title": "Generate"
+                },
+                {
+                  "body": "The fill becomes one step in the photo's history. Your original file is never changed.",
+                  "picture": "history",
+                  "title": "Accept"
+                }
+              ],
+              "title": "Remove anything, fill it in naturally"
+            },
+            "parts": [
+              {
+                "name": "Generative fill",
+                "purpose": "Fills the space where something was, to match the rest of the photo",
+                "resources": [
+                  "generative-klein-4b"
+                ]
+              }
+            ],
+            "title": "Remove"
+          },
+          {
+            "id": "object",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Hold the pointer over something you don't want, click, and Luxforge fills the space to match the rest of the photo. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
+                  "picture": "hover",
+                  "title": "Point at it"
+                },
+                {
+                  "body": "Click the outlined object to select it, or drag loosely across one to find it.",
+                  "picture": "selected",
+                  "title": "Click to select"
+                },
+                {
+                  "body": "Generate fills the space it leaves. Accept the fill you like and it becomes one step in the photo's history.",
+                  "picture": "candidates",
+                  "title": "Generate and accept"
+                }
+              ],
+              "title": "Remove an object by pointing at it"
+            },
+            "parts": [
+              {
+                "name": "Object finder",
+                "purpose": "Finds the whole object under the pointer",
+                "resources": [
+                  "segmenter-l0-encoder",
+                  "segmenter-l0-decoder"
+                ]
+              },
+              {
+                "name": "Generative fill",
+                "purpose": "Fills the space where something was, to match the rest of the photo",
+                "resources": [
+                  "generative-klein-4b"
+                ]
+              }
+            ],
+            "title": "Object"
+          },
+          {
+            "id": "mask-object",
+            "introduction": {
+              "eyebrow": "AI editing",
+              "lead": "Hold the pointer over something in the photo and Luxforge outlines the whole object; click and it becomes a mask you can adjust. It runs entirely on this computer, so your photos never leave it.",
+              "promise": "Your photos stay on this computer.",
+              "steps": [
+                {
+                  "body": "Move over the photo: the object under the pointer is outlined as you go.",
+                  "picture": "hover",
+                  "title": "Point at it"
+                },
+                {
+                  "body": "Click the outlined object and it becomes the mask, or a part of the mask you are building.",
+                  "picture": "selected",
+                  "title": "Click to select"
+                }
+              ],
+              "title": "Select an object by pointing at it"
+            },
+            "parts": [
+              {
+                "name": "Object finder",
+                "purpose": "Finds the whole object under the pointer",
+                "resources": [
+                  "segmenter-l0-encoder",
+                  "segmenter-l0-decoder"
+                ]
+              }
+            ],
+            "title": "Mask Object"
+          },
+          {
+            "id": "replace",
+            "introduction": {
+              "eyebrow": "AI editing · Add-on",
+              "hero": "describe",
+              "lead": "Type what should be there, such as “a red bicycle” or “calm water”, and Replace paints it into the area you selected. It adds a second model, which also runs entirely on this computer.",
+              "promise": "Your photos and what you type stay on this computer.",
+              "title": "Fill it with what you describe"
+            },
+            "parts": [
+              {
+                "name": "Replace",
+                "purpose": "Reads what you describe, so Replace can fill with it",
+                "resources": [
+                  "generative-klein-text-encoder"
+                ]
+              }
+            ],
+            "title": "Replace"
           }
         ],
         "tasks": [
