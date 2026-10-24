@@ -1740,7 +1740,9 @@ pub(crate) struct StripModel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ItemInfo {
     pub(crate) name: String,
-    /// The preview placeholder's shape.
+    /// The view position of the item's cell, whose grid preview heads the panel.
+    pub(crate) position: u32,
+    /// The preview's shape, kept by its placeholder until the grid preview is decoded.
     pub(crate) aspect: Option<f32>,
     /// The Pick band, for a file.
     pub(crate) pick: Option<PickBand>,
@@ -2517,6 +2519,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> InfoModel
     match state.rows.row(item) {
         Some(row) => {
             let mut info = item_info(row, state.summary.as_ref(), state.home.as_deref());
+            info.position = item;
             if let Some(band) = &mut info.stack {
                 band.detail =
                     super::select_merge::band_detail(band, state.merge.inspected.as_ref());
@@ -2632,6 +2635,7 @@ pub(crate) fn item_info(
     }
     ItemInfo {
         name: row.file_name.clone(),
+        position: 0,
         aspect: aspect(row),
         pick: None,
         moment,

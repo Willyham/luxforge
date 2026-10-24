@@ -20,7 +20,7 @@ use crate::{
             OrganizeChip, PhotoInfo, PhotoMenu, SheetKind,
         },
     },
-    view::select::{band, chip, preview_placeholder, source},
+    view::select::{band, chip, info_preview, source},
 };
 use iced::{
     Alignment, ContentFit, Length, Padding,
@@ -49,8 +49,6 @@ pub(crate) const NAMING_FIELD: &str = "luxforge.select.catalog.name";
 
 /// The tallest a catalog menu grows before it scrolls: a long list of folders.
 const MENU_MAX_HEIGHT: f32 = 360.0;
-/// The Info panel's preview box, as the event board draws it: 276 × 176 pt.
-const PREVIEW_BOX: (f32, f32) = (276.0, 176.0);
 /// The width of an Organize band's labels: the Metadata band's, so the bands' values line up.
 const ORGANIZE_LABEL_WIDTH: f32 = 96.0;
 
@@ -404,21 +402,13 @@ pub(crate) fn info<'a>(
 ) -> Element<'a, Message> {
     let mut content = Column::new().spacing(theme::PANEL_SECTION_SPACING);
     if model.count <= 1 {
-        let preview: Element<'a, Message> = match model
-            .previews
-            .first()
-            .and_then(|position| images.image(*position))
-        {
-            Some(handle) => container(
-                image(handle.clone())
-                    .content_fit(ContentFit::Contain)
-                    .width(Length::Fixed(PREVIEW_BOX.0))
-                    .height(Length::Fixed(PREVIEW_BOX.1)),
-            )
-            .center_x(Length::Fill)
-            .into(),
-            None => preview_placeholder(model.aspect),
-        };
+        let preview = info_preview(
+            model
+                .previews
+                .first()
+                .and_then(|position| images.image(*position)),
+            model.aspect,
+        );
         content = content.push(preview).push(
             text(model.title.clone())
                 .size(theme::SIZE_TITLE)
