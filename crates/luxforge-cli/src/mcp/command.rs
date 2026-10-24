@@ -2,6 +2,7 @@
 //! input ends.
 use super::{
     adapter::Adapter,
+    config,
     headless::{self, HEADLESS_FAILED, HeadlessTarget},
     owner::{LiveTarget, Owner, Target},
     serve::{self, Output, Subscriptions},
@@ -19,6 +20,7 @@ use std::{
 };
 
 const HELP: &str = "luxforge-mcp [--catalog PATH] [--headless] [--tools compact] [--no-images]
+luxforge-mcp config CLIENT [--headless] [--catalog PATH]
 
 A Model Context Protocol server for the Luxforge desktop's live session, on standard input and
 output. An MCP client (Claude Code, Claude Desktop, Codex, Cursor and others) starts it and owns its
@@ -42,6 +44,12 @@ never starts Luxforge or another catalog owner.
                   luxforge_methods, luxforge_describe and luxforge_call.
 --no-images       never attach pictures to results; their paths are still returned as data.
 --help, --version print this help or the version, without serving.
+
+config CLIENT     print CLIENT's configuration for starting this luxforge-mcp, without serving:
+                  the text on standard output, and where it goes on standard error. CLIENT is
+                  claude-code, claude-desktop, codex, cursor or json (the mcpServers block other
+                  clients read). --catalog PATH and --headless are added to the arguments the
+                  client starts it with. It never writes another application's configuration.
 
 Diagnostics go to standard error. The server ends when standard input ends, with exit status 0,
 after a headless owner has ended; a command line that cannot be read exits with status 2.";
@@ -161,6 +169,18 @@ pub fn run(
     stderr: &mut dyn Write,
     paths: Option<Paths>,
 ) -> i32 {
+    let mut args = args.into_iter().peekable();
+    if args.peek().is_some_and(|first| first == "config") {
+        args.next();
+        let binary = std::env::current_exe().and_then(|path| path.canonicalize());
+        return config::run(
+            args,
+            binary,
+            luxforge_core::agents::Platform::current(),
+            &mut stdout,
+            stderr,
+        );
+    }
     let options = match parse(args) {
         Ok(Parsed::Help) => {
             let _ = writeln!(stdout, "{HELP}");

@@ -13,9 +13,11 @@
 //!   `Target` and `Connection` pair the live session implements.
 //! - `headless` is the other pair: the adapter's own `luxforge-json` child, for `--headless`.
 //! - `images` attaches the pictures the registry's markers name.
-//! - [`command`] is the command line.
+//! - [`command`] is the command line, and `config` its `config CLIENT`, which prints a client's
+//!   configuration from [`luxforge_core::agents`].
 mod adapter;
 pub mod command;
+mod config;
 mod headless;
 mod images;
 mod owner;

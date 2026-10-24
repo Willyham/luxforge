@@ -1,5 +1,7 @@
 //! UI-independent JPEG decoding, non-destructive editing state, rendering and the JSON owner API.
 pub mod activity;
+/// What a person pastes into an MCP client to give it `luxforge-mcp`, one snippet per client.
+pub mod agents;
 pub mod analysis;
 mod api;
 mod artifacts;

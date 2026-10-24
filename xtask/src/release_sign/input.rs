@@ -230,6 +230,7 @@ mod tests {
             ("Contents/MacOS/luxforge", b"editor".as_slice()),
             ("Contents/Helpers/luxforge-json", b"helper".as_slice()),
             ("Contents/Helpers/luxforge-ctl", b"live helper".as_slice()),
+            ("Contents/Helpers/luxforge-mcp", b"mcp helper".as_slice()),
             ("Contents/Info.plist", b"identity".as_slice()),
             ("Contents/Resources/lensfun/data", b"resource".as_slice()),
             (
@@ -285,6 +286,7 @@ mod tests {
         for file in [
             "Contents/MacOS/luxforge",
             "Contents/Helpers/luxforge-json",
+            "Contents/Helpers/luxforge-mcp",
             "Contents/Info.plist",
             "Contents/Resources/lensfun/data",
             "Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle",

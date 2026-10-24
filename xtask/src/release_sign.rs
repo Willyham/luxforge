@@ -367,6 +367,7 @@ mod tests {
             framework.to_owned(),
             "Contents/Helpers/luxforge-json".to_owned(),
             "Contents/Helpers/luxforge-ctl".to_owned(),
+            "Contents/Helpers/luxforge-mcp".to_owned(),
             "Luxforge.app".to_owned(),
         ];
         assert_eq!(signed.len(), expected.len(), "{signed:?}");

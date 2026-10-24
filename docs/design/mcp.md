@@ -169,7 +169,12 @@ A tab in the Settings sheet, after Models and before Experiments, also opened fr
 - **Introduction.** One opening sentence: agents use the same operations you do, every edit is in history and undoable, and an agent can never grant consent or permissions.
 - **Connect an agent.**
   - The tab shows the `luxforge-mcp` beside this build: `Contents/Helpers/luxforge-mcp` in the macOS bundle, or beside the editor elsewhere. A development build without one says it is missing and names the build command; nothing is drawn as if it worked.
-  - A segmented choice of Claude Code, Claude Desktop, Codex, Cursor and Other (MCP JSON) shows that client's configuration with Copy, for example `claude mcp add luxforge -- '/Applications/Luxforge.app/Contents/Helpers/luxforge-mcp'`, or the `mcpServers` JSON block for Claude Desktop with where its file lives.
+  - A segmented choice of Claude Code, Claude Desktop, Codex, Cursor and Other (MCP JSON) shows that client's configuration with Copy, the file it goes in and one line saying what to do ([client configuration](#client-configuration)). For the bundled server:
+    - Claude Code: `claude mcp add --scope user luxforge -- '/Applications/Luxforge.app/Contents/Helpers/luxforge-mcp'`, run in a terminal. The user scope makes Luxforge available in every project, not only the folder the command runs in.
+    - Claude Desktop: the `mcpServers` block for `claude_desktop_config.json`, which Claude Desktop opens from Settings › Developer › Edit Config, then quit and reopen it.
+    - Codex: the `[mcp_servers.luxforge]` table, with `command` and `args`, for `~/.codex/config.toml`.
+    - Cursor: the `mcpServers` block, with `"type": "stdio"`, for `~/.cursor/mcp.json` or a project's `.cursor/mcp.json`.
+    - Other: the same `mcpServers` block, with `command` and `args`, that most clients read.
   - Luxforge copies text to the system clipboard. It never edits another application's configuration.
   - The snippets come from one core function, also printed by `luxforge-mcp config CLIENT`, so the tab and the command line agree and the text is testable without the interface.
 - **Connected.**
@@ -201,11 +206,36 @@ The adapter has no polling loop: waits are the owner's held `events.wait` and `j
 
 ## Implementation
 
-What is built today: the live-session adapter and headless mode, with the compact profile. The typed profiles, list-change notifications, `config`, packaging and the `rmcp` interoperability test are not built yet.
+What is built today: the live-session adapter and headless mode with the compact profile, `config` with its client configuration, and packaging beside `luxforge-ctl`. The typed profiles, list-change notifications and the `rmcp` interoperability test are not built yet.
 
 ### Command line
 
-`luxforge-mcp [--catalog PATH] [--headless] [--tools compact] [--no-images]`, with `--help` and `--version`, which answer without serving. `--tools` takes only `compact` today; any other value, `--headless` without `--catalog`, a flag given twice and any other argument are usage errors: `{"error": {code: "usage", message}}` on standard error and exit status 2. The server ends with exit status 0 when standard input ends: requests still queued are dropped, the one being answered finishes first, and a headless child has ended. Diagnostics (attaching, a closed or lost connection, an unreadable registry, a headless child's start and end, and the child's own standard error) go to standard error as plain lines, never the session token.
+`luxforge-mcp [--catalog PATH] [--headless] [--tools compact] [--no-images]`, with `--help` and `--version`, which answer without serving. `luxforge-mcp config CLIENT [--headless] [--catalog PATH]` prints one client's configuration for its own executable instead ([client configuration](#client-configuration)). `--tools` takes only `compact` today; any other value, `--headless` without `--catalog`, a flag given twice and any other argument are usage errors: `{"error": {code: "usage", message}}` on standard error and exit status 2. The server ends with exit status 0 when standard input ends: requests still queued are dropped, the one being answered finishes first, and a headless child has ended. Diagnostics (attaching, a closed or lost connection, an unreadable registry, a headless child's start and end, and the child's own standard error) go to standard error as plain lines, never the session token.
+
+### Client configuration
+
+`luxforge_core::agents` makes every client's configuration from the server's absolute path and its optional arguments; the desktop's Settings › Agents tab and `luxforge-mcp config` both call it, so they print the same text.
+
+- **Input.** A `Launch`: the absolute path of `luxforge-mcp`, and optionally `--catalog PATH` (absolute), with `--headless` before it to start its own owner. A relative or non-Unicode path, and `--headless` without a catalog, are refused: a client starts the server from a folder of its own choosing, and no configuration format holds a non-Unicode path.
+- **Output.** A `Snippet` per client: the client, the kind of text (a command, JSON or TOML), the text, the file it goes in on that platform and one instruction line. The server is always named `luxforge`.
+- **Clients.**
+
+  | Client (`config` id) | Text | Where it goes |
+  | --- | --- | --- |
+  | Claude Code (`claude-code`) | `claude mcp add --scope user luxforge -- PATH [ARGS]`: each path in single quotes, a quote inside escaped as POSIX shells read it on macOS and Linux, and doubled for PowerShell on Windows | A terminal |
+  | Claude Desktop (`claude-desktop`) | `{"mcpServers": {"luxforge": {"command", "args"}}}` | `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows and `~/.config/Claude/claude_desktop_config.json` on Linux |
+  | Codex (`codex`) | `[mcp_servers.luxforge]` with `command` and `args` as TOML basic strings | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows) |
+  | Cursor (`cursor`) | `{"mcpServers": {"luxforge": {"type": "stdio", "command", "args"}}}` | `~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows), or a project's `.cursor/mcp.json` |
+  | Other (`json`) | `{"mcpServers": {"luxforge": {"command", "args"}}}` | The client's own configuration |
+
+  Anthropic documents Claude Desktop's configuration file for macOS and Windows; its Linux release is a beta, and the Linux path is the one its configuration folder takes there. The instruction names Settings › Developer › Edit Config, which opens the file on every platform.
+- **Finding the server.** `agents::server_beside` is where it ships relative to the editor's own canonical executable: `Contents/Helpers/luxforge-mcp` in a macOS bundle, beside the editor otherwise (the Linux payload and a development build's target folder). Whether it exists is the caller's to check.
+- **`config`.** `luxforge-mcp config CLIENT` passes its own canonical executable path (`current_exe`), and a `--catalog` made absolute from the current folder. It prints the snippet's text on standard output and where it goes and what to do on standard error, and writes no file. An unknown or missing client is a usage error listing the five ids, exit status 2.
+- Nothing reads or writes another application's configuration.
+
+### Packaging
+
+`luxforge-mcp` is the fourth release executable (`EXECUTABLES` in `xtask/cli/src/release_candidate.rs`): `Contents/Helpers/luxforge-mcp` in the macOS bundle, signed with the other helpers before the app, and `Luxforge/luxforge-mcp` in the Linux payload, mode 0755 in both archives. The release build checks its `--version` against the tag, its hashes are bound in the build records before and after signing, the Linux record lists its ELF imports, and the Linux `INSTALL.txt` names it and its `config` command.
 
 ### Module layout
 
@@ -266,7 +296,7 @@ Before each call the adapter checks, without sending, whether the owner closed t
 
 ### Tests
 
-Unit tests cover framing, era and version rules, the label and actor, the queue's bound and both cancellations over a scripted handler, picture markers and the file bound, the compact tools over a scripted owner serving the built-in registry, the registry re-read after an only client's own `flags.set`, and the headless binary's place, catalog sameness and a binary that cannot start. The process tests (`tests/mcp/`) run the real binary against an in-process owner and `LocalServer`, with a proxy that cuts the connection after a forwarded edit. The headless process tests (`mcp_headless`) run it over the `luxforge-json` built beside it: an edit developed, made and read back, with the child gone and the catalog free once the input ends; a new child after the first is killed, with `session-replaced`; a catalog a registered session names refused before any child starts; and a child refused by the catalog's lock reported with what it wrote, once per call. Every message the binary writes there is validated against `tests/mcp/spec/`'s vendored `schema.json` of its era, checked by the request it answers. The vendored files' source, commit, checksums and licence are in `THIRD_PARTY.md` beside them.
+Unit tests cover framing, era and version rules, the label and actor, the queue's bound and both cancellations over a scripted handler, picture markers and the file bound, the compact tools over a scripted owner serving the built-in registry, the registry re-read after an only client's own `flags.set`, and the headless binary's place, catalog sameness and a binary that cannot start. The core's `agents` tests cover each client's text for the bundled path, each platform's file, headless and catalog arguments, and paths with spaces, quotes, backslashes and control characters read back by a JSON parser, a TOML parser and `/bin/sh`. The process tests (`tests/mcp/`) run the real binary against an in-process owner and `LocalServer`, with a proxy that cuts the connection after a forwarded edit. The headless process tests (`mcp_headless`) run it over the `luxforge-json` built beside it: an edit developed, made and read back, with the child gone and the catalog free once the input ends; a new child after the first is killed, with `session-replaced`; a catalog a registered session names refused before any child starts; and a child refused by the catalog's lock reported with what it wrote, once per call. `config` prints exactly the core's text for its own path for every client. Every message the binary writes there is validated against `tests/mcp/spec/`'s vendored `schema.json` of its era, checked by the request it answers. The vendored files' source, commit, checksums and licence are in `THIRD_PARTY.md` beside them.
 
 ## Verification
 

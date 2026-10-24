@@ -480,10 +480,8 @@ pub(crate) fn archive(directory: &Path, destination: &Path) -> Result {
                 .ok_or("Archive path encoding")?
                 .replace('\\', "/");
             let mode = if path.file_name().is_some_and(|s| {
-                matches!(
-                    s.to_str(),
-                    Some("luxforge" | "luxforge-json" | "luxforge-ctl")
-                )
+                s.to_str()
+                    .is_some_and(|name| crate::release_build::EXECUTABLES.contains(&name))
             }) {
                 0o755
             } else {
