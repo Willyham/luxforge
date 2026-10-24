@@ -208,7 +208,7 @@
     {
       "id": "TASK-004",
       "description": "Deliver the Object kind of the Corrections band: the fourth segment, the crosshair and hover moved from Remove, analysis on entry, click, ⇧-click and ⌥-click selection, the loose drag with One, Several pins and the Nothing hand-off to Remove, the numbered selection, Paint shadow, Generate from object artifacts through the shared Remove group, the Escape order, and the object-remove scenario.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002",
         "TASK-003"
@@ -280,7 +280,7 @@
     {
       "id": "TASK-005",
       "description": "Deliver Object in the Masks panel: the Select group with Object… in New mask and Add component, the picking sub-state of Mask mode, one entry per pick through mask.create-model or mask.add-model, the model component's row with how and when it was picked, the stale note with Recompute and Keep, and the mask-object scenario.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003"
