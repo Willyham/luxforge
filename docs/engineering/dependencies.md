@@ -107,9 +107,9 @@ The [MCP adapter](../design/mcp.md#schema-generation)'s generated input schemas 
 - MIT: `jsonschema`, `jsonschema-regex`, `jsonschema-value` and `referencing` 0.60.1, `fancy-regex` 0.19.2, `fluent-uri` 0.4.1, `email_address` 0.2.9, `uuid-simd` and `vsimd` 0.8.0, `outref` 0.5.2, `data-encoding` 2.11.1, `micromap` 0.3.0, and `strum` and `strum_macros` 0.28.0;
 - MIT or Apache-2.0: `fraction` 0.17.0, `num` 0.4.3, `num-bigint` 0.4.8, `num-iter` 0.1.46, `num-rational` 0.4.2, `num-cmp` 0.1.0, `bytecount` 0.6.9, `heck` 0.5.0, `ref-cast` and `ref-cast-impl` 1.0.27, and `allocator-api2` 0.2.21;
 - Apache-2.0: `unicode-general-category` 1.1.0;
-- MIT-0: `borrow-or-share` 0.2.4, which `deny.toml`'s allowlist does not name.
+- MIT-0: `borrow-or-share` 0.2.4.
 
-These packages are in the graph `cargo xtask audit` checks, so their advisories and sources are checked there. Its licence check skips packages that only a development dependency reaches, so `borrow-or-share`'s MIT-0 passes unchecked rather than allowed. Whether to allow MIT-0, add an exception for it or replace `jsonschema` is an open owner decision, and `deny.toml` is unchanged until it is made. No build that ships links any of these packages.
+These packages are in the graph `cargo xtask audit` checks, so their advisories and sources are checked there. Its licence check skips packages that only a development dependency reaches, so their licences are recorded here rather than checked; MIT-0 is on `deny.toml`'s allowlist. No build that ships links any of these packages.
 
 The adapter binary, `luxforge-mcp`, adds no package to the lockfile: it names `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it, to encode the pictures it attaches. Its process tests hold every message it writes to the MCP specification's own `schema.json` for 2026-07-28 and 2025-11-25, vendored unmodified under `crates/luxforge-cli/tests/mcp/spec/` with their source commit, checksums and the specification project's licence (Apache-2.0, with earlier contributions under MIT) in `THIRD_PARTY.md`. They are test inputs; no binary includes them.
 
