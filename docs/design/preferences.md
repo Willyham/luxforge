@@ -4,7 +4,7 @@ Status: implemented, on the [decisions](#decisions) below; verified on the M4 by
 
 The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). Beside the Performance disclosure and the General tab's Auto collapse history row, there are two kinds of preference:
 
-- **Remembered state.** Choices the person makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame, the last export folder and the last HDR merge's settings.
+- **Remembered state.** Choices the person makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame, the last export folder, the last HDR merge's settings and the Develop folder.
 - **General rows.** Choices with no other home: whether new RAW photos get their lens profile, which look they start from, the mask overlay colour, the canvas background, the interface size and where the catalog lives.
 
 ## Rules
@@ -38,6 +38,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `hdr_merge` | `{alignment, deghost}`, each `auto` or `off`, or `null` | `null`: both Auto | remembered | next ⌥-click merge |
 | `panorama_merge` | `{projection, boundary_warp}`: `auto`, `perspective`, `cylindrical` or `spherical`, and 0–100; or `null` | `null`: Auto and 0 | remembered | next ⌥-click merge |
 | `select_introduction_seen` | boolean, or `null` | `null`: not seen | remembered: closing the [Select introduction](select-introduction.md) sets it | next launch |
+| `develop_folder` | `{catalog_id, folder_id}`: `catalog.info`'s identity of its catalog, 1 to 64 printable characters, and a catalog folder identity; or `null` | `null`: nothing chosen | remembered: the [Develop folder](develop-from-folders.md#develops-folder) | next launch over that catalog |
 
 ### Protected usage statistics record
 
@@ -111,6 +112,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
 - **Remembered export.** After an export the person started from the Export sheet, the Export menu or the palette succeeds, the desktop stores its settings and the preset they came from unchanged, or `null`. The sheet opens on them and Export again repeats them ([export settings](export-settings.md#the-export-sheet)). An API client's export stores nothing.
 - **Remembered HDR merge.** When a merge this desktop asked for starts, the desktop stores its alignment and deghosting as `hdr_merge`, if they differ from what is stored. ⌥-click on Merge HDR merges with them, and the [merge preview](panorama-merge.md#the-merge-preview) opens with them; with nothing stored, both are Auto. The folder, the reference and exposure overrides belong to one bracket and are not remembered.
 - **Remembered panorama merge.** Likewise, a panorama merge this desktop asked for stores its projection and Boundary Warp as `panorama_merge`; ⌥-click on Merge panorama and a newly opened panorama preview start from them, else from Auto and 0. The reference and the folder are not remembered.
+- **Remembered Develop folder.** The catalog folder Develop holds, stored with the identity of its catalog whenever it changes, and `null` when a deletion clears it. A launch with no file to open over the same catalog views it again in Select while the catalog still lists it ([across launches](develop-from-folders.md#develops-folder)). One folder is remembered, the last chosen in any catalog: a launch over another catalog neither views nor clears it until a folder is chosen there. It belongs to the catalog it names, so it is keyed by that catalog's identity rather than its path, and it lives here, beside the rest of the desktop's remembered state, rather than in the catalog, which holds no client's view state.
 
 ## Desktop writes
 
@@ -177,4 +179,5 @@ Recorded defaults, proposals the owner can revise:
 - **Window:** the frame is not remembered in fullscreen.
 - **Brush:** only size, feather and flow are remembered.
 - **Export folder:** stored only after an export the person chose in the dialog.
+- **Develop folder:** one folder remembered, for the catalog last used, keyed by its `catalog_id`; viewed again only by a launch with no file to open, and only in Select, so a launch that starts in Develop opens no photograph.
 - **Lens switch:** on by default, applying only to photographs still at their Original when first prepared.

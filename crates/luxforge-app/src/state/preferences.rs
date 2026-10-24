@@ -12,8 +12,9 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, ExportLast, HdrMergePreference,
-        INTERFACE_SIZES, PanoramaMergePreference, RawLook, WindowFrame, WorkspacePreference,
+        BrushPreference, CanvasBackground, CatalogSelection, DevelopFolderPreference, ExportLast,
+        HdrMergePreference, INTERFACE_SIZES, PanoramaMergePreference, RawLook, WindowFrame,
+        WorkspacePreference,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,9 @@ preferences! {
     update_ask_to_move: bool,
     /// The person closed the Select introduction, so it is not shown the first time Select is.
     select_introduction_seen: bool,
+    /// The catalog folder last chosen as the Develop folder, with its catalog's identity, which a
+    /// launch over that catalog views again; `None` before any.
+    develop_folder: Option<DevelopFolderPreference>,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
@@ -281,6 +285,17 @@ impl PreferenceWriter {
             .find_map(|change| change.export_last.as_ref())
             .or_else(|| self.stored.as_ref().map(|stored| &stored.export_last))?
             .as_deref()
+    }
+
+    /// The remembered Develop folder [`Self::applied`] holds, without cloning the rest, as
+    /// [`Self::applied_theme`] reads the theme. Read after every message, so it allocates nothing.
+    pub(crate) fn applied_develop_folder(&self) -> Option<&DevelopFolderPreference> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.develop_folder.as_ref())
+            .or_else(|| self.stored.as_ref().map(|stored| &stored.develop_folder))?
+            .as_ref()
     }
 
     /// A change to the field named `field` has not been answered yet.
@@ -760,7 +775,8 @@ mod tests {
             "update_checks": true,
             "update_install_automatically": false,
             "update_ask_to_move": true,
-            "select_introduction_seen": false
+            "select_introduction_seen": false,
+            "develop_folder": null
         }))
         .unwrap()
     }

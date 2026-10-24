@@ -895,8 +895,11 @@ impl Editor {
     }
 
     /// With no file requested at launch, an empty catalog starts in Select. Use the same counts
-    /// and workspace entry path as the Catalog sources and the workspace switch.
+    /// and workspace entry path as the Catalog sources and the workspace switch. Such a launch
+    /// views the remembered Develop folder again once the launch's read finds it
+    /// ([`Editor::develop_folder_remembered`]).
     pub(super) fn startup_workspace(&mut self) -> Task<Message> {
+        self.develop.remembered.restore = true;
         match counts_now(&self.owner, self.client) {
             Ok(counts) if counts.photographs == 0 => {
                 // Keep any launch diagnostic already in the status line.

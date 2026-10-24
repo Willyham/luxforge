@@ -126,6 +126,7 @@ fn settable() -> Value {
         "update_install_automatically": false,
         "update_ask_to_move": true,
         "select_introduction_seen": false,
+        "develop_folder": null,
     })
 }
 
@@ -184,6 +185,10 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "update_install_automatically": true,
         "update_ask_to_move": false,
         "select_introduction_seen": true,
+        "develop_folder": {
+            "catalog_id": "0123456789abcdef0123456789abcdef",
+            "folder_id": "folder-0123456789abcdef0123456789abcdef",
+        },
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
@@ -284,6 +289,14 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         ),
         (json!({"export_last": 3}), "export_last: "),
         (
+            json!({"develop_folder": {"catalog_id": "", "folder_id": "folder-0123456789abcdef0123456789abcdef"}}),
+            "develop_folder.catalog_id must be a catalog identity",
+        ),
+        (
+            json!({"develop_folder": {"catalog_id": "c", "folder_id": "lake"}}),
+            "develop_folder: validation: invalid CatalogFolderId",
+        ),
+        (
             json!({"workspace": {"thirds": true}}),
             "workspace: missing field",
         ),
@@ -362,6 +375,10 @@ fn only_a_change_to_a_general_row_is_announced() {
         (
             "export",
             json!({"export_last": {"settings": crate::export::settings::baseline_json_in(&exports), "preset_id": null}}),
+        ),
+        (
+            "develop-folder",
+            json!({"develop_folder": {"catalog_id": "c", "folder_id": "folder-0123456789abcdef0123456789abcdef"}}),
         ),
         // Choosing a default explicitly shows nothing new.
         ("lens-default", json!({"auto_lens_profile": true})),

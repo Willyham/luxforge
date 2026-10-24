@@ -930,6 +930,9 @@ impl Editor {
         let flags = editor.read_flag_values(false);
         // The update status, off the update loop: an offer waits for nothing the first frame needs.
         let updates = editor.read_updates();
+        // This catalog's identity and the remembered Develop folder, read off the update loop
+        // before the launch's first view is chosen, so a launch with no file views it again.
+        let remembered = editor.read_remembered_folder();
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -958,6 +961,7 @@ impl Editor {
                 omarchy,
                 flags,
                 updates,
+                remembered,
                 first,
             ]),
         )
