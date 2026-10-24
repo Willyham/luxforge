@@ -1666,7 +1666,9 @@ impl AgentsStep {
 }
 
 /// One usage statistics gesture, through the messages the notice and the Privacy tab send. Only a
-/// launch with explicit usage statistics test eligibility shows either.
+/// launch with explicit usage statistics test eligibility shows either, and only such a launch
+/// takes these steps, but for an `await` whose one condition is `edited`, which reads nothing of
+/// statistics.
 ///
 /// - `"notice"` waits for the startup claim to settle — its notice on screen, or the claim's answer
 ///   not to show it — and captures.
@@ -1717,6 +1719,17 @@ pub struct UsageAwait {
     pub edited: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+}
+
+impl UsageAwait {
+    /// Whether its one condition is `edited`: it waits for another client's edit of the open
+    /// photograph and reads nothing of statistics, so a launch without test eligibility takes it.
+    pub fn edited_only(&self) -> bool {
+        self.edited
+            && self.attempts.is_none()
+            && self.accepted.is_none()
+            && self.effective.is_none()
+    }
 }
 
 impl UsageStep {

@@ -17,6 +17,10 @@ time.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The `mcp` scenario: the attached pictures' base64 and the vendored MCP schemas its checks hold
+# the adapters' messages to.
+base64.workspace = true
+jsonschema.workspace = true
 image = { workspace = true, features = ["jpeg"] }
 image-webp.workspace = true
 kamadak-exif.workspace = true

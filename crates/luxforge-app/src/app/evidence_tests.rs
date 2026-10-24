@@ -624,3 +624,31 @@ fn an_evidence_type_step_commits_one_coordinate() {
     );
     finish(editor, catalog);
 }
+
+/// A usage `await` whose one condition is `edited` waits for another client's edit in a launch
+/// without statistics test eligibility, since it reads nothing of statistics; one that names a
+/// statistics condition is refused there.
+#[test]
+fn an_edited_await_needs_no_statistics_eligibility() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(
+        r#"[{"usage":{"await":{"edited":true,"timeout_ms":30000}}},{"usage":{"await":{"edited":true,"accepted":1}}}]"#,
+    );
+    assert!(!editor.usage.eligible);
+    let _ = editor.next_step();
+    let evidence = crate::app::testing::evidence(&editor);
+    assert!(evidence.usage_await.is_some(), "the edited await runs");
+    assert_ne!(
+        evidence.current.as_ref().expect("a step record")["status"],
+        json!("failed")
+    );
+    if let Some(evidence) = &mut editor.evidence {
+        evidence.usage_await = None;
+    }
+    let _ = editor.next_step();
+    let record = crate::app::testing::evidence(&editor)
+        .current
+        .clone()
+        .expect("a step record");
+    assert_eq!(record["status"], json!("failed"), "{record}");
+    finish(editor, catalog);
+}

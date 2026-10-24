@@ -1191,6 +1191,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "xtask/src/hdr_merge_measure/mod.rs",
             // `panorama-merge`'s scoped pool recording a generated frame's bands of rows.
             "xtask/src/panorama_merge_smoke.rs",
+            // The `mcp` scenario's reader of each `luxforge-mcp` it runs, which keeps every line
+            // the adapter writes and lets the harness bound its wait for an answer.
+            "xtask/src/mcp_smoke.rs",
         ],
         mode: Match::Whole,
         tests: false,

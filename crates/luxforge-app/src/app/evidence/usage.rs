@@ -6,7 +6,9 @@
 //! Two steps follow delivery in such a launch: `advance` moves the statistics worker's evidence
 //! clock forward ([`usage_supervisor::advance`]), and `await` reads `usage.read` again each
 //! evidence tick until its conditions hold, which is how a script waits for an outside client
-//! (`luxforge-ctl` on the live session) or the receiver.
+//! (`luxforge-ctl` on the live session) or the receiver. An `await` whose one condition is
+//! `edited` reads nothing of statistics, so any launch takes it: the `mcp` scenario waits that way
+//! for `luxforge-mcp`'s edits.
 use super::Settle;
 use crate::app::usage_supervisor;
 use crate::{
@@ -32,7 +34,9 @@ pub(crate) struct UsageAwaiting {
 
 impl Editor {
     pub(super) fn usage_step(&mut self, step: UsageStep) -> Task<Message> {
-        if !self.usage.eligible {
+        // An edit made elsewhere is awaited in any launch: it reads nothing of statistics.
+        let edited_only = matches!(&step, UsageStep::Await(wait) if wait.edited_only());
+        if !self.usage.eligible && !edited_only {
             return self.fail_step(
                 "this launch shows no usage statistics: it was started without test eligibility",
             );

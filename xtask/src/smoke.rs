@@ -15,7 +15,7 @@ use crate::{
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    minify_smoke as minify, minimap_smoke as minimap, mixer_smoke as mixer,
+    mcp_smoke as mcp, minify_smoke as minify, minimap_smoke as minimap, mixer_smoke as mixer,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     panorama_merge_smoke as panorama_merge, performance_smoke as performance, pick_smoke as pick,
     presence_smoke as presence, presets_smoke as presets, range_corpus_smoke as range_corpus,
@@ -1110,6 +1110,21 @@ pub static SCENARIOS: &[Scenario] = &[
         note: Some(settings_agents::NOTE),
         // The adapter runs in this process beside the first launch; the second runs alone.
         own: Some(settings_agents::run),
+    },
+    Scenario {
+        name: mcp::SCENARIO,
+        about: "The hidden desktop driven through luxforge-mcp by two scripted MCP clients over a synthetic RAW and the generated 24 MP JPEG: 2026-07-28 with the compact profile and 2025-11-25 with typed tools, each listing tools, reading both photographs, editing the JPEG (history actor mcp:<client>, the changed frame on screen) and attaching the large preview; Settings › Agents listing both, Disconnect while a call is held (connection-lost, then session-replaced), both edits undone in the desktop and the originals unchanged; every message held to its era's vendored schema",
+        launches: &[LaunchSpec {
+            name: mcp::DESKTOP,
+            plan: mcp::plan,
+            ..APP
+        }],
+        verify: mcp::verify,
+        source: Source::Fixtures(&[mcp::JPEG]),
+        window: Some(PANELLED),
+        note: Some(mcp::NOTE),
+        // The run writes its RAW, and the adapters run in this process beside the launch.
+        own: Some(mcp::run),
     },
     Scenario {
         name: usage::SCENARIO,

@@ -59,6 +59,7 @@ mod mask_interactions_smoke;
 mod mask_panel_smoke;
 mod mask_range_smoke;
 mod mask_smoke;
+mod mcp_smoke;
 mod minify_smoke;
 mod minimap_smoke;
 mod mixer_smoke;
