@@ -32,7 +32,6 @@ pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
-const GENERATOR: &str = "fake-generator";
 const PROMPT: &str = "a red bicycle";
 
 /// The selection: a stroke across the boundary between the top two quadrants.
@@ -215,7 +214,7 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     let missing = launch.at("remove-model")?;
     ensure(
         band(missing)["unoffered"]["setup"]["action"] == json!("Set up")
-            && band(missing)["unoffered"]["setup"]["resource"] == json!(GENERATOR),
+            && band(missing)["unoffered"]["setup"]["setup"] == json!("remove"),
         format!("Remove without the model: {}", band(missing)),
     )?;
     // Set up and Add each ask through the setup sheet, in its feature's words: Remove in three
@@ -376,7 +375,7 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     let prompt = launch.at("prompt")?;
     ensure(
         band(prompt)["action"] == json!("Replace")
-            && band(prompt)["addon"]["resource"] == json!("fake-text-encoder")
+            && band(prompt)["addon"]["setup"] == json!("replace")
             && band(prompt)["addon"]["action"] == json!("Add"),
         format!("The prompt without the encoder: {}", band(prompt)),
     )?;

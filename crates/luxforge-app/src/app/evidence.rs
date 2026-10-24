@@ -5673,8 +5673,8 @@ impl Editor {
     }
 
     /// Capture the running capability step's frame once what it waits for has happened: its round
-    /// trips have answered and its module's jobs have finished or, for `"wait": false`, are
-    /// running and have reported how far they have come, so the frame shows real progress. Read
+    /// trips have answered and its module's jobs have finished or, for `"wait": false`, one is
+    /// running and has reported how far it has come, so the frame shows real progress. Read
     /// from the capability store after every message, so the capability seam reports nothing.
     pub(crate) fn settle_capability(&mut self) {
         let Some((module, wait)) = self
@@ -5686,13 +5686,15 @@ impl Editor {
             return;
         };
         let state = self.capabilities.module(&module);
+        // Without waiting, a frame is captured once a job reports progress: a setup's other
+        // installs may still be queued behind it.
         let settled = state.pending == 0
-            && state.jobs.iter().all(|job| {
-                job.status.is_finished()
-                    || (!wait
-                        && job.status == luxforge_core::jobs::JobStatus::Running
-                        && job.progress.fraction.is_some())
-            });
+            && (state.jobs.iter().all(|job| job.status.is_finished())
+                || (!wait
+                    && state.jobs.iter().any(|job| {
+                        job.status == luxforge_core::jobs::JobStatus::Running
+                            && job.progress.fraction.is_some()
+                    })));
         if settled {
             if let Some(evidence) = &mut self.evidence {
                 evidence.capability_wait = None;

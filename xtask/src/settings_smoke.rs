@@ -761,8 +761,8 @@ fn models(run: &Run, launch: &Checked, checks: &mut Checks) -> Result {
             && status.get("staged_bytes").is_none()
             && status["files"]
                 == json!([{"name": PROOF_MODEL_RESOURCE, "bytes": 6000}, {"name": "decoder", "bytes": 3000}])
-            && row["remove_request"]["method"] == "module.resource.remove"
-            && row["remove_request"]["params"]["resource_id"] == PROOF_MODEL_RESOURCE,
+            && row["remove_requests"][0]["method"] == "module.resource.remove"
+            && row["remove_requests"][0]["params"]["resource_id"] == PROOF_MODEL_RESOURCE,
         format!("The resumed download did not install both files: {row} {status}"),
     )?;
     let loaded = launch.at("models-loaded")?;

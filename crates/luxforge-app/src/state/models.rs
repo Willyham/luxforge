@@ -3,23 +3,27 @@
 //! needs of the machine; the models loaded now; and one line naming this machine's memory against
 //! each model's minimum ([design](../../../../docs/design/ai-editing.md),
 //! [contract](../../../../docs/design/module-capabilities.md#local-runtime)). Everything here is
-//! read from the descriptors and the `module.status` answers the capability store holds; every
-//! button sends a request any client can send, `module.resource.remove` or
-//! `module.runtime.unload`, and Copy as JSON request copies exactly that request. Features have no
-//! default model tiers yet, so the tab shows none.
+//! read from the descriptors and the `module.status` answers the capability store holds. A model an
+//! offered setup holds is listed as that setup's part, captioned with the tools that use it
+//! ([design](../../../../docs/design/ai-tools-workspace.md#settings--models)), and any other model
+//! as itself. Every button sends requests any client can send — `module.resource.remove` for each
+//! resource, `module.runtime.unload`, or Download…'s `module.setup.install` — and Copy as JSON
+//! request copies exactly those. Features have no default model tiers yet, so the tab shows none.
 use super::{
     MenuTarget,
     capabilities::{CapabilityStore, ModuleCapabilities, human_bytes, version_label},
+    fill_setup::{self, SetupAction},
     settings::resource_offered,
 };
 use luxforge_core::{
     ModuleDescriptor,
     capabilities::{
-        descriptor::{CapabilityKind, ResourceDescriptor},
-        resources::{self, ResourceState},
+        descriptor::{CapabilityKind, ResourceDescriptor, SetupDescriptor, SetupPart},
+        resources::{self, ResourceRow, ResourceState},
         runtime,
     },
     flags::FlagList,
+    jobs::JobStatus,
 };
 use serde_json::{Value, json};
 
@@ -31,6 +35,20 @@ pub(crate) enum ModelRequest {
 }
 
 impl ModelRequest {
+    /// The requests the button sends for each of `resources`, in order, as Copy as JSON request
+    /// copies them; `mutation` makes each Remove's envelope.
+    pub(crate) fn requests(
+        self,
+        module_id: &str,
+        resources: &[String],
+        mut mutation: impl FnMut() -> Value,
+    ) -> Vec<Value> {
+        resources
+            .iter()
+            .map(|resource| self.request(module_id, resource, mutation()))
+            .collect()
+    }
+
     /// The method and parameters the button sends, as Copy as JSON request copies them. Remove
     /// carries `mutation`, the envelope a press would send.
     pub(crate) fn request(self, module_id: &str, resource_id: &str, mutation: Value) -> Value {
@@ -48,12 +66,18 @@ impl ModelRequest {
     }
 }
 
-/// One known model.
+/// One known model: a setup's part (the object finder's encoder and decoder as one row), or a
+/// model no offered setup holds.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModelRow {
     pub(crate) module_id: String,
+    /// The row's identity: its first resource.
     pub(crate) resource_id: String,
+    /// Every resource the row stands for.
+    pub(crate) resources: Vec<String>,
     pub(crate) title: String,
+    /// The tools that use a part: `Corrections › Object, Masks › Object`.
+    pub(crate) caption: Option<String>,
     /// `v1 · 8.8 KB · 2 files`.
     pub(crate) detail: String,
     /// `Not installed`, `Installing 35%`, `Installing · preparing the model`, `Installed`,
@@ -67,6 +91,11 @@ pub(crate) struct ModelRow {
     pub(crate) fits: Option<bool>,
     /// Remove is offered: the model is installed, or a partial download is kept.
     pub(crate) removable: bool,
+    /// What Remove removes: each resource that is installed or partly downloaded.
+    pub(crate) remove: Vec<String>,
+    /// Download… on a part that is not installed: the install of the smallest offered setup that
+    /// holds it, which opens that setup's sheet.
+    pub(crate) download: Option<SetupAction>,
     /// Nothing is in flight for the module, so the row's button may send.
     pub(crate) enabled: bool,
     pub(crate) menu_open: bool,
@@ -163,11 +192,26 @@ pub(crate) fn derive(
         if let Some(runtime) = status.and_then(|status| status.runtime.as_ref()) {
             budget = Some((runtime.held_bytes, runtime.budget_bytes));
         }
+        // A resource an offered setup holds is listed as that setup's part, once; any other as
+        // itself.
+        let mut parts_listed: Vec<&str> = Vec::new();
         for resource in held(module, flags) {
-            if let Some(minimum) = resource.min_memory_bytes {
-                minimums.push((resource.title.clone(), minimum));
+            match part_of(module, &resource.id, flags) {
+                Some(part) if parts_listed.contains(&part.name.as_str()) => {}
+                Some(part) => {
+                    parts_listed.push(&part.name);
+                    if let Some(minimum) = part_minimum(module, part) {
+                        minimums.push((part.name.clone(), minimum));
+                    }
+                    model.rows.push(part_row(module, part, state, flags, menu));
+                }
+                None => {
+                    if let Some(minimum) = resource.min_memory_bytes {
+                        minimums.push((resource.title.clone(), minimum));
+                    }
+                    model.rows.push(row(module, resource, state, menu));
+                }
             }
-            model.rows.push(row(module, resource, state, menu));
         }
         for resident in status
             .and_then(|status| status.runtime.as_ref())
@@ -247,6 +291,273 @@ fn machine_line(memory: Option<u64>, minimums: &[(String, u64)]) -> String {
         line.push('.');
     }
     line
+}
+
+/// The part of the first offered setup, in declared order, that holds `resource`.
+fn part_of<'a>(
+    module: &'a ModuleDescriptor,
+    resource: &str,
+    flags: Option<&FlagList>,
+) -> Option<&'a SetupPart> {
+    module
+        .setups
+        .iter()
+        .filter(|setup| fill_setup::offered(module, setup, flags))
+        .flat_map(|setup| &setup.parts)
+        .find(|part| part.resources.iter().any(|held| held == resource))
+}
+
+/// The largest minimum of a part's resources.
+fn part_minimum(module: &ModuleDescriptor, part: &SetupPart) -> Option<u64> {
+    part.resources
+        .iter()
+        .filter_map(|id| declared(module, id)?.min_memory_bytes)
+        .max()
+}
+
+fn declared<'a>(module: &'a ModuleDescriptor, id: &str) -> Option<&'a ResourceDescriptor> {
+    module.resources.iter().find(|resource| resource.id == id)
+}
+
+/// Where a setup's tool lives, as a part's caption names it.
+fn tool_label(setup: &SetupDescriptor) -> String {
+    match setup.id.as_str() {
+        fill_setup::REMOVE => "Corrections \u{203a} Remove".into(),
+        fill_setup::OBJECT => "Corrections \u{203a} Object".into(),
+        fill_setup::MASK_OBJECT => "Masks \u{203a} Object".into(),
+        fill_setup::REPLACE => "Corrections \u{203a} Replace".into(),
+        _ => setup.title.clone(),
+    }
+}
+
+/// `Needs 2 GB of memory · 64 MB while loaded · cpu · fp32`, from a model's requirements.
+fn requirement_text(
+    minimum: Option<u64>,
+    resident: Option<u64>,
+    backends: &[String],
+    precision: Option<String>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(minimum) = minimum {
+        parts.push(format!("Needs {} of memory", memory_text(minimum)));
+    }
+    if let Some(resident) = resident {
+        parts.push(format!("{} while loaded", human_bytes(resident)));
+    }
+    if !backends.is_empty() {
+        parts.push(backends.join(" or "));
+    }
+    parts.extend(precision);
+    (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+}
+
+/// One setup part's row: its resources as one model, captioned with the offered tools that use
+/// it, with one size, one state, one Remove that removes each resource, and Download… while it is
+/// not installed.
+fn part_row(
+    module: &ModuleDescriptor,
+    part: &SetupPart,
+    state: &ModuleCapabilities,
+    flags: Option<&FlagList>,
+    menu: Option<&MenuTarget>,
+) -> ModelRow {
+    let status = state.status.as_ref();
+    let rows: Vec<&ResourceRow> = part
+        .resources
+        .iter()
+        .filter_map(|id| status?.resources.iter().find(|row| &row.id == id))
+        .collect();
+    let read = status.is_some() && rows.len() == part.resources.len();
+    let bytes: u64 = part
+        .resources
+        .iter()
+        .filter_map(|id| declared(module, id))
+        .map(ResourceDescriptor::total_bytes)
+        .sum();
+    let files: usize = part
+        .resources
+        .iter()
+        .filter_map(|id| declared(module, id))
+        .map(|resource| resource.files.len() + 1)
+        .sum();
+    let mut detail = human_bytes(bytes);
+    if files > 1 {
+        detail.push_str(&format!(" \u{b7} {files} files"));
+    }
+    let staged: u64 = rows
+        .iter()
+        .filter(|row| row.state != ResourceState::Installed)
+        .filter_map(|row| row.staged_bytes)
+        .sum();
+    let missing: u64 = rows
+        .iter()
+        .filter(|row| row.state != ResourceState::Installed)
+        .map(|row| row.bytes)
+        .sum();
+    let all = |wanted: ResourceState| rows.iter().all(|row| row.state == wanted);
+    let any = |wanted: ResourceState| rows.iter().any(|row| row.state == wanted);
+    let loaded: Vec<&str> = status
+        .and_then(|status| status.runtime.as_ref())
+        .map(|runtime| {
+            runtime
+                .models
+                .iter()
+                .filter(|model| part.resources.contains(&model.resource_id))
+                .map(|model| model.state.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let installing_job = rows
+        .iter()
+        .filter(|row| row.state == ResourceState::Installing)
+        .filter_map(|row| row.job_id.as_ref())
+        .find_map(|id| {
+            state
+                .jobs
+                .iter()
+                .chain(
+                    status
+                        .map(|status| status.jobs.as_slice())
+                        .unwrap_or_default(),
+                )
+                .find(|record| &record.job_id == id && record.status == JobStatus::Running)
+        });
+    let text = if !read {
+        "Not read yet".to_owned()
+    } else if all(ResourceState::Installed) {
+        match loaded.as_slice() {
+            [] => "Installed".to_owned(),
+            states if states.contains(&"loaded") => "Loaded".to_owned(),
+            _ => "Loading".to_owned(),
+        }
+    } else if any(ResourceState::Installing) {
+        let progress = installing_job.map(|record| &record.progress);
+        match (
+            progress.and_then(|progress| progress.fraction),
+            progress.and_then(|progress| progress.message.as_deref()),
+        ) {
+            (_, Some(step)) if step != "downloading" => format!("Installing \u{b7} {step}"),
+            _ => {
+                // One percentage over the part: what is installed, staged or downloading of it.
+                let done: f64 = rows
+                    .iter()
+                    .map(|row| match row.state {
+                        ResourceState::Installed => row.bytes as f64,
+                        _ => row.staged_bytes.unwrap_or(0) as f64,
+                    })
+                    .sum::<f64>()
+                    .max(
+                        installing_job
+                            .and_then(|record| record.progress.fraction)
+                            .zip(installing_job.and_then(|record| record.resource_id.as_ref()))
+                            .and_then(|(fraction, id)| {
+                                let row = rows.iter().find(|row| &row.id == id)?;
+                                Some(fraction.clamp(0.0, 1.0) * row.bytes as f64)
+                            })
+                            .unwrap_or(0.0),
+                    );
+                let total = rows.iter().map(|row| row.bytes).sum::<u64>().max(1);
+                format!("Installing {:.0}%", done / total as f64 * 100.0)
+            }
+        }
+    } else {
+        let failure = rows
+            .iter()
+            .filter(|row| row.state == ResourceState::Failed)
+            .find_map(|row| row.error.as_ref());
+        let mut text = match failure {
+            Some(error) => format!("Failed: {}", error.message),
+            None => "Not installed".to_owned(),
+        };
+        if staged > 0 {
+            text.push_str(&format!(
+                " \u{b7} {} of {} downloaded, resumes on the next download",
+                human_bytes(staged),
+                human_bytes(missing)
+            ));
+        }
+        text
+    };
+    let requirements: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.requirements.as_ref())
+        .collect();
+    let requirement = requirement_text(
+        requirements
+            .iter()
+            .filter_map(|needs| needs.min_memory_bytes)
+            .max(),
+        requirements
+            .iter()
+            .filter_map(|needs| needs.resident_bytes)
+            .reduce(|one, two| one.saturating_add(two)),
+        requirements
+            .iter()
+            .map(|needs| needs.backends.as_slice())
+            .find(|backends| !backends.is_empty())
+            .unwrap_or_default(),
+        requirements
+            .iter()
+            .find_map(|needs| needs.precision)
+            .map(|precision| format!("{precision:?}").to_lowercase()),
+    );
+    let fits = if rows.iter().any(|row| row.fits == Some(false)) {
+        Some(false)
+    } else {
+        rows.iter().find_map(|row| row.fits)
+    };
+    let remove: Vec<String> = rows
+        .iter()
+        .filter(|row| {
+            row.state == ResourceState::Installed || row.staged_bytes.is_some_and(|bytes| bytes > 0)
+        })
+        .map(|row| row.id.clone())
+        .collect();
+    let first = declared(module, &part.resources[0]);
+    // Download… while nothing of it installs and this machine can run it.
+    let download = (read
+        && !all(ResourceState::Installed)
+        && !any(ResourceState::Installing)
+        && fits != Some(false))
+    .then(|| fill_setup::smallest_holding(module, &part.resources[0], flags))
+    .flatten()
+    .map(|setup| SetupAction::Install {
+        module_id: module.id.clone(),
+        setup: setup.id.clone(),
+    });
+    let tools: Vec<String> = module
+        .setups
+        .iter()
+        .filter(|setup| fill_setup::offered(module, setup, flags))
+        .filter(|setup| setup.parts.iter().any(|held| held.name == part.name))
+        .map(tool_label)
+        .collect();
+    let id = part.resources[0].clone();
+    ModelRow {
+        module_id: module.id.clone(),
+        menu_open: menu
+            == Some(&MenuTarget::Model {
+                module_id: module.id.clone(),
+                resource_id: id.clone(),
+            }),
+        resource_id: id,
+        resources: part.resources.clone(),
+        title: part.name.clone(),
+        caption: (!tools.is_empty()).then(|| tools.join(", ")),
+        detail,
+        state: text,
+        tradeoff: first.and_then(|resource| resource.tradeoff.clone()),
+        use_restriction: part
+            .resources
+            .iter()
+            .find_map(|id| declared(module, id)?.use_restriction.clone()),
+        requirement,
+        fits,
+        removable: !remove.is_empty(),
+        remove,
+        download,
+        enabled: state.pending == 0 && module.is_available(),
+    }
 }
 
 fn row(
@@ -332,34 +643,36 @@ fn row(
     };
     let requirement = reported
         .and_then(|row| row.requirements.as_ref())
-        .map(|needs| {
-            let mut parts = Vec::new();
-            if let Some(minimum) = needs.min_memory_bytes {
-                parts.push(format!("Needs {} of memory", memory_text(minimum)));
-            }
-            if let Some(resident) = needs.resident_bytes {
-                parts.push(format!("{} while loaded", human_bytes(resident)));
-            }
-            if !needs.backends.is_empty() {
-                parts.push(needs.backends.join(" or "));
-            }
-            if let Some(precision) = needs.precision {
-                parts.push(format!("{precision:?}").to_lowercase());
-            }
-            parts.join(" · ")
-        })
-        .filter(|text| !text.is_empty());
+        .and_then(|needs| {
+            requirement_text(
+                needs.min_memory_bytes,
+                needs.resident_bytes,
+                &needs.backends,
+                needs
+                    .precision
+                    .map(|precision| format!("{precision:?}").to_lowercase()),
+            )
+        });
+    let removable = resource_state == Some(ResourceState::Installed) || staged.is_some();
     ModelRow {
         module_id: module.id.clone(),
         resource_id: resource.id.clone(),
+        resources: vec![resource.id.clone()],
         title: resource.title.clone(),
+        caption: None,
         detail,
         state: text,
         tradeoff: resource.tradeoff.clone(),
         use_restriction: resource.use_restriction.clone(),
         requirement,
         fits: reported.and_then(|row| row.fits),
-        removable: resource_state == Some(ResourceState::Installed) || staged.is_some(),
+        removable,
+        remove: if removable {
+            vec![resource.id.clone()]
+        } else {
+            Vec::new()
+        },
+        download: None,
         enabled: state.pending == 0 && module.is_available(),
         menu_open: menu
             == Some(&MenuTarget::Model {
@@ -405,6 +718,7 @@ mod tests {
     fn status(resource: Value, models: Vec<ResidentModel>, memory: Option<u64>) -> ModuleStatus {
         ModuleStatus {
             resources: vec![serde_json::from_value(resource).unwrap()],
+            setups: Vec::new(),
             permissions: Default::default(),
             jobs: Vec::new(),
             fill_tiers: Vec::new(),

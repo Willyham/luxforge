@@ -73,10 +73,18 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         // A Linux release build's payload updater reads its feed and archives over the system
         // transport; every other launch gets an unavailable port naming why.
         updates: Some(super::update_port::select(config, transport.clone())),
-        // A developer run installs the developer models from memory.
-        transport: luxforge_core::DeveloperModels::for_run(config.developer, transport),
-        // What a model's machine minimum is held against in the Models tab and at install.
-        machine_memory_bytes: luxforge_core::capabilities::host::installed_memory_bytes(),
+        // A developer run installs the developer models from memory, an evidence run's paced or
+        // cut as it asks.
+        transport: luxforge_core::DeveloperModels::for_run_with(
+            config.developer,
+            transport,
+            config.evidence_downloads.clone(),
+        ),
+        // What a model's machine minimum is held against in the Models tab and at install: an
+        // evidence run's stated memory, else this machine's.
+        machine_memory_bytes: config
+            .evidence_memory
+            .or_else(luxforge_core::capabilities::host::installed_memory_bytes),
         launch_flags: config.launch_flags.clone(),
         // What the launch knows of its renderer before the window opens, which every client's
         // session reports until the photo surface has checked its GPU stage.
