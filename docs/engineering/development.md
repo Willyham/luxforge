@@ -55,7 +55,7 @@ The unit tests need no model. Three ignored tests need the pinned klein files fr
 | The quick tier with its summary, with no release build | `cargo xtask verify --tier quick --output NEW_DIR` |
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
 | Required native watcher delivery and recovery gate; run for watcher changes and each release platform | `cargo xtask test --native-watchers` |
-| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick\|--native-watchers]`, `build [--release]` (the editor, the headless `luxforge-json` and the live-session client `luxforge-ctl`) |
+| Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick\|--native-watchers]`, `build [--release]` (the editor, the headless `luxforge-json`, the live-session client `luxforge-ctl` and the MCP server `luxforge-mcp`) |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH] [--binary PATH]` |
@@ -121,6 +121,7 @@ The unit tests need no model. Three ignored tests need the pinned klein files fr
 | Desktop against the hosted Cloudflare test tenant through the backend repo's `npm run relay`; expects acceptance within 10 batches/minute, checks only the client/HTTP side ([commands and scope](../../services/usage-statistics/DEPLOYMENT.md#the-desktop-against-the-live-test-tenant)); outside `verify` | `LUXFORGE_USAGE_INGRESS=http://127.0.0.1:8788 LUXFORGE_USAGE_BACKEND_PROFILE=live cargo xtask smoke --scenario usage-backend --output NEW_DIR` |
 | Rendered usage statistics end to end over three background launches sharing one isolated configuration and a loopback receiver: the notice once and declined, an opt-in through Privacy, GUI and `luxforge-ctl` operations in one batch in the order performed, and an opt-out through the live session cancelling a held upload ([the background journey](../design/usage-statistics.md#the-background-journey)); needs the release editor and `luxforge-ctl` | `cargo xtask smoke --scenario usage --output NEW_DIR` |
 | Rendered UI themes at 1440 × 900: the synthetic Omarchy set (`fixtures/themes/omarchy`) imported through the Appearance tab's Import Omarchy theme… with each theme's outcome listed, a folder imported again listed as already imported; Luxforge Dark, the bundled Nord and both imports drawn, the panels, title bar, a control and the canvas sampled against each frame's recorded tokens, the surround within 0.010 OKLCh chroma, the photograph's pixels and an export's SHA-256 the same under every theme, the Grey canvas kept under a light theme, and a second client switching back with `preferences.set` | `cargo xtask smoke --scenario theme --output NEW_DIR` |
+| Rendered Settings › Agents in two launches: the tab opened from the palette with no agent connected, Codex's configuration chosen and copied and Claude Code's shown, each as the core writes it, a real `luxforge-mcp` started beside the editor and attached as Claude Code, listed with its `session.clients` row and disconnected through the tab; then the editor alone in a folder of its own, saying which `luxforge-mcp` it looked for and how to build it | `cargo xtask smoke --scenario settings-agents --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 selected with its handles resting and no draft, then its rotation grip swung to −12° and committed as one entry on release, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | Native masking interaction regressions: unplaced creation, selected/armed targets, live and committed brush flow/feather, deliberate hiding and analytic live-gradient coverage under rotated crop at Fit/100% | `cargo xtask smoke --scenario mask-interactions --output NEW_DIR` |
 | Range selections picked on a real photograph: each pick a new unbound range mask from New mask with the eyedropper armed, the pick sent through `mask.pick-<kind>` as a click and as a drag, the same rectangle asked of `mask.sample-input-area` (which names the renderer that read it) and the mask's coverage drawn on black. Picks are declared per corpus photograph, aimed at its skies, skin, foliage and neutrals; another photograph gets a whole-frame luminance drag and a centre colour click; what a photograph does not hold is reported unavailable. It judges no selection's quality ([range masks](../design/range-masks.md)) | `cargo xtask smoke --scenario range-corpus --source PHOTO --output NEW_DIR` |
@@ -212,7 +213,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `photo-free-xtask-cli`, `xtask-cli-no-photo-dependencies` | A workspace/path dependency or an image, native compiler/codec/database or GUI/GPU dependency in `xtask/cli`'s manifest, in any dependency table; lightweight checks and audits must build independently of the photo tools |
 | `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-net`, whose module transport is the one HTTP client |
 | `core-links-no-network` | `rustls`, `rustls-platform-verifier`, `ring`, `ureq`, `ureq-proto` or `security-framework` in `luxforge-core`'s normal, dev or build dependencies: the transport and the Keychain store are `luxforge-net`'s, given to the host through `HostConfig`, so the core and its test binaries link neither |
-| `headless-cli` | A normal dependency of `luxforge-cli` on the GUI stack (`iced`, `iced_wgpu`, `wgpu`, `naga`, `rfd`, `luxforge-ui` or `luxforge-app`), so building the headless `luxforge-json` and `luxforge-ctl` builds no window, renderer, shader compiler or dialog crate |
+| `headless-cli` | A normal dependency of `luxforge-cli` on the GUI stack (`iced`, `iced_wgpu`, `wgpu`, `naga`, `rfd`, `luxforge-ui` or `luxforge-app`), so building the headless `luxforge-json`, `luxforge-ctl` and `luxforge-mcp` builds no window, renderer, shader compiler or dialog crate |
 | `core-qualification-only-in-tests` | `luxforge-core`'s `qualification` feature turned on by a normal, build or workspace dependency: the CPU filters it exposes (`luxforge_core::qualification`) are for the desktop's GPU readback tests, so only a `[dev-dependencies]` table turns it on |
 | `allocation-counter-only-in-tests` | `luxforge-process`'s `allocation-counter` feature turned on by a normal, build or workspace dependency: the counting allocator it exposes (`luxforge_process::allocations`) is for test binaries that hold a path to an allocation budget, so only a `[dev-dependencies]` table turns it on |
 | `std-only-gpu-types` | Any dependency in any table of `luxforge-gpu-types`; shared formats, extents and conventions use only `std` |
@@ -649,7 +650,7 @@ of the quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: ordinary checks and tests, excluding native watcher delivery, [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | ordinary `check`, the required `native-watchers` gate, `editor-acceptance` and every checkout smoke scenario but `visibility-monitoring`, including the macOS-only `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `select-introduction`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `panorama-merge`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
+| `rendered` | ordinary `check`, the required `native-watchers` gate, `editor-acceptance` and every checkout smoke scenario but `visibility-monitoring`, including the macOS-only `hidden-analysis`, `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `copy-settings` (mixed-kind white balance with a RAW `--source`), `export`, `settings`, `settings-agents`, `usage`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, `select`, `select-introduction`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `hdr-merge`, `hdr-merge-view`, `panorama-merge`, `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
 | `timing` | ordinary `check`, the required `native-watchers` gate, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus the macOS-only `visibility-monitoring` scenario in its pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one, plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel`, a `smoke --scenario look`, a `smoke --scenario raw-detail` and a `smoke --scenario raw-corrections` run per manifest source and one `smoke --scenario performance` run over the first manifest source; its timing part adds an `editor-latency --mode corrections` run per manifest source (`editor-latency-corrections-<id>`) |
 
@@ -669,7 +670,7 @@ nothing failed outright, is `incomplete` rather than `passed`, naming which comp
 in `summary.json`'s `incomplete` list, and its process exits with its own code (currently `3`),
 distinct from `0` (passed) and the ordinary-failure exit code a real component failure uses.
 
-Above `quick`, the command builds `luxforge-app`, `luxforge-cli` (for `luxforge-ctl`, which the `usage` scenario runs against a live session) and `xtask` once in release, then runs each component as a child
+Above `quick`, the command builds `luxforge-app`, `luxforge-cli` (for `luxforge-ctl` and `luxforge-mcp`, which the `usage` and `settings-agents` scenarios run against a live session) and `xtask` once in release, then runs each component as a child
 process of the release `xtask` executable with its console output in `<out>/<component>/console.log`
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
@@ -1092,6 +1093,12 @@ review the diff:
 cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot
 ```
 
+`luxforge-mcp` lists tools without a session from its own copy of `schema.list`,
+`crates/luxforge-cli/src/mcp/builtin-schema.json`, which `the_built_in_schema_matches_the_registry`
+holds to the registry, so an intended registry change also means regenerating it with
+`cargo test -p luxforge-cli --lib -- --ignored generate_builtin_schema_snapshot` and reviewing the
+diff.
+
 Beside it, `schema_list_names_developer_only_methods_only_in_developer_mode` serves
 `ModuleRegistry::developer()` too and checks that it lists every ordinary method unchanged and adds
 exactly the methods the test modules generate, none of which the snapshot holds. The one ordinary
@@ -1476,7 +1483,7 @@ Each step is an object with exactly one key.
   every scripted run samples once a second unless its script closes the section.
 - `settings` opens the Settings sheet at a tab, as its title bar button and tab rail do, or closes
   it: `{"open": true, "tab": "appearance"}`, where `tab` is `general`, `appearance`,
-  `experiments` or, in a launch with usage statistics test eligibility, `privacy`, and Experiments when left out, or `{"open": false}`. Opening is captured once
+  `models` (where the sheet lists it), `agents`, `experiments` or, in a launch with usage statistics test eligibility, `privacy`, and Experiments when left out, or `{"open": false}`. Opening is captured once
   `flags.list` has answered; closing, moving an open sheet to another tab and asking for the state
   it is already in, on the next frame.
 - `flag` changes one flag through its row's own control while the sheet is open:
@@ -1487,6 +1494,17 @@ Each step is an object with exactly one key.
   value its control does not offer and a Reset with nothing stored fail the step. `state.json`
   carries a `settings` summary: the tab, the flags as last listed, every row as drawn and the writes
   outstanding.
+- `agents` is one gesture on Settings › Agents, with the sheet open at Agents. `{"listed": [labels]}`
+  reads `session.clients` again each time the event log records a connection, an identification or
+  a disconnection, and captures once the Connected list shows exactly those labels in order
+  ("Unnamed client" for a client with none) with nothing in flight; `[]` waits for none, which is
+  how a script waits for a client another process connects. `{"client": id}` chooses a client by its
+  `luxforge-mcp config` id and `"copy"` presses Copy, each captured on the next frame.
+  `{"disconnect": label}` presses Disconnect on the first row with that label and captures once
+  `session.disconnect` has answered and the list read after it no longer shows the row. A client
+  the tab does not offer, nothing to copy and a label the list does not show fail the step. A
+  frame's `settings.agents` records the server as looked for, the chosen client, the configuration
+  and rows as drawn, what Copy copied and `session.clients` as the desktop last read it.
 - `open` opens one file as Open… does, bypassing only the native dialog: `{"path":
   "fixtures/s0/orientation-1.jpg"}`, relative to the editor's working directory. It is captured once
   the picture is on screen, as each `--open` is.

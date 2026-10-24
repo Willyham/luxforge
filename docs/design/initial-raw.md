@@ -46,7 +46,7 @@ Keep a machine-readable coverage manifest with four distinct outcomes: verified 
 
 ## Current implementation and integration points
 
-The source path is integrated into the Develop editor. JPEG Basic, the shared exporter and catalog Locate are separate capabilities; MCP remains planned.
+The source path is integrated into the Develop editor. JPEG Basic, the shared exporter, catalog Locate and the [MCP adapter](mcp.md) are separate capabilities.
 
 | Component | Current responsibility |
 | --- | --- |
@@ -198,7 +198,7 @@ Discoverable operations use the same command service as the desktop:
 | `edit.pick-raw-neutral` | Bounded pre-WB sensor patch solver |
 | Render, sample, history and version operations | The same RAW recipe/source identity, with display conversion only at the terminal boundary |
 
-The [user guide](../user-guide.md) documents parameters and asynchronous client usage. Unsupported model/mode or required DNG correction, corrupt input, missing calibration/provider, incompatible interpretation, changed/missing source, resource limits and cancelled/stale work produce explicit failures. MCP will inherit this registry when its separately planned adapter exists.
+The [user guide](../user-guide.md) documents parameters and asynchronous client usage. Unsupported model/mode or required DNG correction, corrupt input, missing calibration/provider, incompatible interpretation, changed/missing source, resource limits and cancelled/stale work produce explicit failures. The [MCP adapter](mcp.md) serves the same registry.
 
 ## Export, recovery and portability
 

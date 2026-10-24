@@ -51,7 +51,7 @@ The catalog format is numbered from 1. Until 1.0.0, catalog format changes need 
 - Crop: free handles, composition move, thirds overlay, Free/Original/1:1/3:2/4:3/16:9/custom ratios, a drag-to-straighten guide, Apply, Cancel and reset. Option/Alt scales proportionally about a fixed center. Straightening preserves composition with only the trimming needed. Apply commits once; Cancel discards.
 - Export never overwrites an existing file or a source alias. Its formats, quality, metadata levels and destination are [export settings](design/export-settings.md), held in presets and the remembered last export.
 - Recovery: verified manual Locate keeps asset identity, layers and history and rejects changed or ambiguous sources.
-- Live agents: human and agent actions share one history. An external commit preserves a human draft and marks it conflicted, resolved by explicit Discard or Reapply. Live JSON/IPC serves the same operations; MCP is a later adapter over them.
+- Live agents: human and agent actions share one history. An external commit preserves a human draft and marks it conflicted, resolved by explicit Discard or Reapply. Live JSON/IPC serves the same operations, and the [MCP adapter](design/mcp.md) offers them to agents.
 
 ## Develop workspace
 
