@@ -23,7 +23,7 @@ Board: [ai-tools-workspace/board.html](ai-tools-workspace/board.html): the Objec
 - **One answer, one download, one bar.** A setup that needs several resources asks once, grants exactly each resource's download scope, and shows one progress bar over the parts.
 - **Painting and pointing are separate tools.** Remove's press always paints the area to fill; Object's press always picks. Neither guesses which the person meant.
 - **Every gesture is a request any client can send.** The Object tool's selection is the `task.select-object` artifacts an agent would publish; its fill is `task.fill-generative` naming them.
-- **Honest about what is not available.** A tool whose download is not published yet, or whose model this machine cannot run, says so in its group and offers no button that would fail.
+- **Honest about what is not available.** A tool whose model this machine cannot run says so in its group and offers no button that would fail.
 
 ## The Corrections band
 
@@ -83,20 +83,15 @@ Each tool's group shows its setup's state where Set up would be, as the delivere
 | Partly downloaded | `Download paused at 1.1 of 2.7 GB` | **Resume** |
 | Installing | `Setting up Object…`, one bar over the setup's missing bytes, then each part's state (`Object finder · Ready ✓`, `Generative fill · 34%`) | **Cancel**, which cancels every install job of the setup |
 | Failed | `Setup didn't finish: …` naming the first failure, with each part's state | **Try again** (installs only what is still missing, resuming kept bytes) |
-| Unavailable | `Object removal needs generative fill, which isn't available to download yet. It comes with a Luxforge update.` | none |
 | Machine too small | `Object removal needs a computer with 16 GB of memory. This Mac has 8 GB.` | none |
 
-Where a tool's fill cannot be set up but the object finder can, Object's group adds `You can still pick objects for masks in Mask mode.` New mask › Object without its setup opens the sheet directly rather than entering the sub-state.
+Where a tool's fill cannot run on this machine but the object finder can, Object's group adds `You can still pick objects for masks in Mask mode.` New mask › Object without its setup opens the sheet directly rather than entering the sub-state.
 
 ### The sheet
 
 Set up opens the delivered setup sheet ([AI editing](ai-editing.md#the-delivered-workflow), [board 4](ai-tools-workspace/board.html)), asked for the setup: the introduction's eyebrow, title, lead and three steps; then BEFORE IT CAN START with the three tiles summed over the missing parts (the download size and `Two parts, once, then offline`; every origin and the licences, `Free · Apache-2.0`; the setup's memory minimum against this machine's); then an **includes** list naming each part with its purpose and size, an installed part shown as `installed ✓` and not counted; then the delivered notes (a use restriction, a past decline, `You can remove it at any time in Settings › Models.`). **Download 2.7 GB ↵** grants every missing part's exact `download-artifact` scope and asks the host to install the setup; **Not now** denies each scope, as Don't allow does. The sheet closes on Download and the group shows the progress.
 
 The Object setup's words: AI EDITING, **Remove an object by pointing at it**, "Hold the pointer over something you don't want, click, and Luxforge fills the space to match the rest of the photo. It runs entirely on this computer, so your photos never leave it."; steps **Point at it** (hover), **Click to select** (`⇧` adds, `⌥` takes away), **Generate and accept** (`Esc` cancels, `⌘Z` undoes). The mask Object setup: **Select an object by pointing at it** over the hover and selected pictures, 133 MB, no memory tile minimum. Remove and Replace keep their delivered words. The step pictures the desktop draws gain two kinds, `Hover` and `Selected`, beside the four it draws now.
-
-### Not yet published
-
-The removal conditioning, one file of `generative-klein-4b`, is published by the owner as a project release asset that does not exist yet ([AI editing](ai-editing.md#decisions), decision 17). Until it does, the module declares that file **pending publication**: the resource lists as `unavailable` with the reason `unpublished`, a setup with an unavailable missing part is `unavailable`, and no Set up is offered for it. A resource whose pending file is already staged at its pinned length (the delivered `generative_kit.py stage` route) is installable as today, so testers keep working. Publishing the asset changes the declaration to its pinned URL, and nothing else.
 
 ### Settings › Models
 
@@ -113,9 +108,8 @@ Proposed additions, each generated into `schema.list`; the methods not named her
 | Method or field | Does |
 | --- | --- |
 | Module descriptor `setups: [{id, title, introduction, parts: [{name, purpose, resources}]}]` | At most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares; validated with the descriptor and refused by name |
-| `module.status` `setups: [{id, state: installed\|missing\|installing\|failed\|unavailable\|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}]` | Derived from the resource states, the install memo and the transfer lane; opens nothing |
-| `module.setup.install {module_id, setup, mutation}` | Queues one install job per missing resource, in declared order, on the transfer lane, after checking the lane has room for all of them (`resource-limit` otherwise, nothing queued); answers `{setup, jobs: [{resource_id, job_id}]}`, empty when nothing is missing. A missing grant fails `consent-required` with `data.consent: {module_id, setup, grants: [{capability, scope}], disclosure, denied}`, the disclosure summed over the missing parts with the setup's introduction and parts; the client grants each scope with `module.permission.grant` and asks again. An unavailable or too-large part fails `not-ready` naming it |
-| Resource state `unavailable` with `reason: unpublished` | A declared file with no published URL yet and no staged copy |
+| `module.status` `setups: [{id, state: installed\|missing\|installing\|failed\|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}]` | Derived from the resource states, the install memo and the transfer lane; opens nothing |
+| `module.setup.install {module_id, setup, mutation}` | Queues one install job per missing resource, in declared order, on the transfer lane, after checking the lane has room for all of them (`resource-limit` otherwise, nothing queued); answers `{setup, jobs: [{resource_id, job_id}]}`, empty when nothing is missing. A missing grant fails `consent-required` with `data.consent: {module_id, setup, grants: [{capability, scope}], disclosure, denied}`, the disclosure summed over the missing parts with the setup's introduction and parts; the client grants each scope with `module.permission.grant` and asks again. A machine below a part's minimum fails `not-ready` naming it |
 | `task.fill-generative` `object-artifacts?: [artifact]` | 1 to 8 `mask-alpha` artifacts from `task.select-object`, instead of or beside `selection-points`. Each must be of this photograph's current source and repair prefix (`conflict` with `data.reason: "stale-selection"` naming it otherwise) and still published (`validation: unknown artifact`). The region joins each artifact's removal region (below) with any painted footprint by maximum. The candidates' provenance records each object's artifact and prompt |
 | `model` payload `prompt?` | For class `object`: `{point}` or `{stroke, radius, candidate?}` in content coordinates, as `task.select-object` took it; at most 1,024 points. Recompute sends it back |
 
@@ -133,9 +127,9 @@ Parity: every gesture above sends a request `Copy as JSON request` shows (the �
 
 ## Acceptance
 
-- **Core, exact.** Setup declaration validation, status derivation for every state, install ordering, lane-room refusal, the combined consent, the unpublished state and its staged exception; the object removal region against its reference; a fill from object artifacts byte-identical outside its coverage; stale and unknown artifact refusals; the stored prompt and Recompute through `luxforge-json`.
-- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate, Accept, Escape order); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object and `settings` for the flag's new description; `ai-setup` (unavailable, too small, failed and resumed).
-- **Native, real models.** On the M4 with the pinned segmenter and klein: the Object journey on corpus photographs (the bridge, the kayaks, the road), hover and analysis latencies against their budgets, the set-up download over the network once the asset is published, the combined residency; recorded with the host's load.
+- **Core, exact.** Setup declaration validation, status derivation for every state, install ordering, lane-room refusal, the combined consent; the object removal region against its reference; a fill from object artifacts byte-identical outside its coverage; stale and unknown artifact refusals; the stored prompt and Recompute through `luxforge-json`.
+- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate, Accept, Escape order); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object and `settings` for the flag's new description; `ai-setup` (too small, failed and resumed).
+- **Native, real models.** On the M4 with the pinned segmenter and klein: the Object journey on corpus photographs (the bridge, the kayaks, the road), hover and analysis latencies against their budgets, the set-up download over the network, the combined residency; recorded with the host's load.
 
 ## Decisions
 
@@ -143,7 +137,7 @@ Taken by the owner on 2026-10-24 and recorded in [decisions](../decisions.md#ai-
 
 1. **Object detection is a separate tool, for removal and for masks**: Corrections › Object removes picked objects; Masks › New mask › Object makes a stored selection; one picker and one download serve both. Remove paints.
 2. **Object removal ships on the Generative tier**; the Fast tier joins the shared Fill control of Remove and Object when its quality study passes.
-3. **Object removal stays behind a flag**: `ai.analysis` keeps gating object picking, so Corrections › Object and Masks › Object are listed only while it is on; Remove is listed by default, `ai.generative` having been removed. Downloads stay opt-in. Until the conditioning asset is published, setups that need it say so and offer nothing. (Revised from "no experiment flag" on 2026-10-24.)
+3. **Object removal stays behind a flag**: `ai.analysis` keeps gating object picking, so Corrections › Object and Masks › Object are listed only while it is on; Remove is listed by default, `ai.generative` having been removed. Downloads stay opt-in. (Revised from "no experiment flag" on 2026-10-24.)
 4. **Setup per tool, one sheet**: each tool asks for exactly what it is missing, the first time it is chosen, under one consent with the combined size; Replace stays an add-on.
 
 Recorded defaults the owner can revise: the kind label **Object** and its line; a crosshair, not a brush, in Object; click replaces, `⇧` adds, `⌥` takes away; at most 8 objects a selection; the selection cleared when switching kinds; the Nothing hand-off to Remove; Paint shadow as one effect stroke; analysis on entering Object; the download glyph on an unset kind; Remove and Object hidden on a host with no runtime for any fill and shown with the reason on a machine too small; Object offered at CPU hover latency on a CPU-only host; mask Object's sub-state staying armed until Escape; the picture kinds `Hover` and `Selected`; the setup limits (8 setups, 4 parts, 5 resources); Settings › Models grouped by part.
