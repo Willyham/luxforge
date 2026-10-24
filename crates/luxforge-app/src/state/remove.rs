@@ -195,6 +195,15 @@ impl FillJob {
     }
 }
 
+/// What a start in flight was for: the selection it fills, from which seed, with which prompt.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Start {
+    pub(crate) asset: AssetId,
+    pub(crate) serial: u64,
+    pub(crate) seed: u64,
+    pub(crate) prompt: Option<String>,
+}
+
 /// Why the last Remove request was refused, as the band shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoveNotice {
@@ -222,6 +231,8 @@ pub(crate) struct RemovePanel {
     pub(crate) notice: Option<RemoveNotice>,
     /// Owner calls of Remove's in flight: a start or a cancel.
     pub(crate) pending: usize,
+    /// The start in flight, until the owner names its job or refuses it.
+    pub(crate) starting: Option<Start>,
     /// An accept of this candidate is in flight, made against this revision.
     pub(crate) accepting: Option<(String, u8, u64)>,
 }
@@ -284,6 +295,40 @@ impl RemovePanel {
         self.strip(asset)
             .into_iter()
             .find(|(held, row)| &held.job_id == job && row.candidate == *number)
+    }
+
+    /// What the tools panel pins to its bottom while a generation this desktop asked for is in
+    /// flight, on any photograph, from its start until it ends, fails or is cancelled: generating
+    /// is heavy enough to slow the rest of the editor. It names whichever is running, a fill or a
+    /// prompted Replace.
+    pub(crate) fn in_flight_notice(&self) -> Option<String> {
+        let prompted = self
+            .starting
+            .iter()
+            .map(|start| start.prompt.is_some())
+            .chain(
+                self.jobs
+                    .iter()
+                    .filter(|job| job.running())
+                    .map(|job| job.prompt.is_some()),
+            );
+        let (mut fill, mut replace) = (false, false);
+        for prompted in prompted {
+            if prompted {
+                replace = true;
+            } else {
+                fill = true;
+            }
+        }
+        let (what, runs) = match (fill, replace) {
+            (false, false) => return None,
+            (true, false) => ("Generative fill", "it runs"),
+            (false, true) => ("Replace", "it runs"),
+            (true, true) => ("Generative fill and Replace", "they run"),
+        };
+        Some(format!(
+            "{what} in progress. The editor may be slow while {runs}."
+        ))
     }
 
     /// The selection and strip go: a new stroke, Escape, an accept that committed.
@@ -724,5 +769,54 @@ mod tests {
             running_sentence(&job),
             "Generative fill \u{b7} candidate 2 of 3, step 4 of 8"
         );
+    }
+
+    /// The tools panel's notice names whichever is in flight on any photograph, a start the owner
+    /// has not answered or a job still queued or running, and is gone once each has ended.
+    #[test]
+    fn the_in_flight_notice_names_what_is_generating_until_it_ends() {
+        let job = |prompt: Option<&str>, status| FillJob {
+            job_id: "j".into(),
+            asset: AssetId::new(),
+            serial: 1,
+            prompt: prompt.map(str::to_owned),
+            seed: 0,
+            status,
+            fraction: None,
+            message: None,
+            candidates: Vec::new(),
+            next_seed: None,
+            error: None,
+            cancelling: false,
+        };
+        let mut panel = RemovePanel::default();
+        assert_eq!(panel.in_flight_notice(), None);
+        panel.starting = Some(Start {
+            asset: AssetId::new(),
+            serial: 1,
+            seed: 0,
+            prompt: None,
+        });
+        assert_eq!(
+            panel.in_flight_notice().as_deref(),
+            Some("Generative fill in progress. The editor may be slow while it runs.")
+        );
+        panel.starting = None;
+        panel.jobs.push(job(Some("a boat"), JobStatus::Queued));
+        assert_eq!(
+            panel.in_flight_notice().as_deref(),
+            Some("Replace in progress. The editor may be slow while it runs.")
+        );
+        panel.jobs.push(job(None, JobStatus::Running));
+        assert_eq!(
+            panel.in_flight_notice().as_deref(),
+            Some("Generative fill and Replace in progress. The editor may be slow while they run.")
+        );
+        for ended in [JobStatus::Ready, JobStatus::Failed, JobStatus::Cancelled] {
+            for held in &mut panel.jobs {
+                held.status = ended;
+            }
+            assert_eq!(panel.in_flight_notice(), None, "{ended:?}");
+        }
     }
 }

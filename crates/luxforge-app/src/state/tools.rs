@@ -232,6 +232,9 @@ pub(crate) struct ToolsModel {
     pub(crate) status: ToolsStatus,
     /// The inline menu open on one generated control or the crop draft's Apply, if any.
     pub(crate) menu: Option<MenuTarget>,
+    /// The notice pinned to the panel's bottom, under whatever scrolls: a generation in flight
+    /// ([`crate::state::remove::RemovePanel::in_flight_notice`]).
+    pub(crate) notice: Option<String>,
 }
 
 /// A declared action with fixed parameters, as a header or group reset button raises it.
@@ -973,6 +976,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         developer,
         status,
         menu: inputs.view_state.menu.clone(),
+        notice: inputs.remove.in_flight_notice(),
     }
 }
 

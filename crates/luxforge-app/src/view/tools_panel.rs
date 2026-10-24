@@ -40,14 +40,14 @@ use luxforge_ui::{
     HistogramChannel, Icon, IconButtonModel, LabelledButtonModel, MenuChoiceModel,
     NumberFieldModel, RailDecoration, RangeGrip, RangeSliderModel, RangeValues, RowPlacement,
     SectionHeaderModel, SegmentedModel, SliderModel, StepperModel, StepperRail,
-    StepperRailMessages, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, badge, boxed_input,
-    button_row, caption, channel_row, chip, chip_row, chip_wrap, color_picker, color_swatch,
-    curve_editor, equal_button_row, error_caption, focus_control, histogram_inspector, icon_button,
-    icon_button_row, inline_menu, inline_value, label_line, labelled_button, list_heading,
-    menu_choice, module_section, number_field, range_rail, readout_card, row_icon_button,
-    section_label, segmented, slider, steady_bottom, stepper, sub_group_header,
-    sub_group_header_with_actions, sub_group_header_with_controls, tab_row, text_button, theme,
-    toggle, values_line,
+    StepperRailMessages, SubGroupHeaderModel, Tab, TabRowModel, ToggleModel, Tone, badge,
+    boxed_input, button_row, caption, channel_row, chip, chip_row, chip_wrap, color_picker,
+    color_swatch, curve_editor, equal_button_row, error_caption, focus_control,
+    histogram_inspector, icon_button, icon_button_row, inline_menu, inline_notice, inline_value,
+    label_line, labelled_button, list_heading, menu_choice, module_section, number_field,
+    range_rail, readout_card, row_icon_button, section_label, segmented, slider, steady_bottom,
+    stepper, sub_group_header, sub_group_header_with_actions, sub_group_header_with_controls,
+    tab_row, text_button, theme, toggle, values_line,
 };
 use serde_json::{Map, Value};
 
@@ -163,7 +163,44 @@ fn is_marked(control: &ControlModel, mark: Option<&RevealKey>) -> bool {
 /// thing that makes a masked adjustment the delivered control rather than a second implementation.
 /// While the Corrections mode is active its band replaces the module list in the same place, with
 /// nothing under it; outside that mode Corrections has no section at all.
+///
+/// The model's notice, while it has one, is pinned under the scrolled body, as the state panel's
+/// Performance section is, so it never scrolls away with the sections. The body is always the
+/// column's first child, so a notice coming or going keeps the body's scroll position.
 pub(crate) fn tools_panel<'a>(
+    model: &'a ToolsModel,
+    plot: &'a HistogramModel,
+    masks: &'a crate::state::masks::MasksModel,
+    masking: bool,
+    corrections: &'a crate::state::corrections::CorrectionsModel,
+    remove: crate::app::remove::RemoveImages<'a>,
+) -> Element<'a, Message> {
+    let mut panel =
+        column![panel_body(model, plot, masks, masking, corrections, remove)].height(Length::Fill);
+    if let Some(notice) = &model.notice {
+        panel = panel.push(pinned_notice(notice));
+    }
+    panel.into()
+}
+
+/// A notice under the panel's scrolled body: the band border over it, as over every module band,
+/// and one neutral line in the sections' inset.
+fn pinned_notice(notice: &str) -> Element<'_, Message> {
+    column![
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fixed(theme::BORDER_WIDTH))
+            .style(theme::band_border_surface),
+        container(inline_notice(Tone::Neutral, notice))
+            .width(Length::Fill)
+            .padding([theme::SPACING, theme::SECTION_PADDING.left]),
+    ]
+    .into()
+}
+
+/// The scrolled part of the panel: the histogram and the module sections, the Masks panel or the
+/// Corrections band.
+fn panel_body<'a>(
     model: &'a ToolsModel,
     plot: &'a HistogramModel,
     masks: &'a crate::state::masks::MasksModel,

@@ -979,6 +979,33 @@ fn generate_sends_the_copied_request_and_fills_the_strip_with_one_candidate() {
     }
 }
 
+/// The tools panel pins its notice while a generation is in flight: from Generate, before the
+/// owner has named the job, while the job runs, and gone once it has ended. The frame records it.
+#[test]
+fn the_tools_panel_says_a_generation_may_slow_the_editor_while_it_runs() {
+    const NOTICE: &str = "Generative fill in progress. The editor may be slow while it runs.";
+    let mut filling = Filling::opened();
+    filling.ready();
+    filling.paint();
+    let notice = |filling: &Filling| filling.editor.workspace.tools.notice.clone();
+    assert_eq!(notice(&filling), None);
+
+    filling.remove(RemoveMessage::Generate);
+    assert_eq!(
+        notice(&filling).as_deref(),
+        Some(NOTICE),
+        "the start is out"
+    );
+    let job = filling.start();
+    assert_eq!(notice(&filling).as_deref(), Some(NOTICE), "the job runs");
+    assert_eq!(filling.editor.snapshot()["tools_notice"], json!(NOTICE));
+
+    assert_eq!(filling.finished(&job)["status"], "ready");
+    filling.poll(&job);
+    assert_eq!(notice(&filling), None, "the job has ended");
+    assert_eq!(filling.editor.snapshot()["tools_notice"], Value::Null);
+}
+
 /// Regenerate asks again from the newest job's next seed and adds one more to the strip; the
 /// earlier candidate stays. Choosing one previews it on the canvas and Accept commits exactly it:
 /// one history entry, and the selection and strip are cleared.
