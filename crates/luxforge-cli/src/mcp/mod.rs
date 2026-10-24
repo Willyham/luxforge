@@ -11,9 +11,11 @@
 //! - `owner` attaches to a catalog owner lazily and again after a lost connection, through a
 //!   `Target` and `Connection` pair the live session implements.
 //! - `images` attaches the pictures the registry's markers name.
-//! - [`command`] is the command line.
+//! - [`command`] is the command line, and `config` its `config CLIENT`, which prints a client's
+//!   configuration from [`luxforge_core::agents`].
 mod adapter;
 pub mod command;
+mod config;
 mod images;
 mod owner;
 pub mod protocol;

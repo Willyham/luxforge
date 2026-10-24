@@ -160,9 +160,14 @@ Extract the archive anywhere you can write, such as your home folder:
     tar -xzf luxforge-{version}-linux-x86_64.tar.gz
 
 then start the editor with ./Luxforge/luxforge. Nothing needs installing, no root is needed and the
-folder finds its own resources wherever it is. The command lines ./Luxforge/luxforge-json and
-./Luxforge/luxforge-ctl are beside it. Nothing is added to PATH: run them by path, or link them
-into a folder on your PATH yourself.
+folder finds its own resources wherever it is. The command lines ./Luxforge/luxforge-json,
+./Luxforge/luxforge-ctl and ./Luxforge/luxforge-mcp are beside it. Nothing is added to PATH: run
+them by path, or link them into a folder on your PATH yourself.
+
+luxforge-mcp lets an MCP client, such as Claude Code, Codex or Cursor, operate Luxforge.
+./Luxforge/luxforge-mcp config CLIENT prints that client's configuration for it, where CLIENT is
+claude-code, claude-desktop, codex, cursor or json; Luxforge never edits another application's
+configuration itself.
 
 When you can write the Luxforge folder and the folder it is in, Luxforge updates itself in place,
 keeping your photographs, catalogs, settings and logs.
@@ -440,6 +445,8 @@ mod tests {
             "luxforge-0.1.0-linux-x86_64.tar.gz",
             "./Luxforge/desktop-integration.sh install",
             "./Luxforge/desktop-integration.sh uninstall",
+            "./Luxforge/luxforge-ctl and ./Luxforge/luxforge-mcp are beside it",
+            "./Luxforge/luxforge-mcp config CLIENT",
             "libvulkan.so.1",
             "xdg-desktop-portal",
             "libgcc_s.so.1, libm.so.6, libstdc++.so.6",

@@ -26,7 +26,7 @@ Dry-run creates/pushes no tag and skips quick and native watcher checks. If a re
 
 Open GitHub **Actions → Release builds** for logs and the public pre-release under **Releases**. It contains:
 
-- `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, both CLIs under `Contents/Helpers`, Lensfun resources, notices and help.
+- `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, the three command lines (`luxforge-json`, `luxforge-ctl` and `luxforge-mcp`) under `Contents/Helpers`, Lensfun resources, notices and help.
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
 - `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
 - `luxforge-VERSION-source.tar.gz`, the complete corresponding [source archive](#the-source-archive) of the same commit.
@@ -186,7 +186,8 @@ cargo xtask release-gate --packet PACKET --gate qualification.macos-arm64.native
   --status passed --evidence m4-full-2026-10-20/summary.json \
   --scope "M4 full tier in the background test bundle; not Finder launch or Gatekeeper" \
   --bundle background-test --executable-identity before-signing \
-  --executable luxforge=SHA256 --executable luxforge-json=SHA256 --executable luxforge-ctl=SHA256
+  --executable luxforge=SHA256 --executable luxforge-json=SHA256 --executable luxforge-ctl=SHA256 \
+  --executable luxforge-mcp=SHA256
 
 cargo xtask release-gate --packet PACKET --gate distribution.advisory_disposition \
   --status passed --evidence distribution-review/advisories.md \

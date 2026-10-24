@@ -637,6 +637,6 @@ mod tests {
                 found += 1;
             }
         }
-        assert_eq!(found, 3);
+        assert_eq!(found, EXECUTABLES.len());
     }
 }

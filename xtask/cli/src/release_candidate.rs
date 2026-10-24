@@ -11,8 +11,10 @@ use std::{fs, path::Path, process::Command};
 
 /// The shape of `target.json`, `build.json` and `release.json`. Only the current shape is read.
 pub const SCHEMA_VERSION: u64 = 2;
-/// Every release payload's executables: the editor, then the two command lines.
-pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl"];
+/// Every release payload's executables: the editor, then the command lines: the headless owner,
+/// the live-session client and the MCP server. On macOS the editor is in `Contents/MacOS` and the
+/// command lines in `Contents/Helpers`; on Linux they are all at the payload's top.
+pub const EXECUTABLES: &[&str] = &["luxforge", "luxforge-json", "luxforge-ctl", "luxforge-mcp"];
 /// A field that does not apply to a target, such as Apple signing on Linux. It never stands for a
 /// required check that did not run.
 pub const NOT_APPLICABLE: &str = "not-applicable";
@@ -847,6 +849,19 @@ mod tests {
             .unwrap()
             .remove("luxforge-json");
         assert!(check_record(&bad, &tag, mac).is_err());
+        // Every command line is bound, the MCP server included, on both platforms.
+        let mut bad = unsigned.clone();
+        bad["executables"]["before_signing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("luxforge-mcp");
+        assert!(check_record(&bad, &tag, mac).is_err());
+        let mut bad = built.clone();
+        bad["executables"]["final"]
+            .as_object_mut()
+            .unwrap()
+            .remove("luxforge-mcp");
+        assert!(check_record(&bad, &tag, linux).is_err());
         // Linux executables are not signed: no before-signing hashes, and its final ones required.
         let mut bad = built.clone();
         bad["executables"]["before_signing"] = bad["executables"]["final"].clone();
