@@ -1,6 +1,7 @@
 //! The typed profiles: one tool per method, its name, description and annotations, the namespace
 //! filter, and calls through the same path as `luxforge_call`.
 use super::*;
+use luxforge_core::{ModuleRegistry, schemas};
 use std::collections::BTreeMap;
 
 fn typed_tools(namespaces: Namespaces) -> Tools {

@@ -15,7 +15,7 @@ use super::{
     serve::Cancel,
 };
 use crate::live::{CONNECTION_LOST, JOB_RELEASED, OUTCOME_UNKNOWN, PROTOCOL_ERROR, failure};
-use luxforge_core::{ApiFailure, Envelope, ModuleRegistry, Mutation, MutationRequest, schemas};
+use luxforge_core::{ApiFailure, Envelope, Mutation, MutationRequest};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, sync::OnceLock};
 
@@ -518,6 +518,12 @@ fn text<'a>(arguments: &'a Map<String, Value>, name: &str) -> Result<Option<&'a 
     }
 }
 
+/// The built-in registry's `schema.list` answer: an ordinary run's registry
+/// (`ModuleRegistry::builtin()`), written down when this adapter is built rather than assembled
+/// when it runs, so the adapter links none of the modules it lists. A test regenerates it from the
+/// registry and fails, naming the command that rewrites it, when the two differ.
+pub(super) const BUILT_IN_SCHEMA: &str = include_str!("builtin-schema.json");
+
 /// The registry built into this adapter, read once.
 pub(super) struct BuiltIn {
     pub(super) schema: Value,
@@ -527,7 +533,8 @@ pub(super) struct BuiltIn {
 pub(super) fn built_in() -> &'static BuiltIn {
     static BUILT_IN: OnceLock<BuiltIn> = OnceLock::new();
     BUILT_IN.get_or_init(|| {
-        let schema = schemas(&ModuleRegistry::builtin());
+        let schema = serde_json::from_str(BUILT_IN_SCHEMA)
+            .expect("the built-in schema snapshot is JSON, as its test proves");
         let inputs = MethodInputs::read(&schema);
         BuiltIn { schema, inputs }
     })

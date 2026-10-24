@@ -580,4 +580,5 @@ fn a_cancellation_stops_the_call_at_its_next_hold() {
     assert!(script.methods_called().is_empty());
 }
 
+mod snapshot;
 mod typed;
