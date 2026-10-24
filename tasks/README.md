@@ -75,7 +75,7 @@ Programmatic access to the operation registry beyond the JSON API itself.
 
 | Plan | Purpose |
 | --- | --- |
-| [MCP adapter](programmability/mcp.json) ([design](../docs/design/mcp.md)) | Implemented and verified on Linux: `luxforge-mcp`, a dual-era stdio MCP server with compact and generated typed tool profiles, the registry markers and client identity it needs, inline pictures, headless mode, packaging and Settings › Agents; the background `mcp` journey and real-client qualification remain |
+| [MCP adapter](programmability/mcp.json) ([design](../docs/design/mcp.md)) | Implemented and verified on Linux: `luxforge-mcp`, a dual-era stdio MCP server with compact and generated typed tool profiles, the registry markers and client identity it needs, inline pictures, headless mode, packaging, Settings › Agents and the background `mcp` journey; the journeys' M4 runs and real-client qualification remain |
 
 ### Project (`project/`)
 

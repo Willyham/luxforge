@@ -1,6 +1,6 @@
 # MCP adapter
 
-Status: implemented ([task plan](../../tasks/programmability/mcp.json), [feature status](../features.md), [user guide](../user-guide.md#connecting-an-agent)). Verified on Linux by the unit and process tests, the `rmcp` interoperability test and the `settings-agents` scenario under Xvfb. Open: the rendered journey and the M4 runs, the macOS release rehearsal, Windows, and qualification with real clients ([verification](#verification)).
+Status: implemented ([task plan](../../tasks/programmability/mcp.json), [feature status](../features.md), [user guide](../user-guide.md#connecting-an-agent)). Verified on Linux by the unit and process tests, the `rmcp` interoperability test and the `settings-agents` and `mcp` scenarios under Xvfb. Open: the M4 runs, the macOS release rehearsal, Windows, and qualification with real clients ([verification](#verification)).
 
 `luxforge-mcp` is a Model Context Protocol server. It lets an agent (Claude Code, Claude Desktop, Codex, Cursor and other MCP clients) operate Luxforge through the same operation registry that the desktop, `luxforge-json` and `luxforge-ctl` use. It is an adapter and has no feature logic of its own. Every tool it offers is a registry method, every edit is an ordinary API transaction with the same history, undo and conflict behaviour as a person's, and every argument schema is generated from `schema.list`. There is no hand-written copy.
 

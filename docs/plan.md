@@ -38,7 +38,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-The [MCP adapter](../tasks/programmability/mcp.json) ([design](design/mcp.md)) is implemented and verified on Linux: the registry markers, client identity, `luxforge-mcp` with both profiles, headless mode and pictures, packaging and Settings › Agents. TASK-009, the rendered journey, remains; TASK-011, qualification with real clients on the owner's M4 against a packaged build, follows it and needs the owner's session.
+The [MCP adapter](../tasks/programmability/mcp.json) ([design](design/mcp.md)) is implemented and verified on Linux: the registry markers, client identity, `luxforge-mcp` with both profiles, headless mode and pictures, packaging and Settings › Agents. TASK-009's `mcp` journey passes under Xvfb on Linux; its M4 run remains. TASK-011, qualification with real clients on the owner's M4 against a packaged build, follows it and needs the owner's session.
 
 [Auto tone](../tasks/editing/auto-tone.json) is implemented and qualified on the owner's M4: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. TASK-008, the owner's Lightroom exports and review, remains.
 
@@ -176,7 +176,7 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 **Live-session CLI** ([design](design/live-cli.md)) is implemented: `luxforge-ctl` drives the catalog the desktop has open through its live session ([feature status](features.md), [user guide](user-guide.md#the-live-session-command-line)). Operation-specific aliases wait until real use shows a need for one.
 
-**MCP adapter** ([design](design/mcp.md), [plan](../tasks/programmability/mcp.json)) is implemented: `luxforge-mcp`, a dual-era stdio MCP server over the operation registry, with compact and typed tool profiles generated from `schema.list`, pictures attached inline, the running desktop or an explicit headless owner, Settings › Agents and packaging beside `luxforge-ctl` ([feature status](features.md), [user guide](user-guide.md#connecting-an-agent)). Outstanding: the rendered journey and the M4 runs, the macOS release rehearsal, and qualification with real clients. Later: published shapes for `json` parameters and result schemas, the MCP tasks extension for jobs, Streamable HTTP, and a switch to turn live sessions off with per-agent restrictions ([later](design/mcp.md#later)).
+**MCP adapter** ([design](design/mcp.md), [plan](../tasks/programmability/mcp.json)) is implemented: `luxforge-mcp`, a dual-era stdio MCP server over the operation registry, with compact and typed tool profiles generated from `schema.list`, pictures attached inline, the running desktop or an explicit headless owner, Settings › Agents and packaging beside `luxforge-ctl` ([feature status](features.md), [user guide](user-guide.md#connecting-an-agent)). Outstanding: the M4 runs of the `settings-agents` and `mcp` journeys, the macOS release rehearsal, and qualification with real clients. Later: published shapes for `json` parameters and result schemas, the MCP tasks extension for jobs, Streamable HTTP, and a switch to turn live sessions off with per-agent restrictions ([later](design/mcp.md#later)).
 
 **Shared editing** (future, [design](design/shared-editing.md)). One host, one invited collaborator or agent, one photograph. No milestone.
 
