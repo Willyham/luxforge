@@ -11,6 +11,7 @@ use super::{
 use crate::state::{
     MenuTarget,
     capabilities::Operation,
+    fill_setup::SetupAction,
     models::{self, ModelRequest},
     preferences::{self, GeneralControl},
     settings::{FlagControl, SettingsTab, parse_number},
@@ -358,13 +359,20 @@ impl Editor {
             .map(|row| {
                 json!({
                     "module_id": row.module_id, "resource_id": row.resource_id,
-                    "title": row.title, "detail": row.detail, "state": row.state,
+                    "resources": row.resources, "title": row.title, "caption": row.caption,
+                    "detail": row.detail, "state": row.state,
                     "tradeoff": row.tradeoff, "use_restriction": row.use_restriction,
                     "requirement": row.requirement, "fits": row.fits,
                     "removable": row.removable, "enabled": row.enabled,
                     "menu_open": row.menu_open,
-                    "remove_request": row.removable.then(|| ModelRequest::Remove.request(
-                        &row.module_id, &row.resource_id, mutation.clone())),
+                    "remove_requests": row.removable.then(|| ModelRequest::Remove.requests(
+                        &row.module_id, &row.remove, || mutation.clone())),
+                    "download": row.download.as_ref().map(|download| json!({
+                        "setup": match download {
+                            SetupAction::Install { setup, .. } | SetupAction::Cancel { setup, .. } => setup,
+                        },
+                        "requests": download.requests(|| mutation.clone()),
+                    })),
                 })
             })
             .collect();

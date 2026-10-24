@@ -1267,6 +1267,8 @@ fn published_settings_failure_reads_back_the_visible_revision_and_keeps_the_erro
             settings,
             status: Ok(status),
             job: None,
+            jobs: Vec::new(),
+            setup_answer: None,
             sent: Vec::new(),
         },
     )));
@@ -1328,6 +1330,8 @@ fn published_resource_job_failure_shows_the_error_beside_the_installed_resource(
             settings: None,
             status: Ok(status),
             job: Some(record),
+            jobs: Vec::new(),
+            setup_answer: None,
             sent: Vec::new(),
         },
     )));

@@ -14,6 +14,7 @@ use super::{
 use crate::{
     Config,
     state::{
+        fill_setup::SetupAction,
         models::{ModelRequest, ModelRow, ModelsModel},
         settings::SettingsTab,
     },
@@ -23,6 +24,7 @@ use luxforge_core::{
     PROOF_MODEL_RESOURCE, PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF,
     capabilities::secrets::MemorySecretStore, proof_model_files,
 };
+use luxforge_test_macros::slow;
 use luxforge_testbase::{ProofEndpoint, wait_until};
 use luxforge_testkit::proof_protocol;
 use serde_json::{Value, json};
@@ -70,7 +72,11 @@ impl Models {
             config_dir: Some(root.join("config")),
             resource_dir: Some(root.join("resources")),
             secrets: Arc::new(MemorySecretStore::new()),
-            transport: Arc::new(luxforge_net::HttpTransport::system()),
+            // The developer models install from memory; the proof's over the loopback endpoint.
+            transport: luxforge_core::DeveloperModels::for_run(
+                developer,
+                Arc::new(luxforge_net::HttpTransport::system()),
+            ),
             machine_memory_bytes,
             inference: Some(luxforge_onnx::host_runtime(None, true)),
             ..HostConfig::unconfigured()
@@ -233,23 +239,43 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     assert_eq!(
         tab.machine.as_deref(),
         Some(
-            "This machine has 16 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB."
+            "This machine has 16 GB of memory. Generative fill needs 2 GB; FLUX.2 klein 4B with the object removal LoRA needs 16 GB; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB."
         )
     );
-    // The generative models are listed beside it; the analysis models wait on their experiment.
-    let titles: Vec<&str> = tab
+    // The generative models are listed beside it, the developer setups' as their parts captioned
+    // with the tools that use them, each offering Download… for its setup; the models no
+    // developer setup holds as themselves; the object finder waits on its experiment.
+    let rows: Vec<(&str, Option<&str>, Option<&SetupAction>)> = tab
         .rows
         .iter()
         .filter(|row| row.module_id == "luxforge.ai")
-        .map(|row| row.title.as_str())
+        .map(|row| {
+            (
+                row.title.as_str(),
+                row.caption.as_deref(),
+                row.download.as_ref(),
+            )
+        })
         .collect();
+    let install = |setup: &str| SetupAction::Install {
+        module_id: "luxforge.ai".into(),
+        setup: setup.into(),
+    };
     assert_eq!(
-        titles,
+        rows,
         [
-            "Developer fake generator",
-            "Developer fake text encoder",
-            "FLUX.2 klein 4B with the object removal LoRA",
-            "Text encoder for Replace (Qwen3-4B)"
+            (
+                "Generative fill",
+                Some("Corrections \u{203a} Remove"),
+                Some(&install("remove"))
+            ),
+            (
+                "Replace",
+                Some("Corrections \u{203a} Replace"),
+                Some(&install("replace"))
+            ),
+            ("FLUX.2 klein 4B with the object removal LoRA", None, None),
+            ("Text encoder for Replace (Qwen3-4B)", None, None),
         ]
     );
     assert!(tab.resident.is_empty());
@@ -277,7 +303,7 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
     assert_eq!(
         models.tab().machine.as_deref(),
         Some(
-            "This machine has 1 GB of memory. FLUX.2 klein 4B with the object removal LoRA needs 16 GB, more than it has; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB, more than it has."
+            "This machine has 1 GB of memory. Generative fill needs 2 GB, more than it has; FLUX.2 klein 4B with the object removal LoRA needs 16 GB, more than it has; Text encoder for Replace (Qwen3-4B) needs 24 GB, more than it has; Proof segmenter needs 2 GB, more than it has."
         )
     );
     // Its Download asks for consent as on any machine, and the notice says it cannot run here and
@@ -336,25 +362,24 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
     assert!(models.endpoint.requests().is_empty(), "nothing was fetched");
 }
 
-/// A download that introduces its feature asks through the setup sheet, from the consent the host
-/// answers its install with: what the model needs of the machine against what this machine has,
-/// and a past Not now. On a machine below the model's minimum it says the model cannot run,
+/// A setup asks through the setup sheet, from the consent the host answers its install with: what
+/// the setup needs of the machine against what this machine has, and a past Not now. On a machine below the model's minimum it says the model cannot run,
 /// offers no Download and only closes, and neither Return nor a scripted Allow downloads. It runs
 /// over a product run, where the qualified generator is the one Remove's setup holds.
 #[test]
 fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
     const AI: &str = "luxforge.ai";
-    const KLEIN: &str = "generative-klein-4b";
+
     let machine = if cfg!(target_os = "macos") {
         "Mac"
     } else {
         "computer"
     };
     let ask = |models: &mut Models| {
-        models.send(CapabilityMessage::Install {
+        models.send(CapabilityMessage::Setup(SetupAction::Install {
             module_id: AI.into(),
-            resource: KLEIN.into(),
-        });
+            setup: "remove".into(),
+        }));
         models.answer();
         assert!(
             models.editor.workspace.canvas.notices.is_empty(),
@@ -445,6 +470,124 @@ fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
     assert_eq!(models.editor.key_context().setup_sheet, None);
 }
 
+/// With `ai.analysis` on, the object finder is one part's row, its encoder and decoder together,
+/// captioned with both tools that use it, as the generative fill's row now is. Its Download…
+/// installs the smallest setup that holds it, mask Object, whose sheet includes the finder alone;
+/// once it is installed one Remove removes both resources, each through the request Copy as JSON
+/// request copies.
+#[test]
+#[slow]
+fn the_object_finder_is_one_part_whose_download_opens_its_smallest_setup() {
+    const AI: &str = "luxforge.ai";
+    const FINDER: [&str; 2] = ["fake-segmenter-encoder", "fake-segmenter-decoder"];
+    let mut models = Models::start(Some(16 << 30));
+    models.editor.select.state.shown = crate::state::select::Shown::Develop;
+    models
+        .api("flags.set", json!({"flag": "ai.analysis", "value": true}))
+        .unwrap();
+    super::testing::read_flags(&mut models.editor);
+    models.open();
+    let row = |models: &Models, title: &str| {
+        models
+            .tab()
+            .rows
+            .iter()
+            .find(|row| row.title == title)
+            .cloned()
+            .unwrap_or_else(|| panic!("the {title} row: {:?}", models.tab().rows))
+    };
+    let finder = row(&models, "Object finder");
+    assert_eq!(finder.resources, FINDER);
+    assert_eq!(
+        finder.caption.as_deref(),
+        Some("Corrections \u{203a} Object, Masks \u{203a} Object")
+    );
+    assert_eq!(
+        row(&models, "Generative fill").caption.as_deref(),
+        Some("Corrections \u{203a} Remove, Corrections \u{203a} Object")
+    );
+    let download = finder.download.clone().expect("Download…");
+    assert_eq!(
+        download,
+        SetupAction::Install {
+            module_id: AI.into(),
+            setup: "mask-object".into(),
+        }
+    );
+    models.send(CapabilityMessage::Setup(download));
+    models.answer();
+    let sheet = models
+        .editor
+        .workspace
+        .setup_sheet
+        .clone()
+        .expect("the mask Object sheet");
+    assert_eq!(sheet.title, "Select an object by pointing at it");
+    assert_eq!(
+        sheet
+            .includes
+            .iter()
+            .map(|part| part.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Object finder"]
+    );
+    assert_eq!(
+        sheet
+            .allow_requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "module.permission.grant",
+            "module.permission.grant",
+            "module.setup.install"
+        ],
+        "one answer grants every scope"
+    );
+    models.send(CapabilityMessage::Consent(true));
+    models.answer();
+    wait_until("the finder installed", || {
+        models
+            .api("module.resource.list", json!({"module_id": AI}))
+            .unwrap()["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|resource| FINDER.contains(&resource["id"].as_str().unwrap_or_default()))
+            .all(|resource| resource["state"] == "installed")
+    });
+    let _ = models.editor.reload_capabilities();
+    models.answer();
+    let finder = row(&models, "Object finder");
+    assert_eq!(finder.state, "Installed");
+    assert!(finder.removable && finder.download.is_none());
+    assert_eq!(finder.remove, FINDER);
+    let _ = models
+        .editor
+        .update(Message::Capability(CapabilityMessage::CopyModelRequest {
+            module_id: AI.into(),
+            resources: finder.remove.clone(),
+            request: ModelRequest::Remove,
+        }));
+    assert_eq!(
+        models.editor.status.text,
+        "Copied the module.resource.remove request"
+    );
+    models.send(CapabilityMessage::RemoveResources {
+        module_id: AI.into(),
+        resources: finder.remove.clone(),
+    });
+    let sent = models.answer();
+    assert_eq!(
+        sent.iter()
+            .take(2)
+            .map(|request| request["params"]["resource_id"].clone())
+            .collect::<Vec<_>>(),
+        FINDER.map(Value::from),
+        "one Remove removes each resource of the part"
+    );
+}
+
 #[test]
 fn an_interrupted_download_resumes_over_loopback_and_installs_both_files_together() {
     let mut models = Models::start(Some(16 << 30));
@@ -528,7 +671,7 @@ fn unload_now_and_remove_go_through_the_tab_and_copy_the_requests_they_send() {
         .editor
         .update(Message::Capability(CapabilityMessage::CopyModelRequest {
             module_id: MODULE.into(),
-            resource: RESOURCE.into(),
+            resources: vec![RESOURCE.into()],
             request: ModelRequest::Unload,
         }));
     assert_eq!(
@@ -556,7 +699,7 @@ fn unload_now_and_remove_go_through_the_tab_and_copy_the_requests_they_send() {
         .editor
         .update(Message::Capability(CapabilityMessage::CopyModelRequest {
             module_id: MODULE.into(),
-            resource: RESOURCE.into(),
+            resources: vec![RESOURCE.into()],
             request: ModelRequest::Remove,
         }));
     assert_eq!(

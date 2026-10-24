@@ -26,8 +26,8 @@ use luxforge_ui::{
     ButtonSize, ButtonTone, CorrectionRowMessages, CorrectionRowModel, DropEdge, Element,
     GroupRuleModel, Icon, LabelledButtonModel, MenuEntry, MenuItem, SegmentedModel, SliderModel,
     Token, Tone, ValueEdit, band_header_with_reset, caption, correction_row, drop_feedback,
-    group_rule, inline_notice, labelled_button, menu_list, popover, segmented, segmented_fill,
-    slider, theme,
+    group_rule, inline_notice, labelled_button, menu_list, popover, segmented,
+    segmented_fill_marked, slider, theme,
 };
 
 fn message(message: CorrectionMessage) -> Message {
@@ -156,7 +156,15 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
     if model.remove.is_some() {
         titles.push("Remove".into());
     }
-    group = group.push(segmented_fill(
+    // A kind whose setup has not run carries the small download glyph.
+    let marked: Vec<usize> = model
+        .remove
+        .as_ref()
+        .filter(|remove| remove.needs_setup)
+        .map(|_| model.kinds.len())
+        .into_iter()
+        .collect();
+    group = group.push(segmented_fill_marked(
         &SegmentedModel {
             options: titles,
             selected: if removing {
@@ -166,6 +174,7 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
             },
             enabled: true,
         },
+        &marked,
         move |index| match options.get(index) {
             Some(option) => message(CorrectionMessage::Kind(option.clone())),
             None => Message::Remove(RemoveMessage::Choose),

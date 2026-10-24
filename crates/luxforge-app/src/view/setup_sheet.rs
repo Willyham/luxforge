@@ -1,4 +1,4 @@
-//! A download's setup sheet over the whole window: the sheet centred on an opaque scrim, which
+//! A setup's sheet over the whole window: the sheet centred on an opaque scrim, which
 //! takes every press beside it, so nothing behind it is pressed while it asks
 //! ([`crate::state::setup_sheet`]).
 use crate::{
@@ -6,8 +6,8 @@ use crate::{
     state::setup_sheet::{FactKind, IntroductionPicture, SetupSheet},
 };
 use luxforge_ui::{
-    Element, FactTone, Icon, KeyHint, SetupFactModel, SetupPicture, SetupSheetModel,
-    SetupStepModel, setup_sheet as sheet,
+    Element, FactTone, Icon, KeyHint, SetupFactModel, SetupIncludeModel, SetupPicture,
+    SetupSheetModel, SetupStepModel, setup_sheet as sheet,
 };
 
 /// The sheet and its scrim, while one asks.
@@ -51,6 +51,16 @@ pub(crate) fn setup_sheet(model: Option<&SetupSheet>) -> Option<Element<'_, Mess
                         kind if kind.unmet() => FactTone::Unmet,
                         _ => FactTone::Plain,
                     },
+                })
+                .collect(),
+            includes: model
+                .includes
+                .iter()
+                .map(|part| SetupIncludeModel {
+                    name: part.name.clone(),
+                    purpose: part.purpose.clone(),
+                    size: part.size.clone(),
+                    installed: part.installed,
                 })
                 .collect(),
             notes: model.notes.clone(),

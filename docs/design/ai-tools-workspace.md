@@ -1,6 +1,6 @@
 # AI tools in the Develop workspace
 
-Status: **decided, in progress.** The owner settled the four product questions on 2026-10-24 and revised the third the same day ([Decisions](#decisions)); everything else here is a recorded default the owner can revise. Nothing below is built unless it says so. Its plan is [tasks/editing/ai-tools-workspace.json](../../tasks/editing/ai-tools-workspace.json).
+Status: **decided, in progress.** The owner settled the four product questions on 2026-10-24 and revised the third the same day ([Decisions](#decisions)); everything else here is a recorded default the owner can revise. Nothing below is built unless it says so: [Setting up](#setting-up) is implemented (setups, `module.setup.install`, Remove's and Replace's lines, the sheet, Settings › Models and the `ai-setup` smoke); the Object kinds and their lines are not yet. Its plan is [tasks/editing/ai-tools-workspace.json](../../tasks/editing/ai-tools-workspace.json).
 
 This design turns the AI editing that is delivered, with object picking behind an experiment, into a feature a person finds, sets up and uses without Settings. It owns what the person sees and does: the **Remove** and **Object** kinds of the Corrections band, **Object** in the Masks panel's New mask menu, the setup of every model a tool needs, and how Settings › Models lists them. What a selection, a fill, a patch, the picker and the analysis *are* stays [AI editing](ai-editing.md)'s; the band, its pins and its keys stay the [Corrections workspace](corrections-workspace.md)'s; consent, resources and jobs stay [module capabilities](module-capabilities.md)'.
 
@@ -12,10 +12,10 @@ Board: [ai-tools-workspace/board.html](ai-tools-workspace/board.html): the Objec
 | --- | --- |
 | Remove is listed by default; hover picking only with the `ai.analysis` experiment, and a press still paints | Remove is listed wherever the run can run its fill; Object, and mask Object, while `ai.analysis` is on, wherever the run can run the fill and the segmenter respectively |
 | One Remove kind that paints, with a hover highlight that does nothing | Two kinds. **Remove** paints exactly what to fill, with no hover. **Object** points: hover outlines, a click selects, a loose drag finds |
-| The segmenter installs only through `module.resource.install` from an API client | Each tool sets itself up on first use, from its own group, through one sheet for everything it lacks |
-| A setup sheet per resource download | A sheet per **setup**: a module-declared group of resources a tool needs, installed under one answer |
+| Remove and Replace set themselves up from their group, and the segmenter from Settings › Models' Download… or an API client | Each tool sets itself up on first use, from its own group, through one sheet for everything it lacks |
+| A sheet per **setup**: a module-declared group of resources a tool needs, installed under one answer | Delivered |
 | `query.pick-object` and `task.select-object` reach no gesture | Object removal fills a set of picked objects; New mask › Object makes a stored `model` selection with Recompute |
-| Settings › Models lists resources | Lists each setup's parts, captioned with the tools that use them |
+| Settings › Models lists each setup's parts, captioned with the tools that use them | Delivered |
 
 ## Principles
 
@@ -60,7 +60,7 @@ A `model` component's row (built here; Select reuses it) shows its class, how it
 
 ### Setups
 
-A module declares **setups**: the resources one tool needs, grouped into parts named in the feature's words. A tool asks for its setup; the host works out what is missing.
+Implemented. A module declares **setups**: the resources one tool needs, grouped into parts named in the feature's words. A tool asks for its setup; the host works out what is missing.
 
 | Setup | For | Parts (resources) | Download when nothing is installed |
 | --- | --- | --- | --- |
@@ -73,7 +73,7 @@ A developer run declares the same setups over its fake resources. A setup's mach
 
 ### The group's lines
 
-Each tool's group shows its setup's state where Set up would be, as the delivered Remove setup does ([board 3](ai-tools-workspace/board.html)):
+Each tool's group shows its setup's state where Set up would be, as the delivered Remove setup does ([board 3](ai-tools-workspace/board.html)). Implemented for Remove and Replace, and derived for every setup by id (`state/fill_setup.rs`), so Object and mask Object draw the same lines once their groups exist; Finding objects… and the Mask mode hint below are not yet built. A kind whose setup is not installed carries a small download glyph (↓) in the kind control:
 
 | State | Line | Action |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ Each tool's group shows its setup's state where Set up would be, as the delivere
 | Nothing missing, not yet analysed (Object) | Finding objects… | none |
 | Missing | The tool's sentence ("Point at an object and Luxforge removes it, filling the space to match the photo. It runs on this computer, so your photos stay on it."), then `One-time download · 2.7 GB` with only the missing bytes counted | **Set up…** |
 | Partly downloaded | `Download paused at 1.1 of 2.7 GB` | **Resume** |
-| Installing | `Setting up Object…`, one bar over the setup's missing bytes, then each part's state (`Object finder · Ready ✓`, `Generative fill · 34%`) | **Cancel**, which cancels every install job of the setup |
+| Installing | `Setting up Object…`, one bar over the setup's missing bytes, then each part's state (`Object finder · Ready ✓`, `Generative fill · Downloading · 34%`) | **Cancel**, which cancels every install job of the setup |
 | Failed | `Setup didn't finish: …` naming the first failure, with each part's state | **Try again** (installs only what is still missing, resuming kept bytes) |
 | Machine too small | `Object removal needs a computer with 16 GB of memory. This Mac has 8 GB.` | none |
 
@@ -89,13 +89,13 @@ Where a tool's fill cannot run on this machine but the object finder can, Object
 
 ### The sheet
 
-Set up opens the delivered setup sheet ([AI editing](ai-editing.md#the-delivered-workflow), [board 4](ai-tools-workspace/board.html)), asked for the setup: the introduction's eyebrow, title, lead and three steps; then BEFORE IT CAN START with the three tiles summed over the missing parts (the download size and `Two parts, once, then offline`; every origin and the licences, `Free · Apache-2.0`; the setup's memory minimum against this machine's); then an **includes** list naming each part with its purpose and size, an installed part shown as `installed ✓` and not counted; then the delivered notes (a use restriction, a past decline, `You can remove it at any time in Settings › Models.`). **Download 2.7 GB ↵** grants every missing part's exact `download-artifact` scope and asks the host to install the setup; **Not now** denies each scope, as Don't allow does. The sheet closes on Download and the group shows the progress.
+Implemented. Set up sends `module.setup.install`; while a grant is missing, its `consent-required` answer's `data.consent` opens the delivered setup sheet ([AI editing](ai-editing.md#the-delivered-workflow), [board 4](ai-tools-workspace/board.html)), asked for the setup: the introduction's eyebrow, title, lead and three steps; then BEFORE IT CAN START with the three tiles summed over the missing parts (the download size and `Two parts, once, then offline`; every origin and the licences, `Free · Apache-2.0`; the setup's memory minimum against this machine's); then an **includes** list naming each part with its purpose and size, an installed part shown as `installed ✓` and not counted; then the delivered notes (a use restriction, a past decline, `You can remove it at any time in Settings › Models.`). **Download 2.7 GB ↵** grants every missing part's exact `download-artifact` scope and asks the host to install the setup; **Not now** denies each scope, as Don't allow does. The sheet closes on Download and the group shows the progress. Every button sends exactly the requests Copy as JSON request copies, built by the same function, and `state.json` records the open sheet's setup, includes and requests.
 
 The Object setup's words: AI EDITING, **Remove an object by pointing at it**, "Hold the pointer over something you don't want, click, and Luxforge fills the space to match the rest of the photo. It runs entirely on this computer, so your photos never leave it."; steps **Point at it** (hover), **Click to select** (`⇧` adds, `⌥` takes away), **Generate and accept** (`Esc` cancels, `⌘Z` undoes). The mask Object setup: **Select an object by pointing at it** over the hover and selected pictures, 133 MB, no memory tile minimum. Remove and Replace keep their delivered words. The step pictures the desktop draws gain two kinds, `Hover` and `Selected`, beside the four it draws now.
 
 ### Settings › Models
 
-The tab lists models grouped by setup part rather than by resource: **Object finder** (the encoder and decoder as one row, one size, one Remove that removes both), **Generative fill**, **Replace**, each captioned with the tools that use it (`Corrections › Object, Masks › Object`). A part's row keeps the delivered contents: state, size, trade-off, use restriction, memory needed and while loaded. A part that is not installed offers **Download…**, which opens its tool's sheet for the smallest setup that holds it. The tab is listed in every run that serves a model; the Object finder's row is listed while `ai.analysis` is on, as the analysis models are today.
+Implemented. The tab lists models grouped by setup part rather than by resource: **Object finder** (the encoder and decoder as one row, one size, one Remove that removes both), **Generative fill**, **Replace**, each captioned with the tools that use it (`Corrections › Object, Masks › Object`). A part's row keeps the delivered contents: state, size, trade-off, use restriction, memory needed and while loaded. A part that is not installed offers **Download…**, which opens its tool's sheet for the smallest setup that holds it. The tab is listed in every run that serves a model; the Object finder's row is listed while `ai.analysis` is on, as the analysis models are today.
 
 ## Flags
 
@@ -107,9 +107,9 @@ Proposed additions, each generated into `schema.list`; the methods not named her
 
 | Method or field | Does |
 | --- | --- |
-| Module descriptor `setups: [{id, title, introduction, parts: [{name, purpose, resources}]}]` | At most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares; validated with the descriptor and refused by name |
-| `module.status` `setups: [{id, state: installed\|missing\|installing\|failed\|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}]` | Derived from the resource states, the install memo and the transfer lane; opens nothing |
-| `module.setup.install {module_id, setup, mutation}` | Queues one install job per missing resource, in declared order, on the transfer lane, after checking the lane has room for all of them (`resource-limit` otherwise, nothing queued); answers `{setup, jobs: [{resource_id, job_id}]}`, empty when nothing is missing. A missing grant fails `consent-required` with `data.consent: {module_id, setup, grants: [{capability, scope}], disclosure, denied}`, the disclosure summed over the missing parts with the setup's introduction and parts; the client grants each scope with `module.permission.grant` and asks again. A machine below a part's minimum fails `not-ready` naming it |
+| Module descriptor `setups: [{id, title, introduction, parts: [{name, purpose, resources}]}]` (implemented) | At most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares; validated with the descriptor and refused by name |
+| `module.status` `setups: [{id, state: installed\|missing\|installing\|failed\|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}]` (implemented) | Derived from the resource states, the install memo and the transfer lane; opens nothing |
+| `module.setup.install {module_id, setup, mutation}` (implemented) | Queues one install job per missing resource, in declared order, on the transfer lane, after checking the lane has room for all of them (`resource-limit` otherwise, nothing queued); answers `{setup, jobs: [{resource_id, job_id}]}`, empty when nothing is missing. A missing grant fails `consent-required` with `data.consent: {module_id, setup, grants: [{capability, scope}], disclosure, denied}`, the disclosure summed over the missing parts with the setup's introduction and parts; the client grants each scope with `module.permission.grant` and asks again. A machine below a part's minimum fails `not-ready` naming it |
 | `task.fill-generative` `object-artifacts?: [artifact]` | 1 to 8 `mask-alpha` artifacts from `task.select-object`, instead of or beside `selection-points`. Each must be of this photograph's current source and repair prefix (`conflict` with `data.reason: "stale-selection"` naming it otherwise) and still published (`validation: unknown artifact`). The region joins each artifact's removal region (below) with any painted footprint by maximum. The candidates' provenance records each object's artifact and prompt |
 | `model` payload `prompt?` | For class `object`: `{point}` or `{stroke, radius, candidate?}` in content coordinates, as `task.select-object` took it; at most 1,024 points. Recompute sends it back |
 
@@ -128,7 +128,7 @@ Parity: every gesture above sends a request `Copy as JSON request` shows (the �
 ## Acceptance
 
 - **Core, exact.** Setup declaration validation, status derivation for every state, install ordering, lane-room refusal, the combined consent; the object removal region against its reference; a fill from object artifacts byte-identical outside its coverage; stale and unknown artifact refusals; the stored prompt and Recompute through `luxforge-json`.
-- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate, Accept, Escape order); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object and `settings` for the flag's new description; `ai-setup` (too small, failed and resumed).
+- **Rendered.** Background-only smoke scenarios over the fake runtime with correlated state, logs and captures: `object-remove` (the sheet, one answer granting every scope, the aggregated bar, Finding objects, hover, click, `⇧`-click, `⌥`-click, a loose drag with pins, the Nothing hand-off to Remove, Paint shadow, Generate, Accept, Escape order); `mask-object` (the menu entry, the sheet, the sub-state, create and add, the stored row, a removal that stales it, Recompute and Keep); `pick` updated for hover living in Object and `settings` for the flag's new description; `ai-setup` (delivered: missing, the sheet and a decline, one answer granting every scope, a paced download's progress, Cancel and Resume, a failed part resumed, the object finder's part installing both files under one progress and removed, and a forced too-small machine).
 - **Native, real models.** On the M4 with the pinned segmenter and klein: the Object journey on corpus photographs (the bridge, the kayaks, the road), hover and analysis latencies against their budgets, the set-up download over the network, the combined residency; recorded with the host's load.
 
 ## Decisions

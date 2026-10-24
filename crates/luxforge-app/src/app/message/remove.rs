@@ -14,15 +14,18 @@ pub(crate) enum RemoveRequest {
     Cancel,
     /// The chosen candidate's preview read.
     Preview,
+    /// What the group's setup button sends: Set up, Resume, Try again, Add or Cancel.
+    Setup,
 }
 
 impl RemoveRequest {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Generate,
         Self::Regenerate,
         Self::Accept,
         Self::Cancel,
         Self::Preview,
+        Self::Setup,
     ];
 
     /// The menu's line for it.
@@ -33,6 +36,7 @@ impl RemoveRequest {
             Self::Accept => "Copy Accept request",
             Self::Cancel => "Copy Cancel request",
             Self::Preview => "Copy preview read request",
+            Self::Setup => "Copy setup request",
         }
     }
 }
@@ -55,8 +59,8 @@ pub(crate) enum RemoveMessage {
     Candidate { job_id: String, candidate: u8 },
     /// Commit the chosen candidate.
     Accept,
-    /// A setup button: install a model through the capability block's install and its consent
-    /// notice, or cancel its install.
+    /// A setup button: install the setup, through the setup sheet when a grant is missing, or
+    /// cancel each of its install jobs.
     Setup(crate::state::fill_setup::SetupAction),
     /// The group's menu opened or closed.
     Menu(bool),
