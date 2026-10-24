@@ -24,6 +24,7 @@ use luxforge_core::{
         grants::{GrantKind, PermissionCounts},
         resources::{ResourceRow, ResourceState},
         settings::{FieldRead, ProfileStatus, SettingsRead, SettingsState},
+        setups::{SetupDisclosure, SetupRow},
     },
     flags::FlagList,
     jobs::{JobRecord, JobStatus},
@@ -60,6 +61,9 @@ pub(crate) fn declares_offered(module: &ModuleDescriptor, flags: Option<&FlagLis
 pub(crate) struct ModuleStatus {
     #[serde(default)]
     pub(crate) resources: Vec<ResourceRow>,
+    /// Every setup the module declares, with its state ([`crate::state::fill_setup`]).
+    #[serde(default)]
+    pub(crate) setups: Vec<SetupRow>,
     #[serde(default)]
     pub(crate) permissions: PermissionCounts,
     #[serde(default)]
@@ -124,6 +128,63 @@ pub(crate) struct Consent {
     pub(crate) denied: bool,
 }
 
+/// `error.data.consent` of a `consent-required` refusal of `module.setup.install`: every grant
+/// the setup still needs, each scope exactly as the core named it, and the disclosure summed over
+/// the missing parts that the setup sheet states.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct SetupConsent {
+    pub(crate) module_id: String,
+    pub(crate) setup: String,
+    pub(crate) grants: Vec<SetupGrant>,
+    pub(crate) disclosure: SetupDisclosure,
+    /// A denial of one of the grants is recorded.
+    #[serde(default)]
+    pub(crate) denied: bool,
+}
+
+/// One grant a setup install still needs.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct SetupGrant {
+    pub(crate) capability: String,
+    /// Kept as the core sent it, so Download grants exactly this scope and nothing wider.
+    pub(crate) scope: Value,
+    #[serde(default)]
+    pub(crate) denied: bool,
+}
+
+impl SetupConsent {
+    /// The requests the sheet's Download (`allow`) or Not now sends, in order, exactly as Copy as
+    /// JSON request copies them: a grant or a denial of each scope, then, after Download, the
+    /// setup install asked again. `mutation` makes each envelope.
+    pub(crate) fn requests(&self, allow: bool, mut mutation: impl FnMut() -> Value) -> Vec<Value> {
+        let method = if allow {
+            luxforge_core::capabilities::grants::GRANT
+        } else {
+            luxforge_core::capabilities::grants::DENY
+        };
+        let mut requests: Vec<Value> = self
+            .grants
+            .iter()
+            .map(|grant| {
+                json!({"method": method, "params": {
+                    "module_id": self.module_id, "capability": grant.capability,
+                    "scope": grant.scope, "mutation": mutation(),
+                }})
+            })
+            .collect();
+        if allow {
+            requests.extend(
+                fill_setup::SetupAction::Install {
+                    module_id: self.module_id.clone(),
+                    setup: self.setup.clone(),
+                }
+                .requests(mutation),
+            );
+        }
+        requests
+    }
+}
+
 /// One operation the desktop asks the owner for, as plain data: the app layer turns it into the
 /// owner requests an independent JSON client sends. A settings write carries the settings
 /// revision it was made against, so a stale one is refused as a conflict rather than applied.
@@ -152,6 +213,18 @@ pub(crate) enum Operation {
     Cancel {
         job: String,
     },
+    /// Install what a setup lacks: `module.setup.install`.
+    InstallSetup {
+        setup: String,
+    },
+    /// Stop each of these jobs, a setup's installs: one `job.cancel` each.
+    CancelJobs {
+        jobs: Vec<String>,
+    },
+    /// Remove each of these resources, a Models tab part's: one `module.resource.remove` each.
+    RemoveResources {
+        resources: Vec<String>,
+    },
     RunTask {
         task: String,
         asset: Option<AssetId>,
@@ -163,6 +236,12 @@ pub(crate) enum Operation {
         allow: bool,
         consent: Box<Consent>,
         retry: Option<Box<Operation>>,
+    },
+    /// The person's answer to the setup sheet: Download grants every scope and asks for the setup
+    /// again, once; Not now denies each.
+    SetupConsent {
+        allow: bool,
+        consent: Box<SetupConsent>,
     },
 }
 
@@ -177,9 +256,12 @@ impl Operation {
             Self::Remove { .. } => "remove",
             Self::Unload { .. } => "unload",
             Self::Cancel { .. } => "cancel",
+            Self::InstallSetup { .. } => "install-setup",
+            Self::CancelJobs { .. } => "cancel-setup",
+            Self::RemoveResources { .. } => "remove-part",
             Self::RunTask { .. } => "task",
-            Self::Consent { allow: true, .. } => "allow",
-            Self::Consent { allow: false, .. } => "deny",
+            Self::Consent { allow: true, .. } | Self::SetupConsent { allow: true, .. } => "allow",
+            Self::Consent { allow: false, .. } | Self::SetupConsent { allow: false, .. } => "deny",
         }
     }
 }
@@ -236,6 +318,9 @@ pub(crate) struct ModuleCapabilities {
     pub(crate) tasks: BTreeMap<String, TaskRun>,
     /// Owner requests in flight for this module.
     pub(crate) pending: u32,
+    /// The jobs this desktop's last install of each setup queued, by setup, as `(resource, job)`:
+    /// what that setup's one bar covers.
+    pub(crate) installs: BTreeMap<String, Vec<(String, String)>>,
 }
 
 /// The state of a module nothing has been read for yet.
@@ -247,6 +332,7 @@ static UNREAD: ModuleCapabilities = ModuleCapabilities {
     jobs: Vec::new(),
     tasks: BTreeMap::new(),
     pending: 0,
+    installs: BTreeMap::new(),
 };
 
 impl ModuleCapabilities {
@@ -288,16 +374,23 @@ impl ModuleCapabilities {
     }
 }
 
-/// Every capability-declaring module the desktop has loaded, and the one consent notice it has
-/// open. At most one notice is open: a second refusal replaces it, because the operation it
-/// answers has itself been replaced.
+/// Every capability-declaring module the desktop has loaded, and the one consent it asks for: the
+/// consent notice or the setup sheet. At most one is open: a second refusal replaces it, because
+/// the operation it answers has itself been replaced.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CapabilityStore {
     pub(crate) modules: BTreeMap<String, ModuleCapabilities>,
     pub(crate) consent: Option<OpenConsent>,
+    /// The setup sheet's consent, while it is open.
+    pub(crate) setup_consent: Option<SetupConsent>,
 }
 
 impl CapabilityStore {
+    /// A consent notice or the setup sheet is open.
+    pub(crate) fn asking(&self) -> bool {
+        self.consent.is_some() || self.setup_consent.is_some()
+    }
+
     /// Some tracked job anywhere is still queued or running: the one condition the job reader
     /// exists under.
     pub(crate) fn live(&self) -> bool {
@@ -837,15 +930,12 @@ pub(crate) fn task_profile(state: &ModuleCapabilities, takes_profile: bool) -> O
 /// purpose written `Lead: sentence` is the title and the first line, as `Set up AI editing?`.
 /// Sending photo data says where it goes, what is sent and kept, and whether it may cost money.
 ///
-/// A download whose capability introduces the feature it sets up asks through the setup sheet
-/// instead ([`crate::state::setup_sheet`]), so it has no notice.
+/// A setup asks through the setup sheet instead ([`crate::state::setup_sheet`]); a resource's own
+/// download, which only a client installing one resource meets, asks here.
 pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
     let open = inputs.capabilities.consent.as_ref()?;
     let consent = &open.consent;
     let disclosure = &consent.disclosure;
-    if introduced(consent) {
-        return None;
-    }
     let (title, mut lines, actions) = match consent.kind {
         GrantKind::DownloadArtifact => {
             let (title, purpose) = match disclosure.purpose.split_once(": ") {
@@ -935,18 +1025,19 @@ pub(crate) fn consent_notice(inputs: &Inputs<'_>) -> Option<Notice> {
     })
 }
 
-/// Whether `consent` is a download that introduces the feature it sets up.
-pub(crate) fn introduced(consent: &Consent) -> bool {
-    matches!(consent.kind, GrantKind::DownloadArtifact) && consent.disclosure.introduction.is_some()
-}
-
 /// The hosts a download comes from, each once, in the order the disclosure names them.
 pub(crate) fn hosts(disclosure: &Disclosure) -> Vec<&str> {
-    disclosure
-        .destination
-        .iter()
-        .chain(&disclosure.further_origins)
-        .map(|url| host(url))
+    unique_hosts(
+        disclosure
+            .destination
+            .iter()
+            .chain(&disclosure.further_origins),
+    )
+}
+
+/// The hosts these URLs or origins name, each once, in order.
+pub(crate) fn unique_hosts<'a>(urls: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+    urls.map(|url| host(url))
         .fold(Vec::new(), |mut hosts, host| {
             if !hosts.contains(&host) {
                 hosts.push(host);
@@ -1099,6 +1190,23 @@ fn module_summary(
                 "denied": open.consent.denied,
                 "retry": open.retry.as_ref().map(Operation::name),
             })
+        })
+        .or_else(|| {
+            store
+                .setup_consent
+                .as_ref()
+                .filter(|open| open.module_id == module.id)
+                .map(|open| {
+                    json!({
+                        "setup": open.setup,
+                        "grants": open.grants.iter().map(|grant| json!({
+                            "capability": grant.capability, "scope": grant.scope,
+                            "denied": grant.denied,
+                        })).collect::<Vec<_>>(),
+                        "denied": open.denied,
+                        "retry": "install-setup",
+                    })
+                })
         });
     json!({
         "loaded": state.settings.is_some() || state.status.is_some(),
@@ -1113,6 +1221,7 @@ fn module_summary(
             "denials": counts.denials,
         },
         "setup": fill_setup::derive(module, state, flags).as_ref().map(SetupModel::summary),
+        "setups": fill_setup::summary(module, state, flags),
         "consent": consent,
         "status_line": status_line(state),
     })

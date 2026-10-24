@@ -70,7 +70,7 @@ pub fn current_effect_format(effect_id: &str) -> u32 {
         .map_or(crate::EFFECT_FORMAT, |(_, format)| *format)
 }
 
-pub use ai::DeveloperModels;
+pub use ai::{DeveloperDownloads, DeveloperModels};
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.

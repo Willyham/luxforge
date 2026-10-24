@@ -1,5 +1,8 @@
 //! Module capabilities.
-use crate::{app::capabilities::Answer, state::models::ModelRequest};
+use crate::{
+    app::capabilities::Answer,
+    state::{fill_setup::SetupAction, models::ModelRequest},
+};
 use luxforge_core::jobs::JobRecord;
 use serde_json::Value;
 
@@ -39,12 +42,23 @@ pub(crate) enum CapabilityMessage {
         module_id: String,
         resource: String,
     },
-    /// Copy the request a Models tab button sends: Remove or Unload now.
+    /// The Models tab's Remove on a part: remove each of its resources that is installed or
+    /// partly downloaded, one `module.resource.remove` each.
+    RemoveResources {
+        module_id: String,
+        resources: Vec<String>,
+    },
+    /// Copy the requests a Models tab button sends: Remove (one per resource) or Unload now.
     CopyModelRequest {
         module_id: String,
-        resource: String,
+        resources: Vec<String>,
         request: ModelRequest,
     },
+    /// A setup button: Set up, Resume, Try again or Download… sends `module.setup.install`, which
+    /// opens the setup sheet when a grant is missing; Cancel cancels each of the setup's jobs.
+    Setup(SetupAction),
+    /// Copy the requests a setup button sends.
+    CopySetupRequest(SetupAction),
     Cancel {
         module_id: String,
         job: String,
@@ -63,7 +77,8 @@ pub(crate) enum CapabilityMessage {
         module_id: String,
         task: String,
     },
-    /// Allow (`true`) or Don't allow on the open consent notice.
+    /// Allow (`true`) or Don't allow on the open consent notice; Download or Not now on the setup
+    /// sheet while it is open.
     Consent(bool),
     /// An owner round trip the driver started has answered.
     Answered(Box<Answer>),
@@ -74,19 +89,9 @@ pub(crate) enum CapabilityMessage {
     Polled(Vec<(String, String, Result<JobRecord, String>)>),
 }
 
-impl From<crate::state::fill_setup::SetupAction> for CapabilityMessage {
-    /// A setup button's request: the capability block's own install or cancel.
-    fn from(action: crate::state::fill_setup::SetupAction) -> Self {
-        use crate::state::fill_setup::SetupAction;
-        match action {
-            SetupAction::Install {
-                module_id,
-                resource,
-            } => Self::Install {
-                module_id,
-                resource,
-            },
-            SetupAction::Cancel { module_id, job } => Self::Cancel { module_id, job },
-        }
+impl From<SetupAction> for CapabilityMessage {
+    /// A setup button's request: the setup install, or the cancel of each of its jobs.
+    fn from(action: SetupAction) -> Self {
+        Self::Setup(action)
     }
 }
