@@ -1,3 +1,4 @@
+mod ai_setup_smoke;
 mod auto_tone_fit;
 mod auto_tone_smoke;
 mod basic_acceptance;

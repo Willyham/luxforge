@@ -4,13 +4,13 @@
 //! own checks, what it opens and the window it opens at. `smoke --list`, [`dispatch`], the replay
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
-    basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    corrections_raw_smoke as raw_corrections, corrections_smoke as corrections, crop_smoke as crop,
-    curve_smoke as curve, detail_smoke as detail, develop_picks_smoke as develop_picks,
-    export_smoke as export, filmstrip_smoke as filmstrip, gallery_smoke as gallery,
-    generative_smoke as generative, gpu_preview_smoke as gpu_preview,
-    gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
-    hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
+    ai_setup_smoke as ai_setup, basic_smoke as basic, capabilities_smoke as capabilities,
+    controls_smoke as controls, corrections_raw_smoke as raw_corrections,
+    corrections_smoke as corrections, crop_smoke as crop, curve_smoke as curve,
+    detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
+    filmstrip_smoke as filmstrip, gallery_smoke as gallery, generative_smoke as generative,
+    gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
+    grading_smoke as grading, hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
@@ -85,6 +85,12 @@ pub struct LaunchSpec {
     pub move_question: bool,
     /// Show the Select introduction the first time Select is shown, so it can be captured.
     pub introduction: bool,
+    /// Pace a developer run's model downloads, so a setup's progress can be captured.
+    pub paced_downloads: bool,
+    /// Cut this developer resource's first transfer halfway, so a failed setup can be captured.
+    pub cut_download: Option<&'static str>,
+    /// The machine memory model minimums are held against, in place of this machine's.
+    pub machine_memory: Option<u64>,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
     /// A process deadline of its own in place of the run's.
@@ -104,6 +110,9 @@ pub const APP: LaunchSpec = LaunchSpec {
     usage_receiver: None,
     move_question: false,
     introduction: false,
+    paced_downloads: false,
+    cut_download: None,
+    machine_memory: None,
     watch: None,
     deadline: None,
 };
@@ -983,6 +992,34 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: ai_setup::SCENARIO,
+        about: ai_setup::ABOUT,
+        // The setups, their fake models and the fake runtime are served only by a host that
+        // serves the developer modules.
+        launches: &[
+            LaunchSpec {
+                name: ai_setup::SETUP,
+                plan: ai_setup::setup_plan,
+                developer: true,
+                paced_downloads: true,
+                cut_download: Some(ai_setup::CUT),
+                ..APP
+            },
+            LaunchSpec {
+                name: ai_setup::SMALL,
+                plan: ai_setup::small_plan,
+                developer: true,
+                machine_memory: Some(ai_setup::SMALL_MEMORY),
+                ..APP
+            },
+        ],
+        verify: ai_setup::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(ai_setup::NOTE),
+        own: None,
+    },
+    Scenario {
         name: pick::SCENARIO,
         about: pick::ABOUT,
         launches: &[LaunchSpec {
@@ -1702,6 +1739,12 @@ pub(crate) fn launch_of(
     }
     if spec.introduction {
         launch = launch.introduction();
+    }
+    if spec.paced_downloads || spec.cut_download.is_some() {
+        launch = launch.downloads(spec.paced_downloads, spec.cut_download);
+    }
+    if let Some(bytes) = spec.machine_memory {
+        launch = launch.machine_memory(bytes);
     }
     launch = launch.open_all(sources);
     if plan.scripted() {

@@ -17,5 +17,5 @@ mod setups;
 #[cfg(test)]
 mod tests;
 
-pub use models::DeveloperModels;
+pub use models::{DeveloperDownloads, DeveloperModels};
 pub(crate) use module::AiModule;

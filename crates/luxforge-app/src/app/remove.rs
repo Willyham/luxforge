@@ -92,6 +92,9 @@ pub(crate) struct Remove {
     read_at: Option<u64>,
     /// The tiers were asked for on entering Remove.
     asked_tiers: bool,
+    /// The fill module's status was asked for on entering the Corrections band, so the kind
+    /// control can mark Remove while its setup has not run.
+    asked_setups: bool,
     /// The last request Remove sent, as `(method, params)`: what an API client sends for the
     /// same gesture.
     pub(crate) last_request: Option<(String, Value)>,
@@ -495,9 +498,36 @@ impl Editor {
         ))
     }
 
-    /// The request one Copy as JSON line copies: the one its control sends.
+    /// The setup button the group shows: Remove's own setup while it is not installed, else
+    /// Replace's add-on while a prompt asks for it.
+    fn remove_setup_action(&self) -> Option<crate::state::fill_setup::SetupAction> {
+        let flags = self.settings.flags.as_ref();
+        let module = fill_module(&self.modules, flags)?;
+        let setup =
+            crate::state::fill_setup::derive(module, self.capabilities.module(&module.id), flags)?;
+        let line = if setup.main.installed {
+            setup.addon?
+        } else {
+            setup.main
+        };
+        line.action.map(|(_, action)| action)
+    }
+
+    /// The request one Copy as JSON line copies: the one its control sends; the setup button's,
+    /// one request or, for Cancel, one per job.
     pub(crate) fn remove_copy_request(&self, request: RemoveRequest) -> Result<Value, String> {
         let (method, params) = match request {
+            RemoveRequest::Setup => {
+                let action = self
+                    .remove_setup_action()
+                    .ok_or("There is nothing to set up")?;
+                let mut requests = action.requests(|| json!(super::tasks::request()));
+                return Ok(if requests.len() == 1 {
+                    requests.remove(0)
+                } else {
+                    Value::Array(requests)
+                });
+            }
             RemoveRequest::Generate => self
                 .fill_request(false)
                 .map(|(method, params, _)| (method, params))?,
@@ -1296,8 +1326,9 @@ impl Editor {
 
     /// Whether Remove has finished what the running evidence step started.
     pub(crate) fn remove_settled(&self) -> bool {
-        // The fill module's status read, which lists the tiers, is Remove's too.
-        let reading_tiers = self.remove_active()
+        // The fill module's status read, which lists the tiers and the setups the Corrections
+        // band marks, is Remove's too.
+        let reading_tiers = self.corrections_active()
             && fill_module(&self.modules, self.settings.flags.as_ref())
                 .is_some_and(|module| self.capabilities.module(&module.id).pending > 0);
         if self.remove.pending > 0
@@ -1381,6 +1412,19 @@ impl Editor {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let mut tasks = Vec::new();
     let active = editor.remove_active();
+    let fill = fill_module(&editor.modules, editor.settings.flags.as_ref())
+        .map(|module| module.id.clone())
+        .filter(|_| editor.corrections_active());
+    if let Some(fill) = &fill
+        && !editor.remove_reads.asked_setups
+    {
+        editor.remove_reads.asked_setups = true;
+        if editor.capabilities.module(fill).status.is_none() {
+            tasks.push(editor.remove_refresh_tiers());
+        }
+    } else if fill.is_none() {
+        editor.remove_reads.asked_setups = false;
+    }
     if active && !editor.remove_reads.asked_tiers {
         editor.remove_reads.asked_tiers = true;
         tasks.push(editor.remove_refresh_tiers());

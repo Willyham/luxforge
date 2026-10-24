@@ -265,9 +265,7 @@ impl Editor {
     /// What delays a claimed notice: a native dialog, a module's consent notice or the Settings
     /// sheet is open.
     pub(crate) fn notice_delayed(&self) -> bool {
-        self.view_state.picker_open
-            || self.capabilities.consent.is_some()
-            || self.settings.open.is_some()
+        self.view_state.picker_open || self.capabilities.asking() || self.settings.open.is_some()
     }
 
     /// What a captured frame records of usage statistics: eligibility, where the notice is and

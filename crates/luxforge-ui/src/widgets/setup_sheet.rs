@@ -1,7 +1,8 @@
 //! The setup sheet a download that sets up a feature asks through, a guide sheet
 //! ([`super::guide_sheet`]) as the AI editing setup board (`docs/design/ai-editing/setup-board.html`)
 //! draws it: the feature in its own words, how it is used in up to three pictured steps or one hero
-//! picture, the download's facts as three tiles, and the decision in its footer.
+//! picture, the download's facts as three tiles over the parts it includes, and the decision in
+//! its footer.
 //!
 //! The pictures are drawn here from the theme and a fixed sky-water-grass scene, never shipped as
 //! images, so every theme keeps their hierarchy.
@@ -67,6 +68,17 @@ pub struct SetupFactModel {
     pub tone: FactTone,
 }
 
+/// One part the setup holds, as its includes list names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupIncludeModel {
+    pub name: String,
+    /// What the part does, after its name.
+    pub purpose: String,
+    /// Its size, or `installed ✓` for a part that is installed and not counted.
+    pub size: String,
+    pub installed: bool,
+}
+
 /// Plain data for the setup sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupSheetModel {
@@ -79,6 +91,8 @@ pub struct SetupSheetModel {
     /// The facts' label, when the steps come first ("Before it can start").
     pub facts_label: Option<String>,
     pub facts: Vec<SetupFactModel>,
+    /// Every part the setup holds, under the facts.
+    pub includes: Vec<SetupIncludeModel>,
     /// Lines under the facts, each with whether it warns: a licence limit, that the machine cannot
     /// run it, that it was declined before, where to remove it later.
     pub notes: Vec<(String, bool)>,
@@ -167,6 +181,9 @@ fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
         model.facts.iter().map(fact).collect::<Vec<_>>(),
         false,
     ));
+    if !model.includes.is_empty() {
+        part = part.push(includes(&model.includes));
+    }
     for (note, warns) in &model.notes {
         part = part.push(
             text(note.clone())
@@ -182,6 +199,51 @@ fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
         Some(label) => guide_section(label, part.into()),
         None => part.into(),
     }
+}
+
+/// The includes list: one line per part in a hairline box, its name and purpose leading and its
+/// size trailing, an installed part's `installed ✓` in the accent.
+fn includes<'a, M: 'a>(parts: &[SetupIncludeModel]) -> Element<'a, M> {
+    let mut list = Column::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            list = list.push(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(1.0)
+                    .style(theme::rule_surface),
+            );
+        }
+        list = list.push(
+            container(
+                row![
+                    row![
+                        text(part.name.clone())
+                            .size(theme::SIZE_CAPTION)
+                            .style(theme::ink(Token::TextSecondary)),
+                        text(format!("\u{b7} {}", part.purpose))
+                            .size(theme::SIZE_CAPTION)
+                            .style(theme::ink(Token::TextTertiary)),
+                    ]
+                    .spacing(theme::SPACING * 0.5)
+                    .width(Length::Fill),
+                    text(part.size.clone())
+                        .size(theme::SIZE_CAPTION)
+                        .style(theme::ink(if part.installed {
+                            Token::Accent
+                        } else {
+                            Token::TextSecondary
+                        })),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding([theme::SPACING * 0.875, theme::SPACING * 1.5]),
+        );
+    }
+    container(list)
+        .width(Length::Fill)
+        .style(theme::outline(Token::Border, 1.0, theme::RADIUS))
+        .into()
 }
 
 /// One fact's tile: its glyph in a tinted box, its headline and its detail.
@@ -627,6 +689,20 @@ mod tests {
             facts: [FactTone::Plain, FactTone::Met, FactTone::Unmet]
                 .map(fact)
                 .to_vec(),
+            includes: vec![
+                SetupIncludeModel {
+                    name: "Object finder".into(),
+                    purpose: "finds the object under the pointer".into(),
+                    size: "133 MB".into(),
+                    installed: false,
+                },
+                SetupIncludeModel {
+                    name: "Generative fill".into(),
+                    purpose: "fills the space where it was".into(),
+                    size: "installed \u{2713}".into(),
+                    installed: true,
+                },
+            ],
             notes: vec![("It can't run on this Mac.".into(), true)],
             promise: "Your photos stay on this computer.".into(),
             allow: Some("Download 2.5 GB".into()),

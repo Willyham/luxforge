@@ -2117,10 +2117,13 @@ pub enum CapabilityAction {
     Apply,
     /// Capture once every job the desktop tracks for the module has finished.
     Settle,
-    /// Press Remove on this resource's row of the Settings sheet's Models tab.
+    /// Press Remove on the Settings sheet Models tab's row that holds this resource.
     Remove(String),
     /// Press Unload now on this model's row of the Models tab's loaded models.
     Unload(String),
+    /// Press Download\u{2026} on the Models tab's row that holds this resource, which opens the
+    /// setup sheet of the smallest setup holding it.
+    Download(String),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2141,6 +2144,8 @@ struct CapabilityWire {
     remove: Option<ResourceWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unload: Option<ResourceWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    download: Option<ResourceWire>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2163,7 +2168,7 @@ enum Consent {
 }
 
 /// The gesture keys of a capability step, of which a step takes exactly one.
-const CAPABILITY_GESTURES: &str = "task, consent, apply, settle, remove or unload";
+const CAPABILITY_GESTURES: &str = "task, consent, apply, settle, remove, unload or download";
 
 impl TryFrom<CapabilityWire> for CapabilityStep {
     type Error = String;
@@ -2179,6 +2184,8 @@ impl TryFrom<CapabilityWire> for CapabilityStep {
                 .map(|remove| CapabilityAction::Remove(remove.resource)),
             wire.unload
                 .map(|unload| CapabilityAction::Unload(unload.resource)),
+            wire.download
+                .map(|download| CapabilityAction::Download(download.resource)),
         ]
         .into_iter()
         .flatten();
@@ -2206,6 +2213,7 @@ impl From<CapabilityStep> for CapabilityWire {
             settle: None,
             remove: None,
             unload: None,
+            download: None,
         };
         match step.action {
             CapabilityAction::Task(task) => wire.task = Some(TaskWire { task }),
@@ -2216,6 +2224,9 @@ impl From<CapabilityStep> for CapabilityWire {
             CapabilityAction::Settle => wire.settle = Some(True),
             CapabilityAction::Remove(resource) => wire.remove = Some(ResourceWire { resource }),
             CapabilityAction::Unload(resource) => wire.unload = Some(ResourceWire { resource }),
+            CapabilityAction::Download(resource) => {
+                wire.download = Some(ResourceWire { resource });
+            }
         }
         wire
     }
@@ -2228,6 +2239,7 @@ impl CapabilityStep {
             CapabilityAction::Task(task) => text(task, "capability task"),
             CapabilityAction::Remove(resource) => text(resource, "capability remove resource"),
             CapabilityAction::Unload(resource) => text(resource, "capability unload resource"),
+            CapabilityAction::Download(resource) => text(resource, "capability download resource"),
             _ => Ok(()),
         }
     }
