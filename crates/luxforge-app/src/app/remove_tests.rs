@@ -1358,3 +1358,38 @@ fn a_candidate_the_owner_refuses_leaves_the_photograph_unfilled_and_says_why() {
     assert_eq!(filling.shown(), Some((second, 0)));
     assert_eq!(filling.model().notice, None);
 }
+
+/// A selection whose bounds are past half the frame is refused at the start in a plain line: the
+/// status bar names what to do, while the refusal's code, words and limit stay in the band's notice
+/// and the event log, as an API client receives them.
+#[test]
+#[slow]
+fn a_selection_too_large_to_fill_is_refused_in_a_plain_line() {
+    let mut filling = Filling::opened();
+    filling.ready();
+    filling.content_press([0.05, 0.05]);
+    for step in 1..=18 {
+        let at = 0.05 + 0.05 * f64::from(step);
+        filling.update(Message::Corrections(CorrectionMessage::Drag {
+            view: ((at * 1000.0) as f32, (at * 1000.0) as f32),
+            content: [at, at],
+        }));
+    }
+    filling.update(Message::Corrections(CorrectionMessage::Release {
+        view: (950.0, 950.0),
+        content: [0.95, 0.95],
+    }));
+    filling.remove(RemoveMessage::Generate);
+    let (method, params) = filling.sent();
+    let answer = start_fill(&filling.owner(), filling.editor.client, &method, params);
+    let error = answer
+        .clone()
+        .expect_err("the region is past half the frame");
+    assert_eq!(error.code, "resource-limit");
+    assert_eq!(error.data.as_ref().unwrap()["limit"], "half-frame");
+    filling.remove(RemoveMessage::Started(answer));
+    assert_eq!(filling.editor.status.text, super::remove::TOO_LARGE_PAINTED);
+    let notice = filling.model().notice.clone().expect("the refusal is kept");
+    assert_eq!(notice.code, "resource-limit");
+    assert_eq!(notice.text, error.message);
+}

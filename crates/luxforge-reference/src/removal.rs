@@ -9,7 +9,8 @@
 //! ```text
 //! texel    = max(W / width, H / height)                    -- one raster texel, in stage pixels
 //! cap      = max(round(15 · sqrt(W · H / 1.5e6)), 1)       -- dilation and feather together
-//! core     = { stage pixel p : model_alpha(p's centre) >= 1/2 }
+//! peak     = max over stage pixels p of model_alpha(p's centre)
+//! core     = { stage pixel p : model_alpha(p's centre) >= peak / 2 }
 //! feather  = min(max(round(texel), 2), cap)                -- the soft outer edge, one texel
 //! r        = clamp(round(texel / 2 + 0.04 · min(core width, core height)), 2, max(cap − feather, 2))
 //! d(p)     = the Euclidean distance from p to the nearest core pixel, centre to centre
@@ -17,8 +18,10 @@
 //!          = smooth(clamp((r + feather − d) / feather, 0, 1))   elsewhere
 //! ```
 //!
-//! `round` is half away from zero. The core's width and height are those of its bounding box. A
-//! raster whose alpha reaches one half at no stage pixel has no core and no region.
+//! `round` is half away from zero. The core's width and height are those of its bounding box. An
+//! opaque object peaks at 1, so its core is where it reaches one half; a soft one keeps the pixels
+//! where it reaches half its own peak. A raster that is zero at every stage pixel has no core and
+//! no region.
 //!
 //! This file evaluates the core over the whole stage, and each distance by a search that shares
 //! nothing with production's: the least, over the core's rows, of the row distance squared plus the
@@ -33,13 +36,24 @@ use crate::mask::{Model, Stage, model_alpha, smooth};
 pub fn object_region(model: &Model, stage: &Stage) -> Vec<f64> {
     let (w, h) = (stage.width as usize, stage.height as usize);
     let height = f64::from(stage.height);
+    let alpha: Vec<f64> = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let u = (x as f64 + 0.5) / height;
+            let v = (y as f64 + 0.5) / height;
+            model_alpha(model, stage, u, v)
+        })
+        .collect();
+    let peak = alpha.iter().copied().fold(0.0, f64::max);
+    let mut out = vec![0.0; w * h];
+    if peak <= 0.0 {
+        return out;
+    }
     let mut core = vec![false; w * h];
     let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
     for y in 0..h {
         for x in 0..w {
-            let u = (x as f64 + 0.5) / height;
-            let v = (y as f64 + 0.5) / height;
-            if model_alpha(model, stage, u, v) >= 0.5 {
+            if alpha[y * w + x] >= peak / 2.0 {
                 core[y * w + x] = true;
                 x0 = x0.min(x);
                 y0 = y0.min(y);
@@ -48,7 +62,6 @@ pub fn object_region(model: &Model, stage: &Stage) -> Vec<f64> {
             }
         }
     }
-    let mut out = vec![0.0; w * h];
     if x0 == usize::MAX {
         return out;
     }
@@ -133,10 +146,20 @@ mod tests {
     }
 
     #[test]
-    fn a_raster_that_never_reaches_one_half_has_no_region() {
-        let faint = model(4, 4, vec![100; 16]);
+    fn a_soft_raster_keeps_its_core_at_half_its_peak_and_an_empty_one_has_no_region() {
+        // A faint centre of 100 over a ring of 40: the core is where it reaches 50, not one half.
+        let mut codes = vec![40; 8 * 8];
+        for j in 3..5 {
+            for i in 3..5 {
+                codes[j * 8 + i] = 100;
+            }
+        }
+        let region = object_region(&model(8, 8, codes), &Stage::new(8, 8));
+        assert_eq!(region[3 * 8 + 3], 1.0);
+        assert!(region.iter().any(|&c| c < 1.0));
+        let empty = model(4, 4, vec![0; 16]);
         assert!(
-            object_region(&faint, &Stage::new(8, 8))
+            object_region(&empty, &Stage::new(8, 8))
                 .iter()
                 .all(|&c| c == 0.0)
         );

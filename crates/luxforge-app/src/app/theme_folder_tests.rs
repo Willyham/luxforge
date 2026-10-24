@@ -522,16 +522,19 @@ fn the_steps_import_a_folder_and_a_second_client_chooses_a_theme() {
         answered,
     )));
     assert!(!evidence(&editor).1, "waits for the sync to follow");
+    // The step starts the poll itself, and the wake that lands during it is read right after it.
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
-    let polled = tasks::sync_now(
-        &editor.owner,
-        editor.client,
-        None,
-        editor.sync.sequence,
-        &[],
-        None,
-    );
-    let _ = editor.update(Message::Sync(SyncMessage::Synced(polled)));
+    while editor.sync.poll.in_flight() {
+        let polled = tasks::sync_now(
+            &editor.owner,
+            editor.client,
+            None,
+            editor.sync.sequence,
+            &[],
+            None,
+        );
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(polled)));
+    }
     assert!(!evidence(&editor).1, "waits for the preferences");
     let read = call(&editor.owner, editor.client, "preferences.read", json!({}))
         .and_then(|(answer, _)| crate::state::preferences::parse(answer));

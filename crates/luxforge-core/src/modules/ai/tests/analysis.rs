@@ -9,6 +9,7 @@ use crate::modules::ai::analysis::models::{
     FAKE_DEPTH, FAKE_PEOPLE, FAKE_SEGMENTER_DECODER, FAKE_SEGMENTER_ENCODER, FAKE_SEMANTIC,
     FAKE_SUBJECT,
 };
+use crate::modules::ai::pick::PROBE_SIDES;
 
 pub(super) const ANALYSE: &str = "task.analyse";
 const PICK: &str = "query.pick-object";
@@ -134,7 +135,13 @@ fn analyse_once_then_pick_and_select_from_the_cache() {
     // Hover and a click are one query; the same prompt answers the same candidates.
     let hover = owner.pick(point.clone()).unwrap();
     assert_eq!(hover["decision"], "one", "{hover}");
-    assert_eq!(hover["candidates"].as_array().unwrap().len(), 3);
+    // The point's three candidates, then each probe box's three when the point's answer is the
+    // region around it.
+    let count = hover["candidates"].as_array().unwrap().len();
+    assert!(
+        count == 3 || count == 3 * (1 + PROBE_SIDES.len()),
+        "{hover}"
+    );
     let chosen = hover["chosen"][0].as_u64().unwrap() as usize;
     let preview = &hover["candidates"][chosen]["preview"];
     assert!(preview["width"].as_u64().unwrap() * preview["height"].as_u64().unwrap() <= 1 << 16);
@@ -177,9 +184,10 @@ fn analyse_once_then_pick_and_select_from_the_cache() {
         selection["candidate"]["bounds"], hover["candidates"][chosen]["bounds"],
         "{selection}"
     );
+    // The decoder only: the point, and the probe's boxes in one call when the hover probed.
     assert_eq!(
         fixture.controls().runs(),
-        runs + 1,
+        runs + if count == 3 { 1 } else { 2 },
         "the decoder only: {selection}"
     );
     let twice = owner.task(SELECT, point.clone());

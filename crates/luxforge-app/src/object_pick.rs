@@ -144,6 +144,9 @@ pub(crate) struct HoverOverlay {
     pub(crate) handle: Handle,
     /// What a click on it keeps, for a tool that holds what it selects.
     pub(crate) held: Option<Held>,
+    /// The removal candidate shown in the photograph when it was answered, `(job_id, candidate)`:
+    /// an outline answered before a candidate appeared is not drawn over it.
+    pub(crate) over: Option<(String, u8)>,
 }
 
 /// A candidate's highlight, decoded off the update loop: its width, height and RGBA bytes.

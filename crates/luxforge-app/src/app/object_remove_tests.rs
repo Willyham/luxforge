@@ -638,6 +638,69 @@ fn object_switching_kind_clears_the_selection_and_the_flag_returns_to_remove() {
     assert!(!removing.model().object_offered);
 }
 
+/// Choosing a kind says its own line at once rather than the one it left: Object's after Remove's,
+/// Remove's after Object's, and Heal's after either.
+#[test]
+#[slow]
+fn object_choosing_a_kind_says_its_own_line() {
+    let mut removing = Removing::armed();
+    assert_eq!(
+        removing.editor.status.text,
+        crate::state::remove::OBJECT_IDLE
+    );
+    removing.remove(RemoveMessage::Choose);
+    let remove = removing.model().hint.clone();
+    assert_eq!(removing.editor.status.text, remove);
+    assert!(!remove.contains("Object"), "{remove}");
+    removing.remove(RemoveMessage::ChooseObject);
+    removing.answer_entry();
+    assert_eq!(
+        removing.editor.status.text,
+        crate::state::remove::OBJECT_IDLE
+    );
+    removing.update(Message::Corrections(
+        super::message::corrections::CorrectionMessage::Kind("heal".into()),
+    ));
+    assert!(
+        removing
+            .editor
+            .status
+            .text
+            .starts_with("Corrections \u{b7} Heal"),
+        "{}",
+        removing.editor.status.text
+    );
+}
+
+/// The outline of an object hovered before its removal candidate appeared is not drawn over the
+/// candidate while the pointer stays; the next hover, once the pointer moves, is drawn again.
+#[test]
+#[slow]
+fn object_the_hover_outline_gives_way_to_a_shown_candidate() {
+    let mut removing = Removing::armed();
+    removing.pick_at(LEFT, Modifiers::default());
+    assert!(removing.editor.object_overlay().is_some());
+    removing.generate(false);
+    assert!(
+        removing.editor.shown_candidate().is_some(),
+        "the candidate shows"
+    );
+    assert!(
+        removing.editor.object_overlay().is_none(),
+        "the outline answered before it is not drawn over it"
+    );
+    assert_eq!(
+        removing.editor.object_pick_record()["overlay_drawn"],
+        json!(false)
+    );
+    removing.hover(RIGHT);
+    assert!(removing.editor.shown_candidate().is_some());
+    assert_eq!(
+        removing.editor.object_pick_record()["overlay_drawn"],
+        json!(true)
+    );
+}
+
 /// Escape in Object, one level at a time: a running generation is cancelled, then pins (or
 /// Nothing found here) are put down, then the selection is cleared, and then nothing holds the
 /// mode.

@@ -2185,6 +2185,13 @@ impl Editor {
             Ok((answer, sequence)) => {
                 wait.sequence = Some(sequence);
                 self.note_step(json!({"result": answer, "sequence": sequence}));
+                // The answer's sequence counts every client's events, this desktop's own among
+                // them, which wake no poll; and a method that changed nothing wakes none either.
+                // So the step asks the sync to read up to it itself, and the poll's answer settles
+                // it, rather than waiting for a message that an idle tool never sends.
+                if self.sync.sequence < sequence {
+                    self.sync.poll.offer(());
+                }
                 self.settle_agent_host();
             }
             Err(error) => {
@@ -7837,6 +7844,70 @@ mod tests {
         );
         assert_eq!(evidence(&editor).awaiting, Some(Settle::AgentHost));
         assert!(!evidence(&editor).capture_pending, "waits for its answer");
+        finish(editor, catalog);
+    }
+
+    /// A host `agent` step settles with nothing else arriving: its answer is ahead of the sync's
+    /// cursor once the desktop's own changes have written events, which wake no poll, and a method
+    /// that changes nothing wakes none either, so the step starts the poll that reads up to it.
+    #[test]
+    fn an_agent_host_step_reads_up_to_its_answer_itself() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-agent-host-{}-{}.sqlite",
+            std::process::id(),
+            crate::app::tasks::REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+        crate::app::testing::attach_script(&mut editor, r#"[{"agent":{"method":"preset.list"}}]"#);
+        // The launch's theme listing answered: the poll is all the step can wait on.
+        if editor.themes.listing.in_flight() {
+            crate::app::themes_tests::answer_list(&mut editor);
+        }
+        let (owner, client) = (editor.owner.clone(), editor.client);
+        let revision = editor.document.state.as_ref().unwrap().revision;
+        crate::app::tasks::call(
+            &owner,
+            client,
+            "edit.transform",
+            json!({
+                "asset_id": asset,
+                "mutation": {"expected_revision": revision, "request_id": "own", "actor": "desktop"},
+                "transform": "rotate-right",
+            }),
+        )
+        .expect("the desktop's own change");
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::AgentHost));
+        let agent = evidence(&editor).agent.expect("the second client");
+        let answered = crate::app::tasks::call(&owner, agent, "preset.list", json!({}));
+        assert!(answered.as_ref().unwrap().1 > editor.sync.sequence);
+        let _ = editor.update(Message::Evidence(EvidenceMessage::AgentHostAnswered(
+            answered,
+        )));
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::AgentHost));
+        assert!(editor.sync.poll.in_flight(), "the step started the poll");
+        let held = editor
+            .document
+            .state
+            .as_ref()
+            .map(|state| (state.asset.id.clone(), state.revision));
+        let polled = crate::app::tasks::sync_now(
+            &owner,
+            client,
+            held,
+            editor.sync.sequence,
+            &editor.sync.own_requests.iter().cloned().collect::<Vec<_>>(),
+            None,
+        )
+        .expect("the poll answers");
+        let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
+        assert_eq!(
+            evidence(&editor).awaiting,
+            None,
+            "settled by the poll's answer"
+        );
+        assert!(evidence(&editor).capture_pending);
+        drop(asset);
         finish(editor, catalog);
     }
 

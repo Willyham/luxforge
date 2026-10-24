@@ -105,6 +105,9 @@ pub(crate) struct Remove {
     pub(crate) wait: Option<RemoveWait>,
     /// The progress or reason last said on the status bar.
     said: Option<String>,
+    /// Remove or Object was just chosen: the next derived screen says the chosen kind's line,
+    /// so the status bar does not keep the kind it left.
+    announce: bool,
     /// The candidate whose draft the owner refused, at the photograph's revision then: it is not
     /// drafted again until it is chosen anew or the photograph moves.
     pub(crate) unshown: Option<(CandidateKey, u64)>,
@@ -586,6 +589,7 @@ impl Editor {
                 }
                 self.view_state.menu = None;
                 let task = self.choose_fill_kind(matches!(message, RemoveMessage::ChooseObject));
+                self.remove_reads.announce = self.remove.chosen;
                 self.remove_reads.yielded = false;
                 self.correction_reads.line = None;
                 self.corrections.selected = None;
@@ -799,7 +803,10 @@ impl Editor {
                     }
                     _ => error.message.clone(),
                 };
-                self.status.text = format!("{text} \u{b7} {}", error.code);
+                self.status.text = match too_large(&error, self.remove.object) {
+                    Some(plain) => plain.to_owned(),
+                    None => format!("{text} \u{b7} {}", error.code),
+                };
                 self.remove.notice = Some(RemoveNotice {
                     text,
                     code: error.code,
@@ -1540,10 +1547,38 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     Task::batch(tasks)
 }
 
-/// After the screen is derived: while Remove is chosen, the status bar says a running
-/// generation's progress as the job reports it, and why no tier is offered, each
-/// once when it changes, so a sentence the person's own gesture set is not repeated over.
+/// What the status bar says of a fill refused because its region's bounds are past a candidate
+/// or half the frame, in place of the refusal's own words, which name pixels and bytes; `None` for
+/// any other refusal. `object` is whether Object asked. The code and the words stay in the event
+/// log and the group's notice.
+pub(crate) fn too_large(error: &CallError, object: bool) -> Option<&'static str> {
+    let limit = error.data.as_ref()?.get("limit")?.as_str()?;
+    (error.code == "resource-limit" && matches!(limit, "candidate" | "half-frame")).then_some(
+        if object {
+            TOO_LARGE_OBJECT
+        } else {
+            TOO_LARGE_PAINTED
+        },
+    )
+}
+
+/// [`too_large`]'s line for Object.
+pub(crate) const TOO_LARGE_OBJECT: &str =
+    "The selection is too large to fill. Pick a smaller object or paint it with Remove.";
+/// [`too_large`]'s line for Remove.
+pub(crate) const TOO_LARGE_PAINTED: &str =
+    "The selection is too large to fill. Paint a smaller area.";
+
+/// After the screen is derived: a kind just chosen says its line; while Remove is chosen, the
+/// status bar says a running generation's progress as the job reports it, and why no tier is
+/// offered, each once when it changes, so a sentence the person's own gesture set is not repeated
+/// over.
 pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
+    if std::mem::take(&mut editor.remove_reads.announce)
+        && let Some(hint) = editor.remove_status()
+    {
+        editor.status.text = hint;
+    }
     let line = editor
         .workspace
         .corrections

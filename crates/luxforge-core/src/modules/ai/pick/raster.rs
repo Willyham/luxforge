@@ -38,6 +38,25 @@ pub(crate) fn valid_cells(l: &Logits) -> (usize, usize) {
     )
 }
 
+/// The logit cells above 0 among the valid cells.
+pub(crate) fn cells_inside(l: &Logits) -> usize {
+    let (vw, vh) = valid_cells(l);
+    l.data
+        .chunks_exact(l.width.max(1))
+        .take(vh)
+        .map(|row| row[..vw].iter().filter(|&&v| v > 0.0).count())
+        .sum()
+}
+
+/// A candidate's area in analysis pixels: its cells above 0 among the valid cells, each
+/// `1 / (cx · cy)` pixels.
+pub(crate) fn area(l: &Logits) -> f64 {
+    if !well_formed(l) {
+        return 0.0;
+    }
+    cells_inside(l) as f64 / (f64::from(l.cells_per_px.0) * f64::from(l.cells_per_px.1))
+}
+
 /// Inclusive cell bounds `(u0, v0, u1, v1)` of the logits above `threshold` among the cells that
 /// can influence the image: the valid cells and the first row and column beyond them.
 pub(crate) fn cells_above(l: &Logits, threshold: f32) -> Option<(usize, usize, usize, usize)> {

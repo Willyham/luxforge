@@ -18,7 +18,7 @@ mod raster;
 mod tests;
 
 use raster::{Footprint, Grid, Shape, point_bounds};
-pub(crate) use raster::{valid_cells, well_formed};
+pub(crate) use raster::{cells_inside, valid_cells, well_formed};
 
 /// A painted stroke: a polyline in analysis pixels swept by a round brush.
 #[derive(Clone, Debug, PartialEq)]
@@ -360,6 +360,79 @@ pub(crate) fn pick_hover(candidates: &[Candidate], params: &Params) -> Option<us
         }
     }
     Some(pick)
+}
+
+/// The box sides a point's probe decodes it with, as fractions of the analysis input's long side,
+/// smallest first: 16 to 128 px at the 1024 px input. A recorded default, not a published constant.
+pub(crate) const PROBE_SIDES: [f32; 4] = [1.0 / 64.0, 1.0 / 32.0, 1.0 / 16.0, 1.0 / 8.0];
+/// The most of its box a probe's candidate may cover and still be an object the box surrounds: on
+/// the corpus a box over open water or sky comes back about three quarters full or more, and a
+/// small object inside one well under half.
+const PROBE_FILL: f64 = 0.5;
+
+/// Whether `candidate`, chosen for a single `point`, is the region around the point rather than
+/// an object under it: the point lies outside it, or its bounds cover more than half the analysis
+/// input. EfficientViT-SAM L0's export answers one mask a prompt, the best of its four by
+/// predicted IoU, and for an object a few cells across that is often the water or sky it sits in.
+pub(crate) fn surrounds(candidate: &Candidate, point: Point) -> bool {
+    let logits = &candidate.logits;
+    if logits.sample(point) <= 0.0 {
+        return true;
+    }
+    let Some([x0, y0, x1, y1]) = bounds(logits) else {
+        return true;
+    };
+    let (w, h) = logits.source;
+    2 * u64::from(x1 - x0) * u64::from(y1 - y0) > u64::from(w) * u64::from(h)
+}
+
+/// The probe of a single `point` over an analysis input of `size`: the point with a box of each of
+/// [`PROBE_SIDES`] centred on it, clamped to the input. A box prompt is unambiguous, so the decoder
+/// segments what the box holds rather than what surrounds it.
+pub(crate) fn probes(point: Point, size: (u32, u32)) -> Vec<Prompt> {
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    PROBE_SIDES
+        .iter()
+        .map(|side| {
+            let half = side * w.max(h) / 2.0;
+            Prompt {
+                positive: vec![point],
+                bbox: Some((
+                    Point::new((point.x - half).max(0.0), (point.y - half).max(0.0)),
+                    Point::new((point.x + half).min(w), (point.y + half).min(h)),
+                )),
+                ..Prompt::default()
+            }
+        })
+        .collect()
+}
+
+/// The probe's answer: `(probe, candidate)` of the smallest box whose chosen candidate (as
+/// [`pick_hover`] chooses) holds the point, reaches `min_whole_iou` and covers at most
+/// [`PROBE_FILL`] of its box, so the object lies inside the box with room around it; `None` when
+/// no box surrounds an object under the point. `results` are the decoder's answers to `probes`, in
+/// order.
+pub(crate) fn pick_probe(
+    point: Point,
+    probes: &[Prompt],
+    results: &[Vec<Candidate>],
+    params: &Params,
+) -> Option<(usize, usize)> {
+    probes
+        .iter()
+        .zip(results)
+        .enumerate()
+        .find_map(|(probe, (prompt, candidates))| {
+            let (a, b) = prompt.bbox?;
+            let index = pick_hover(candidates, params)?;
+            let candidate = &candidates[index];
+            let area = f64::from(b.x - a.x) * f64::from(b.y - a.y);
+            let object = candidate.predicted_iou >= params.min_whole_iou
+                && candidate.logits.sample(point) > 0.0
+                && area > 0.0
+                && raster::area(&candidate.logits) <= PROBE_FILL * area;
+            object.then_some((probe, index))
+        })
 }
 
 /// SAM's stability score: the IoU of the mask thresholded at `logit > +offset` against the mask

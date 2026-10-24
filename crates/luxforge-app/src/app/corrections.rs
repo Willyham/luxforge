@@ -547,6 +547,8 @@ impl Editor {
                     self.corrections.settings = Some(settings);
                     self.correction_reads.line = None;
                 }
+                // The kind's own line, not the one it left (Object's or Remove's).
+                self.status.text = self.correction_hint();
                 Task::none()
             }
             CorrectionMessage::Field { name, fraction } => {

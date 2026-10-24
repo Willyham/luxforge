@@ -8,8 +8,12 @@
 //! `radius` — and the cached embedding is decoded for it on the host's query worker. A stroke
 //! becomes the prototype's prompts and decision ([`super::pick::decide`]); any other prompt is
 //! decoded once and its candidate chosen as hover chooses ([`super::pick::pick_hover`]), biased to
-//! the whole object. Identical model outputs and prompts give identical answers, so the selection
-//! task, which decodes the same prompt on the module lane, selects exactly what the query answered.
+//! the whole object. A single point whose answer is the region around it rather than an object
+//! under it ([`super::pick::surrounds`]) is decoded again with boxes centred on it, in one call,
+//! and the smallest box that surrounds an object under the point names it
+//! ([`super::pick::pick_probe`]). Identical model outputs and prompts give identical answers, so
+//! the selection task, which decodes the same prompt on the module lane, selects exactly what the
+//! query answered.
 use super::{
     analysis::{
         Guide, cached_guide, key,
@@ -152,23 +156,44 @@ pub(crate) fn pick(
             let mut results =
                 Segmenter::decode_many(decoder, embedding, std::slice::from_ref(prompt), cancel)?;
             let candidates = results.pop().unwrap_or_default();
-            let decision = match pick::pick_hover(&candidates, &params) {
-                Some(index) => Decision::One(index),
-                None => Decision::Nothing,
-            };
-            Ok(Picked {
-                candidates: candidates
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, candidate)| PickedCandidate {
-                        prompt: 0,
+            let mut chosen = pick::pick_hover(&candidates, &params).map(|index| (0, index));
+            let mut answers = vec![candidates];
+            // A single point whose answer is the region around it is probed with boxes: the
+            // smallest that surrounds an object under the point names it, and with none the
+            // point's own answer stands.
+            if let ([point], [], None, Some((_, index))) = (
+                prompt.positive.as_slice(),
+                prompt.negative.as_slice(),
+                prompt.bbox,
+                chosen,
+            ) && pick::surrounds(&answers[0][index], *point)
+            {
+                let probes = pick::probes(*point, embedding.source);
+                let found = Segmenter::decode_many(decoder, embedding, &probes, cancel)?;
+                if let Some((probe, index)) = pick::pick_probe(*point, &probes, &found, &params) {
+                    chosen = Some((probe + 1, index));
+                }
+                answers.extend(found);
+            }
+            let mut position = None;
+            let mut picked = Vec::new();
+            for (prompt, candidates) in answers.into_iter().enumerate() {
+                for (index, candidate) in candidates.into_iter().enumerate() {
+                    if chosen == Some((prompt, index)) {
+                        position = Some(picked.len());
+                    }
+                    picked.push(PickedCandidate {
+                        prompt,
                         index,
                         stability: pick::stability(&candidate.logits, 1.0),
                         candidate,
                         coverage: None,
-                    })
-                    .collect(),
-                decision,
+                    });
+                }
+            }
+            Ok(Picked {
+                candidates: picked,
+                decision: position.map_or(Decision::Nothing, Decision::One),
             })
         }
         Request::Stroke(stroke) => {
@@ -268,13 +293,7 @@ fn area_share(logits: &super::segment::Logits) -> f64 {
     if vw == 0 || vh == 0 {
         return 0.0;
     }
-    let inside: usize = logits
-        .data
-        .chunks_exact(logits.width)
-        .take(vh)
-        .map(|row| row[..vw].iter().filter(|&&v| v > 0.0).count())
-        .sum();
-    inside as f64 / (vw * vh) as f64
+    pick::cells_inside(logits) as f64 / (vw * vh) as f64
 }
 
 /// The run's segmenter, or `validation` when it offers none.
@@ -517,6 +536,7 @@ pub(crate) fn select_object(
 
 #[cfg(test)]
 mod tests {
+    use super::super::segment::{Point, Prompt};
     use super::*;
     use crate::{
         AssetId,
@@ -558,6 +578,157 @@ mod tests {
         Arc::new(SegmenterAnalysis {
             embedding: Embedding::new((480, 320), tensor).unwrap(),
         })
+    }
+
+    /// A photograph of one small object on open water, as EfficientViT-SAM L0's export answers it:
+    /// one mask a prompt. A point alone answers the water (with a `hole` of that radius around the
+    /// point, or none) or, with `water` off, the object; a point with a box answers the object, a
+    /// disc of `object` px around the point inside the box, or with none the whole box, as a box
+    /// over open water comes back. Records each call's tokens a prompt and batch.
+    struct Lake {
+        water: Option<f32>,
+        object: Option<f32>,
+        calls: std::sync::Mutex<Vec<(u64, u64)>>,
+        model: crate::inference::ModelIdentity,
+        placement: crate::inference::Placement,
+    }
+
+    /// The analysis input the lake is, 1024 px on its long side: one prompt-frame pixel a pixel
+    /// and four a logit cell.
+    const LAKE: (u32, u32) = (1024, 640);
+
+    impl Lake {
+        fn new(water: Option<f32>, object: Option<f32>) -> Self {
+            use crate::inference::{Device, ModelIdentity, Placement, Precision};
+            Self {
+                water,
+                object,
+                calls: std::sync::Mutex::new(Vec::new()),
+                model: ModelIdentity {
+                    id: "decoder".into(),
+                    version: "1".into(),
+                    sha256: "0".repeat(64),
+                },
+                placement: Placement {
+                    backend: "test".into(),
+                    device: Device::Cpu,
+                    precision: Precision::Fp32,
+                    partitions: None,
+                },
+            }
+        }
+    }
+
+    impl crate::inference::Session for Lake {
+        fn model(&self) -> &crate::inference::ModelIdentity {
+            &self.model
+        }
+
+        fn placement(&self) -> &crate::inference::Placement {
+            &self.placement
+        }
+
+        fn inputs(&self) -> &[crate::inference::TensorSpec] {
+            &[]
+        }
+
+        fn outputs(&self) -> &[crate::inference::TensorSpec] {
+            &[]
+        }
+
+        fn run(&self, inputs: &[Tensor], _: &crate::Cancel) -> Result<Vec<Tensor>, Error> {
+            let coords = &inputs[1];
+            let (b, n) = (coords.shape()[0], coords.shape()[1]);
+            self.calls.lock().unwrap().push((n, b));
+            let values = coords.f32().unwrap();
+            // Undo the decoder's half-pixel shift: prompt-frame pixels are the input's.
+            let at = |i: usize, t: usize| {
+                let k = (i * n as usize + t) * 2;
+                (values[k] + 0.5, values[k + 1] + 0.5)
+            };
+            let mut masks = Vec::new();
+            for i in 0..b as usize {
+                let (px, py) = at(i, 0);
+                let corners = (n == 3).then(|| (at(i, 1), at(i, 2)));
+                for v in 0..256 {
+                    for u in 0..256 {
+                        let (x, y) = ((u as f32 + 0.5) * 4.0, (v as f32 + 0.5) * 4.0);
+                        let d = (x - px).hypot(y - py);
+                        let inside = y < LAKE.1 as f32
+                            && match corners {
+                                None => match self.water {
+                                    Some(hole) => d > hole,
+                                    None => d <= self.object.unwrap_or(0.0),
+                                },
+                                Some(((x0, y0), (x1, y1))) => {
+                                    (x0..x1).contains(&x)
+                                        && (y0..y1).contains(&y)
+                                        && self.object.is_none_or(|r| d <= r)
+                                }
+                            };
+                        masks.push(if inside { 8.0 } else { -8.0 });
+                    }
+                }
+            }
+            Ok(vec![
+                Tensor::new("masks", vec![b, 1, 256, 256], TensorData::F32(masks))?,
+                Tensor::new(
+                    "iou_predictions",
+                    vec![b, 1],
+                    TensorData::F32(vec![0.8; b as usize]),
+                )?,
+            ])
+        }
+    }
+
+    /// Pick `point` (in analysis pixels) on the lake: the decision and the chosen candidate's
+    /// prompt and bounds in analysis pixels.
+    fn pick_on(lake: &Lake, point: (f32, f32)) -> (Decision, Option<(usize, [u32; 4])>) {
+        let mut embedding = analysis().embedding.clone();
+        embedding.source = LAKE;
+        let request = Request::Prompt(Prompt {
+            positive: vec![Point::new(point.0, point.1)],
+            ..Prompt::default()
+        });
+        let picked = pick(lake, &mut embedding, &request, &crate::Cancel::new()).unwrap();
+        let chosen = picked.chosen().first().map(|&position| {
+            let found = &picked.candidates[position];
+            (found.prompt, pick::bounds(&found.candidate.logits).unwrap())
+        });
+        (picked.decision, chosen)
+    }
+
+    #[test]
+    fn a_point_on_a_small_object_picks_it_rather_than_the_water_around_it() {
+        // The point alone answers the water around the kayak; the 16 px box is too small to hold
+        // its 10 px radius with room around it, and the 32 px box surrounds it.
+        let lake = Lake::new(Some(0.0), Some(10.0));
+        let (decision, chosen) = pick_on(&lake, (500.0, 300.0));
+        assert_eq!(decision, Decision::One(2));
+        let (prompt, [x0, y0, x1, y1]) = chosen.unwrap();
+        assert_eq!(prompt, 2, "the 32 px box's answer");
+        assert!(
+            x0 >= 484 && x1 <= 516 && y0 >= 284 && y1 <= 316,
+            "{chosen:?}"
+        );
+        // The point alone, then the four boxes in one call.
+        assert_eq!(*lake.calls.lock().unwrap(), vec![(1, 1), (3, 4)]);
+        // An answer that leaves the point outside is probed however small it is.
+        let around = Lake::new(Some(12.0), Some(10.0));
+        assert_eq!(pick_on(&around, (500.0, 300.0)).1.unwrap().0, 2);
+    }
+
+    #[test]
+    fn a_point_on_open_water_keeps_the_water_and_an_ordinary_object_decodes_once() {
+        // Every box comes back full, as a box over open water does: the water holds the point.
+        let water = Lake::new(Some(0.0), None);
+        let (decision, chosen) = pick_on(&water, (500.0, 300.0));
+        assert_eq!(decision, Decision::One(0));
+        assert_eq!(chosen.unwrap().1, [0, 0, 1024, 640]);
+        // An object the point alone finds is answered from one decode.
+        let kayak = Lake::new(None, Some(10.0));
+        assert_eq!(pick_on(&kayak, (500.0, 300.0)).0, Decision::One(0));
+        assert_eq!(*kayak.calls.lock().unwrap(), vec![(1, 1)]);
     }
 
     #[test]

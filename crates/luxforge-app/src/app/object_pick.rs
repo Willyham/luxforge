@@ -405,14 +405,19 @@ impl Editor {
             && crate::state::at_current(self.document.state.as_ref(), &self.session)
     }
 
-    /// The hovered object the canvas draws now: only for the photograph and revision on screen.
+    /// The hovered object the canvas draws now: only for the photograph and revision on screen,
+    /// and not over a removal candidate shown since it was answered, where the object it outlines
+    /// may be gone. The next hover, once the pointer moves, is answered over the candidate and
+    /// drawn.
     pub(crate) fn object_overlay(&self) -> Option<&HoverOverlay> {
         let (asset, revision) = self.object_target()?;
+        let shown = self.shown_candidate().map(|(key, _)| key);
         self.object_pick
             .as_ref()?
             .overlay
             .as_ref()
             .filter(|overlay| overlay.asset == asset && overlay.revision == revision)
+            .filter(|overlay| shown.is_none() || overlay.over == shown)
     }
 
     /// Send the pick waiting, unless one or an analysis is in flight: a released stroke's first,
@@ -633,6 +638,7 @@ impl Editor {
         json!({
             "session": self.object_pick.as_ref().map(ObjectPick::summary),
             "picking": self.object_picking(),
+            "overlay_drawn": self.object_overlay().is_some(),
             "finding_objects": self.object_pick.as_ref().is_some_and(ObjectPick::finding_objects),
             "selects": self.object_selects.summary(),
         })
@@ -820,6 +826,7 @@ impl Editor {
         result: Result<Box<Picked>, CallError>,
     ) -> Task<Message> {
         let current = self.object_target() == Some((asset.clone(), revision));
+        let over = self.shown_candidate().map(|(key, _)| key);
         let Some(session) = self.object_pick.as_mut() else {
             return Task::none();
         };
@@ -836,6 +843,7 @@ impl Editor {
                         bounds,
                         handle: handle(image),
                         held: kept,
+                        over,
                     }),
                     _ => None,
                 };

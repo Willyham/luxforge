@@ -6,7 +6,8 @@
 //! ```text
 //! texel    = max(W / width, H / height)                    -- one raster texel, in stage pixels
 //! cap      = max(round(15 · sqrt(W · H / 1.5e6)), 1)       -- dilation and feather together
-//! core     = { stage pixel p : alpha(p's centre) >= 1/2 }  -- the model kind's bilinear read
+//! peak     = max over stage pixels p of alpha(p's centre)  -- the model kind's bilinear read
+//! core     = { stage pixel p : alpha(p's centre) >= peak / 2 }
 //! feather  = min(max(round(texel), 2), cap)                -- the soft outer edge, one texel
 //! r        = clamp(round(texel / 2 + 0.04 · min(core width, core height)), 2, max(cap − feather, 2))
 //! d(p)     = the Euclidean distance from p to the nearest core pixel, centre to centre
@@ -14,8 +15,14 @@
 //! ```
 //!
 //! The core is the object at full coverage, as the decoder's core is: a removal needs the object's
-//! extent, not its probability. The dilation is a grayscale disc dilation of that binary core, and
-//! the soft edge lies outside it, so nothing of the object is ever under partial coverage.
+//! extent, not its probability. An opaque object peaks at 1, so its core is where it reaches one
+//! half; a small object the refinement left soft (a kayak a few texels long peaking at 130 of 255)
+//! keeps the pixels where it reaches half its own peak rather than none. The artifact is never finer
+//! than the stage it was selected on (the guide is the stage reduced), so a pixel centre lies within
+//! half a texel of every texel and reads it at a weight of at least a quarter: any raster with a
+//! non-zero texel, which the owner admitted, has a core. The dilation is a grayscale disc dilation
+//! of that binary core, and the soft edge lies outside it, so nothing of the object is ever under
+//! partial coverage.
 //!
 //! **Only over the raster's window.** The core is evaluated over the stage pixels whose bilinear
 //! read reaches a non-zero texel ([`core_window`]), and the region over the core's bounds grown by
@@ -188,9 +195,55 @@ fn envelope(sites: &[(i64, i64)], out: &mut [i64], v: &mut Vec<usize>, z: &mut V
     }
 }
 
+/// Mark in `core` (row-major over `window`) the stage pixels whose bilinear alpha is at least
+/// `threshold`: their bounds, `None` for none, and the largest alpha met.
+fn core_at(
+    codes: &[u8],
+    raster: ObjectRaster,
+    stage: Stage,
+    window: Region,
+    threshold: f64,
+    core: &mut [bool],
+    checkpoint: &dyn Fn() -> Result<(), Error>,
+) -> Result<(Option<Region>, f64), Error> {
+    let h = f64::from(stage.height);
+    let (kx, ky) = raster.scale(stage);
+    let ww = window.width as usize;
+    let mut peak = 0.0_f64;
+    let (mut cx0, mut cy0, mut cx1, mut cy1) = (u32::MAX, u32::MAX, 0, 0);
+    for row in 0..window.height {
+        if row.is_multiple_of(ROWS_PER_CHECK) {
+            checkpoint()?;
+        }
+        let py = window.y0 + row;
+        let v = (f64::from(py) + 0.5) / h;
+        for column in 0..window.width {
+            let px = window.x0 + column;
+            let u = (f64::from(px) + 0.5) / h;
+            let alpha = sample_alpha(codes, raster.width, raster.height, kx, ky, u, v);
+            peak = peak.max(alpha);
+            if alpha >= threshold {
+                core[row as usize * ww + column as usize] = true;
+                cx0 = cx0.min(px);
+                cy0 = cy0.min(py);
+                cx1 = cx1.max(px);
+                cy1 = cy1.max(py);
+            }
+        }
+    }
+    let bounds = (cx0 != u32::MAX).then(|| Region {
+        x0: cx0,
+        y0: cy0,
+        width: cx1 - cx0 + 1,
+        height: cy1 - cy0 + 1,
+    });
+    Ok((bounds, peak))
+}
+
 /// The removal region of a `width × height` raster of `codes` over `stage`, over the core's bounds
 /// grown by the dilation and feather and clamped to the stage, untightened; `None` when the raster
-/// has no core. `checkpoint` is called between bands of rows.
+/// is zero at every stage pixel. `checkpoint` is called between bands of rows. A raster with no
+/// opaque pixel is read twice: once to find its peak, once at half of it.
 pub(crate) fn region(
     codes: &[u8],
     width: u32,
@@ -202,38 +255,28 @@ pub(crate) fn region(
     let Some(window) = core_window(raster, stage) else {
         return Ok(None);
     };
-    // The core over the window, as the model kind reads the raster.
-    let h = f64::from(stage.height);
-    let (kx, ky) = raster.scale(stage);
+    // The core over the window, as the model kind reads the raster: at one half, which is half
+    // the peak when some pixel is opaque, and otherwise again at half the peak found.
     let (ww, wh) = (window.width as usize, window.height as usize);
     let mut core = vec![false; ww * wh];
-    let (mut cx0, mut cy0, mut cx1, mut cy1) = (u32::MAX, u32::MAX, 0, 0);
-    for row in 0..window.height {
-        if row.is_multiple_of(ROWS_PER_CHECK) {
-            checkpoint()?;
-        }
-        let py = window.y0 + row;
-        let v = (f64::from(py) + 0.5) / h;
-        for column in 0..window.width {
-            let px = window.x0 + column;
-            let u = (f64::from(px) + 0.5) / h;
-            if sample_alpha(codes, width, height, kx, ky, u, v) >= 0.5 {
-                core[row as usize * ww + column as usize] = true;
-                cx0 = cx0.min(px);
-                cy0 = cy0.min(py);
-                cx1 = cx1.max(px);
-                cy1 = cy1.max(py);
-            }
-        }
-    }
-    if cx0 == u32::MAX {
+    let (bounds, peak) = core_at(codes, raster, stage, window, 0.5, &mut core, checkpoint)?;
+    let bounds = if peak < 1.0 && peak > 0.0 {
+        core.fill(false);
+        core_at(
+            codes,
+            raster,
+            stage,
+            window,
+            peak / 2.0,
+            &mut core,
+            checkpoint,
+        )?
+        .0
+    } else {
+        bounds
+    };
+    let Some(bounds) = bounds else {
         return Ok(None);
-    }
-    let bounds = Region {
-        x0: cx0,
-        y0: cy0,
-        width: cx1 - cx0 + 1,
-        height: cy1 - cy0 + 1,
     };
     let texel = raster.texel(stage);
     let cap = reach_cap(stage);
@@ -419,13 +462,36 @@ mod tests {
     }
 
     #[test]
-    fn a_raster_without_a_core_has_no_region_and_an_empty_raster_no_support() {
+    fn an_empty_raster_has_no_region_and_no_support() {
         let s = stage(64, 64);
-        let faint = vec![100_u8; 16 * 16];
-        assert!(region(&faint, 16, 16, s, &|| Ok(())).unwrap().is_none());
         let empty = vec![0_u8; 16 * 16];
         assert!(region(&empty, 16, 16, s, &|| Ok(())).unwrap().is_none());
         assert!(support(ObjectRaster::of(&empty, 16, 16), s).is_empty());
+    }
+
+    #[test]
+    fn a_soft_small_object_keeps_a_core_at_half_its_peak_within_what_was_admitted() {
+        // A kayak a few texels long whose refined alpha peaks at 130 of 255: one half is reached
+        // at no pixel centre between texels, so the core is where it reaches half its peak.
+        let s = stage(1200, 800);
+        let codes: Vec<u8> = ellipse(600, 400, (300.0, 200.0), (3.0, 1.2))
+            .into_iter()
+            .map(|code| (u32::from(code) * 130 / 255) as u8)
+            .collect();
+        assert_eq!(codes.iter().max(), Some(&130));
+        let raster = ObjectRaster::of(&codes, 600, 400);
+        let (kx, ky) = raster.scale(s);
+        let peak = (0..s.height)
+            .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let (u, v) = ((f64::from(x) + 0.5) / 800.0, (f64::from(y) + 0.5) / 800.0);
+                sample_alpha(&codes, 600, 400, kx, ky, u, v)
+            })
+            .fold(0.0, f64::max);
+        assert!(peak < 0.5, "{peak}");
+        assert!(!support(raster, s).is_empty(), "the owner admits it");
+        let bounds = matches_reference(codes, 600, 400, s);
+        assert!(bounds.pixels() < 40 * 40, "{bounds:?}");
     }
 
     #[test]
