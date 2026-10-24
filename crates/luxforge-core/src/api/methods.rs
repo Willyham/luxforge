@@ -10,8 +10,8 @@
 //! mutating service handler reports beside its answer ([`Mutated`]); nothing is routed any other
 //! way.
 use super::{
-    ClientSession, MASK_MODE, MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode,
-    POINTER_MODE, PROTOCOL, ViewSelection,
+    ClientAuthority, ClientSession, MASK_MODE, MAX_VIEW_SELECTIONS, MaskOverlayColour,
+    MaskOverlayMode, POINTER_MODE, PROTOCOL, ViewSelection,
     owner::{self, Call, Owner},
     params::{self, Envelope, HostParams, NoParams, ParamSchema, RevisionOf, host_params, parse},
 };
@@ -155,7 +155,86 @@ pub(super) struct MethodSpec {
     /// Who answers a retry of this method. A mutating entry names it after its notes, as
     /// `retries: Catalog`, `retries: Durable` or `retries: Owner`; an entry that names none changes nothing.
     pub retries: Retries,
+    /// What its change is, as `schema.list` publishes it: a mutating entry declares after its
+    /// macro whether the change can be taken back, `.reversible()` or `.irreversible()`, and any
+    /// entry `.network()` when it can reach the network. A test refuses a mutating entry that
+    /// declares neither and a read that declares either.
+    pub effects: Effects,
+    /// For a method only permission authority may call at all, declared `.permissions(refusal)`:
+    /// the refusal a client without it gets. The catalog owner refuses such a call with this,
+    /// before any handler runs, and `schema.list` marks the method `authority: "permissions"`
+    /// from the same field, so the marker and the check cannot differ.
+    pub permission_only: Option<&'static str>,
+    /// The fields of the answer, as dotted paths, that hold the path of a JPEG the owner wrote
+    /// for display, declared `.images(&[...])`: `schema.list` lists them as `images`.
+    pub images: &'static [&'static str],
 }
+
+/// What a method's change is ([`MethodSpec::effects`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Effects {
+    /// Whether the change can be put back through the API: history undo or library undo, another
+    /// call of the same method with the earlier value, or removing exactly what the call created.
+    /// False when the call discards something no call brings back or acts where Luxforge cannot
+    /// take it back. `None` until the entry declares it, which only a read may leave so.
+    pub reversible: Option<bool>,
+    /// Whether the method can reach the network.
+    pub network: bool,
+}
+
+impl Effects {
+    /// What an entry declares before it names anything.
+    pub(super) const UNDECLARED: Self = Self {
+        reversible: None,
+        network: false,
+    };
+}
+
+impl MethodSpec {
+    /// Its change can be taken back ([`Effects::reversible`]).
+    const fn reversible(mut self) -> Self {
+        self.effects.reversible = Some(true);
+        self
+    }
+
+    /// Its change cannot be taken back ([`Effects::reversible`]).
+    const fn irreversible(mut self) -> Self {
+        self.effects.reversible = Some(false);
+        self
+    }
+
+    /// It can reach the network.
+    const fn network(mut self) -> Self {
+        self.effects.network = true;
+        self
+    }
+
+    /// Only permission authority may call it, and anyone else is refused with `refusal`
+    /// ([`MethodSpec::permission_only`]).
+    const fn permissions(mut self, refusal: &'static str) -> Self {
+        self.permission_only = Some(refusal);
+        self
+    }
+
+    /// The answer's fields that name a JPEG written for display ([`MethodSpec::images`]).
+    const fn images(mut self, fields: &'static [&'static str]) -> Self {
+        self.images = fields;
+        self
+    }
+}
+
+/// The fields of a ready job's `result` that hold the path of a JPEG the owner wrote for display,
+/// per job kind: the preview jobs `preview.read` and `preview.region` start. `job.read` and
+/// `job.wait` publish them as `job_images`. An export's output is never one: it is the person's
+/// file, at full resolution, and not a picture written for display.
+const JOB_IMAGES: &[(&str, &[&str])] = {
+    use crate::catalog_types::jobs::{PREVIEW_EXTRACT, PREVIEW_REGION, PREVIEW_RENDER};
+    &[
+        (PREVIEW_EXTRACT.job_kind, &["path"]),
+        (PREVIEW_RENDER.job_kind, &["path"]),
+        (PREVIEW_REGION.job_kind, &["path"]),
+    ]
+};
 
 /// Who answers a retried mutation, the same `request_id` with the same input, so that resending a
 /// request whose answer was lost never changes anything twice. Each method declares it, and the
@@ -205,6 +284,9 @@ macro_rules! service {
                 $body
             }),
             retries: Retries::None,
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
     ($name:expr, $params:ty, $handler:path, $notes:expr $(,)?) => {
@@ -216,6 +298,9 @@ macro_rules! service {
                 $handler(service, session, parse::<$params>(request)?)
             }),
             retries: Retries::None,
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
 }
@@ -232,6 +317,9 @@ macro_rules! mutating {
                 $handler(service, session, parse::<$params>(request)?)
             }),
             retries: Retries::$retries,
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
 }
@@ -247,6 +335,9 @@ macro_rules! planned {
                 $handler(service, session, parse::<$params>(request)?)
             }),
             retries: Retries::None,
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
 }
@@ -268,6 +359,9 @@ macro_rules! owner {
                 $body
             }),
             retries: retries!($($retries)?),
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
     // A handler whose request `before` checks first, before the parse: a check that must answer
@@ -284,6 +378,9 @@ macro_rules! owner {
                 $handler(owner, call, parse::<$params>(&call.request.params)?)
             }),
             retries: retries!($($retries)?),
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
     ($name:expr, $params:ty, $handler:path, $notes:expr $(, retries: $retries:ident)? $(,)?) => {
@@ -295,6 +392,9 @@ macro_rules! owner {
                 $handler(owner, call, parse::<$params>(&call.request.params)?)
             }),
             retries: retries!($($retries)?),
+            effects: Effects::UNDECLARED,
+            permission_only: None,
+            images: &[],
         }
     };
 }
@@ -345,14 +445,17 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::usage::claim,
         "{show_prompt, state, deduplicated}: only a client with permission authority may, otherwise forbidden; in an eligible launch, atomically records prompt_shown: true with sharing off in preferences.json under the preferences lock before answering show_prompt: true to exactly one claimant, across processes sharing the configuration; a record already claimed, answered or enabled, an ineligible launch (which writes nothing) and a retried request answer show_prompt: false; state is usage.read's answer as it is now; a preferences file that cannot be read or written is an error and is kept unchanged; a claim that wrote is announced",
         retries: Owner,
-    ),
+    )
+    .permissions("claiming the usage statistics notice needs permission authority")
+    .irreversible(),
     owner!(
         "usage.set",
         owner::usage::UsageSet,
         owner::usage::set,
         "{outcome, state, deduplicated}: enabled true opts in, which needs permission authority (otherwise forbidden), disclosure_version equal to the current one usage.read answers, and an eligible launch (otherwise not-ready naming the reason); it is saved first and takes effect only once saved, creating a fresh random installation ID and image key unless the record already is consent to this disclosure (then a no-op that keeps them); enabled false opts out and any client may: collection in this process stops before the write is attempted, a saved opt-out removes the installation ID and image key, and a failed write leaves this process off and is an error whose data.state reports the stored record as it really is; disclosure_version is refused with false; either saved choice also records prompt_shown: true, so no automatic notice follows; outcome is applied or no-op; state is usage.read's answer as it is now, also for a retried request, which never applies again, so an enable a later opt-out revoked stays revoked; the actor or same-user socket access never grants consent; a change is announced",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     // Automatic updates ([`crate::update`]): the owner validates, and the host's update port carries
     // out the platform's mechanism off the owner. None reads a catalog or a photograph, and none
     // makes a network request on the owner; a host without a port checks nothing.
@@ -367,14 +470,18 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::update::check,
         "check the update feed now and answer update.status's answer once the check has ended, its outcome in last_check; the check runs on the updater's own worker, so neither the owner nor the caller's thread waits on the network: the call is held until the check ends or 60 seconds pass, whichever is first, and joins a check already running rather than start another; a caller that may not wait, and one past 8 held calls, is answered at once with checking true, and reads update.status or waits for the update.status event; any client may; with the update_checks preference off a check still runs when asked; not-ready with data.reason naming the reason when the mechanism is unavailable, and nothing is checked"
-    ),
+    )
+    .network(),
     owner!(
         "update.install",
         owner::update::UpdateRequest,
         owner::update::install,
         "{outcome: requested, status}: install the available update and relaunch, through the desktop's ordinary quit path: drafts follow their usual rules, the catalog is closed, and only then does the platform's mechanism replace the app and start the new version; an update that changes the catalog format installs when asked here, never automatically; only a client with permission authority may, otherwise forbidden; not-ready with data.reason when the mechanism is unavailable (its reason), cannot replace itself (notify-only) or has no update available (no-update); conflict while an export, batch export, HDR merge, develop of picks, batch settings, module install or removal or task runs, naming each job in the message and in data.jobs [{job_id, kind}]; the updater's own refusal is answered as it is; an accepted request is announced",
         retries: Owner,
-    ),
+    )
+    .permissions("installing an update needs permission authority")
+    .irreversible()
+    .network(),
     owner!(
         "update.skip",
         owner::update::UpdateSkip,
@@ -387,7 +494,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::update::move_to_applications,
         "{outcome: requested, status}: macOS only: copy the app into /Applications, or ~/Applications when that is not writable, verify the copy's signature, clear its quarantine, and relaunch it from there through the same quit path as update.install, then move the original to the Trash or eject the disk image it ran from; only a client with permission authority may, otherwise forbidden; not-ready with data.reason not-supported unless update.status says can_move_to_applications; conflict naming the running jobs as update.install does; a Luxforge already in the destination goes to the Trash only with replace true, and is otherwise refused as conflict with data.reason existing-app and data.path; the updater's own refusal is answered as it is",
         retries: Owner,
-    ),
+    )
+    .permissions("moving into Applications needs permission authority")
+    .irreversible(),
     // The theme library, outside every catalog: `themes.json` beside the preferences. No theme
     // method reads or writes a catalog or changes a photograph.
     owner!(
@@ -414,7 +523,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::themes::import,
         "{theme, report, deduplicated}: store a theme from a Luxforge theme document (format luxforge, its text as content; resolved by a document's rules, so a missed contrast floor or a surround past the chroma bound is refused) or an Omarchy theme folder (format omarchy, its files as files and the folder's own name as folder: only colors.toml, alacritty.toml (read when there is no colors.toml) and light.mode are taken, and any other file name is refused as validation; the palette is resolved as Omarchy's resolver resolves it, and its mode, background, dark_background (the surround, held to the chroma bound), lighter_background (the control, derived instead when it equals the background), foreground (the text) and accent become roles; an own ink that misses its floor is moved and reported; a theme the reader cannot read is unsupported-input with the reader's coded error as data; named after folder as Omarchy lists it unless name is given, and refused with neither), with mutation.actor as its actor and the imported text kept verbatim; name overrides the theme's own; a name is 1..64 printable characters after trimming and unique ignoring case across every theme, a built-in one's included (a duplicate is a conflict, and nothing is renamed or replaced); the library holds at most 128 themes of at most 8 KiB each, source included, in at most 1 MiB (resource-limit); each file is at most 64 KiB; theme has theme.read's shape without source; a refused import stores nothing",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     owner!(
         "theme.export",
         owner::themes::ThemeParams,
@@ -427,7 +537,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::themes::delete,
         "{outcome, deleted, deduplicated}: remove a stored theme, or a stored record this build cannot read, by id: applied and true when it was there, no-op and false when it was not; a built-in theme is refused as validation and the active theme as a conflict, by name",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     // The one job table belongs to the catalog owner, so the owner answers for every kind.
     owner!(
         JOB_READ,
@@ -473,7 +584,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::candidates::release_candidates,
         "{job_id, outcome, released, candidates, deduplicated}: releases the named live candidates of a task job, or every one, deleting their files; released lists the numbers released now and candidates the job's candidates as job.read lists them, each released one with released: released; a candidate already accepted or released is left as it is (outcome no-op when nothing was released); a candidate an accept holds refuses the whole request as conflict, and a number the job never published as validation, releasing nothing; same ownership as job.read; a release that released something is announced",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         "source.prepare",
         owner::SourcePrepare,
@@ -554,7 +666,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "validates the named non-secret fields against their declared parameters (a module's settings.fields and settings.profiles.fields are parameter descriptors, checked exactly as an action's are) and commits them together; null returns a field to its default; an endpoint is stored as the URL the transport policy accepts; a secret field is refused; mutation.expected_revision is the module's settings revision; returns {outcome, revision, changed, settings}",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     owner!(
         settings::SET_SECRET,
         SetSecretParams,
@@ -569,7 +682,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "stores one secret field's value in the secure store and never echoes it; a retry is matched by the setting alone; not-ready names a locked or unavailable store and nothing is kept in plain text",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         settings::CLEAR_SECRET,
         ClearSecretParams,
@@ -584,7 +698,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "removes only that secret from the secure store; an absent secret is a no-op",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         settings::RESET,
         ResetParams,
@@ -599,7 +714,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "deletes the module's stored values and profiles and clears their secrets; the one write an incompatible entry accepts; the revision keeps counting",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         settings::CREATE_PROFILE,
         CreateProfileParams,
@@ -614,7 +730,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "a new empty provider profile of a declared adapter with a host-generated profile-<uuid> identity, at most the module's declared maximum; returns it as profile",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     owner!(
         settings::REMOVE_PROFILE,
         RemoveProfileParams,
@@ -629,17 +746,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "clears the profile's secrets and removes it and its values, revokes the profile's grants and returns the removed profile",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     // Permissions, resources and capability jobs are answered by the catalog owner too: grants
     // live beside the settings, and the jobs and lanes live there.
     owner!(
         grants::GRANT,
         GrantParams,
         |owner, call, params| {
-            let authority = owner.authority(call.client);
             owner.host.grant(
                 &owner.service,
-                authority,
                 params,
                 &call.origin,
                 &mut owner.announced,
@@ -647,7 +763,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "grants one exact scope of a declared capability; only a client with permission authority may, otherwise forbidden; scope is {resource, version, origin} for download-artifact (the declared version from the origin of its pinned URL) or {profile_id, adapter, origin, data, asset_id} for remote-image-request (an existing profile of that adapter whose endpoint has that origin, the capability's data class and an asset of this catalog); clears a matching denial; a scope that already has a live grant returns it as a no-op; returns {grant, outcome, deduplicated}",
         retries: Owner,
-    ),
+    )
+    .permissions("granting a permission needs permission authority")
+    .irreversible(),
     owner!(
         grants::DENY,
         DenyParams,
@@ -661,7 +779,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "records that the person did not allow one exact scope; the next consent-required for it reports denied: true; any client may; returns {denial, deduplicated}",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         grants::REVOKE,
         RevokeParams,
@@ -675,7 +794,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "marks the grant revoked and cancels the queued and running jobs that depend on it with cancelled: permission revoked; never touches recipes, history or artifacts; any client may; returns {grant, outcome, cancelled_jobs, deduplicated}",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         grants::LIST,
         PermissionList,
@@ -713,7 +833,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued: consent-required comes first on any machine, its disclosure carrying machine_memory_bytes and fits for a resource that declares a memory minimum, and with a grant held a machine below that minimum is refused resource-limit with data.requirements; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
         retries: Owner,
-    ),
+    )
+    .reversible()
+    .network(),
     owner!(
         resources::REMOVE,
         ResourceParams,
@@ -728,7 +850,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         "queues a transfer-lane job that deletes the installed version, first releasing the model a local-runtime capability holds of it and cancelling its load; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         runtime::LOAD,
         LoadParams,
@@ -762,35 +885,40 @@ pub(super) const METHODS: &[MethodSpec] = &[
         history_undo,
         "moves current to its undo parent without adding an entry",
         retries: Catalog,
-    ),
+    )
+    .reversible(),
     mutating!(
         "history.redo",
         Navigate,
         history_redo,
         "follows the persisted redo path",
         retries: Catalog,
-    ),
+    )
+    .reversible(),
     mutating!(
         "history.restore",
         Restore,
         history_restore,
         "appends a restore action copying the entry's stack and returns the session to current",
         retries: Catalog,
-    ),
+    )
+    .reversible(),
     mutating!(
         "version.create",
         VersionCreate,
         version_create,
         "names a retained entry; unique per asset ignoring case; no-op when the name already names that entry; records mutation.actor",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     mutating!(
         "version.delete",
         VersionDelete,
         version_delete,
         "removes the name only; the entry stays in history; no-op when absent",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     service!(
         "version.list",
         AssetParams,
@@ -817,7 +945,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         preset_create,
         "{preset, deduplicated}: stores a settings set as a Luxforge preset with origin {kind: luxforge}, report null and mutation.actor as its actor; name is 1..128 and group 1..64 printable characters after trimming, the (group, name) pair is unique ignoring case (a duplicate is a conflict) and the library holds at most 1000 presets (resource-limit); every action and field is checked against the registry",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     service!(
         "preset.groups",
         PresetGroups,
@@ -836,14 +965,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         preset_update,
         "{outcome, preset, deduplicated}: applied when the name, group or settings change, recording mutation.actor and updated_ms; no-op, with nothing written, when they do not; a rename onto another preset's (group, name) pair is a conflict; origin and report are kept",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     mutating!(
         "preset.delete",
         PresetDelete,
         preset_delete,
         "{outcome, deleted, deduplicated}: applied and true when the preset existed, no-op and false when it is absent; history entries that applied it are unchanged",
         retries: Durable,
-    ),
+    )
+    .irreversible(),
     service!(
         "preset.export",
         PresetParams,
@@ -862,7 +993,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         preset_import,
         "{preset, report, deduplicated}: reads the text of a Luxforge preset document, a Lightroom XMP preset or a .lrtemplate, at most 1 MiB, and stores its mapped settings with the text kept verbatim and mutation.actor as its actor; the library's name, uniqueness and size rules apply as for preset.create; a file that maps nothing is unsupported-input with the report counts, and a refused import stores nothing",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     service!(
         "preview.select",
         PreviewSelect,
@@ -919,6 +1051,9 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "validates the named fields against the action's parameters and merges them into the draft; an invalid field, or one superseded on the draft's target (refused in its commit's words), changes nothing",
         handler: Handler::Service(draft_set),
         retries: Retries::None,
+        effects: Effects::UNDECLARED,
+        permission_only: None,
+        images: &[],
     },
     service!(
         "draft.read",
@@ -938,7 +1073,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         draft_commit,
         "runs the draft's action with its accumulated fields and ends the draft; a conflicted draft or a mismatched expected_revision is refused and the draft is kept",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     service!(
         "draft.reapply",
         DraftParams,
@@ -999,7 +1135,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::export::write_file,
         "writes one saved entry's exact render, the current entry unless entry_id names another, with settings, to a new file at destination: an absolute path whose extension matches settings.format (.jpg or .jpeg, .webp, .tif or .tiff, any case) and whose parent directory exists, at which nothing exists (conflict otherwise, and nothing is ever replaced); settings.folder and settings.suffix are what export.plan suggested destination from and are checked, but destination names the file; a notice export.plan shows as refusing is refused with validation and data.notice its code; every format, size, quality, chroma, optimise, size limit, sharpening, metadata level and density is written: settings.sharpen sharpens the output after resizing, at its own size, on luminance only and on its encoded codes, so it adds no colour fringes (the reference sharpens the codes of its output, the GPU in the last sweep of its cuts); a JPEG without a size limit and a TIFF take the output's rows as they render, while a size-limited JPEG and a WebP hold the output frame, a size limit searching quality, at most 8 attempts, for the best file of at most limit_bytes, and failing the job with validation and data.code limit-unreachable when quality 10 does not fit; settings.metadata chooses the original's supported EXIF fields written, in every format (none writes no EXIF; every other level also writes the structural fields), every file carries the sRGB profile, and settings.pixels_per_inch sets a JPEG's JFIF density and a TIFF's resolution tags, which size the file in viewers such as Preview and in print, null a unitless 1:1 aspect ratio, while a WebP carries no density; the GPU renders the output at its size in tiles that the encoder takes as they arrive, within the display limit of the reference renderer's export, identical run to run on one machine and driver and allowed a last-digit difference across machines, and reference: true asks for the reference renderer's export instead, the CPU render every GPU output is measured against; the reference also renders when the host has no GPU (luxforge-json), and when the GPU cannot render the stack, before or part-way through, which starts the export again from nothing so one file is never two renderers' pixels; while it runs, job.read's progress is determinate, in whole percent and never going back, its message the phase: rendering, resampling (the reference reducing the render to a smaller output, and sharpening it when settings.sharpen asks; the GPU resamples and sharpens within its tiles), encoding, optimising (an optimised JPEG's passes), limiting k/8 (a size limit's attempts) and writing; a ready job's result is {path, bytes, width, height, format, quality? (a JPEG's or WebP's, under a size limit the one the search chose; absent for a TIFF), optimised, metadata (the EXIF fields kept), renderer, acknowledged_stale}, renderer {record, reason} naming the renderer that wrote the file: {gpu, null}, or the reference with the reason it rendered (schema.list's renderer block), null on a host with no GPU; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, settings, reference, acknowledged_stale, deduplicated}; a retry with the same request id and parameters is answered from the stored answer and writes no second file; an unprepared source is preparation-required with its job; a finished export records an event",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     owner!(
         "export.presets.list",
         NoParams,
@@ -1012,21 +1149,24 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::export::presets_create,
         "{preset, deduplicated}: store a preset of the person's own, {preset_id (export-preset-<32 hex>), name, builtin: false, settings}; name is 1..64 characters with no control character and no leading or trailing space, and unique ignoring case across every preset, built-in ones included (conflict otherwise); settings are checked as export.write checks their shape; at most 100 presets of the person's own (resource-limit); a document this build cannot read is refused as incompatible and kept unchanged; announced; needs a configured application preference directory",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     owner!(
         "export.presets.update",
         owner::export::PresetUpdate,
         owner::export::presets_update,
         "{preset, deduplicated}: rename a preset of the person's own, replace its settings, or both, under the rules export.presets.create applies; a built-in preset, or an id no preset has, is refused as validation; announced; needs a configured application preference directory",
         retries: Owner,
-    ),
+    )
+    .reversible(),
     owner!(
         "export.presets.delete",
         owner::export::PresetDelete,
         owner::export::presets_delete,
         "{outcome, deleted, deduplicated}: remove a preset of the person's own: applied and true when it was there, no-op and false when it was not; a built-in preset is refused as validation; announced when it was there; needs a configured application preference directory",
         retries: Owner,
-    ),
+    )
+    .irreversible(),
     service!(
         "artifact.status",
         NoParams,
@@ -1047,7 +1187,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::artifact_collect,
         "removes the rows of artifacts no entry references and no task of this process published, and of derived sources no photograph holds and no writer of this process published, then queues a source job that removes their files, object and source files without a row, staged files older than an hour and the candidate directories no task job of this process holds; nothing an entry or a photograph's source references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary, source_rows, source_objects, candidates}",
         retries: Durable,
-    ),
+    )
+    .irreversible(),
     // The catalog's methods. Each is declared once in `catalog_types::api` (its parameter struct,
     // answer, errors and notes) and registered here, naming the parameter struct and the handler by
     // path (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`). A mutation declares
@@ -1089,21 +1230,24 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::files::index_add_folder,
         "adds a folder, with its subfolders, to the indexed folders as one library change and starts listing it, answering {change: {outcome, change?, items, deduplicated}, folder: {path, volume_id, added_ms, actor, offline, files?, listed_ms?}, job_id?}; a folder already indexed changes nothing; validation for a relative path, a file, a package, another application's cache or Luxforge's own directories; conflict, naming it in data.folder, for a folder inside or around an indexed one; library.undo removes it and forgets its rows",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "index.remove-folder",
         crate::catalog_types::api::IndexRemoveFolder,
         owner::files::index_remove_folder,
         "removes an indexed folder as one library change, answering {outcome, change?, items, deduplicated}: its listing stops and its rows are forgotten unless another root lists them; nothing on disk changes; a folder that is not indexed changes nothing; library.undo adds it back and lists it again",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     // The preview lane: previews and 100% regions.
     owner!(
         "preview.read",
         crate::catalog_types::api::PreviewRead,
         owner::previews::preview_read,
         "a cached preview's path, size, origin and whether it is approximate, or the job that makes it and the best preview cached meanwhile, with fallback_current saying whether that fallback shows what was asked for, edits included: a file's other stage, a photograph's same entry at another tier or renderer generation, or its camera preview while the entry is its Original, never an earlier entry's render or an edited entry's camera preview; a file's tiers are grid (at most 512 px, first its thumbnail stage, origin exif-thumbnail, then its embedded preview) and loupe (its largest embedded preview, at most 2560 px, never enlarged), every one upright; a RAW with no usable embedded preview is developed neutrally, one RAW at a time, for a visible or look-ahead request (origin developed) and is not-ready for a background one; the job (preview-extract) is shared by every request for the same file and tier and read by the clients that asked, its result is the preview, and a client's job.cancel or disconnect releases only its own interest: the task is removed or stopped once no request or view wants it, and another client's job.cancel is conflict while one waits; a file the index does not hold, or tier large, is validation; a file that cannot give the tier keeps its own error (a corrupt file invalid-input, a camera Luxforge cannot develop unsupported-input, naming why) and is answered at once until it changes; resource-limit past 20,000 queued tasks; a developed photograph's tiers ({kind: photo, asset_id, entry_id?}) are grid (512 px) and large (2048 px), rendered from its current or named entry at full resolution by the owner's tile service, the GPU on the desktop, or by the reference renderer, and area-averaged to the tier, renderer {record, reason} naming which as an export's result does (job preview-render, one per tier, shared and cancelled as a file's is, an edit's background re-render of a tier having its own job that any client may cancel, 2,000 renders waiting at most; its camera preview is the fallback until its first render); approximate is always false; renderer is present only on a photograph's rendered tier"
-    ),
+    )
+    .images(&["preview.path", "fallback.path"]),
     owner!(
         "preview.region",
         crate::catalog_types::api::PreviewRegion,
@@ -1117,7 +1261,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::pick_set,
         "picks or clears files as one library change, answering {outcome, change?, items, deduplicated}; a pick keeps the file's path and signature with its actor, request and time until it is developed or cleared, and picking a file already picked keeps its pick; targets are files by path or index row, or the files selected in the caller's view; resource-limit past 50,000 files",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "pick.list",
         crate::catalog_types::api::PickList,
@@ -1142,14 +1287,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::library_undo,
         "reverts the calling actor's latest library change not yet undone by appending its inverse, answering {outcome, change?, items, deduplicated}, no-op when there is none; conflict, naming the items in data.items, when a later change touched them or their values are no longer the ones it left",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "library.redo",
         crate::catalog_types::api::LibraryRequest,
         owner::library::library_redo,
         "reverts the calling actor's latest undo not yet redone, made since its latest new change, under the same rule as library.undo",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "catalog.info",
         params::NoParams,
@@ -1169,42 +1316,48 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::organize::folder_create,
         "makes an empty catalog folder in parent_id's folder or at the top level as one library change, answering {change: {outcome, change?, items, deduplicated}, folder, deduplicated}; the name is trimmed, 1 to 128 characters without control characters (validation), and unique among its siblings ignoring case (conflict naming the clash); an unknown parent is validation; nothing on disk changes",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "folder.rename",
         crate::catalog_types::api::FolderRename,
         owner::library::organize::folder_rename,
         "renames a catalog folder as one library change, answering {outcome, change?, items, deduplicated}; the name follows folder.create's rules (validation, conflict naming the clash), an unknown folder is validation and the same name is a no-op; nothing on disk changes",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "folder.move",
         crate::catalog_types::api::FolderMove,
         owner::library::organize::folder_move,
         "nests a catalog folder in parent_id's folder, or at the top level without it, as one library change, answering {outcome, change?, items, deduplicated}; a move into itself or a folder inside it, and an unknown folder or parent, are validation; a sibling of the same name ignoring case is conflict",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "folder.merge",
         crate::catalog_types::api::FolderMerge,
         owner::library::organize::folder_merge,
         "moves every photograph of folder_id, removed ones too, into into_id, then its subfolders under into_id, then deletes folder_id, as one library change whose undo restores all three, answering {outcome, change?, items, deduplicated}; a merge into itself or a folder inside it and an unknown folder are validation; a subfolder whose name into_id already holds is conflict naming it; more than 50,000 items is resource-limit",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "folder.delete",
         crate::catalog_types::api::FolderDelete,
         owner::library::organize::folder_delete,
         "deletes an empty catalog folder as one library change, answering {outcome, change?, items, deduplicated}; a folder any photograph (removed ones included) or folder is in is conflict saying what it holds; an unknown folder is validation",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "asset.move",
         crate::catalog_types::api::AssetMove,
         owner::library::organize::asset_move,
         "moves the photographs targets names into the catalog folder folder_id as one library change, answering {outcome, change?, items, deduplicated}; photographs already there are left out, and none to move is a no-op; targets are photographs by asset_ids, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown folder or photograph is validation; resource-limit past 50,000; nothing on disk changes",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.list",
         params::NoParams,
@@ -1217,56 +1370,64 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::organize::collection_create,
         "makes a plain collection (kind collection) or a group (kind group) in the group parent_id or at the top level as one library change, answering {change: {outcome, change?, items, deduplicated}, collection, deduplicated}; the name is trimmed, 1 to 128 characters without control characters (validation), and unique among its siblings of every kind ignoring case (conflict naming the clash); a parent that is unknown or not a group is validation",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.create-smart",
         crate::catalog_types::api::CollectionCreateSmart,
         owner::library::organize::collection_create_smart,
         "saves query as a smart collection in the group parent_id or at the top level as one library change, answering as collection.create; the query is stored as given with its defaults and must be one browse.view accepts over photographs: an event, folder or card source (files) is validation, as is a {kind: collection} source naming a smart collection, a group or an unknown collection, and a {kind: catalog-folder} source naming an unknown folder; names as collection.create",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.update-smart",
         crate::catalog_types::api::CollectionUpdateSmart,
         owner::library::organize::collection_update_smart,
         "replaces a smart collection's query as one library change, answering {outcome, change?, items, deduplicated}; the query is checked as collection.create-smart's; a collection that is unknown or not smart is validation",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.rename",
         crate::catalog_types::api::CollectionRename,
         owner::library::organize::collection_rename,
         "renames a collection, smart collection or group as one library change, answering {outcome, change?, items, deduplicated}; the name follows collection.create's rules (validation, conflict naming the clash); an unknown collection is validation and the same name a no-op",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.move",
         crate::catalog_types::api::CollectionMove,
         owner::library::organize::collection_move,
         "moves a collection, smart collection or group into the group parent_id, or to the top level without it, as one library change, answering {outcome, change?, items, deduplicated}; a parent that is unknown or not a group, and a group moved into itself or a group inside it, are validation; a sibling of the same name ignoring case is conflict",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.delete",
         crate::catalog_types::api::CollectionDelete,
         owner::library::organize::collection_delete,
         "deletes a plain collection with its memberships, a smart collection, or an empty group, as one library change whose undo restores the collection and its members, answering {outcome, change?, items, deduplicated}; a group that holds anything is conflict; an unknown collection is validation; a collection with 50,000 or more members is resource-limit",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.add",
         crate::catalog_types::api::CollectionMembers,
         owner::library::organize::collection_add,
         "adds the photographs targets names to a plain collection as one library change, answering {outcome, change?, items, deduplicated}; a member keeps when it joined and none to add is a no-op; targets as asset.move's; a collection that is unknown, smart or a group, and an unknown photograph, are validation; resource-limit past 50,000",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "collection.remove",
         crate::catalog_types::api::CollectionMembers,
         owner::library::organize::collection_remove,
         "removes the photographs targets names from a plain collection as one library change, answering {outcome, change?, items, deduplicated}; photographs not in it are left out and none to remove is a no-op; refused as collection.add",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     // Availability and Locate.
     owner!(
         "source.check",
@@ -1280,7 +1441,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::sources::source_locate,
         "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     // Developing picks.
     owner!(
         "pick.plan",
@@ -1294,14 +1456,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::develop::pick_develop,
         "starts a develop-picks job, answering {job_id, status, deduplicated}, whose result is {developed: [{path, used?, asset_id, outcome: created | linked | relinked, folder_id, chosen_folder_id}], failed: [{path, asset_id?, code, message}], changes}: the files are planned as pick.plan plans them and each event goes into the folder its into entry names by event_id, else the entry with no event_id, else the plan's proposal, so into: [] accepts the plan; each photograph is filed by its own camera-local capture day as its header records it when it is developed, so a file the index does not list gets its day too: {kind: place, name} files it in the top-level folder named after its year (\"2026\"), then name, then its day (\"12 Sep\"), and one with no capture time in the top-level \"Undated\", then name; {kind: existing, folder_id} files it in that folder, and with days: true in its day's folder inside it (the folder itself with no capture time); {kind: new, name, parent_id?} makes one folder; each developed pick names folder_id, the folder its photograph is in (a linked or relinked photograph's own), and chosen_folder_id, the folder its choice named: the place or existing folder over the day folder it was filed in, else folder_id; each folder of a path is found by its name among its siblings ignoring case, or made by the batch that first puts a photograph in it, in that batch's change, and a place never adds a number to its name; a place folder or new folder Develop makes records the span of the events it is made from, and their key when made from one, a year or day folder records none, and a found folder is not changed; an existing folder must exist, a place's and a new folder's name are checked as folder.create's and a new folder's must be free (validation, conflict); events given the same place or the same new folder share it; each file is read once off the owner, bounded, its SHA-256 streamed, its header read and its interpretation read without developing, and must keep its signature while it is read and until it commits; a file whose bytes are a photograph's is linked to it, one whose name, length and fingerprint match a photograph whose original is not there relinks it (asset-source, its folder and history unchanged), a linked or relinked photograph in Removed is put back in the same change (asset-removal), a file another photograph names with other bytes fails with conflict, and any other becomes a photograph with its Original, capture row, source folder and moment in its event's folder; the job commits in batches, the first of one file, then up to 100 files or 5 s, never across an event, each one library change (the catalog-folder items of the folders it makes, parents first, then developed-asset, asset-source and pick items) announced as one event, clearing its picks; a file that fails is listed in failed and stays picked; picks on a removable volume are conflict (naming it in data) unless use_copies finds each a copy to verify or confirm_removable is set, and with use_copies a card's pick is developed from the first copy whose fingerprint matches (used), else from the card only with confirm_removable; an offline file fails with source-unavailable; nothing to develop is validation; job.cancel stops between files and keeps every batch committed; library.undo of a batch sends its photographs back, picks their files again and deletes the folders it made; a live retry answers the first job; a completed retry after restart reconstructs its stored terminal report, while an interrupted admission reports interruption and requires a fresh request ID; resource-limit when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "asset.send-back",
         crate::catalog_types::api::AssetTargets,
         owner::library::develop::asset_send_back,
         "sends the photographs targets names back as one library change, answering {outcome, change?, items, deduplicated}: each one's catalog record (asset, capture, Original entry, state and requests) is deleted and its file picked again with its signature now (kept as picked when it already is); refused with conflict, naming the item in data.items and changing nothing, for a photograph with history beyond its Original, a named version or a collection (it leaves only by removal) and for one whose original is not at its locator (it could not be picked again); a sent-back photograph is developed again with pick.develop, so undoing a send-back is conflict; targets as asset.move's; the file is never touched",
         retries: Durable,
-    ),
+    )
+    .irreversible(),
     // Resolving missing originals.
     owner!(
         "source.missing",
@@ -1321,7 +1485,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::missing::source_relink,
         "points every photograph of pairs at its file in one transaction as one library change (asset-source items, labelled Relinked <file> or Relinked N originals, undone with library.undo), answering {outcome, change?, items, deduplicated}: each photograph's source folder becomes its file's folder, its volume is recorded and its original recorded available, and its history, edits and fingerprint are unchanged; a pair whose photograph already names its file needs nothing; every other pair must be a file a finished source.find verified for that photograph, still with the signature it had then and named by no other photograph, or nothing changes and the request is refused naming every such pair in data.pairs [{asset_id, path, reason: not-verified | changed | gone | claimed | same-file, by?}] (the first 100, with data.count): source-unavailable when a file is gone, conflict otherwise; a relative path, an unknown photograph, and a photograph or file named twice are validation; more than 50,000 pairs is resource-limit",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     // Removing.
     owner!(
         "asset.remove",
@@ -1329,21 +1494,25 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::remove::asset_remove,
         "moves the photographs targets names to Removed as one library change of asset-removal items (labelled Removed <file> or Removed N photographs), answering {outcome, change?, items, deduplicated}: each keeps its edits, history, versions, collections and catalog folder, and leaves every browse source but removed and every count; a photograph already removed keeps when it was removed, and none to remove is a no-op; a merge's result is removed with its stack deactivated (its merge-stack item removed, in the same change), its originals untouched; library.undo puts them back; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "asset.restore",
         crate::catalog_types::api::AssetTargets,
         owner::library::remove::asset_restore,
         "puts the removed photographs targets names back as one library change (labelled Put back <file> or Put back N photographs), answering {outcome, change?, items, deduplicated}: each returns to its catalog folder, collections and every view as it was; a photograph not removed is left out, and none to put back is a no-op; a merge's result comes back with its stack active again, and the whole change is conflict, naming the stack, when another active stack now claims one of its inputs; library.undo removes them again; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "catalog.empty-removed",
         crate::catalog_types::api::LibraryRequest,
         owner::library::remove::catalog_empty_removed,
         "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, merges, remaining, deduplicated} (merges: how many of the deleted were saved merges' results; remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references, derived source reference, the merge it is the result of with its provenance and stack, and asset row, then the strokes, artifact rows and derived sources nothing remaining names (never a bracket original) (the artifacts' files are removed by a collect job it queues); records one event and marks every client's view stale; not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
         retries: Durable,
-    ),
+    )
+    .permissions("emptying Removed permanently deletes photographs' history and needs permission authority: only the desktop or luxforge-json --permission-authority may")
+    .irreversible(),
     // Batch settings and export.
     owner!(
         "batch.apply-settings",
@@ -1351,7 +1520,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::batch::batch_apply_settings,
         "starts a batch-settings job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the set is either inline settings with their origin ({kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}) or a library preset_id, read once, whose origin is {kind: preset, name, preset_id}; exactly one of settings and preset_id, and origin only with settings; it is checked once as edit.apply-settings checks it, so an unknown, non-presettable or overlapping action or a refused field refuses the submission, and a step whose module does not apply to a photograph's kind is skipped for that photograph; then it is applied to each photograph targets names, one at a time, exactly as edit.apply-settings applies it (against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone running after the field patches and recomputed per photograph; so each done photograph has its own entry labelled by the origin (Preset: <name> or Paste settings from <source>) and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), locked (a running task such as task.fill-generative holds it locked), not-applicable (none of the set's settings apply to it), unchanged (it already has them) or the code and message edit.apply-settings refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; the job's detail is the entry label and the photograph count; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "batch.export",
         crate::catalog_types::api::BatchExport,
@@ -1359,7 +1529,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written: [{asset_id, path, renderer, quality?}], skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.write exports it with settings, the same for every photograph (refused at once, before any job, for a chosen folder that is not an existing directory, validation with data.notice folder-missing), through the GPU tile service or the reference renderer, into settings.folder: each photograph's own original's folder for original, or the chosen folder; each file is named by the export's rule from its original's name, <stem><suffix>.<extension>, else <stem><suffix>-2.<extension> and so on per folder, at most 64 names read, and never replacing a file; each written file names the renderer that rendered it as export.write's result does ({record: gpu, reason: null}, or {record: reference, reason} with why the GPU did not, no reason on an owner with no GPU provider) and its quality as export.write's result names it, and records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.write refuses it with, such as source-unavailable for a missing or offline original, a refusing notice's code with its words (folder-missing for a derived photograph with original, webp-too-large or tiff-too-large for an output the format cannot hold), limit-unreachable when no quality fits the size limit, and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-settings'; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
 
         retries: Durable,
-    ),
+    )
+    .irreversible(),
     // Merges (`docs/design/hdr-merge.md`, `docs/design/panorama-merge.md`): planned and admitted
     // on the owner, merged on the merge lane's worker, published in one owner transaction. A kind
     // with no provider is refused before the parse.
@@ -1377,7 +1548,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         before: owner::merge::kinded,
         "starts the kind's merge job (hdr: an hdr-merge job), answering {job_id, status, deduplicated}, whose result is {merge_id, kind, result_asset_id, source_id, file_name, catalog_folder_id, merged: true, inputs, exposure_range_ev?: [low, high] (an HDR merge's), reused, change?, deduplicated, accounting?}: kind and its options (hdr) as merge.plan takes them; preview_id, when named, is the caller's open merge.preview of the same inputs, whose options must be its latest revision's (conflict otherwise, and for a preview that is not open, being merged, or whose inputs changed since it read them; its refused latest revision's refusal as merge.create's): the job takes its spool, proxies and alignment over and reads and aligns nothing again (a preview still preparing is continued behind its own job, outside the lane's bound, never restarted), its result equal bit for bit to a merge without a preview of the same options and development, the preview then gone; the inputs are resolved and checked as merge.plan does (plan_id, when named, must still be merge.plan's: conflict otherwise), a refusal answered at once: a header-level refusal as validation with the typed refusal in data, an input not there source-unavailable, an input an active stack claims conflict naming that stack (data.stack, data.result_asset_id), an exact recorded match in Removed conflict with data.put_back {merge_id, result_asset_id}, a folder choice that names an unknown folder or an invalid name validation (a new folder's taken name conflict), the provider absent not-ready, the temporary storage past the kind's ceiling (hdr: 16 GiB) or the free space resource-limit, and one merge of any kind running with one waiting resource-limit; an exact active match answers a finished job with reused: true, merges nothing and records no library change, and a merge already queued or running is answered as it is; otherwise the job runs on the merge lane, off the owner: each input is checked against its signature at the request, read once with its SHA-256 and developed through the shared verified RAW development (the reference first, its as-shot white balance for all), reduced to its analysis proxy and spooled, its development then released; the decoded bracket is validated, its exposures resolved or fitted, it is aligned (alignment auto or off) with its common coverage, and its moving regions found (deghost auto or off); the result is fused chunk by chunk from bounded windows of the spool into a durable derived source, its inputs' signatures checked again, and published in one transaction and one library change (asset-removal and merge-stack written; library.undo keeps the result in Removed as an undone merge, library.redo restores it): a photograph named after the reference with HDR in the folder its folder choice (folder, default merge.plan's proposal) files it in for the reference's capture day, as pick.develop files a photograph; any year, place or day folder the choice needs is found by name or made in the same transaction, recorded just before the publication as a library change of its own (method folder.create, the request's actor and request_id, catalog-folder items), so undoing the merge leaves those folders holding its result; with the reference's capture time, place, camera, lens, aperture, ISO and focal length and no shutter time, its provenance and its stack leading the inputs, whose originals are never changed; progress names the phases reading, aligning, merging and saving, and while it runs job.read's result is {stage, accounting: {scratch_bytes, scratch_peak_bytes, scratch_limit_bytes, temp_bytes, development_bytes}}; job.cancel stops it between reads, development stages, alignment passes and chunks, and once it reached the owner first nothing is published; a cancel after publication finds the job ready; no selection, workspace change or disconnect cancels it; the job removes its spool files however it ends; an input gone or changed while it runs fails it with source-unavailable or conflict naming it, a full disk with resource-limit; a retry, or the same merge requested again while it is queued or running, answers that job with deduplicated: true; after a restart a retry answers a finished job with the published result, or with the error it ended with, or cancelled with data.reason interrupted and nothing published when Luxforge stopped first, which a new request_id merges again; the job records one event as it ends, however it ends, naming its job_id",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.preview",
         crate::catalog_types::api::MergePreviewParams,
@@ -1409,14 +1581,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::merge::merge_remove,
         "Remove merge: moves the merges' results to Removed as one library change, each with its stack deactivated so its originals show again, exactly as asset.remove of the results does, answering {outcome, change?, items, deduplicated}; the results keep their source, edits and history, and library.undo puts them back; an unknown merge is validation",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.restore",
         crate::catalog_types::api::MergeTargets,
         owner::merge::merge_restore,
         "Put back merge: puts the merges' results back as one library change, each stack active again, exactly as asset.restore of the results does, answering {outcome, change?, items, deduplicated}; conflict naming the stack when another active stack now claims an input; an unknown merge is validation",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.rerun",
         crate::catalog_types::api::MergeRerun,
@@ -1424,7 +1598,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         before: owner::merge::kinded,
         "starts the merge's kind's job (hdr: an hdr-merge job) that merges a recorded merge's exact inputs again into a new result photograph, answering {job_id, status, deduplicated}, whose result is merge.create's with replaced: the merge's recorded options are used save those named under its kind's options (hdr: reference, exposure_overrides, alignment, deghost; folder_id defaults to the old result's folder); refused before anything is read: validation when kind names another kind than the merge's, or for another kind's options; incompatible when this build's provider or its version is not the one that made the merge, not-ready when there is none, source-unavailable or conflict naming an input gone or changed since it was merged, and conflict naming another active stack that claims an input; each input's SHA-256 must be the recorded one (conflict otherwise); with the very same inputs, options and provider and a whole saved source, the new result is given that source and nothing is merged; otherwise it merges as merge.create does; the new result replaces an active old one as the inputs' stack in the same library change, the old result going to Removed with its edits and history, and library.undo restores the old; no result's source or edits are ever overwritten; retries, cancellation, progress and events as merge.create's",
         retries: Durable,
-    ),
+    )
+    .reversible(),
     // Stacks.
     owner!(
         "stack.inspect",
@@ -1607,6 +1782,38 @@ impl Method {
         }
     }
 
+    /// What the method's change is: what a host method's entry declares. An action — a module's or
+    /// a mask command — is a history entry, which history undo takes back, and reaches no network.
+    /// A task queues a job whose outputs are new artifacts or candidates, which change nothing
+    /// that exists and which `job.cancel` stops and releases; it reaches the network when a
+    /// capability it uses sends a request ([`crate::CapabilityKind::RemoteImageRequest`]). A query
+    /// reads.
+    pub(super) fn effects(&self, registry: &ModuleRegistry) -> Effects {
+        match self {
+            Self::Host(spec) => spec.effects,
+            Self::Action(_) => Effects {
+                reversible: Some(true),
+                network: false,
+            },
+            Self::Task(task_id) => Effects {
+                reversible: Some(true),
+                network: registry.task(task_id).is_some_and(|(provider, task)| {
+                    task_reaches_network(provider.descriptor(), task)
+                }),
+            },
+            Self::Query(_) => Effects::UNDECLARED,
+        }
+    }
+
+    /// The refusal a client without permission authority gets, for a method only permission
+    /// authority may call at all ([`MethodSpec::permission_only`]); generated methods have none.
+    pub(super) fn permission_only(&self) -> Option<&'static str> {
+        match self {
+            Self::Host(spec) => spec.permission_only,
+            Self::Action(_) | Self::Task(_) | Self::Query(_) => None,
+        }
+    }
+
     pub(super) fn route(&self) -> Route<'_> {
         match self {
             Self::Host(MethodSpec {
@@ -1688,6 +1895,21 @@ fn owner_answered(name: &str) -> Error {
     Error::internal(format!("{name} is answered by the catalog owner"))
 }
 
+/// Whether a task can reach the network: a capability it uses sends a request. A download is the
+/// resource install's, which the task only reads once installed, and a local runtime sends nothing.
+fn task_reaches_network(
+    descriptor: &crate::ModuleDescriptor,
+    task: &crate::capabilities::descriptor::TaskDescriptor,
+) -> bool {
+    descriptor.capabilities.iter().any(|capability| {
+        task.uses.contains(&capability.id)
+            && matches!(
+                capability.kind,
+                crate::capabilities::descriptor::CapabilityKind::RemoteImageRequest { .. }
+            )
+    })
+}
+
 /// Task method names are generated in a third namespace: task `generate-proof-tint` is
 /// `task.generate-proof-tint`.
 pub(super) fn task_method(task_id: &str) -> String {
@@ -1733,6 +1955,7 @@ pub(crate) fn host_envelope(name: &str) -> Envelope {
 /// fields the caller names, but the identities it addresses say which state those fields merge over,
 /// and a default is what a client seeds or resets the field to. Every other one is optional.
 fn method_schema(
+    registry: &ModuleRegistry,
     method: &Method,
     mut required: Vec<Value>,
     mut optional: Map<String, Value>,
@@ -1768,6 +1991,41 @@ fn method_schema(
     }
     if method.session_scoped() {
         schema["session_scoped"] = json!(true);
+    }
+    let effects = method.effects(registry);
+    if let Some(reversible) = effects.reversible {
+        schema["reversible"] = json!(reversible);
+    }
+    if effects.network {
+        schema["network"] = json!(true);
+    }
+    if method.permission_only().is_some() {
+        schema["authority"] = json!(ClientAuthority::Permissions);
+    }
+    if let Method::Host(spec) = method {
+        if !spec.images.is_empty() {
+            schema["images"] = json!(spec.images);
+        }
+        // A job's own record, as job.read answers it and job.wait answers it under `job`, names
+        // the pictures of its kind's result.
+        let record = match spec.name {
+            JOB_READ => Some(""),
+            JOB_WAIT => Some("job."),
+            _ => None,
+        };
+        if let Some(record) = record {
+            let fields: Map<String, Value> = JOB_IMAGES
+                .iter()
+                .map(|(kind, fields)| {
+                    let paths: Vec<String> = fields
+                        .iter()
+                        .map(|field| format!("{record}result.{field}"))
+                        .collect();
+                    ((*kind).to_owned(), json!(paths))
+                })
+                .collect();
+            schema["job_images"] = json!({"kind": format!("{record}kind"), "fields": fields});
+        }
     }
     if let Some(patch) = patch {
         schema["patch"] = json!(patch);
@@ -1822,6 +2080,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 .into_iter()
                 .collect();
             let schema = method_schema(
+                registry,
                 &Method::Host(spec),
                 required,
                 Map::new(),
@@ -1868,6 +2127,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 None => action.notes.clone(),
             };
             let mut schema = method_schema(
+                registry,
                 &Method::Action(action.id.clone()),
                 vec![json!("asset_id"), json!("mutation")],
                 optional,
@@ -1906,6 +2166,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 );
             }
             let mut schema = method_schema(
+                registry,
                 &Method::Query(query.id.clone()),
                 vec![json!("asset_id")],
                 optional,
@@ -1935,6 +2196,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 task.notes
             );
             let schema = method_schema(
+                registry,
                 &Method::Task(task.id.clone()),
                 required,
                 Map::new(),
@@ -1991,6 +2253,11 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         // A method whose effect lives only in the caller's session marks itself `session_scoped`.
         "session": {
             "notes": "A method marked session_scoped: true acts only on the calling client's session, such as its draft, previewed entry, view, workspace or browse selection, which ends when the client's connection closes: call it on a connection that also sends what depends on it, never on a connection of its own.",
+        },
+        // What each method's markers mean, for a client that adapts the registry, such as an MCP
+        // adapter, without knowing any one method.
+        "markers": {
+            "notes": "authority: \"permissions\" marks a method only a client with permission authority may call at all; any other client is refused forbidden before its handler runs or a retry is answered (a method that needs it for one argument value, such as usage.set's opt-in, is not marked and says so in its notes). reversible marks every mutating method and no read: true when its change can be put back through this API (history.undo, library.undo, the same method with the earlier value, or removing exactly what it created; every edit.* and mask.* action is a history entry, and a task.* only adds a job and outputs nothing references, which job.cancel stops and releases), false when it discards something no call brings back or acts where Luxforge cannot take it back (a deletion, a secret, collected artifacts, a file written outside the catalog, a permission change, an installed update). network: true marks a method that can reach the network, omitted otherwise. images lists the dotted fields of a method's answer that hold the path of a JPEG the owner wrote for display; job_images, on job.read and job.wait, is {kind, fields}: kind is the answer's field naming the job's kind and fields maps a job kind to the dotted fields of the answer that hold such a path once its result is ready. A field absent from an answer holds none. An export's output is never marked.",
         },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {
@@ -6478,6 +6745,9 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 }
+#[cfg(test)]
+#[path = "markers_tests.rs"]
+mod markers_tests;
 #[cfg(test)]
 #[path = "usage_coverage_tests.rs"]
 mod usage_coverage_tests;

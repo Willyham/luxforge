@@ -5,7 +5,7 @@ use super::{
     CapabilityHost, asset_exists, encode, profile_origin, registered, resources::download_scope,
 };
 use crate::{
-    ClientAuthority, EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry,
+    EditorService, Error, JobId, ModuleDescriptor, ModuleRegistry,
     api::{Origin, announce_once, params::host_params},
     capabilities::{
         descriptor::{CapabilityDescriptor, CapabilityKind},
@@ -50,22 +50,18 @@ host_params! {
 }
 
 impl CapabilityHost {
-    /// `module.permission.grant`: only a client with permission authority, only for a scope the
-    /// module can use now. The grant records the envelope's actor and request identity; a retry of
-    /// the request is answered by the owner's request table before it reaches here.
+    /// `module.permission.grant`, only for a scope the module can use now. Only a client with
+    /// permission authority reaches here: the method table declares it, and the catalog owner
+    /// refuses anyone else before any handler runs. The grant records the envelope's actor and
+    /// request identity; a retry of the request is answered by the owner's request table before it
+    /// reaches here.
     pub(crate) fn grant(
         &mut self,
         service: &EditorService,
-        authority: ClientAuthority,
         request: GrantParams,
         origin: &Origin,
         announce: &mut Vec<Origin>,
     ) -> Result<Value, Error> {
-        if authority != ClientAuthority::Permissions {
-            return Err(Error::forbidden(
-                "granting a permission needs permission authority",
-            ));
-        }
         let registry = service.registry();
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;

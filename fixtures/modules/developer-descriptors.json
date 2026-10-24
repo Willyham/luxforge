@@ -762,6 +762,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.select-controls-choice": {
@@ -800,6 +801,7 @@
           "mutation",
           "key"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.set-controls": {
@@ -1045,6 +1047,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "query.controls-choices": {
@@ -1239,7 +1242,8 @@
         "required": [
           "mutation",
           "asset_id"
-        ]
+        ],
+        "reversible": true
       },
       "task.publish-proof-selection": {
         "mutates": true,
@@ -1250,7 +1254,8 @@
         "required": [
           "mutation",
           "asset_id"
-        ]
+        ],
+        "reversible": true
       }
     }
   }

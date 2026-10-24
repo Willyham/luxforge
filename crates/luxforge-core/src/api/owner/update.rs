@@ -20,7 +20,7 @@
 //!   process made.
 use super::{Call, Owner};
 use crate::{
-    ClientAuthority, Error, JobId,
+    Error, JobId,
     api::{
         ApiResponse, Origin, announce_once,
         methods::value,
@@ -275,15 +275,6 @@ fn running_jobs(owner: &Owner, doing: &str) -> Result<(), Error> {
     })))
 }
 
-fn permission(owner: &Owner, call: &Call<'_>, doing: &str) -> Result<(), Error> {
-    if owner.authority(call.client) != ClientAuthority::Permissions {
-        return Err(Error::forbidden(format!(
-            "{doing} needs permission authority"
-        )));
-    }
-    Ok(())
-}
-
 /// `update.status`.
 pub(in crate::api) fn read(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
     refresh(owner);
@@ -336,7 +327,6 @@ pub(in crate::api) fn install(
     call: &Call<'_>,
     _: UpdateRequest,
 ) -> Result<Value, Error> {
-    permission(owner, call, "installing an update")?;
     refresh(owner);
     let now = status(owner);
     if let Some(refusal) = unavailable(&now, "installing an update") {
@@ -410,10 +400,9 @@ host_params! {
 /// the same quit path as an install.
 pub(in crate::api) fn move_to_applications(
     owner: &mut Owner,
-    call: &Call<'_>,
+    _: &Call<'_>,
     params: UpdateMove,
 ) -> Result<Value, Error> {
-    permission(owner, call, "moving into Applications")?;
     let port = port(owner).filter(|port| port.status().can_move_to_applications);
     let Some(port) = port else {
         return Err(

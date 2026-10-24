@@ -2339,6 +2339,14 @@ impl Owner {
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
         // Every mutation envelope is checked here, once, before any handler runs.
         method.envelope().check(&request.params)?;
+        // So is the authority of a method only permission authority may call, from the same
+        // declaration `schema.list` marks it with, before a retry is answered: authority is
+        // current even when the requested work was completed earlier, or by an older owner.
+        if let Some(refusal) = method.permission_only()
+            && self.authority(client) != ClientAuthority::Permissions
+        {
+            return Err(Error::forbidden(refusal));
+        }
         // A retried mutation whose method declares the owner answers it is answered from the
         // request table, and its handler does not run again; the catalog answers the others.
         let key = match method.retries() {
@@ -2349,22 +2357,12 @@ impl Owner {
                 }),
             Retries::Catalog | Retries::None => None,
         };
-        if method.retries() == Retries::Durable {
-            // Authority is current even when the requested work was completed by an older owner.
-            if request.method == "catalog.empty-removed"
-                && self.authority(client) != ClientAuthority::Permissions
-            {
-                return Err(Error::forbidden(
-                    "emptying Removed needs permission authority",
-                ));
-            }
-            if let Some(key) = &key
-                && let Some(mut first) =
-                    library::durable_retry(self, &key.durable(), request, client)?
-            {
-                usage::deduplicated(self, &request.method, &mut first);
-                return Ok(Planned::Value(first));
-            }
+        if method.retries() == Retries::Durable
+            && let Some(key) = &key
+            && let Some(mut first) = library::durable_retry(self, &key.durable(), request, client)?
+        {
+            usage::deduplicated(self, &request.method, &mut first);
+            return Ok(Planned::Value(first));
         }
         if method.retries() != Retries::Durable
             && let Some(key) = &key
