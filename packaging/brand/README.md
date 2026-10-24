@@ -70,6 +70,10 @@ joins and flat terminals sit with the arch.
 Keep clear space of a quarter of the mark's width on every side. Do not set the horizontal lockup
 smaller than 20 px tall.
 
+The editor's empty canvas draws the stacked lockup from `lockup-stacked-dark.svg`'s view box and
+word outline and the colours of both stacked files, so a change to them changes the app; its
+tests check that the mark's construction and colours still match those drawings.
+
 ## Colour
 
 The colours are the Develop histogram's: its red, green and blue fills and the colours their

@@ -1,20 +1,24 @@
-//! The empty Develop canvas: the invitation to open a photograph under a piece of art, drawn by one
-//! shader of its own (`empty_canvas.wgsl`) in the theme's colours.
+//! The empty Develop canvas: the invitation to open a photograph under the Luxforge lockup, drawn
+//! by one shader of its own (`empty_canvas.wgsl`).
 //!
-//! The art is a lens seen from the front, stopping down through f/1.4 to f/8 and back, a tunnel of
-//! film rushing away through its aperture, bokeh the aperture's own shape drifting behind it and the
-//! word LUXFORGE in pixel letters under it, which a glint crosses every few seconds. Each 2 pt art pixel is an ordered-dithered level of one of two ramps,
-//! one towards the theme's brightest text and one towards its accent, with the canvas's own fill at
-//! the ground level, which the shader leaves transparent so the fill shows through exactly.
+//! The art is the brand pack's stacked lockup (`packaging/brand`): the Midtone mark over the
+//! wordmark, whose outline is read from the pack's own drawing, never retyped. When it first
+//! appears the mark's two channels rise from the tonal axis and their light adds to the arch where
+//! they overlap, and the word fades in under them; then the channels sway a little, out of step, as
+//! a histogram does while the exposure moves. The mark is the house mix, never remixed: on a dark
+//! ground the colour drawing with the word in Bright, on a light one the paper drawing, whose arch
+//! is the ground itself, with the word in Ink. Every pixel the lockup does not cover is left
+//! transparent, so the canvas's fill shows through it exactly.
 //!
 //! - **Bounded motion.** The art's clock is the widget's own, advanced by the redraws it asks for,
 //!   about thirty a second, so it costs the editor no message and no view rebuild. It plays while
 //!   the pointer has moved over the canvas within [`AWAKE`], then eases to a stop over [`EASE`] and
-//!   asks for nothing more; the next pointer movement over it eases it back in from where it
-//!   stopped. Idle means asleep.
+//!   asks for nothing more; the sway eases out with it, so the art comes to rest as the mark
+//!   exactly. The next pointer movement over it eases it back in from where it stopped. Idle means
+//!   asleep.
 //! - **Held still.** A launch that draws its window on a software adapter or none, an evidence run
 //!   and a hidden launch hold the art still for the life of the process ([`hold_still`]): it draws
-//!   one composed frame and never asks for another.
+//!   the lockup at rest, once, and never asks for another frame.
 use crate::{Element, Palette, Theme, Token, theme};
 use iced::{
     Color, Event, Length, Point, Rectangle, Size,
@@ -29,8 +33,10 @@ use iced::{
     },
     window,
 };
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use wgpu::util::DeviceExt as _;
 
 /// How often the art redraws while it plays: about thirty times a second, enough for the motion to
 /// read as smooth without redrawing the window at the display's rate.
@@ -45,41 +51,57 @@ pub const EASE: Duration = Duration::from_millis(1500);
 /// The longest step one redraw advances the art by, so a late frame never jumps it.
 const MAX_STEP: Duration = Duration::from_millis(100);
 
-/// The art's time in a frame held still: the aperture half closed, no glint on the word.
-const STILL_TIME: f32 = 7.6;
+/// The art's time in a frame held still: the channels risen and the word in.
+const STILL_TIME: f32 = 4.0;
 
-/// The size of one art pixel, in logical pixels.
-const ART_PIXEL: f32 = 2.0;
+/// The lockup's width as a share of the canvas's width, and of the height the invitation leaves
+/// it, and its bounds. The share keeps far more than the brand's clear space, a quarter of the
+/// mark's width, on every side; the least keeps the mark well above the 32 px its drawing needs.
+const WIDTH_SHARE: f32 = 0.3;
+const HEIGHT_SHARE: f32 = 0.42;
+const LOCKUP_MAX: f32 = 320.0;
+const LOCKUP_MIN: f32 = 110.0;
 
-/// The gap between the lens and the word under it.
-const WORD_GAP: f32 = 26.0;
-
-/// The word's height in font pixels, its drop shadow's row included, and the most art pixels a
-/// side of a font pixel.
-const WORD_ROWS: f32 = 8.0;
-const FONT_MAX: f32 = 3.0;
-
-/// The word's width in font pixels: five a letter and one between letters.
-const WORD_COLUMNS: f32 = 47.0;
-
-/// The lens radius each art pixel a side of the word's font pixels needs: the word is never wider
-/// than the lens.
-const RADIUS_PER_FONT_PIXEL: f32 = 60.0;
-
-/// The invitation's line, about [`theme::SIZE_TITLE`] high, and the gap between it and the word.
+/// The invitation's line, about [`theme::SIZE_TITLE`] high, and the least gap between it and the
+/// word; a larger lockup's clear space is wider.
 const INVITATION_HEIGHT: f32 = 18.0;
-const INVITATION_GAP: f32 = 22.0;
+const INVITATION_GAP: f32 = 28.0;
 
-/// The lens's radius as a share of the room the canvas gives it, and its bounds.
-const LENS_SHARE: f32 = 0.3;
-const LENS_MAX: f32 = 230.0;
-const LENS_MIN: f32 = 48.0;
+/// The stacked lockup, as the brand pack draws it.
+const LOCKUP_SVG: &str = include_str!("../../../packaging/brand/lockup/lockup-stacked-dark.svg");
+
+/// The mark's construction (`packaging/brand/midtone.py`): its width as a share of the word's in
+/// the stacked lockup, the quarters' radius as a share of the square's side, and the paper
+/// drawing's tonal axis as a share of the mark's height.
+const MARK_SHARE: f32 = 0.42;
+const R0: f32 = 0.94;
+const AXIS: f32 = 0.045;
+
+/// The brand's colours (`packaging/brand/README.md`): the house mix's channels, Blue and
+/// Chartreuse, and the Light their overlap makes; the channels' fills on paper; and the word's
+/// Bright on dark grounds and Ink on light ones.
+const BLUE: Color = Color::from_rgb8(0x4a, 0x75, 0xbf);
+const CHARTREUSE: Color = Color::from_rgb8(0x9d, 0xc5, 0x70);
+const LIGHT: Color = Color::from_rgb8(0xee, 0xf5, 0xf9);
+const BLUE_ON_PAPER: Color = Color::from_rgb8(0x46, 0x6e, 0xb2);
+const CHARTREUSE_ON_PAPER: Color = Color::from_rgb8(0x90, 0xb4, 0x68);
+const BRIGHT: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
+const INK: Color = Color::from_rgb8(0x17, 0x18, 0x1b);
+
+/// The most contours and segments the wordmark's flattened outline may have, as
+/// `empty_canvas.wgsl`'s `Word` holds them.
+const CONTOURS: usize = 16;
+const SEGMENTS: usize = 640;
+
+/// How far a flattened curve of the wordmark may stray from the drawing, in lockup units: a tenth
+/// of a physical pixel at the largest lockup on a 2× display.
+const TOLERANCE: f32 = 0.1;
 
 static STILL: AtomicBool = AtomicBool::new(false);
 
-/// Hold the empty canvas's art still for the life of the process: it draws one composed frame and
-/// asks for no redraw. Call it once at launch, before the window opens, for a launch whose window
-/// is not drawn by a hardware GPU, and for evidence and hidden launches.
+/// Hold the empty canvas's art still for the life of the process: it draws the lockup at rest,
+/// once, and asks for no redraw. Call it once at launch, before the window opens, for a launch
+/// whose window is not drawn by a hardware GPU, and for evidence and hidden launches.
 pub fn hold_still() {
     STILL.store(true, Ordering::Release);
 }
@@ -89,7 +111,7 @@ pub fn held_still() -> bool {
     STILL.load(Ordering::Acquire)
 }
 
-/// The empty canvas: the art, filling the canvas, with `invitation` centred under its lens. The
+/// The empty canvas: the art, filling the canvas, with `invitation` centred under the lockup. The
 /// art's ground is `ground`, resolved from the palette the canvas is drawn with, and must be the
 /// fill the canvas region draws under it.
 pub fn empty_canvas<'a, Message: 'a>(
@@ -125,45 +147,303 @@ pub fn empty_canvas<'a, Message: 'a>(
     .into()
 }
 
-/// Where the lens, the word and the invitation sit in a canvas, in its logical pixels: the three
-/// centred together, top to bottom, the lens a share of the room the other two leave.
+/// Where the lockup and the invitation sit in a canvas, in its logical pixels: the two centred
+/// together, top to bottom, the lockup a share of the room the invitation leaves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Composition {
-    pub centre: Point,
-    pub radius: f32,
-    /// The top of the word.
-    pub word_top: f32,
-    /// The art pixels a side of one of the word's font pixels.
-    pub font: f32,
+    /// The lockup's top left.
+    pub origin: Point,
+    /// The lockup's width; its height is the drawing's at that width.
+    pub width: f32,
     /// The top of the invitation's line.
     pub invitation_top: f32,
 }
 
 impl Composition {
-    /// The composition in a canvas of `size`, or `None` when the lens would be too small to read,
-    /// where the invitation is drawn alone.
+    /// The composition in a canvas of `size`, or `None` when the lockup would be too small to
+    /// read, where the invitation is drawn alone.
     pub fn of(size: Size) -> Option<Self> {
-        let below = |font: f32| {
-            WORD_GAP + WORD_ROWS * font * ART_PIXEL + INVITATION_GAP + INVITATION_HEIGHT
-        };
-        let room = size.width.min(size.height - below(FONT_MAX));
-        let radius = (room * LENS_SHARE).min(LENS_MAX);
-        if radius < LENS_MIN {
+        let aspect = LOCKUP.height / LOCKUP.width;
+        // The room under the lockup, its gap as wide as the largest lockup's clear space.
+        let below = invitation_gap(LOCKUP_MAX) + INVITATION_HEIGHT;
+        let width = (size.width * WIDTH_SHARE)
+            .min((size.height - below) * HEIGHT_SHARE / aspect)
+            .min(LOCKUP_MAX);
+        if width < LOCKUP_MIN {
             return None;
         }
-        let font = (radius / RADIUS_PER_FONT_PIXEL)
-            .floor()
-            .clamp(1.0, FONT_MAX);
-        let top = ((size.height - 2.0 * radius - below(font)) / 2.0).max(0.0);
-        let word_top = top + 2.0 * radius + WORD_GAP;
+        let height = width * aspect;
+        let top = ((size.height - height - below) / 2.0).max(0.0);
         Some(Self {
-            centre: Point::new(size.width / 2.0, top + radius),
-            radius,
-            word_top,
-            font,
-            invitation_top: word_top + WORD_ROWS * font * ART_PIXEL + INVITATION_GAP,
+            origin: Point::new((size.width - width) / 2.0, top),
+            width,
+            invitation_top: top + height + invitation_gap(width),
         })
     }
+
+    /// The lockup's height.
+    pub fn height(&self) -> f32 {
+        self.width * LOCKUP.height / LOCKUP.width
+    }
+
+    /// Where the lockup falls at `scale` physical pixels a logical one: its top left in physical
+    /// pixels and its physical pixels a lockup unit. The mark's side is a whole number of pixels,
+    /// and its left edge and baseline lie on pixel edges, so its straight edges are crisp.
+    fn placement(&self, scale: f32) -> (Point, f32) {
+        let [x0, base, side, _] = LOCKUP.mark;
+        let unit = (self.width * scale / LOCKUP.width * side).round().max(1.0) / side;
+        let left = (self.origin.x * scale + x0 * unit).round() - x0 * unit;
+        let top = (self.origin.y * scale + base * unit).round() - base * unit;
+        (Point::new(left, top), unit)
+    }
+}
+
+/// The gap between a lockup `width` wide and the invitation: its clear space, a quarter of the
+/// mark's width, and never less than [`INVITATION_GAP`].
+fn invitation_gap(width: f32) -> f32 {
+    INVITATION_GAP.max(MARK_SHARE * width / 4.0)
+}
+
+/// The stacked lockup the art draws, in its drawing's units.
+#[derive(Debug)]
+struct Lockup {
+    width: f32,
+    height: f32,
+    /// The mark: its left corner's x, its baseline's y, the square's side and the quarters' radius.
+    mark: [f32; 4],
+    word: Outline,
+}
+
+static LOCKUP: LazyLock<Lockup> = LazyLock::new(|| {
+    Lockup::parse(LOCKUP_SVG).unwrap_or_else(|error| panic!("the brand's stacked lockup: {error}"))
+});
+
+impl Lockup {
+    /// The lockup from its drawing: the view box's size, the mark from the construction, centred on
+    /// the word at the top, and the word from the drawing's last path, its outline.
+    fn parse(svg: &str) -> Result<Self, String> {
+        let view_box = attribute(svg, "viewBox").ok_or("no view box")?;
+        let numbers: Vec<f32> = view_box
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|error| format!("the view box: {error}"))?;
+        let &[0.0, 0.0, width, height] = numbers.as_slice() else {
+            return Err(format!("the view box {view_box:?}"));
+        };
+        let word = svg
+            .rsplit(" d=\"")
+            .next()
+            .and_then(|tail| tail.split('"').next())
+            .ok_or("no word")?;
+        let side = MARK_SHARE * width;
+        Ok(Self {
+            width,
+            height,
+            mark: [(width - side) / 2.0, R0 * side, side, R0 * side],
+            word: Outline::flatten(word)?,
+        })
+    }
+}
+
+/// The value of the first attribute `name` in `svg`.
+fn attribute<'a>(svg: &'a str, name: &str) -> Option<&'a str> {
+    let at = svg.find(&format!(" {name}=\""))? + name.len() + 3;
+    svg[at..].split('"').next()
+}
+
+/// An outline flattened to line segments, contour by contour.
+#[derive(Debug, Default)]
+struct Outline {
+    /// Each contour's bounds, its least x and y then its greatest, and its first segment and count
+    /// of segments.
+    contours: Vec<([f32; 4], [u32; 2])>,
+    /// Each segment's start and end.
+    segments: Vec<[f32; 4]>,
+}
+
+impl Outline {
+    /// The outline of the path data `d`, which uses the absolute `M`, `L`, `H`, `V`, `Q` and `Z`
+    /// commands only, as the brand's outlines do, each curve flattened within [`TOLERANCE`].
+    fn flatten(d: &str) -> Result<Self, String> {
+        let tokens = path_tokens(d)?;
+        let mut outline = Self::default();
+        let (mut at, mut command) = (0, None);
+        let (mut current, mut start, mut first) = ([0.0f32; 2], [0.0f32; 2], 0);
+        while at < tokens.len() {
+            if let PathToken::Command(next) = tokens[at] {
+                command = Some(next);
+                at += 1;
+            }
+            match command {
+                Some(b'Z') => {
+                    outline.close(&mut current, start, first);
+                    first = outline.segments.len();
+                    command = None;
+                }
+                Some(b'M') => {
+                    outline.close(&mut current, start, first);
+                    first = outline.segments.len();
+                    let [x, y] = numbers(&tokens, &mut at)?;
+                    (current, start) = ([x, y], [x, y]);
+                    // Pairs after a move's first are lines.
+                    command = Some(b'L');
+                }
+                Some(b'L') => {
+                    let to = numbers(&tokens, &mut at)?;
+                    outline.line(&mut current, to);
+                }
+                Some(b'H') => {
+                    let [x] = numbers(&tokens, &mut at)?;
+                    let to = [x, current[1]];
+                    outline.line(&mut current, to);
+                }
+                Some(b'V') => {
+                    let [y] = numbers(&tokens, &mut at)?;
+                    let to = [current[0], y];
+                    outline.line(&mut current, to);
+                }
+                Some(b'Q') => {
+                    let [cx, cy, x, y] = numbers(&tokens, &mut at)?;
+                    let (from, control, to) = (current, [cx, cy], [x, y]);
+                    let bend = (from[0] - 2.0 * cx + x).hypot(from[1] - 2.0 * cy + y);
+                    // A quadratic strays from the chords of n equal steps by at most bend / 4n².
+                    let steps = (bend / (4.0 * TOLERANCE)).sqrt().ceil().clamp(1.0, 64.0) as u32;
+                    for step in 1..=steps {
+                        let t = step as f32 / steps as f32;
+                        let point = |axis: usize| {
+                            let u = 1.0 - t;
+                            u * u * from[axis] + 2.0 * u * t * control[axis] + t * t * to[axis]
+                        };
+                        outline.line(&mut current, [point(0), point(1)]);
+                    }
+                }
+                Some(other) => return Err(format!("the path command {:?}", other as char)),
+                None => return Err("a number before any command".into()),
+            }
+        }
+        outline.close(&mut current, start, first);
+        if outline.contours.len() > CONTOURS || outline.segments.len() > SEGMENTS {
+            return Err(format!(
+                "{} contours and {} segments, more than the shader's {CONTOURS} and {SEGMENTS}",
+                outline.contours.len(),
+                outline.segments.len()
+            ));
+        }
+        Ok(outline)
+    }
+
+    fn line(&mut self, current: &mut [f32; 2], to: [f32; 2]) {
+        if *current != to {
+            self.segments.push([current[0], current[1], to[0], to[1]]);
+        }
+        *current = to;
+    }
+
+    /// Close the contour whose segments start at `first`, back to its `start`.
+    fn close(&mut self, current: &mut [f32; 2], start: [f32; 2], first: usize) {
+        self.line(current, start);
+        let segments = &self.segments[first..];
+        if segments.is_empty() {
+            return;
+        }
+        let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for &[x0, y0, x1, y1] in segments {
+            bounds = [
+                bounds[0].min(x0).min(x1),
+                bounds[1].min(y0).min(y1),
+                bounds[2].max(x0).max(x1),
+                bounds[3].max(y0).max(y1),
+            ];
+        }
+        self.contours
+            .push((bounds, [first as u32, segments.len() as u32]));
+    }
+
+    /// The outline as `empty_canvas.wgsl`'s `Word` lays it out, unused contours empty.
+    fn block(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(WORD_BYTES);
+        let empty = ([1e30, 1e30, -1e30, -1e30], [0, 0]);
+        let contours = || {
+            self.contours
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(empty))
+                .take(CONTOURS)
+        };
+        for (bounds, _) in contours() {
+            for value in bounds {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for (_, [first, count]) in contours() {
+            for value in [first, count, 0, 0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for segment in self
+            .segments
+            .iter()
+            .chain(std::iter::repeat(&[0.0; 4]))
+            .take(SEGMENTS)
+        {
+            for value in segment {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PathToken {
+    Command(u8),
+    Number(f32),
+}
+
+/// The commands and numbers of the path data `d`.
+fn path_tokens(d: &str) -> Result<Vec<PathToken>, String> {
+    let bytes = d.as_bytes();
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        if byte.is_ascii_alphabetic() {
+            tokens.push(PathToken::Command(byte));
+            at += 1;
+        } else if byte == b' ' || byte == b',' {
+            at += 1;
+        } else {
+            let start = at;
+            if byte == b'-' || byte == b'+' {
+                at += 1;
+            }
+            let mut point = false;
+            while at < bytes.len() && (bytes[at].is_ascii_digit() || (bytes[at] == b'.' && !point))
+            {
+                point |= bytes[at] == b'.';
+                at += 1;
+            }
+            let number = d[start..at]
+                .parse()
+                .map_err(|_| format!("the path number at {start}: {:?}", &d[start..=start]))?;
+            tokens.push(PathToken::Number(number));
+        }
+    }
+    Ok(tokens)
+}
+
+/// The `N` numbers at `at` in `tokens`, advancing past them.
+fn numbers<const N: usize>(tokens: &[PathToken], at: &mut usize) -> Result<[f32; N], String> {
+    let mut values = [0.0; N];
+    for value in &mut values {
+        let Some(PathToken::Number(number)) = tokens.get(*at) else {
+            return Err(format!("{N} numbers at token {at}"));
+        };
+        *value = *number;
+        *at += 1;
+    }
+    Ok(values)
 }
 
 /// The art's clock: the time it has played, advanced by each redraw at the speed it plays at, which
@@ -235,6 +515,11 @@ impl Clock {
     /// The art's time, as the shader reads it.
     fn seconds(&self) -> f32 {
         self.time as f32
+    }
+
+    /// How much the art sways: its speed, so the sway eases out as the clock comes to rest.
+    fn sway(&self) -> f32 {
+        self.speed
     }
 }
 
@@ -313,11 +598,11 @@ where
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        let palette = theme.palette();
-        let time = if self.still {
-            STILL_TIME
+        let (time, sway) = if self.still {
+            (STILL_TIME, 0.0)
         } else {
-            tree.state.downcast_ref::<Clock>().seconds()
+            let clock = tree.state.downcast_ref::<Clock>();
+            (clock.seconds(), clock.sway())
         };
         let bounds = layout.bounds();
         renderer.draw_primitive(
@@ -326,9 +611,8 @@ where
                 size: bounds.size(),
                 composition: self.composition,
                 time,
-                ground: (self.ground)(palette),
-                accent: palette.accent,
-                ink: palette.text_bright,
+                sway,
+                ground: (self.ground)(theme.palette()),
                 slot: AtomicUsize::new(0),
             },
         );
@@ -341,41 +625,16 @@ impl<'a, Message: 'a, G: Fn(&Palette) -> Color + 'a> From<Art<G>> for Element<'a
     }
 }
 
-/// The word under the lens, letter by letter: each letter's 5×7 rows, top to bottom, separated by
-/// spaces, `#` lit.
-const WORD: [(u8, &str); 8] = [
-    (b'L', "#.... #.... #.... #.... #.... #.... #####"),
-    (b'U', "#...# #...# #...# #...# #...# #...# .###."),
-    (b'X', "#...# #...# .#.#. ..#.. .#.#. #...# #...#"),
-    (b'F', "##### #.... #.... ####. #.... #.... #...."),
-    (b'O', ".###. #...# #...# #...# #...# #...# .###."),
-    (b'R', "####. #...# #...# ####. #.#.. #..#. #...#"),
-    (b'G', ".###. #...# #.... #.### #...# #...# .####"),
-    (b'E', "##### #.... #.... ####. #.... #.... #####"),
-];
-
-/// The word as the shader reads it: two words a letter, two letters a vector.
-const LETTERS: [[u32; 4]; 4] = letters();
-
-const fn letters() -> [[u32; 4]; 4] {
-    let mut words = [[0u32; 4]; 4];
-    let mut letter = 0;
-    while letter < WORD.len() {
-        // Six bytes a row: its five pixels and the space before the next.
-        let bits = WORD[letter].1.as_bytes();
-        assert!(bits.len() == 7 * 6 - 1, "a letter is seven rows of five");
-        let mut at = 0;
-        while at < bits.len() {
-            let (row, column) = (at / 6, at % 6);
-            if bits[at] == b'#' {
-                let word = letter % 2 * 2 + row / 4;
-                words[letter / 2][word] |= 1 << ((row % 4) * 5 + column);
-            }
-            at += 1;
-        }
-        letter += 1;
-    }
-    words
+/// Whether `ground` takes the paper drawing: it is light, Ink reading on it at 4.5:1 or more and
+/// better than Bright does. A mid grey, where neither reads well, keeps the colour drawing, whose
+/// arch is its own light.
+fn on_paper(ground: Color) -> bool {
+    let contrast = |a: Color, b: Color| {
+        let (a, b) = (a.relative_luminance(), b.relative_luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    };
+    let ink = contrast(ground, INK);
+    ink >= 4.5 && ink > contrast(ground, BRIGHT)
 }
 
 /// One frame of the art: what its uniform block is made from once the scale factor is known.
@@ -384,15 +643,20 @@ struct ArtPrimitive {
     size: Size,
     composition: Composition,
     time: f32,
+    /// How much the channels sway, 0 at rest to 1 at full speed.
+    sway: f32,
     ground: Color,
-    accent: Color,
-    ink: Color,
     /// The pipeline's uniform slot `prepare` wrote this frame's block into, which `draw` binds.
     slot: AtomicUsize,
 }
 
-/// The uniform block's size: six vectors and the word's four.
-const UNIFORM_BYTES: usize = (6 + 4) * 16;
+/// The uniform block's size: eight vectors.
+const UNIFORM_BYTES: usize = 8 * 16;
+
+/// The wordmark's block's size: a vector for each contour's bounds and range, and for each segment.
+const WORD_BYTES: usize = (2 * CONTOURS + SEGMENTS) * 16;
+// Within the 16 KiB a downlevel device binds.
+const _: () = assert!(WORD_BYTES <= 16 * 1024);
 
 /// The most art primitives one frame draws: one per window's canvas, with room to spare.
 const SLOTS: usize = 4;
@@ -401,40 +665,38 @@ impl ArtPrimitive {
     /// The uniform block, as `empty_canvas.wgsl`'s `Art` lays it out, at `scale` physical pixels a
     /// logical one, for a target that stores linear light when `linear`.
     fn uniforms(&self, scale: f32, linear: bool) -> Vec<u8> {
-        let cell = (ART_PIXEL * scale).round().max(1.0);
-        let composition = self.composition;
-        // The word centred under the lens, on the art pixels' grid.
-        let word = [
-            (composition.centre.x * scale / cell - WORD_COLUMNS * composition.font / 2.0).round(),
-            (composition.word_top * scale / cell).round(),
-            composition.font,
-            0.0,
-        ];
+        let (origin, unit) = self.composition.placement(scale);
+        let paper = on_paper(self.ground);
+        let radius = LOCKUP.mark[3];
         let colour = |colour: Color| [colour.r, colour.g, colour.b, colour.a];
-        let vectors: [[f32; 4]; 6] = [
+        let (left, right, arch, word) = if paper {
+            (BLUE_ON_PAPER, CHARTREUSE_ON_PAPER, Color::TRANSPARENT, INK)
+        } else {
+            (BLUE, CHARTREUSE, LIGHT, BRIGHT)
+        };
+        let vectors: [[f32; 4]; 8] = [
             [
                 self.size.width * scale,
                 self.size.height * scale,
-                cell,
                 if linear { 1.0 } else { 0.0 },
+                0.0,
             ],
             [
-                composition.centre.x * scale,
-                composition.centre.y * scale,
-                composition.radius * scale,
-                self.time,
+                origin.x,
+                origin.y,
+                unit,
+                if paper { AXIS * radius } else { 0.0 },
             ],
-            word,
-            colour(self.ground),
-            colour(self.accent),
-            colour(self.ink),
+            LOCKUP.mark,
+            [self.time, self.sway, 0.0, 0.0],
+            colour(left),
+            colour(right),
+            colour(arch),
+            colour(word),
         ];
         let mut bytes = Vec::with_capacity(UNIFORM_BYTES);
         for value in vectors.iter().flatten() {
             bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        for word in LETTERS.iter().flatten() {
-            bytes.extend_from_slice(&word.to_le_bytes());
         }
         bytes
     }
@@ -463,10 +725,16 @@ impl shader::Primitive for ArtPrimitive {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("luxforge.empty_canvas.group"),
                 layout: &pipeline.layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: pipeline.word.as_entire_binding(),
+                    },
+                ],
             });
             pipeline.slots.push((buffer, group));
         }
@@ -486,11 +754,12 @@ impl shader::Primitive for ArtPrimitive {
     }
 }
 
-/// The art's pipeline: its program and up to [`SLOTS`] uniform blocks, one per primitive a frame
-/// draws, reused from frame to frame.
+/// The art's pipeline: its program, the wordmark's outline, written once, and up to [`SLOTS`]
+/// uniform blocks, one per primitive a frame draws, reused from frame to frame.
 struct ArtPipeline {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    word: wgpu::Buffer,
     slots: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
     /// The slots this frame has prepared.
     used: usize,
@@ -500,18 +769,24 @@ struct ArtPipeline {
 
 impl shader::Pipeline for ArtPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let uniform = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("luxforge.empty_canvas.layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[uniform(0), uniform(1)],
+        });
+        let word = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("luxforge.empty_canvas.word"),
+            contents: &LOCKUP.word.block(),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("luxforge.empty_canvas.shader"),
@@ -538,8 +813,8 @@ impl shader::Pipeline for ArtPipeline {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Every art pixel is opaque or, on the ground, transparent: the canvas's fill
-                    // shows through the ground untouched.
+                    // The art is premultiplied, transparent wherever the lockup does not reach:
+                    // the canvas's fill shows through there untouched.
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -558,6 +833,7 @@ impl shader::Pipeline for ArtPipeline {
         Self {
             pipeline,
             layout,
+            word,
             slots: Vec::new(),
             used: 0,
             linear: format.is_srgb(),
@@ -571,366 +847,4 @@ impl shader::Pipeline for ArtPipeline {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The clock plays at the frame cadence, eases to a stop once [`AWAKE`] passes with no pointer
-    /// movement and then asks for nothing; a movement plays it on from the time it stopped at.
-    #[test]
-    fn the_art_plays_eases_to_sleep_and_wakes_where_it_stopped() {
-        let start = Instant::now();
-        let mut clock = Clock::default();
-        let mut now = start;
-        let mut frames = 0;
-        while let Some(next) = clock.advance(now) {
-            assert_eq!(next, now + FRAME, "it asks for the next frame a frame away");
-            now = next;
-            frames += 1;
-            assert!(frames < 10_000, "the art never stopped");
-        }
-        let played = now.duration_since(start);
-        assert!(
-            played >= AWAKE && played <= AWAKE + EASE + FRAME,
-            "it stops within its ease of {AWAKE:?}: {played:?}"
-        );
-        // Full speed until it begins to ease, then less than full speed through the ease.
-        let stopped = clock.seconds();
-        assert!(stopped > AWAKE.as_secs_f32() && stopped < (AWAKE + EASE).as_secs_f32());
-
-        // Asleep, any other redraw leaves it still and asks for nothing.
-        assert_eq!(clock.advance(now + Duration::from_secs(5)), None);
-        assert_eq!(clock.seconds(), stopped);
-
-        // The pointer wakes it: it asks to be redrawn, then plays on from where it stopped.
-        assert!(clock.wake(), "a sleeping clock needs a redraw to start");
-        let woken = now + Duration::from_secs(60);
-        assert_eq!(clock.advance(woken), Some(woken + FRAME));
-        assert_eq!(clock.seconds(), stopped, "no time passes while it sleeps");
-        assert!(
-            !clock.wake(),
-            "a playing clock already has its next frame asked for"
-        );
-        let later = clock.advance(woken + FRAME).expect("it plays on");
-        assert!(clock.seconds() > stopped);
-        assert_eq!(later, woken + FRAME * 2);
-    }
-
-    /// A late redraw advances the art by [`MAX_STEP`] at most, so it never jumps.
-    #[test]
-    fn a_late_redraw_never_jumps_the_art() {
-        let start = Instant::now();
-        let mut clock = Clock::default();
-        clock.advance(start);
-        clock.advance(start + Duration::from_secs(3));
-        assert!((clock.seconds() - MAX_STEP.as_secs_f32()).abs() < 1e-6);
-    }
-
-    /// The lens, the word and the invitation are centred together, top to bottom and inside the
-    /// canvas, the word no wider than the lens; a canvas too small for a lens draws the invitation
-    /// alone.
-    #[test]
-    fn the_word_and_the_invitation_sit_under_the_lens_inside_the_canvas() {
-        for size in [
-            Size::new(1200.0, 800.0),
-            Size::new(700.0, 1000.0),
-            Size::new(2400.0, 1400.0),
-            Size::new(260.0, 300.0),
-        ] {
-            let composition = Composition::of(size).expect("room for a lens");
-            assert_eq!(composition.centre.x, size.width / 2.0);
-            assert!(composition.radius <= LENS_MAX && composition.radius >= LENS_MIN);
-            assert!(composition.centre.y - composition.radius >= 0.0);
-            let word_height = WORD_ROWS * composition.font * ART_PIXEL;
-            let word_width = WORD_COLUMNS * composition.font * ART_PIXEL;
-            assert!(composition.word_top > composition.centre.y + composition.radius);
-            assert!(word_width < 2.0 * composition.radius);
-            assert!(composition.invitation_top > composition.word_top + word_height);
-            assert!(composition.invitation_top + INVITATION_HEIGHT <= size.height);
-        }
-        assert_eq!(Composition::of(Size::new(120.0, 400.0)), None);
-        assert_eq!(Composition::of(Size::new(800.0, 160.0)), None);
-    }
-
-    /// The shader parses and validates as wgpu will compile it, with no device, and its uniform
-    /// block is laid out exactly as [`ArtPrimitive::uniforms`] writes it.
-    #[test]
-    fn the_shader_validates_and_its_block_matches_the_uniforms() {
-        use wgpu::naga;
-        let source = include_str!("empty_canvas.wgsl");
-        let module = naga::front::wgsl::parse_str(source)
-            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .unwrap_or_else(|error| panic!("{}", error.emit_to_string(source)));
-        let (_, block) = module
-            .types
-            .iter()
-            .find(|(_, ty)| ty.name.as_deref() == Some("Art"))
-            .expect("the Art block");
-        let naga::TypeInner::Struct { members, span } = &block.inner else {
-            panic!("Art is a struct");
-        };
-        assert_eq!(*span as usize, UNIFORM_BYTES);
-        let offsets: Vec<u32> = members.iter().map(|member| member.offset).collect();
-        assert_eq!(offsets, [0, 16, 32, 48, 64, 80, 96]);
-        let primitive = ArtPrimitive {
-            size: Size::new(800.0, 600.0),
-            composition: Composition::of(Size::new(800.0, 600.0)).expect("a lens"),
-            time: 1.0,
-            ground: Color::BLACK,
-            accent: Color::WHITE,
-            ink: Color::WHITE,
-            slot: AtomicUsize::new(0),
-        };
-        assert_eq!(primitive.uniforms(2.0, true).len(), UNIFORM_BYTES);
-    }
-
-    /// The word spells LUXFORGE, and each letter is packed row by row as drawn: `G`'s fourth row
-    /// is `#.###`.
-    #[test]
-    fn the_word_spells_luxforge_packed_row_by_row() {
-        assert_eq!(WORD.map(|(letter, _)| letter), *b"LUXFORGE");
-        let g = WORD.iter().position(|(c, _)| *c == b'G').expect("a G");
-        let [low, high] = [LETTERS[g / 2][g % 2 * 2], LETTERS[g / 2][g % 2 * 2 + 1]];
-        assert_eq!(low & 0b11111, 0b01110, "the top row: .###.");
-        assert_eq!((low >> 15) & 0b11111, 0b11101, "the fourth row: #.###");
-        assert_eq!((high >> 10) & 0b11111, 0b11110, "the last row: .####");
-    }
-}
-
-/// The art drawn on this host's GPU through its real pipeline, read back. A host without an
-/// adapter prints that it was skipped and asserts nothing; that is not GPU evidence.
-#[cfg(test)]
-mod gpu_tests {
-    use super::*;
-    use iced::widget::shader::{Pipeline as _, Primitive as _};
-    use luxforge_test_macros::slow;
-    use luxforge_testbase::wait_for;
-
-    const WIDTH: u32 = 320;
-    const HEIGHT: u32 = 300;
-    /// The canvas's fill under the art, as a test target's clear holds it.
-    const GROUND: [u8; 4] = [0x19, 0x19, 0x1b, 0xff];
-
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        let mut future = std::pin::pin!(future);
-        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        wait_for("the GPU request", || {
-            match future.as_mut().poll(&mut context) {
-                std::task::Poll::Ready(value) => Some(value),
-                std::task::Poll::Pending => None,
-            }
-        })
-    }
-
-    /// A device of this host's default adapter, never one of wgpu's OpenGL backend: an instance
-    /// of that backend holds an EGL display as long as the device lives, and a thread holding a
-    /// clone of the device may drop the last one while the test process exits
-    /// (`luxforge_gpu::adapters::open`).
-    fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all() - wgpu::Backends::GL,
-            ..wgpu::InstanceDescriptor::default()
-        });
-        let adapter =
-            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-    }
-
-    fn primitive(time: f32) -> ArtPrimitive {
-        sized(Size::new(WIDTH as f32, HEIGHT as f32), time)
-    }
-
-    fn sized(size: Size, time: f32) -> ArtPrimitive {
-        let palette = Palette::luxforge_dark();
-        ArtPrimitive {
-            size,
-            composition: Composition::of(size).expect("room for a lens"),
-            time,
-            ground: palette.surround,
-            accent: palette.accent,
-            ink: palette.text_bright,
-            slot: AtomicUsize::new(0),
-        }
-    }
-
-    /// Prepare and draw `primitive` as the toolkit does, over a target cleared to the ground, and
-    /// read the RGBA codes back.
-    fn paint(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut ArtPipeline,
-        primitive: &ArtPrimitive,
-    ) -> Vec<u8> {
-        paint_at(device, queue, pipeline, primitive, 1.0)
-    }
-
-    /// [`paint`] at `scale` physical pixels a logical one.
-    fn paint_at(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut ArtPipeline,
-        primitive: &ArtPrimitive,
-        scale: f32,
-    ) -> Vec<u8> {
-        let bounds = Rectangle::new(Point::ORIGIN, primitive.size);
-        let (width, height) = (
-            (primitive.size.width * scale).round() as u32,
-            (primitive.size.height * scale).round() as u32,
-        );
-        let viewport = Viewport::with_physical_size(Size::new(width, height), scale);
-        primitive.prepare(pipeline, device, queue, &bounds, &viewport);
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("empty canvas readback target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("empty canvas readback"),
-            size: u64::from(width * height * 4),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        {
-            let linear = luxforge_reference::srgb::decode;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("empty canvas readback pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: linear(GROUND[0]),
-                            g: linear(GROUND[1]),
-                            b: linear(GROUND[2]),
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            assert!(primitive.draw(pipeline, &mut pass));
-        }
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(width * 4),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let index = queue.submit([encoder.finish()]);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
-            });
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(index),
-                timeout: None,
-            })
-            .expect("device wait");
-        receiver
-            .recv()
-            .expect("readback callback")
-            .expect("the readback maps");
-        let codes = readback.slice(..).get_mapped_range().to_vec();
-        readback.unmap();
-        pipeline.trim();
-        codes
-    }
-
-    fn pixel(codes: &[u8], x: u32, y: u32) -> [u8; 4] {
-        let at = ((y * WIDTH + x) * 4) as usize;
-        [codes[at], codes[at + 1], codes[at + 2], codes[at + 3]]
-    }
-
-    /// The art leaves the ground untouched at the canvas's edges, draws the lens and the word
-    /// where the composition puts them, is the same frame for the same time and moves as time
-    /// passes.
-    #[test]
-    #[slow]
-    fn the_art_draws_the_lens_over_an_untouched_ground_and_moves() {
-        let Some((device, queue)) = headless() else {
-            eprintln!("skipped: no adapter; the empty canvas's art drew nothing");
-            return;
-        };
-        let mut pipeline = ArtPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb);
-        let still = paint(&device, &queue, &mut pipeline, &primitive(STILL_TIME));
-        for (x, y) in [
-            (0, 0),
-            (WIDTH - 1, 0),
-            (0, HEIGHT - 1),
-            (WIDTH - 1, HEIGHT - 1),
-        ] {
-            assert_eq!(
-                pixel(&still, x, y),
-                GROUND,
-                "the corner ({x}, {y}) is the ground"
-            );
-        }
-        let composition = primitive(0.0).composition;
-        let inside = (0..HEIGHT)
-            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-            .filter(|&(x, y)| {
-                let (dx, dy) = (
-                    x as f32 - composition.centre.x,
-                    y as f32 - composition.centre.y,
-                );
-                (dx * dx + dy * dy).sqrt() < composition.radius * 0.95
-            })
-            .filter(|&(x, y)| pixel(&still, x, y) != GROUND)
-            .count();
-        assert!(inside > 1000, "the lens is drawn: {inside} pixels");
-        let word = Rectangle::new(
-            Point::new(
-                composition.centre.x - WORD_COLUMNS * composition.font * ART_PIXEL / 2.0,
-                composition.word_top,
-            ),
-            Size::new(
-                WORD_COLUMNS * composition.font * ART_PIXEL,
-                7.0 * composition.font * ART_PIXEL,
-            ),
-        );
-        let lettered = (0..HEIGHT)
-            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-            .filter(|&(x, y)| word.contains(Point::new(x as f32 + 0.5, y as f32 + 0.5)))
-            .filter(|&(x, y)| pixel(&still, x, y) != GROUND)
-            .count();
-        assert!(lettered > 200, "the word is drawn: {lettered} pixels");
-
-        let again = paint(&device, &queue, &mut pipeline, &primitive(STILL_TIME));
-        assert_eq!(still, again, "the same time draws the same frame");
-        let early = paint(&device, &queue, &mut pipeline, &primitive(1.0));
-        let later = paint(&device, &queue, &mut pipeline, &primitive(1.5));
-        assert_ne!(early, later, "the art moves as its time passes");
-    }
-}
+mod tests;
