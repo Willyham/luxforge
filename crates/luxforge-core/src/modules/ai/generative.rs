@@ -1,9 +1,10 @@
-//! One Generative tier job: read the photograph once, then make each candidate in turn from
-//! consecutive seeds, reserving it before it is made and publishing it as soon as it is, with
-//! progress per step and cancellation at every step boundary.
+//! One Generative tier job: read the picked objects' artifacts and the photograph once, then make
+//! each candidate in turn from consecutive seeds, reserving it before it is made and publishing it
+//! as soon as it is, with progress per step and cancellation at every step boundary.
 use super::{
-    fill::{self, Context},
+    fill::{self, Context, Coverage},
     module::{FillRequest, GENERATIVE_TIER, MAX_SEED},
+    picked::PickedObject,
 };
 use crate::{
     Error,
@@ -41,10 +42,45 @@ fn drawn_seed() -> u64 {
     RandomState::new().hash_one(std::time::SystemTime::now()) & MAX_SEED
 }
 
+/// The region of one request over `stage`: the strokes' coverage joined by maximum with each
+/// picked object's removal region, whose artifact is read here, on the lane, one at a time and
+/// released before the next. `None` when it covers no pixel.
+fn region(
+    request: &FillRequest,
+    objects: &[PickedObject],
+    stage: crate::modules::Stage,
+    context: &ModuleContext,
+) -> Result<Option<Coverage>, Error> {
+    let mut rasters = Vec::with_capacity(objects.len());
+    for object in objects {
+        let artifact = context.artifact(&object.artifact)?;
+        let (width, height) = crate::mask::check_alpha(
+            &artifact.kind,
+            artifact.width,
+            artifact.height,
+            artifact.bytes.len() as u64,
+        )
+        .map_err(|reason| {
+            Error::validation(format!("object artifact {} {reason}", object.artifact))
+        })?;
+        rasters.push((artifact, width, height));
+    }
+    let rasters: Vec<(&[u8], u32, u32)> = rasters
+        .iter()
+        .map(|(artifact, width, height)| (&artifact.bytes[..], *width, *height))
+        .collect();
+    request
+        .selection
+        .region(stage, &rasters, &|| context.checkpoint())
+}
+
 /// Run one request: `{tier, model, candidates, seeds, next_seed, rect, prompt}` once every
-/// candidate is published. Its generations share the GPU, running their GPU work in slices.
+/// candidate is published. `objects` are the selections its `object-artifacts` name, resolved
+/// against the photograph as it is now. Its generations share the GPU, running their GPU work in
+/// slices.
 pub(crate) fn run(
     request: &FillRequest,
+    objects: &[PickedObject],
     context: &ModuleContext,
     hold: &dyn Fn(&ModuleContext),
 ) -> Result<Value, Error> {
@@ -68,10 +104,12 @@ pub(crate) fn run(
     context.progress(Some(0.0), "reading the photograph");
     let mut reader = context.stage_reader()?;
     let stage = reader.stage();
-    let coverage = request
-        .selection
-        .coverage(stage)?
+    let coverage = region(request, objects, stage, context)?
         .ok_or_else(|| Error::validation("the selection covers no pixel of the photograph"))?;
+    let removed: Vec<Value> = objects
+        .iter()
+        .map(|object| json!({"artifact": object.artifact, "prompt": object.prompt}))
+        .collect();
     let prepared = Context::prepare(
         coverage,
         stage,
@@ -140,6 +178,9 @@ pub(crate) fn run(
             "blend".into(),
             json!(if prompt { "none" } else { "seam-and-detail" }),
         );
+        if !removed.is_empty() {
+            provenance.insert("objects".into(), json!(removed));
+        }
         let number = reservation.publish(CandidatePatch {
             rect: finished.rect,
             colour: PatchColour::LinearSrgb(&finished.linear),

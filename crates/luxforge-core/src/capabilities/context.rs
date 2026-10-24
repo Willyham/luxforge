@@ -123,6 +123,9 @@ pub struct ModuleContext {
     identity: Option<StageIdentity>,
     /// The owner's analysis cache.
     analysis: Option<Arc<AnalysisCache>>,
+    /// The verified bytes of the artifacts the task's parameters name, prepared before it was
+    /// queued.
+    task_artifacts: BTreeMap<ArtifactId, Arc<PreparedArtifact>>,
     control: Arc<JobControl>,
 }
 
@@ -166,6 +169,7 @@ impl ModuleContext {
             read: None,
             identity: None,
             analysis: None,
+            task_artifacts: BTreeMap::new(),
             control,
         }
     }
@@ -207,6 +211,24 @@ impl ModuleContext {
     pub(crate) fn with_analysis(mut self, analysis: Arc<AnalysisCache>) -> Self {
         self.analysis = Some(analysis);
         self
+    }
+
+    /// The verified bytes of one artifact the task's parameters name, as the source work
+    /// prepared them before the task was queued.
+    pub(crate) fn with_task_artifact(mut self, artifact: Arc<PreparedArtifact>) -> Self {
+        self.task_artifacts.insert(artifact.id.clone(), artifact);
+        self
+    }
+
+    /// The verified bytes of one artifact the task's parameters name; `validation` for one they do
+    /// not name, so a module reads nothing it was not given. `O(log artifacts)`, nothing read.
+    pub(crate) fn artifact(&self, id: &ArtifactId) -> Result<Arc<PreparedArtifact>, Error> {
+        self.checkpoint()?;
+        self.task_artifacts.get(id).cloned().ok_or_else(|| {
+            Error::validation(format!(
+                "artifact {id} is not one this task's parameters name"
+            ))
+        })
     }
 
     /// The asset's repair stage identity: its source, the repair stage's output and the content

@@ -10,11 +10,11 @@ use crate::modules::ai::analysis::models::{
     FAKE_SUBJECT,
 };
 
-const ANALYSE: &str = "task.analyse";
+pub(super) const ANALYSE: &str = "task.analyse";
 const PICK: &str = "query.pick-object";
-const SELECT: &str = "task.select-object";
+pub(super) const SELECT: &str = "task.select-object";
 
-trait Analysis {
+pub(super) trait Analysis {
     fn analysis_flag(&self, on: bool);
     /// A task, waiting through any preparation its read asks for: its finished job.
     fn task(&self, method: &str, params: Value) -> Value;
@@ -62,7 +62,7 @@ impl Analysis for Owner {
 }
 
 /// The owner with the analysis flag on and the fake segmenter installed.
-fn segmenter_ready(fixture: &Fixture) -> Owner {
+pub(super) fn segmenter_ready(fixture: &Fixture) -> Owner {
     let owner = fixture.start();
     owner.analysis_flag(true);
     owner.install(&FAKE_SEGMENTER_ENCODER.file);

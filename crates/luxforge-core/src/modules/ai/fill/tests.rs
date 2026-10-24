@@ -936,7 +936,7 @@ fn a_selection_is_full_over_what_was_painted_and_feathers_past_it() {
     let bounds = coverage.bounds();
     assert_eq!((bounds.y0, bounds.y1()), (462, 738));
     // What the owner admits by holds every covered pixel.
-    let support = selection.support(s);
+    let support = selection.support(s, &[]);
     assert!(
         support.y0 <= bounds.y0 && support.y1() >= bounds.y1(),
         "{support:?}"
@@ -1008,6 +1008,116 @@ fn an_object_the_brush_paints_over_never_shows_through_the_candidate() {
         assert!(
             worst < 1.0,
             "blend {blend}: the block shows through by {worst} codes at {at:?}"
+        );
+    }
+}
+
+/// A `width × height` object raster holding an opaque disc of `radius` texels at `(cx, cy)`, with
+/// an anti-aliased edge.
+fn disc_raster(width: u32, height: u32, (cx, cy): (f64, f64), radius: f64) -> Vec<u8> {
+    (0..height)
+        .flat_map(|j| (0..width).map(move |i| (i, j)))
+        .map(|(i, j)| {
+            let d = (f64::from(i) - cx).hypot(f64::from(j) - cy);
+            (255.0 * (radius + 0.5 - d).clamp(0.0, 1.0)).round() as u8
+        })
+        .collect()
+}
+
+#[test]
+#[slow]
+fn a_fill_of_objects_keeps_the_input_wherever_their_joined_region_is_zero() {
+    // A 160 x 120 raster over a 640 x 480 frame, four pixels a texel: a disc about 80 px across
+    // left of centre. Alone, beside a painted stroke through it, beside an effect stroke below it
+    // and beside both, the region is the largest of the parts at every pixel, and the candidate
+    // is the input exactly wherever the region is zero.
+    let s = stage(640, 480);
+    let image = linear_image(s, 31);
+    let codes = disc_raster(160, 120, (60.0, 60.0), 10.0);
+    let objects = [(&codes[..], 160, 120)];
+    let object = super::super::object_region::region(&codes, 160, 120, s, &ok)
+        .unwrap()
+        .unwrap();
+    let artifact = format!("artifact-{}", "1".repeat(64));
+    let stroke = serde_json::json!({
+        "selection-points": [[0.4, 0.5], [0.6, 0.5]],
+        "selection-radius": 0.04,
+    });
+    let effect = serde_json::json!({
+        "effect-points": [[0.4, 0.75], [0.6, 0.75]],
+        "effect-radius": 0.03,
+    });
+    let answer = flat_answer(128, [0.2, 0.6, 0.4]);
+    for extra in [
+        serde_json::json!({}),
+        stroke.clone(),
+        effect.clone(),
+        serde_json::json!({
+            "selection-points": stroke["selection-points"],
+            "selection-radius": stroke["selection-radius"],
+            "effect-points": effect["effect-points"],
+            "effect-radius": effect["effect-radius"],
+        }),
+    ] {
+        let mut parameters = extra.as_object().unwrap().clone();
+        parameters.insert("object-artifacts".into(), serde_json::json!([artifact]));
+        let selection = Selection::parse(&parameters).unwrap();
+        let strokes = selection.coverage(s).unwrap();
+        let coverage = selection.region(s, &objects, &ok).unwrap().unwrap();
+        let bounds = coverage.bounds();
+        // What the owner admitted by holds it.
+        let raster = super::super::object_region::ObjectRaster::of(&codes, 160, 120);
+        let support = selection.support(s, &[raster]);
+        assert!(
+            support.x0 <= bounds.x0
+                && support.y0 <= bounds.y0
+                && support.x1() >= bounds.x1()
+                && support.y1() >= bounds.y1(),
+            "{extra}: {support:?} does not hold {bounds:?}"
+        );
+        for y in 0..s.height {
+            for x in 0..s.width {
+                let parts = strokes
+                    .as_ref()
+                    .map_or(0.0, |strokes| strokes.at(x, y))
+                    .max(object.at(x, y));
+                assert_eq!(coverage.at(x, y), parts, "{extra}: ({x}, {y})");
+            }
+        }
+        let mut reads = Vec::new();
+        let context = Context::prepare(
+            coverage.clone(),
+            s,
+            128,
+            50_000,
+            &mut reader(&image, s, &mut reads),
+            &ok,
+        )
+        .unwrap();
+        let candidate = context.finish(&answer, 3).unwrap();
+        assert_eq!(
+            candidate.rect,
+            [bounds.x0, bounds.y0, bounds.width, bounds.height]
+        );
+        let (mut kept, mut changed) = (0, 0);
+        for (i, &c) in candidate.coverage.iter().enumerate() {
+            let (x, y) = (
+                bounds.x0 + i as u32 % bounds.width,
+                bounds.y0 + i as u32 / bounds.width,
+            );
+            assert_eq!(c, coverage.at(x, y));
+            let input = image[(y * s.width + x) as usize];
+            let patch = &candidate.linear[i * 3..i * 3 + 3];
+            if c == 0.0 {
+                assert_eq!(patch, input, "{extra}: ({x}, {y})");
+                kept += 1;
+            } else if patch != input {
+                changed += 1;
+            }
+        }
+        assert!(
+            kept > 0 && changed > 0,
+            "{extra}: {kept} kept, {changed} changed"
         );
     }
 }

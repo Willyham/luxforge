@@ -303,9 +303,14 @@ fn publication_refuses_what_it_cannot_store_and_returns_the_reservation() {
     }
     for (key, value, fragment) in [
         ("module", json!("other"), "the host's"),
-        ("seed", json!([1]), "a string or a number"),
+        ("seed", json!([1]), "a number or a list of objects"),
         ("bad key", json!(1), "printable"),
         ("notes", json!("x".repeat(2100)), "at most 2048"),
+        (
+            "objects",
+            json!([{"prompt": "x".repeat(512 * 1024)}]),
+            "lists of objects are at most",
+        ),
     ] {
         refuse(
             CandidatePatch {
