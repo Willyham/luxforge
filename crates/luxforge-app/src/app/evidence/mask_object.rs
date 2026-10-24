@@ -119,8 +119,7 @@ impl Editor {
     /// flight or waiting, the session's map has arrived, and the newest frame is on screen.
     pub(crate) fn mask_object_settled(&self) -> bool {
         let module = match self.setup_ready(SetupId::MaskObject) {
-            crate::app::object_pick::SetupReady::Missing { module, .. }
-            | crate::app::object_pick::SetupReady::Unread { module } => Some(module),
+            crate::app::object_pick::SetupReady::Unread { module } => Some(module),
             _ => self.object_select_module().map(|module| module.id.clone()),
         };
         let reading = module.is_some_and(|module| self.capabilities.module(&module).pending > 0);

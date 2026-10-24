@@ -17,9 +17,8 @@ use crate::{
         mask_panel::{brush_field_id, draft_field_id},
         message::{
             Message, control::ControlMessage, mask::BrushEdit, mask::DragEdit, mask::KindMenu,
-            mask::ObjectRequest,
-            mask::MaskMessage, mask::PaintTarget, mask::RowEdit, mask::TypingEdit,
-            view::ViewMessage,
+            mask::MaskMessage, mask::ObjectRequest, mask::PaintTarget, mask::RowEdit,
+            mask::TypingEdit, view::ViewMessage,
         },
     },
     state::{
@@ -38,16 +37,17 @@ use iced::{
     widget::{Column, Space, column, container, mouse_area, row},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
-    DropdownButtonModel, GridField, GroupRuleModel, HelpAlike, HelpRemedy, HelpSheetModel,
-    HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart, MaskRowMessages, MaskRowModel,
-    MenuEntry, MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode,
-    OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, PickLineModel,
-    RenameMessages, SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel,
-    ValueEdit, band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
-    dropdown_button, field_grid, group_rule, header_icon_button, help_sheet as sheet, mask_row,
-    menu_list, menu_list_with_width, mode_control, mode_menu, overlay_control, pick_line, popover,
-    slider, stroke_row, swatch_slots, text_button, theme, with_tooltip,
+    ButtonSize, ButtonTone, CombineMode, ComponentRowMessages, ComponentRowModel,
+    CoverageThumbnailModel, DropEdge, DropdownButtonModel, GridField, GroupRuleModel, HelpAlike,
+    HelpRemedy, HelpSheetModel, HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart,
+    MaskRowMessages, MaskRowModel, MenuEntry, MenuItem, ModeControlModel, NumberFieldModel,
+    OverlayControlModel, OverlayMode, OverlayTint, PatchGesture, PatchHolds, PickBarModel,
+    PickButtonModel, PickLineModel, RenameMessages, SliderModel, StepDrawing, StrokeRowModel,
+    SwatchSlotsModel, ToggleModel, ValueEdit, band_header, caption, compact_toggle, component_note,
+    component_row, drop_feedback, dropdown_button, field_grid, group_rule, header_icon_button,
+    help_sheet as sheet, mask_row, menu_list, menu_list_with_width, mode_control, mode_menu,
+    overlay_control, pick_line, popover, slider, stroke_row, swatch_slots, text_button, theme,
+    with_tooltip,
 };
 use luxforge_ui::{Element, Token};
 
@@ -520,11 +520,7 @@ pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Mes
             entries.push(MenuEntry::Item(MenuItem {
                 icon: None,
                 label: option.label.clone(),
-                trailing: Some(if option.needs_setup {
-                    "set up\u{2026}".into()
-                } else {
-                    "point at it".into()
-                }),
+                trailing: Some(option.tag.into()),
                 on_press: refusal
                     .is_none()
                     .then(|| mask(MaskMessage::ChooseObject(menu))),

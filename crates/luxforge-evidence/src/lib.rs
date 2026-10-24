@@ -2533,9 +2533,7 @@ pub enum ObjectStep {
 impl ObjectStep {
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Hover(Some(point)) | Self::Click(point) => {
-                content_point(*point, "object point")
-            }
+            Self::Hover(Some(point)) | Self::Click(point) => content_point(*point, "object point"),
             Self::Drag(points) => {
                 if points.len() < 2 {
                     return Err("an object drag needs at least two points".into());

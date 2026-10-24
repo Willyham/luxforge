@@ -434,8 +434,10 @@ pub(crate) fn stale_words(reason: ModelStale) -> &'static str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SelectOption {
     pub(crate) label: String,
-    /// Its setup is not installed, so choosing it opens the setup sheet.
+    /// Its setup is not installed, so choosing it opens the setup flow.
     pub(crate) needs_setup: bool,
+    /// The words beside it: `point at it`, `set up…` or `setting up…`.
+    pub(crate) tag: &'static str,
 }
 
 /// Masks › Object while it picks, as the draft bar, the canvas notices and a captured frame read
@@ -902,6 +904,7 @@ impl MasksModel {
             "select": self.select.iter().map(|option| serde_json::json!({
                 "label": option.label,
                 "needs_setup": option.needs_setup,
+                "tag": option.tag,
             })).collect::<Vec<_>>(),
             "object": self.object.as_ref().map(|object| serde_json::json!({
                 "create": object.create,
@@ -1183,34 +1186,29 @@ pub(crate) const OBJECT_ENTRY: &str = "Object\u{2026}";
 /// The kind menus' Select group: Object… while the run offers `task.select-object` and the
 /// experiment is on, marked when its setup is not installed.
 fn select_options(inputs: &Inputs<'_>) -> Vec<SelectOption> {
-    if crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_none()
-    {
+    if crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_none() {
         return Vec::new();
     }
+    let line = crate::object_pick::setup_line(
+        inputs.modules,
+        inputs.capabilities,
+        crate::object_pick::SetupId::MaskObject.as_str(),
+    );
+    let installed = line.as_ref().is_some_and(|line| line.installed);
+    let installing = line.as_ref().is_some_and(|line| {
+        line.state == Some(luxforge_core::capabilities::setups::SetupState::Installing)
+    });
     vec![SelectOption {
         label: OBJECT_ENTRY.to_owned(),
-        needs_setup: !setup_installed(inputs, crate::app::object_pick::SetupId::MaskObject),
+        needs_setup: !installed,
+        tag: if installed {
+            "point at it"
+        } else if installing {
+            "setting up\u{2026}"
+        } else {
+            "set up\u{2026}"
+        },
     }]
-}
-
-/// Whether every resource of `setup` is installed, as the module's status last read them.
-fn setup_installed(inputs: &Inputs<'_>, setup: crate::app::object_pick::SetupId) -> bool {
-    use luxforge_core::capabilities::resources::ResourceState;
-    inputs
-        .modules
-        .iter()
-        .filter(|module| module.is_available())
-        .find_map(|module| Some((module, module.setup(setup.as_str())?)))
-        .is_some_and(|(module, declared)| {
-            let status = inputs.capabilities.module(&module.id).status.as_ref();
-            status.is_some_and(|status| {
-                declared.resources().all(|resource| {
-                    status.resources.iter().any(|row| {
-                        row.id == resource && row.state == ResourceState::Installed
-                    })
-                })
-            })
-        })
 }
 
 /// Masks › Object while it picks.

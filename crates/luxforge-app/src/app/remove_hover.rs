@@ -20,6 +20,9 @@
 //!
 //! The pick, its answer's highlight and the analysis it asks for are the shared object picker's
 //! ([`crate::object_pick`], [`super::object_pick`]); this keeps only Remove's own hover state.
+pub(crate) use super::object_pick::pick;
+#[cfg(test)]
+pub(crate) use super::object_pick::queue_analysis;
 use super::{
     Editor,
     decoded_handles::image_handle,
@@ -27,9 +30,6 @@ use super::{
     object_pick::analyse,
     tasks::{CallError, owner_task},
 };
-pub(crate) use super::object_pick::pick;
-#[cfg(test)]
-pub(crate) use super::object_pick::queue_analysis;
 #[cfg(test)]
 pub(crate) use crate::object_pick::highlight;
 use crate::object_pick::needs_analysis;
@@ -61,7 +61,6 @@ pub(crate) struct Hover {
     /// The last pick sent: what an API client sends for the same hover.
     pub(crate) last_request: Option<Value>,
 }
-
 
 impl Editor {
     /// Whether hover picking is on: Remove is chosen, the picker is offered and the current state,
