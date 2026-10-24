@@ -397,9 +397,20 @@ For [AI editing](design/ai-editing.md), together with the two Corrections decisi
 - **Consent to send photo data to a remote provider is remembered** per provider profile and data class until revoked; the capability contract changes with the remote tier.
 - **The repair stage** sits after source development and before colour, in content coordinates, with its own repair primitive (the Corrections decision).
 - **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
-- **Generative fill comes first.** Its workflow (a brush selection in the Remove mode, the candidate strip, Regenerate, Replace and Accept) is built over the fake generator on the inference foundation and the Corrections candidate seam, while the generative models are qualified beside it; the Fast tier, the analysis cache, object picking and Select follow and join the same Remove mode.
+- **Generative fill comes first.** Its workflow (a brush selection in the Remove mode, the candidate strip, Regenerate, Replace and Accept) is built over the fake generator on the inference foundation and the Corrections candidate seam, while the generative models are qualified beside it; the Fast tier, the analysis cache, object picking and Select follow; the Fast tier joins Remove's Fill control, and object picking is the separate Object tool ([AI tools in the Develop workspace](#ai-tools-in-the-develop-workspace)).
 
 Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
+
+## AI tools in the Develop workspace
+
+For [the AI tools in the Develop workspace](design/ai-tools-workspace.md), taken on 2026-10-24:
+
+- **Object detection is a separate tool, for removal and for masks.** Corrections › Object removes objects the person points at; Masks › New mask › Object makes a stored selection; one picker and one download serve both. Remove paints exactly what to fill, with no hover.
+- **Object removal ships on the Generative tier.** The Fast tier joins the Fill control Remove and Object share when its quality study passes.
+- **No experiment flag.** `ai.generative` and `ai.analysis` are removed and the tools are listed by default; downloads stay opt-in. Until the removal conditioning is published, the setups that need it say so and offer nothing.
+- **Each tool sets up what it is missing**, the first time it is chosen, through one sheet and one consent with the combined size. Replace stays an add-on.
+
+The recorded defaults are in the [design](design/ai-tools-workspace.md#decisions).
 
 ## RAW looks
 
