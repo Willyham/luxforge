@@ -810,6 +810,11 @@ fn invalid_text_shows_the_declared_range_and_commits_nothing() {
 #[test]
 fn group_module_and_field_resets_each_run_one_declared_action() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    // Every product module's section, Grain's experiment included.
+    editor.settings.flags = Some(crate::state::testing::flags_on(&[
+        luxforge_core::flags::GRAIN,
+    ]));
+    editor.rederive();
     let modules = editor.modules.clone();
     let mut groups = 0usize;
     // The product modules' groups hold number controls and, for the Tone curve, one curve control

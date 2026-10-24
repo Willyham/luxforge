@@ -2403,8 +2403,10 @@ mod tests {
                 .iter()
                 .filter(|module| module.applies_to(luxforge_core::SourceTag::Raw))
                 .filter(|module| !module.developer && tools::draws_section(module, None))
+                .filter(|module| settings::module_offered(None, module))
                 .count(),
-            "a module with nothing of its own to draw has no section"
+            "a module with nothing of its own to draw, or behind an experiment that is off, has \
+             no section"
         );
         // Crop draws its transforms and the host's crop frame; the RAW development draws
         // nothing of its own.
@@ -3553,6 +3555,9 @@ mod tests {
             .all_expanded()
             .opened(Vec::new());
         scene.developer = true;
+        scene.settings.flags = Some(crate::state::testing::flags_on(&[
+            luxforge_core::flags::GRAIN,
+        ]));
         if let Some(state) = &mut scene.document.state {
             state.asset.source = crate::state::testing::raw_source();
         }
@@ -4282,9 +4287,11 @@ mod tests {
                 // development's controls are Basic's variants.
                 assert_eq!(
                     sections.contains(&id.as_str()),
-                    applies && tools::draws_section(module, scene.settings.flags.as_ref()),
-                    "{id} has a section on a {label} photo exactly when it applies and declares \
-                     controls"
+                    applies
+                        && tools::draws_section(module, scene.settings.flags.as_ref())
+                        && settings::module_offered(scene.settings.flags.as_ref(), module),
+                    "{id} has a section on a {label} photo exactly when it applies, declares \
+                     controls and its experiment flags are on"
                 );
                 assert!(
                     applies || !listed.contains(id),

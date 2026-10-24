@@ -1957,6 +1957,15 @@ pub struct ModuleDescriptor {
     /// one tab row. Validated at registration; see [`ModuleLayout`].
     #[serde(default)]
     pub layout: ModuleLayout,
+    /// The experiment flags ([`crate::flags`]) the module is offered under: toggles that must all
+    /// be on. While one is off a client offers none of the module's controls, its section or its
+    /// settings groups, and the host refuses every action of the module but its reset — called
+    /// directly, as a draft's action or as a step of a settings set — as `not-ready` with
+    /// `data.flag` naming the flag. Its reset still runs, since removing what the module added is
+    /// not offering it, and every stored layer of its effects renders, describes and exports
+    /// exactly as it does with the flag on: a flag never changes pixels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
     pub availability: Availability,
     /// User-level settings and provider profiles the host stores for this module, outside every
     /// catalog. Discovery lists the declarations only, never a value or a secret.

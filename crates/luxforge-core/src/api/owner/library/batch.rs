@@ -90,6 +90,13 @@ pub(in crate::api) fn batch_apply_settings(
     };
     let registry = owner.service.registry();
     crate::presets::validate_composite(registry, &settings)?;
+    // A step of a module offered only under an experiment flag that is off refuses the whole set,
+    // as `edit.apply-settings` refuses it, before any photograph changes.
+    let needed: Vec<_> = settings
+        .keys()
+        .flat_map(|step| registry.needed_flags(step, None))
+        .collect();
+    owner.flags_on(&needed)?;
     let input = PreparedAction::new(
         registry,
         APPLY_SETTINGS,

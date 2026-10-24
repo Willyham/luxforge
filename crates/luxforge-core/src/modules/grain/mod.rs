@@ -17,6 +17,10 @@
 //! whichever was committed first, and a later crop update moves the crop in place before both. The
 //! grain is a function of the output pixel's position in the full-resolution output stage, so a
 //! crop re-lays the pattern without changing its size.
+//!
+//! The module is offered only while the `grain` experiment flag is on ([`crate::flags::GRAIN`]):
+//! the host refuses `set-grain` while it is off, and runs `reset-grain` and renders every stored
+//! grain layer either way.
 mod unit;
 
 /// The grain unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
@@ -131,6 +135,7 @@ impl FieldPatch for Grain {
         ])
         .group(Group::new(GROUP_LABEL, FIELDS))
         .collapsed()
+        .flag(crate::flags::GRAIN)
     }
 
     /// The layer as a whole is neutral exactly when `amount` is 0, whatever the other two fields
@@ -235,6 +240,7 @@ mod tests {
         assert!(effect.single);
         assert!(!effect.maskable);
         assert!(descriptor.collapsed);
+        assert_eq!(descriptor.flags, [crate::flags::GRAIN]);
         let set = descriptor.action(SET_GRAIN).expect("set-grain");
         assert!(set.patch);
         assert!(descriptor.action("reset-grain").is_some());

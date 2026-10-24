@@ -485,9 +485,11 @@ impl Opened {
         let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
             catalog,
             std::sync::Arc::new(registry),
+            // The grain experiment forced on, as a test host forces it, so a grain recipe's
+            // `set-grain` steps build its stack; a flag never changes what the stack renders.
             luxforge_core::HostConfig {
                 tiles,
-                ..luxforge_core::HostConfig::unconfigured()
+                ..luxforge_testkit::client::grain_host()
             },
         )
         .map_err(|error| error.to_string())?;

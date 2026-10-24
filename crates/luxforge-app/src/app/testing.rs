@@ -84,6 +84,18 @@ pub(crate) fn start_owner(
     .unwrap()
 }
 
+/// A launch that forces the grain experiment on, as a test host may force a live flag: for the
+/// tests that add grain through the desktop or its owner.
+pub(crate) fn grain_config() -> Config {
+    Config {
+        launch_flags: luxforge_core::flags::LaunchFlags::resolve(
+            None,
+            &[(luxforge_core::flags::GRAIN, json!(true), "test")],
+        ),
+        ..Config::default()
+    }
+}
+
 /// The flags read through `flags.list` and taken up as the launch's own read is.
 pub(crate) fn read_flags(editor: &mut Editor) {
     let flags = crate::app::tasks::call(&editor.owner, editor.client, "flags.list", json!({}))

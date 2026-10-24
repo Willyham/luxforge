@@ -461,7 +461,12 @@ fn selecting_a_view_is_session_state_with_no_history_or_frame() {
 #[test]
 fn the_wheels_views_add_no_capture_groups_and_no_duplicate_fields() {
     let proof = Proof::new();
-    let groups = crate::state::presets::settings_groups(&proof.editor.modules, true).groups;
+    let groups = crate::state::presets::settings_groups(
+        &proof.editor.modules,
+        true,
+        proof.editor.settings.flags.as_ref(),
+    )
+    .groups;
     let labels: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
     // The nested Colour wheel group is a capture group of its own, as any nested group is; its
     // Compact and Large views are not.

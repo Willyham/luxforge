@@ -5593,7 +5593,7 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         // The script names groups by the labels the form shows, and steps by identity.
-        let offered = settings_groups(&self.modules, self.developer);
+        let offered = settings_groups(&self.modules, self.developer, self.settings.flags.as_ref());
         let groups: Vec<(String, String)> = offered
             .groups
             .into_iter()

@@ -196,7 +196,9 @@ impl PresetsModule {
                          under skipped in the result. Auto without usable tonal range is also \
                          skipped. An unknown, non-presettable or unavailable action, an \
                          overlapping analysis/field set or another refused field refuses the \
-                         whole set and writes nothing.",
+                         whole set and writes nothing, and so does an action whose module is \
+                         offered only under an experiment flag that is off, as not-ready with \
+                         data.flag naming the flag.",
                     )
                 }],
                 queries: Vec::new(),

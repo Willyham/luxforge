@@ -621,6 +621,8 @@ pub(crate) struct Spec {
     /// Whether the module is a developer proof, listed and registered only in developer mode.
     developer: bool,
     presettable: bool,
+    /// The experiment flags the module is offered under ([`ModuleDescriptor::flags`]).
+    flags: Vec<&'static str>,
 }
 
 impl Spec {
@@ -675,6 +677,7 @@ impl Spec {
             layout: ModuleLayout::Stacked,
             developer: false,
             presettable: true,
+            flags: Vec::new(),
         }
     }
 
@@ -741,6 +744,14 @@ impl Spec {
 
     pub(crate) fn canvas(mut self, canvas: CanvasInteraction) -> Self {
         self.canvas = Some(canvas);
+        self
+    }
+
+    /// The module is offered only while the experiment flag `flag` is on
+    /// ([`ModuleDescriptor::flags`]): its field patch is refused while it is off, and its reset
+    /// still runs.
+    pub(crate) fn flag(mut self, flag: &'static str) -> Self {
+        self.flags.push(flag);
         self
     }
 
@@ -1056,6 +1067,7 @@ impl Spec {
             developer: self.developer,
             collapsed: self.collapsed,
             layout: self.layout,
+            flags: self.flags.iter().map(|flag| (*flag).to_owned()).collect(),
             availability: Availability::Available,
             ..ModuleDescriptor::default()
         }

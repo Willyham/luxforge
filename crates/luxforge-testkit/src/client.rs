@@ -208,6 +208,18 @@ pub fn recipe(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Checked<R
         .map_err(|error| format!("asset.state answered an unreadable recipe: {error}"))
 }
 
+/// A host with no settings directory that forces the grain experiment on for its life, as a check
+/// that adds grain starts its owner with: a test host's forced flag holds whatever is stored.
+pub fn grain_host() -> HostConfig {
+    HostConfig {
+        launch_flags: luxforge_core::flags::LaunchFlags::resolve(
+            None,
+            &[(luxforge_core::flags::GRAIN, json!(true), "test")],
+        ),
+        ..HostConfig::unconfigured()
+    }
+}
+
 /// A catalog owner that is stopped and joined however the check using it ends. It dereferences to
 /// its [`OwnerHandle`], so every free function above takes it too.
 pub struct Owner {
@@ -222,7 +234,7 @@ impl Owner {
         Self::start_with_host(catalog, registry, HostConfig::unconfigured(), actor)
     }
 
-    /// [`Self::start`] on a capability host.
+    /// [`Self::start`] on a capability host, such as [`grain_host`].
     pub fn start_with_host(
         catalog: &Path,
         registry: ModuleRegistry,

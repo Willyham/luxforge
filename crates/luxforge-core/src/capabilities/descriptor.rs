@@ -697,6 +697,15 @@ pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
     for task in &module.tasks {
         validate_task(module, task, &mut tasks)?;
     }
+    let mut flags = HashSet::with_capacity(module.flags.len());
+    for flag in &module.flags {
+        validate_flag("module", id, flag)?;
+        if !flags.insert(flag.as_str()) {
+            return Err(Error::validation(format!(
+                "module {id} declares flag {flag} twice"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1985,6 +1994,19 @@ mod tests {
             (
                 |d| d.tasks[0].flags = vec!["ai.analysis".into(), "ai.analysis".into()],
                 "task generate-test-tint declares flag ai.analysis twice",
+            ),
+            // The module's own flags.
+            (
+                |d| d.flags = vec!["ai.unknown".into()],
+                "module test.capabilities declares unknown flag ai.unknown",
+            ),
+            (
+                |d| d.flags = vec!["proof.number".into()],
+                "module test.capabilities declares flag proof.number, which is not a toggle",
+            ),
+            (
+                |d| d.flags = vec!["grain".into(), "grain".into()],
+                "module test.capabilities declares flag grain twice",
             ),
             (
                 |d| d.tasks[0].uses.push("missing".into()),

@@ -102,7 +102,12 @@ fn section(fixture: &Path, catalog: &Path, scratch: Option<&Path>, run: Section)
     let source = luxforge_core::open_source(fixture)?;
     let total = Instant::now();
     let mut checks = Vec::new();
-    let (owner, join) = OwnerHandle::start(catalog)?;
+    // The grain experiment on, as a test host forces it, so the grain section can add grain.
+    let (owner, join) = OwnerHandle::start_with_host(
+        catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
+        client::grain_host(),
+    )?;
     let outcome = (|| -> Result {
         let editor = owner.register();
         let imported = open(&owner, editor, fixture)?;

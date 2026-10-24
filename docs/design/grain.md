@@ -1,6 +1,6 @@
 # Grain
 
-Status: implemented and verified on Linux ([task plan](../../tasks/editing/grain.json)): the [grain study](grain-study.md) and its `f64` reference, the module on both evaluation paths, the GPU program (device tests and the `grain` corpus family on RADV), the desktop section and its `grain` smoke scenario (under Xvfb), the API, presets, copy and paste, Lightroom preset import and the alignment rig's grain families. Open: native M4 qualification (the rendered tier's background `grain` scenario on the native GPU frame and the whole-corpus gate, the corpus's RAW grain cells included) and the [measurements](#resource-and-responsiveness-constraints), and the [Lightroom alignment round](#verification-and-acceptance), which needs the owner's grain export. Its [decisions](#decided) are the owner's; its [recorded defaults](#proposals-with-recorded-defaults) are the implementation's until the owner changes them.
+Status: implemented behind the off-by-default [`grain` flag](#the-grain-flag) and verified on Linux ([task plan](../../tasks/editing/grain.json)): the [grain study](grain-study.md) and its `f64` reference, the module on both evaluation paths, the GPU program (device tests and the `grain` corpus family on RADV), the desktop section and its `grain` smoke scenario (under Xvfb), the API, presets, copy and paste, Lightroom preset import and the alignment rig's grain families. Open: native M4 qualification (the rendered tier's background `grain` scenario on the native GPU frame and the whole-corpus gate, the corpus's RAW grain cells included) and the [measurements](#resource-and-responsiveness-constraints), and the [Lightroom alignment round](#verification-and-acceptance), which needs the owner's grain export. Its [decisions](#decided) are the owner's; its [recorded defaults](#proposals-with-recorded-defaults) are the implementation's until the owner changes them.
 
 Grain adds synthetic film grain to a photograph: a built-in module, `luxforge.grain`, with Lightroom's three controls, Amount, Size and Roughness, generated controls and generated API methods. It builds on the delivered [vignette](presence-mixer-vignette.md#vignette-one-positional-unit), whose finish stage and positional colour units it reuses: grain is a pattern that is a function of the pixel's position and the three sliders alone, so it needs no neighbourhood, no halo, no spatial primitive and no new host stage.
 
@@ -54,7 +54,21 @@ Grain is judged at 100%. A downsized export resamples the full-resolution termin
 
 ## API
 
-Generated from the descriptors: `edit.set-grain` and `edit.reset-grain`, discoverable through `module.list` and `schema.list`, each patch validating exactly the fields sent, storing the patch as sent, deduplicating by request id and creating no entry for a patch that changes nothing. `draft.begin` accepts the patch action, `recipe.describe` reports the layer's values, and `render.sample` and `analysis.request` keep their identities. Parity is verified through the [field-patch conformance chapter](../engineering/development.md#the-field-patch-conformance-chapter).
+Generated from the descriptors: `edit.set-grain` and `edit.reset-grain`, discoverable through `module.list` and `schema.list` whatever the [flag](#the-grain-flag) says, each patch validating exactly the fields sent, storing the patch as sent, deduplicating by request id and creating no entry for a patch that changes nothing. `draft.begin` accepts the patch action, `recipe.describe` reports the layer's values, and `render.sample` and `analysis.request` keep their identities. Parity is verified through the [field-patch conformance chapter](../engineering/development.md#the-field-patch-conformance-chapter).
+
+## The grain flag
+
+Grain is an experiment behind the live toggle `grain` ([settings and feature flags](settings-and-flags.md#gated-grain)), off by default and listed in Settings › Experiments after AI object picking. It gates what is offered and what writes new grain, never how a stored grain layer renders: a recipe's grain layer renders, samples, exports and describes identically whatever the flag says.
+
+The module declares the flag (`flags: ["grain"]` in its descriptor), so a client knows from the descriptor alone. While it is off:
+
+- the desktop draws no Grain section, offers no Grain group in the create-preset form or Copy settings, and lists no Grain palette entry;
+- the host refuses `edit.set-grain`, `draft.begin` of `set-grain` and the commit of a `set-grain` draft, and a settings set carrying `set-grain` in `edit.apply-settings`, its draft's `draft.set` and commit, and `batch.apply-settings`, each as `not-ready` with `data.flag: "grain"`, writing nothing;
+- `edit.reset-grain`, undo, redo and history navigation run, since removing grain or replaying a stored entry is not offering it;
+- `module.list` and `schema.list` still describe the module and its methods; `edit.set-grain`'s schema carries `flags: ["grain"]` and says when it is refused, and `preset.groups` still lists the Grain group;
+- Lightroom preset import still maps grain into the stored preset; only applying it waits for the flag.
+
+On, everything behaves as this design describes. Turning the flag on or off takes effect at once: the desktop reads the flags again on a `flags.set` event and shows or hides the section.
 
 ## Presets and Lightroom import
 
@@ -62,9 +76,9 @@ Generated from the descriptors: `edit.set-grain` and `edit.reset-grain`, discove
 
 ## Desktop
 
-A Grain section in the tools panel, after Vignette, collapsed, one group drawn without a header: Amount (unipolar, zero 0), Size (unipolar, default 25), Roughness (unipolar, default 50) and the module's reset. Every slider drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request. The section has its accent dot when Amount is non-zero. The section is the generated one, with no grain-specific widget.
+While the [`grain` flag](#the-grain-flag) is on, a Grain section in the tools panel, after Vignette, collapsed, one group drawn without a header: Amount (unipolar, zero 0), Size (unipolar, default 25), Roughness (unipolar, default 50) and the module's reset. Every slider drafts through the core lifecycle, previews live and commits once on release, key-up or Enter; Escape cancels; a right-click copies the exact JSON request. The section has its accent dot when Amount is non-zero. The section is the generated one, with no grain-specific widget.
 
-The rendered check is `cargo xtask smoke --scenario grain`, over the generated `fixtures/generated/grain.jpg`: a 2400 × 1600 flat mid-grey crossed by a band of black, white and four saturated patches, larger than the canvas at 100%. It drags and commits Amount at Fit, commits Size and Roughness at 100%, crops, undoes and redoes, and judges each 100% frame against the same view before any grain: grain shown and even across the view up to the canvas's edges, the grey's mean and neutrality kept, black and white untouched, each colour's mean kept, Size coarser, Roughness changing the pattern, and a crop, undo and redo keeping the grain's size and strength. Fit frames are reduced stages and are recorded, not judged.
+The rendered check is `cargo xtask smoke --scenario grain`, over the generated `fixtures/generated/grain.jpg`: a 2400 × 1600 flat mid-grey crossed by a band of black, white and four saturated patches, larger than the canvas at 100%. It opens with the flag off and no Grain section, has a second client turn the flag on and checks the section appears, collapsed, then drags and commits Amount at Fit, commits Size and Roughness at 100%, crops, undoes and redoes, and judges each 100% frame against the same view before any grain: grain shown and even across the view up to the canvas's edges, the grey's mean and neutrality kept, black and white untouched, each colour's mean kept, Size coarser, Roughness changing the pattern, and a crop, undo and redo keeping the grain's size and strength. Fit frames are reduced stages and are recorded, not judged.
 
 ## Resource and responsiveness constraints
 

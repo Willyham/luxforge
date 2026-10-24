@@ -4,7 +4,9 @@
 //! Roughness unipolar at 0, 25 and 50, and the module's reset. Each slider drafts through the core
 //! lifecycle and previews while dragging, a release commits once, Escape cancels, a right-click's
 //! Copy as JSON request is the request an independent client sends to `edit.set-grain`, and the
-//! band's accent dot follows the core's neutrality, which is Amount's alone.
+//! band's accent dot follows the core's neutrality, which is Amount's alone. The section, its
+//! settings group and its palette entries are offered only while the `grain` experiment flag is
+//! on, and follow the flag live.
 use super::{
     gpu_preview_tests::{catalog, deliver_until},
     keymap,
@@ -13,12 +15,11 @@ use super::{
     },
     tasks,
     testing::{
-        attach_log, events, finish, let_go, logged, real_photo_prepared, run_commit, slide,
-        start_owner,
+        attach_log, events, finish, grain_config, let_go, logged, read_flags, real_photo_prepared,
+        run_commit, slide, start_owner,
     },
     *,
 };
-use crate::Config;
 use crate::state::tools::{ControlModel, SectionModel};
 use luxforge_core::{AssetId, ClientId, GRAIN_EFFECT};
 use luxforge_gpu::GpuStageState;
@@ -130,13 +131,13 @@ fn agent_sets(editor: &mut Editor, agent: ClientId, asset: &AssetId, fields: Val
 fn the_grain_section_drafts_previews_commits_once_cancels_copies_and_dots_on_amount() {
     let catalog = catalog("grain-section");
     // The reference renderer draws every frame, so the preview's pixels can be read here.
-    let (owner, join) = start_owner(&catalog, &Config::default());
+    let (owner, join) = start_owner(&catalog, &grain_config());
     let (mut editor, asset, agent, ()) = real_photo_prepared(
         owner,
         join,
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/s0/orientation-1.jpg"),
-        Config::default(),
+        grain_config(),
         |editor| editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: true }),
     );
     deliver_until(&mut editor, "the opened frame", |editor| {
@@ -314,4 +315,58 @@ fn the_grain_section_drafts_previews_commits_once_cancels_copies_and_dots_on_amo
     agent_sets(&mut editor, agent, &asset, json!({"amount": 5.0}));
     assert!(section(&editor).active, "any non-zero Amount lights it");
     finish(editor, catalog);
+}
+
+/// Off by default, the Grain section is not drawn, its settings group is not offered and the
+/// palette lists none of its entries; another client turning the flag on shows all three as soon as
+/// the desktop reads the flags again, as its event sync does for a `flags.set`, and turning it off
+/// hides them again, with no relaunch.
+#[test]
+fn the_grain_section_follows_the_live_flag() {
+    let (mut editor, root) = super::settings_tests::launch();
+    let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
+        testing::descriptors(),
+    ))));
+    read_flags(&mut editor);
+    let offered = |editor: &Editor| {
+        let section = editor
+            .workspace
+            .tools
+            .sections
+            .iter()
+            .any(|section| section.module_id == MODULE);
+        let group = crate::state::presets::settings_groups(
+            &editor.modules,
+            editor.developer,
+            editor.settings.flags.as_ref(),
+        )
+        .groups
+        .iter()
+        .any(|group| group.module == MODULE);
+        let palette = editor
+            .workspace
+            .palette
+            .entries
+            .iter()
+            .any(|entry| entry.label.starts_with("Grain"));
+        (section, group, palette)
+    };
+    let _ = editor.update(Message::Palette(
+        crate::app::message::palette::PaletteMessage::Open,
+    ));
+    assert_eq!(offered(&editor), (false, false, false), "off by default");
+
+    let agent = editor.owner.register();
+    for on in [true, false] {
+        tasks::call(
+            &editor.owner,
+            agent,
+            "flags.set",
+            json!({"flag": luxforge_core::flags::GRAIN, "value": on}),
+        )
+        .unwrap();
+        read_flags(&mut editor);
+        assert_eq!(offered(&editor), (on, on, on), "the flag {on}");
+    }
+    super::settings_tests::finish(editor, root);
 }

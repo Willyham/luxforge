@@ -157,6 +157,9 @@ pub(crate) fn derive(
         .modules
         .iter()
         .filter(|module| crate::state::tools::applies(module, inputs.document.state.as_ref()))
+        .filter(|module| {
+            crate::state::settings::module_offered(inputs.settings.flags.as_ref(), module)
+        })
         .cloned()
         .collect();
     raw.extend(palette_entries(

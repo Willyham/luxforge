@@ -107,6 +107,52 @@ impl ModuleRegistry {
         Some((provider, &provider.descriptor().actions[*position]))
     }
 
+    /// The experiment flags a request that runs `action_id` with `parameters` needs on, each once
+    /// with the module that declares it ([`ModuleDescriptor::flags`]): the flags of the action's
+    /// module, unless the action is that module's reset, which only removes what the module
+    /// added, and, for an action that takes a settings set, those of every action the set names.
+    /// Empty for an action no module declares, which the path that resolves it refuses. Reads
+    /// declarations only: `O(steps)`.
+    pub(crate) fn needed_flags(
+        &self,
+        action_id: &str,
+        parameters: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Vec<(&str, &ModuleDescriptor)> {
+        let mut needed: Vec<(&str, &ModuleDescriptor)> = Vec::new();
+        let mut add = |id: &str| {
+            let Some((provider, _)) = self.action(id) else {
+                return;
+            };
+            let module = provider.descriptor();
+            if module
+                .reset
+                .as_ref()
+                .is_some_and(|reset| reset.action == id)
+            {
+                return;
+            }
+            for flag in &module.flags {
+                if !needed.iter().any(|(named, _)| named == flag) {
+                    needed.push((flag, module));
+                }
+            }
+        };
+        add(action_id);
+        if let (Some((_, action)), Some(parameters)) = (self.action(action_id), parameters) {
+            let sets = action
+                .parameters
+                .iter()
+                .filter(|parameter| matches!(parameter.kind, crate::ParameterKind::Settings))
+                .filter_map(|parameter| parameters.get(&parameter.name)?.as_object());
+            for set in sets {
+                for step in set.keys() {
+                    add(step);
+                }
+            }
+        }
+        needed
+    }
+
     /// The one answer to "is this a presettable action": registered, declared `patch: true` and
     /// provided by an available module. The preset library's validation and its `unavailable`
     /// list, capture, a composite plan's steps and the Lightroom mapping all resolve through it.

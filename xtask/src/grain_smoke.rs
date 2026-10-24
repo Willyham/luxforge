@@ -1,5 +1,6 @@
-//! The `grain` smoke scenario: the Grain section's own expand, an Amount drag and commit, Size and
-//! Roughness commits, a crop, and its undo and redo, on the real editor, captured at Fit and 100%.
+//! The `grain` smoke scenario: the Grain section offered once another client turns the `grain`
+//! experiment on, its own expand, an Amount drag and commit, Size and Roughness commits, a crop,
+//! and its undo and redo, on the real editor, captured at Fit and 100%.
 //!
 //! The fixture is `fixtures/generated/grain.jpg` (`cargo xtask generate-fixtures`): 2400 × 1600, so
 //! at 100% the window's edges cut it, a flat mid-grey where grain shows plainly, crossed in its
@@ -25,6 +26,8 @@ use luxforge_core::{CROP_EFFECT, GRAIN_EFFECT};
 use luxforge_evidence::{self as script, SliderStep, ViewStep};
 
 const GRAIN_MODULE: &str = "luxforge.grain";
+/// The experiment flag the Grain section and `set-grain` are offered under.
+const GRAIN_FLAG: &str = "grain";
 /// The sections above Grain that are expanded by their own descriptor's default, collapsed first
 /// so the module's own sliders are on screen without scrolling. Every other section above it is
 /// collapsed by default or draws no section.
@@ -95,15 +98,22 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     let view = |name: &str, step: ViewStep| Step::new(name, step).no_draft().commits(0);
     let all = json!({AMOUNT: 60.0, SIZE: 80.0, ROUGHNESS: 90.0});
     Plan::new(vec![
-        // The fixture opens with the Grain section listed and collapsed, Amount at its default, no
-        // draft and no grain layer yet.
-        Step::opened("opened")
-            .collapsed(GRAIN_MODULE)
-            .field(SET_GRAIN, AMOUNT, "0")
-            .field(SET_GRAIN, SIZE, "25")
-            .field(SET_GRAIN, ROUGHNESS, "50")
-            .no_draft()
-            .no_layer(GRAIN_EFFECT),
+        // The fixture opens with the grain experiment off: no Grain section, no draft and no grain
+        // layer.
+        Step::opened("opened").no_draft().no_layer(GRAIN_EFFECT),
+        // Another client turns the experiment on; the desktop follows its `flags.set` event and
+        // lists the Grain section, collapsed, every field at its default.
+        Step::new(
+            "grain-on",
+            script::Step::agent("flags.set", json!({"flag": GRAIN_FLAG, "value": true})),
+        )
+        .commits(0)
+        .collapsed(GRAIN_MODULE)
+        .field(SET_GRAIN, AMOUNT, "0")
+        .field(SET_GRAIN, SIZE, "25")
+        .field(SET_GRAIN, ROUGHNESS, "50")
+        .no_draft()
+        .no_layer(GRAIN_EFFECT),
         section("basic-collapsed", BASIC_MODULE, false).collapsed(BASIC_MODULE),
         section("crop-collapsed", CROP_MODULE, false).collapsed(CROP_MODULE),
         section("expanded", GRAIN_MODULE, true)
@@ -407,13 +417,23 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let opened = launch.at("opened")?;
     opened.module_available(GRAIN_MODULE)?;
     ensure(
-        opened.state()["active"][GRAIN_MODULE] == json!(false),
-        "The Grain section carries a dot with no grain layer",
+        opened.state()["expanded"][GRAIN_MODULE].is_null(),
+        "The Grain section is listed with the grain experiment off",
     )?;
     checks.note(
         opened,
-        "the collapsed Grain section as launched",
+        "no Grain section as launched, with the grain experiment off",
         drawing(opened),
+    );
+    let on = launch.at("grain-on")?;
+    ensure(
+        on.state()["active"][GRAIN_MODULE] == json!(false),
+        "The Grain section carries a dot with no grain layer",
+    )?;
+    checks.note(
+        on,
+        "the collapsed Grain section once the experiment is on",
+        drawing(on),
     );
 
     // The view at 100% before any grain.
