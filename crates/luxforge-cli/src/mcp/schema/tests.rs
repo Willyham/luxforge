@@ -230,6 +230,34 @@ fn artifact_maps_to_a_string() {
 }
 
 #[test]
+fn artifacts_map_to_an_array_of_distinct_strings_within_their_count() {
+    let id = |byte: char| format!("artifact-{}", byte.to_string().repeat(64));
+    assert_mapping(
+        ParameterDescriptor::new(
+            "artifacts",
+            ParameterKind::Artifacts {
+                artifacts_min: 1,
+                artifacts_max: 2,
+            },
+        ),
+        json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "description": "Distinct artifact ids of derived artifacts published in this catalog.",
+        }),
+        &[json!([id('a')]), json!([id('a'), id('b')])],
+        &[
+            (json!([]), "must name 1..=2 artifacts", true),
+            (json!([id('a'), id('a')]), "names artifact", true),
+            (json!(["artifact-1"]), "must be an artifact identity", false),
+        ],
+    );
+}
+
+#[test]
 fn points_map_to_an_array_of_pairs_within_the_published_path_range() {
     let pair = json!({
         "type": "array",
@@ -742,6 +770,11 @@ fn example(parameter: &ParameterDescriptor) -> Value {
             IdentityKind::Correction => json!(CorrectionId::new(1.try_into().unwrap())),
         },
         ParameterKind::Artifact => json!(format!("artifact-{hex}{hex}")),
+        ParameterKind::Artifacts { artifacts_min, .. } => json!(
+            (0..*artifacts_min)
+                .map(|index| format!("artifact-{index:064x}"))
+                .collect::<Vec<_>>()
+        ),
         ParameterKind::Points { points_min, .. } => json!(vec![[0.5, 0.5]; *points_min]),
         ParameterKind::Curve {
             points_min,

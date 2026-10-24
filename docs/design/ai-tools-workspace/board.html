@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Remove, Object and mask Object — design board</title>
+<style>
+  @font-face { font-family: "Inter"; font-weight: 400; src: local("Inter Regular"), local("Inter"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-Regular.ttf"); }
+  @font-face { font-family: "Inter"; font-weight: 600; src: local("Inter SemiBold"), url("../../../crates/luxforge-ui/assets/fonts/inter-4.1/Inter-SemiBold.ttf"); }
+  :root {
+    --canvas: #19191b; --panel: #202023; --bar: #232326; --control: #2c2c31;
+    --rule: #2f2f32; --border: rgba(255,255,255,.06);
+    --text: #e8e8ea; --text2: #a8a8ae; --text3: #77777f;
+    --accent: #e2b46a; --ink: #1a1408; --accent-tint: rgba(226,180,106,.14);
+    --warn: #e0875a; --warn-tint: rgba(224,135,90,.12); --ok: #3fd07a;
+    --band: #2b2b30;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f10; color: var(--text); font: 12px/1.45 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 32px; }
+  h1.board { font-size: 13px; font-weight: 600; color: var(--text2); margin: 0 0 12px; letter-spacing: .02em; }
+  .note { color: var(--text3); font-size: 11px; margin: 10px 0 36px; max-width: 1440px; }
+  .note b { color: var(--text2); font-weight: 600; }
+
+  /* ---------- the window ---------- */
+  .window { position: relative; width: 1440px; height: 900px; background: var(--canvas); border-radius: 10px; overflow: hidden; border: 1px solid #000; }
+  .titlebar { height: 44px; background: var(--bar); border-bottom: 1px solid var(--rule); display: flex; align-items: center; padding: 0 12px 0 84px; gap: 12px; }
+  .traffic { position: absolute; left: 14px; top: 16px; display: flex; gap: 8px; }
+  .traffic i { width: 12px; height: 12px; border-radius: 50%; background: #3a3a40; display: block; }
+  .seg { display: flex; background: var(--canvas); border-radius: 6px; padding: 2px; }
+  .seg span { padding: 4px 10px; border-radius: 5px; color: var(--text2); font-size: 12px; }
+  .seg span.on { background: var(--control); color: var(--text); }
+  .seg kbd { color: var(--text3); margin-left: 6px; font: inherit; font-size: 11px; }
+  .vname { font-weight: 600; font-size: 13px; }
+  .vsum { color: var(--text3); }
+  .grow { flex: 1; }
+  .btn { height: 28px; padding: 0 12px; border-radius: 6px; background: var(--control); color: var(--text); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--accent); color: var(--ink); border-color: transparent; font-weight: 600; }
+  .btn.disabled { opacity: .45; }
+  .btn.full { width: 100%; justify-content: center; }
+  .btn kbd { font: inherit; font-size: 11px; opacity: .6; }
+  .iconbtn { width: 28px; height: 28px; border-radius: 6px; background: var(--control); border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; color: var(--text2); }
+  .body { display: flex; height: calc(900px - 44px - 26px); }
+  .left { width: 240px; background: var(--panel); border-right: 1px solid var(--rule); padding: 12px; }
+  .lbl { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--text3); text-transform: uppercase; margin: 14px 0 8px; display: flex; justify-content: space-between; }
+  .lbl em { font-style: normal; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .row { display: flex; justify-content: space-between; color: var(--text2); padding: 4px 0; }
+  .centre { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; }
+  .modes { position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .modes span { width: 30px; height: 30px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); color: var(--text2); display: flex; align-items: center; justify-content: center; font-size: 13px; }
+  .modes span.on { background: var(--control); color: var(--accent); border-color: rgba(226,180,106,.4); }
+  .band { width: 300px; background: var(--panel); border-left: 1px solid var(--rule); padding: 12px; }
+  .band h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; }
+  .band h3 small { color: var(--text3); font-weight: 400; font-size: 11px; }
+  .kinds { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--canvas); border-radius: 6px; padding: 2px; margin-bottom: 4px; }
+  .kinds span { text-align: center; padding: 4px 0; color: var(--text2); border-radius: 5px; position: relative; }
+  .kinds span.on { background: var(--control); color: var(--text); }
+  .kinds span .dl { position: absolute; right: 5px; top: 3px; font-size: 9px; color: var(--text3); }
+  .kindnote { color: var(--text3); font-size: 11px; margin: 0 0 12px; }
+  .bandtext { color: var(--text); line-height: 1.45; margin: 0 0 8px; }
+  .bandsub { color: var(--text3); font-size: 11px; margin: -4px 0 10px; }
+  .status { height: 26px; background: var(--panel); border-top: 1px solid var(--rule); color: var(--text3); font-size: 11px; display: flex; align-items: center; padding: 0 12px; justify-content: space-between; }
+  .status b { color: var(--text2); font-weight: 400; }
+  .slider { margin: 6px 0 10px; }
+  .slider .t { display: flex; justify-content: space-between; color: var(--text2); font-size: 11.5px; }
+  .slider .rail { height: 3px; background: var(--control); border-radius: 2px; margin-top: 6px; position: relative; }
+  .slider .rail i { position: absolute; left: 0; top: 0; bottom: 0; width: 34%; background: var(--text3); border-radius: 2px; }
+  .slider .rail b { position: absolute; left: 34%; top: -4px; width: 11px; height: 11px; margin-left: -5px; border-radius: 50%; background: var(--text); }
+  .fill { display: grid; grid-template-columns: 1fr 1fr; background: var(--canvas); border-radius: 6px; padding: 2px; margin: 4px 0 10px; }
+  .fill span { text-align: center; padding: 3px 0; color: var(--text3); border-radius: 5px; font-size: 11.5px; }
+  .fill span.on { background: var(--control); color: var(--text); }
+  .objlist { display: flex; flex-direction: column; gap: 2px; margin: 0 0 10px; }
+  .objrow { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--text2); }
+  .objrow.hl { background: var(--band); color: var(--text); }
+  .objrow .n { width: 16px; height: 16px; border-radius: 50%; border: 1.2px solid #fff; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; color: #fff; background: rgba(0,0,0,.45); }
+  .objrow small { margin-left: auto; color: var(--text3); font-size: 10.5px; }
+  .field { height: 28px; border-radius: 6px; background: var(--control); border: 1px solid var(--border); color: var(--text3); display: flex; align-items: center; padding: 0 9px; font-size: 11.5px; margin: 0 0 10px; }
+  .btns { display: flex; gap: 6px; }
+
+  /* ---------- the photograph and its overlays ---------- */
+  .photo { width: 860px; height: 572px; border-radius: 2px; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, #7c9cc0 0%, #b5c9dc 46%, #46677f 47%, #34546b 72%, #6c6250 73%, #5c533f 100%); }
+  .jetty { position: absolute; left: 0; right: 0; top: 413px; height: 22px; background: linear-gradient(180deg, #8a7a5e, #6d5f47); }
+  .post { position: absolute; width: 9px; height: 70px; background: #3b3328; top: 420px; }
+  .person { position: absolute; width: 34px; height: 104px; }
+  .person::before { content: ""; position: absolute; left: 9px; top: 0; width: 16px; height: 16px; border-radius: 50%; background: #2a2622; }
+  .person::after { content: ""; position: absolute; left: 3px; top: 17px; width: 28px; height: 87px; border-radius: 10px 10px 4px 4px; background: #2f2a26; }
+  .buoy { position: absolute; width: 26px; height: 26px; border-radius: 50%; background: #d4573b; box-shadow: inset 0 -6px 0 rgba(0,0,0,.25); }
+  .boat { position: absolute; width: 120px; height: 26px; background: #e9e4da; border-radius: 0 0 60px 60px / 0 0 26px 26px; }
+  .boat::before { content: ""; position: absolute; left: 54px; bottom: 24px; width: 3px; height: 58px; background: #5a564e; }
+  .wire { position: absolute; left: 0; right: 0; top: 96px; height: 1.6px; background: #33363d; transform: rotate(-3deg); }
+  .shadow { position: absolute; height: 10px; border-radius: 50%; background: rgba(20,18,15,.55); filter: blur(2px); }
+  /* hover: Corrections' overlay — a white wash inside a white outline over a dark under-stroke */
+  .hover { position: absolute; border-radius: 12px 12px 6px 6px; background: rgba(255,255,255,.35); outline: 1.5px solid #fff; box-shadow: 0 0 0 2.5px rgba(0,0,0,.45); }
+  /* the selection tint Remove's draft uses */
+  .chosen { position: absolute; border-radius: 12px 12px 6px 6px; background: rgba(226,180,106,.42); outline: 1.5px solid var(--accent); box-shadow: 0 0 0 2.5px rgba(0,0,0,.35); }
+  .tag { position: absolute; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #fff; background: rgba(0,0,0,.6); color: #fff; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+  .tag.on { background: var(--accent); color: var(--ink); border-color: var(--accent); }
+  .pointer { position: absolute; width: 0; height: 0; }
+  .pointer::before { content: ""; position: absolute; left: -9px; top: -1px; width: 18px; height: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
+  .pointer::after { content: ""; position: absolute; left: -1px; top: -9px; width: 2px; height: 18px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
+  .loose { position: absolute; border-radius: 40px; border: 1.5px dashed #fff; background: rgba(255,255,255,.12); }
+  .chip { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(20,20,22,.86); border: 1px solid var(--border); border-radius: 14px; padding: 5px 12px; color: var(--text2); font-size: 11.5px; display: flex; gap: 8px; align-items: center; }
+  .spin { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--text3); border-top-color: var(--accent); }
+  .draftbar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: rgba(20,20,22,.9); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px 6px 12px; display: flex; gap: 10px; align-items: center; color: var(--text2); font-size: 11.5px; white-space: nowrap; }
+  .draftbar .name { color: var(--accent); font-weight: 600; }
+
+  /* ---------- crops ---------- */
+  .row-boards { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 36px; }
+  .crop { background: var(--panel); border: 1px solid #000; border-radius: 8px; width: 300px; padding: 12px; }
+  .crop h4 { margin: 0 0 8px; font-size: 11px; color: var(--accent); font-weight: 600; }
+  .meter { height: 4px; border-radius: 2px; background: var(--control); overflow: hidden; margin: 8px 0 4px; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+  .parts { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 2px; font-size: 11px; color: var(--text3); }
+  .parts div { display: flex; justify-content: space-between; }
+  .parts .done { color: var(--ok); }
+  .err { color: var(--warn); }
+  .cap { font-size: 10px; color: var(--text3); }
+
+  /* ---------- the setup sheet ---------- */
+  .sheet { width: 760px; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4); overflow: hidden; position: relative; }
+  .close { position: absolute; right: 14px; top: 14px; width: 24px; height: 24px; border-radius: 6px; color: var(--text3); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .head { padding: 28px 32px 0; }
+  .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+  .title { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 6px 0 8px; }
+  .lead { font-size: 13px; color: var(--text2); max-width: 620px; margin: 0; line-height: 1.5; }
+  .lead strong { color: var(--text); font-weight: 600; }
+  .steps { display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr; align-items: stretch; padding: 22px 32px 0; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 13px; padding-bottom: 60px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  .illus { height: 112px; background: var(--canvas); border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .stext { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .sname { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .num { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .sbody { color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .where { margin-top: auto; padding-top: 6px; color: var(--text3); font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .key { display: inline-flex; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--control); border: 1px solid var(--border); color: var(--text); font-size: 10.5px; align-items: center; justify-content: center; }
+  .scene { width: 150px; height: 84px; border-radius: 4px; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, #6f93b8 0%, #9fb9d2 50%, #3b5d78 51%, #2c4a61 76%, #4f6b38 77%, #5d7a41 100%); }
+  .scene.small { width: 64px; height: 42px; border-radius: 3px; }
+  .mini-person { position: absolute; left: 88px; top: 26px; width: 12px; height: 40px; }
+  .mini-person::before { content: ""; position: absolute; left: 3px; top: 0; width: 6px; height: 6px; border-radius: 50%; background: #262220; }
+  .mini-person::after { content: ""; position: absolute; left: 0; top: 7px; width: 12px; height: 33px; border-radius: 5px 5px 2px 2px; background: #2c2824; }
+  .mini-hover { position: absolute; left: 84px; top: 22px; width: 20px; height: 48px; border-radius: 7px; background: rgba(255,255,255,.35); outline: 1.2px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.45); }
+  .mini-chosen { position: absolute; left: 84px; top: 22px; width: 20px; height: 48px; border-radius: 7px; background: rgba(226,180,106,.45); outline: 1.2px solid var(--accent); }
+  .mini-ptr { position: absolute; left: 98px; top: 44px; width: 10px; height: 10px; }
+  .mini-ptr::before { content: ""; position: absolute; left: 0; top: 4px; width: 10px; height: 1.5px; background: #fff; }
+  .mini-ptr::after { content: ""; position: absolute; left: 4px; top: 0; width: 1.5px; height: 10px; background: #fff; }
+  .strip { display: flex; gap: 5px; }
+  .strip .scene.small.chosen { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+  .progress { width: 150px; height: 4px; border-radius: 2px; background: var(--control); overflow: hidden; }
+  .progress i { display: block; width: 62%; height: 100%; background: var(--accent); }
+  .cands { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .facts { padding: 22px 32px 0; }
+  .facts .lbl { margin: 0 0 8px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start; }
+  .tile .ic { width: 28px; height: 28px; border-radius: 7px; background: var(--accent-tint); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
+  .tile b { display: block; font-size: 13px; font-weight: 600; }
+  .tile span { color: var(--text3); font-size: 11px; display: block; }
+  .tile .ok { color: var(--ok); }
+  .aside { color: var(--text3); font-size: 11px; margin-top: 8px; }
+  .includes { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .includes div { display: flex; justify-content: space-between; padding: 7px 12px; color: var(--text2); font-size: 11.5px; border-top: 1px solid var(--border); }
+  .includes div:first-child { border-top: 0; }
+  .includes small { color: var(--text3); }
+  .includes .have { color: var(--ok); }
+  .foot { margin-top: 24px; padding: 14px 32px; border-top: 1px solid var(--rule); background: var(--panel); display: flex; align-items: center; gap: 10px; }
+  .promise { display: flex; align-items: center; gap: 8px; color: var(--text2); }
+  .shield { width: 14px; height: 16px; border: 1.5px solid var(--text2); border-radius: 3px 3px 7px 7px; }
+
+  /* ---------- masks panel ---------- */
+  .menu { width: 230px; background: var(--bar); border: 1px solid var(--rule); border-radius: 8px; padding: 5px; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+  .menu .it { display: flex; justify-content: space-between; align-items: center; padding: 5px 9px; border-radius: 5px; color: var(--text); }
+  .menu .it small { color: var(--text3); font-size: 10.5px; }
+  .menu .it.hl { background: var(--accent); color: var(--ink); }
+  .menu .it.hl small { color: var(--ink); opacity: .7; }
+  .menu .sep { height: 1px; background: var(--rule); margin: 4px 6px; }
+  .menu .grp { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text3); padding: 6px 9px 2px; }
+  .comp { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: 5px; color: var(--text2); }
+  .comp.sel { background: var(--band); color: var(--text); }
+  .comp .mode { margin-left: auto; font-size: 10.5px; color: var(--text3); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+  .modelrow { background: var(--canvas); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin: 6px 0 0; font-size: 11px; color: var(--text3); }
+  .modelrow b { color: var(--text2); font-weight: 600; }
+  .modelrow .stale { color: var(--warn); margin-top: 4px; }
+
+  /* ---------- settings models ---------- */
+  .settings { width: 720px; height: 480px; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px; display: flex; overflow: hidden; }
+  .rail { width: 160px; border-right: 1px solid var(--rule); padding: 44px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .rail span { padding: 6px 10px; border-radius: 6px; color: var(--text2); }
+  .rail span.on { background: var(--control); color: var(--text); }
+  .pane { flex: 1; padding: 16px 20px; overflow: hidden; }
+  .pane h2 { font-size: 15px; margin: 0 0 4px; }
+  .pane .machine { color: var(--text3); font-size: 11px; margin-bottom: 12px; }
+  .mgroup { margin-bottom: 12px; }
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 7px; margin-bottom: 6px; }
+  .mrow .what { flex: 1; }
+  .mrow .what b { display: block; font-size: 12px; font-weight: 600; }
+  .mrow .what span { color: var(--text3); font-size: 11px; }
+  .pill { font-size: 10.5px; padding: 1px 7px; border-radius: 9px; background: var(--control); color: var(--text2); }
+  .pill.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+
+<h1 class="board">Board 1 · The Object tool, ready: the object under the pointer is outlined (1440 × 900 pt)</h1>
+<div class="window">
+  <div class="traffic"><i></i><i></i><i></i></div>
+  <div class="titlebar">
+    <div class="seg"><span>Select<kbd>G</kbd></span><span class="on">Develop<kbd>D</kbd></span></div>
+    <span class="vname">DSC_0412.NEF</span><span class="vsum">6048 × 4024 · RAW</span>
+    <span class="grow"></span>
+    <span class="iconbtn">↶</span><span class="iconbtn">↷</span>
+    <span class="iconbtn">◧</span><span class="iconbtn">◨</span>
+  </div>
+  <div class="body">
+    <div class="left">
+      <div class="lbl">Versions <span>+</span></div>
+      <div class="lbl">History <span>rev 3</span></div>
+      <div class="row" style="color:var(--text)">● Add Heal 1</div>
+      <div class="row">○ Basic · Exposure +0.40</div>
+      <div class="row">○ Original</div>
+    </div>
+    <div class="centre">
+      <div class="modes"><span>⬚</span><span>◐</span><span class="on">✚</span></div>
+      <div class="photo">
+        <i class="wire"></i>
+        <i class="boat" style="left:560px;top:300px"></i>
+        <i class="buoy" style="left:250px;top:345px"></i>
+        <i class="jetty"></i>
+        <i class="post" style="left:120px"></i><i class="post" style="left:420px"></i><i class="post" style="left:720px"></i>
+        <i class="shadow" style="left:330px;top:428px;width:70px"></i>
+        <i class="person" style="left:345px;top:312px"></i>
+        <i class="hover" style="left:341px;top:308px;width:42px;height:112px"></i>
+        <i class="pointer" style="left:366px;top:368px"></i>
+      </div>
+    </div>
+    <div class="band">
+      <h3>Corrections <small>1 correction · Esc leaves</small></h3>
+      <div class="kinds"><span>Heal</span><span>Clone</span><span>Remove</span><span class="on">Object</span></div>
+      <p class="kindnote">Point at an object to remove it</p>
+      <div class="lbl">Object <em>next click on the photo</em></div>
+      <p class="bandtext">Click an object to select it. Drag loosely over one when it's hard to point at.</p>
+      <p class="bandsub">⇧-click adds another · ⌥-click takes one away</p>
+      <div class="lbl">Fill</div>
+      <div class="fill"><span class="on">Generative</span><span style="opacity:.4">Fast · later</span></div>
+      <div class="field">Describe what should be there (optional)</div>
+      <div class="btns"><span class="btn primary disabled">Generate</span><span class="btn disabled">Accept</span></div>
+    </div>
+  </div>
+  <div class="status"><span><b>Corrections · Object</b> · click to select the person · drag loosely to find an object · ⇧ adds · ⌥ takes away</span><span>Fit · 18%</span></div>
+</div>
+<p class="note">The kind control gains a fourth segment, <b>Object</b>, beside Remove. Remove keeps exactly what is delivered: a press paints the area to fill, with no hover. Object has no brush in hand: the cursor is a crosshair, and the object under it is washed white inside a white outline over a dark under-stroke (Corrections' overlay treatment, which takes no hue from the photograph). Fill, the prompt, Generate, the candidate strip and Accept are Remove's own group, shared by both kinds. The first entry into Object on a photograph shows "Finding objects…" at the top of the canvas until hover is ready, normally a fraction of a second.</p>
+
+<h1 class="board">Board 2 · Selecting: one click, more with ⇧, and a loose drag that finds several</h1>
+<div class="row-boards">
+  <div>
+    <div class="photo" style="width:560px;height:372px;background-size:100% 100%">
+      <i class="boat" style="left:380px;top:190px;width:90px;height:20px"></i>
+      <i class="buoy" style="left:150px;top:220px;width:20px;height:20px"></i>
+      <i class="jetty" style="top:270px;height:16px"></i>
+      <i class="person" style="left:228px;top:198px;transform:scale(.68);transform-origin:top left"></i>
+      <i class="chosen" style="left:225px;top:195px;width:29px;height:76px"></i>
+      <i class="tag on" style="left:248px;top:186px">1</i>
+      <i class="chosen" style="left:146px;top:216px;width:28px;height:28px;border-radius:50%"></i>
+      <i class="tag on" style="left:168px;top:208px">2</i>
+      <i class="pointer" style="left:420px;top:198px"></i>
+      <i class="hover" style="left:376px;top:150px;width:98px;height:62px;border-radius:6px 6px 40px 40px"></i>
+      <div class="draftbar"><span class="name">Object</span>2 objects selected · ⇧-click the boat to add it · Generate <span class="key">↵</span><span class="btn" style="height:22px">Clear <kbd>esc</kbd></span></div>
+    </div>
+    <p class="note" style="max-width:560px">A click selects the outlined object and replaces the selection; ⇧-click adds one; ⌥-click on a selected object takes it away. Selected objects are tinted as Remove's selection is and numbered in the order they were picked. The boat is still only hovered. Each pick refines the object at full resolution in the background, so the tint sharpens a moment after the click.</p>
+  </div>
+  <div>
+    <div class="photo" style="width:560px;height:372px">
+      <i class="jetty" style="top:270px;height:16px"></i>
+      <i class="person" style="left:200px;top:198px;transform:scale(.68);transform-origin:top left"></i>
+      <i class="person" style="left:232px;top:204px;transform:scale(.6);transform-origin:top left"></i>
+      <i class="loose" style="left:186px;top:186px;width:84px;height:96px"></i>
+      <i class="tag" style="left:208px;top:180px">1</i>
+      <i class="tag on" style="left:240px;top:188px">2</i>
+      <i class="chosen" style="left:230px;top:202px;width:23px;height:66px"></i>
+      <div class="draftbar"><span class="name">Object</span>2 objects found · click the numbers to choose · <span class="btn primary" style="height:22px">Use 1 <kbd>↵</kbd></span><span class="btn" style="height:22px">Cancel <kbd>esc</kbd></span></div>
+    </div>
+    <p class="note" style="max-width:560px">A loose drag is a stroke prompt: one object is selected at once; several show numbered pins, the person clicks the ones to remove and confirms with Return; nothing found keeps the painted footprint under "Nothing found here · Remove the painted area ↵ · Cancel", which hands the stroke to Remove. This is the picker's One, Several and Nothing decision, unchanged.</p>
+  </div>
+</div>
+
+<h1 class="board">Board 3 · The Object group through setup, in the band</h1>
+<div class="row-boards">
+  <div class="crop">
+    <h4>Nothing installed</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext">Point at an object and Luxforge removes it, filling the space to match the photo. It runs on this computer, so your photos stay on it.</p>
+    <p class="bandsub">One-time download · 2.7 GB</p>
+    <span class="btn primary">Set up…</span>
+  </div>
+  <div class="crop">
+    <h4>Remove already set up</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext">Add the object finder so you can point at what to remove instead of painting it.</p>
+    <p class="bandsub">One-time download · 133 MB</p>
+    <span class="btn primary">Set up…</span>
+  </div>
+  <div class="crop">
+    <h4>Installing (one bar for the whole setup)</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext">Setting up Object…</p>
+    <div class="meter"><i style="width:38%"></i></div>
+    <div class="row" style="padding:0;font-size:11px;color:var(--text3)"><span>1.0 of 2.7 GB</span><span style="color:var(--text2)">Cancel</span></div>
+    <div class="parts"><div><span>Object finder</span><span class="done">Ready ✓</span></div><div><span>Generative fill</span><span>Downloading · 34%</span></div></div>
+  </div>
+  <div class="crop">
+    <h4>Partly failed</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext err">Setup didn't finish: the connection to huggingface.co was lost.</p>
+    <div class="parts"><div><span>Object finder</span><span class="done">Ready ✓</span></div><div><span>Generative fill</span><span>Paused at 1.1 of 2.5 GB</span></div></div>
+    <div style="height:8px"></div>
+    <span class="btn primary">Resume</span>
+  </div>
+</div>
+<div class="row-boards">
+  <div class="crop">
+    <h4>Too little memory for the fill</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext">Object removal needs a computer with 16 GB of memory. This Mac has 8 GB.</p>
+    <p class="bandsub">You can still pick objects for masks in Mask mode.</p>
+  </div>
+  <div class="crop">
+    <h4>Ready, first entry on a photo</h4>
+    <div class="lbl" style="margin-top:0">Object</div>
+    <p class="bandtext"><span class="spin" style="display:inline-block;vertical-align:-1px;margin-right:6px"></span>Finding objects…</p>
+    <p class="bandsub">You can paint with Remove meanwhile.</p>
+  </div>
+  <div class="crop">
+    <h4>Kind control before setup</h4>
+    <div class="kinds"><span>Heal</span><span>Clone</span><span class="on">Remove<i class="dl">↓</i></span><span>Object<i class="dl">↓</i></span></div>
+    <p class="kindnote">Paint over what to remove · needs a one-time download</p>
+    <p class="bandsub" style="margin-top:8px">A small ↓ marks a kind whose setup has not run. Both kinds are always listed, so the tools can be found without opening Settings.</p>
+  </div>
+</div>
+
+<h1 class="board">Board 4 · Set up Object: one sheet for everything the tool is missing</h1>
+<div class="sheet" role="dialog" aria-labelledby="t4">
+  <div class="close">✕</div>
+  <div class="head">
+    <div class="eyebrow">AI editing</div>
+    <div class="title" id="t4">Remove an object by pointing at it</div>
+    <p class="lead">Hold the pointer over something you don't want, click, and Luxforge fills the space to match the rest of the photo. It runs <strong>entirely on this computer</strong>, so <strong>your photos never leave it</strong>.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="illus"><div class="scene"><i class="mini-person"></i><i class="mini-hover"></i><i class="mini-ptr"></i></div></div>
+      <div class="stext">
+        <div class="sname"><span class="num">1</span>Point at it</div>
+        <div class="sbody">The whole object is outlined as the pointer moves over it. Drag loosely when it's small or thin.</div>
+        <div class="where">Hover · drag loosely</div>
+      </div>
+    </div>
+    <div class="arrow">›</div>
+    <div class="step">
+      <div class="illus"><div class="scene"><i class="mini-person"></i><i class="mini-chosen"></i></div></div>
+      <div class="stext">
+        <div class="sname"><span class="num">2</span>Click to select</div>
+        <div class="sbody">Click it to select it. Add more objects, or take one away, before you fill.</div>
+        <div class="where"><span class="key">⇧</span> adds · <span class="key">⌥</span> takes away</div>
+      </div>
+    </div>
+    <div class="arrow">›</div>
+    <div class="step">
+      <div class="illus"><div class="cands"><div class="strip"><i class="scene small chosen"></i><i class="scene small"></i></div><div class="progress"><i></i></div><div class="cap">Generating · step 3 of 4</div></div></div>
+      <div class="stext">
+        <div class="sname"><span class="num">3</span>Generate and accept</div>
+        <div class="sbody">Compare fills over the photo and keep the best. It becomes one step in the photo's history.</div>
+        <div class="where"><span class="key">Esc</span> cancels · <span class="key">⌘</span><span class="key">Z</span> undoes</div>
+      </div>
+    </div>
+  </div>
+  <div class="facts">
+    <div class="lbl">Before it can start</div>
+    <div class="tiles">
+      <div class="tile"><span class="ic">↓</span><div><b>2.7 GB download</b><span>Two parts, once, then offline</span></div></div>
+      <div class="tile"><span class="ic">◎</span><div><b>From huggingface.co</b><span>and github.com · Free · Apache-2.0</span></div></div>
+      <div class="tile"><span class="ic">▤</span><div><b>Needs 16 GB of memory</b><span class="ok">This Mac has 48 GB ✓</span></div></div>
+    </div>
+    <div class="includes">
+      <div><span>Object finder <small>· finds the object under the pointer</small></span><span>133 MB</span></div>
+      <div><span>Generative fill <small>· fills the space where it was</small></span><span>2.5 GB</span></div>
+    </div>
+    <div class="aside">Remove uses the same fill, so it's ready too. You can remove either at any time in Settings › Models.</div>
+  </div>
+  <div class="foot">
+    <div class="promise"><i class="shield"></i>Your photos stay on this computer.</div>
+    <span class="grow"></span>
+    <span class="btn">Not now</span>
+    <span class="btn primary">Download 2.7 GB <kbd>↵</kbd></span>
+  </div>
+</div>
+<p class="note">The sheet is the delivered setup sheet, now asked for a whole setup rather than one resource: the facts add up what is missing and the "includes" list names each part in the feature's words, never the model's. With the fill already installed the list has one row ("Generative fill · installed ✓" in green, not counted) and the button reads Download 133 MB. One Download grants each listed part's exact download scope and queues their installs together; the band then shows one bar for the setup. The mask Object setup is the same sheet with the object finder alone: "Select an object by pointing at it", 133 MB, no memory minimum.</p>
+
+<h1 class="board">Board 5 · Masks: New mask › Object, picking in Mask mode, and the stored selection's row</h1>
+<div class="row-boards">
+  <div class="menu">
+    <div class="it"><span>Brush</span></div>
+    <div class="it"><span>Linear gradient</span></div>
+    <div class="it"><span>Radial gradient</span></div>
+    <div class="sep"></div>
+    <div class="grp">Select</div>
+    <div class="it hl"><span>Object…</span><small>point at it</small></div>
+  </div>
+  <div>
+    <div class="photo" style="width:520px;height:346px">
+      <i class="boat" style="left:330px;top:176px;width:96px;height:20px"></i>
+      <i class="jetty" style="top:250px;height:16px"></i>
+      <i class="person" style="left:200px;top:180px;transform:scale(.68);transform-origin:top left"></i>
+      <i class="hover" style="left:197px;top:177px;width:29px;height:76px"></i>
+      <i class="pointer" style="left:212px;top:214px"></i>
+      <div class="draftbar"><span class="name">New mask · Object</span>click an object · drag loosely to find one <span class="btn" style="height:22px">Cancel <kbd>esc</kbd></span></div>
+    </div>
+  </div>
+  <div class="crop" style="width:280px">
+    <div class="lbl" style="margin-top:0">Mask 2 <em>2 components</em></div>
+    <div class="comp sel"><span>◉</span><span>Object 1</span><span class="mode">+</span></div>
+    <div class="comp"><span>✎</span><span>Brush 1</span><span class="mode">−</span></div>
+    <div class="modelrow"><b>Object</b> · picked from a point · 2 min ago<br>Object finder, version a2f0c592</div>
+    <div class="modelrow"><b>Object</b> · picked from a point · yesterday
+      <div class="stale">Needs recompute · an object was removed after this was picked</div>
+      <div class="btns" style="margin-top:6px"><span class="btn" style="height:22px">Recompute</span><span class="btn" style="height:22px">Keep</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">Object… is the New mask and Add component menus' first Select entry; the later Select classes (Subject, Sky, People) join the same group. Choosing it enters a picking sub-state of Mask mode, as the range picker is: hover outlines, a click picks and commits one entry (<b>Add object (model)</b>) as a new mask, or as a component in the Add row's mode. A loose drag finds one or shows numbered pins as in Corrections. The stored selection keeps the point or stroke it was picked from, so Recompute can pick again; Keep leaves it. Without the object finder installed, choosing Object… opens its setup sheet.</p>
+
+<h1 class="board">Board 6 · Settings › Models: models listed by the tools they serve</h1>
+<div class="settings">
+  <div class="rail"><span>General</span><span>Appearance</span><span class="on">Models</span><span>Experiments</span></div>
+  <div class="pane">
+    <h2>Models</h2>
+    <div class="machine">This Mac has 48 GB of memory · 2 models loaded, 4.4 GB · <span style="color:var(--text2)">Unload now</span></div>
+    <div class="mgroup">
+      <div class="lbl" style="margin-top:0">Object finder <em>· Corrections › Object, Masks › Object</em></div>
+      <div class="mrow"><div class="what"><b>Object finder</b><span>EfficientViT-SAM L0 · 133 MB · 448 MB while loaded</span></div><span class="pill ok">Loaded</span><span class="btn" style="height:24px">Remove</span></div>
+    </div>
+    <div class="mgroup">
+      <div class="lbl">Generative fill <em>· Corrections › Remove, Object</em></div>
+      <div class="mrow"><div class="what"><b>Generative fill</b><span>FLUX.2 klein 4B with object removal · 2.5 GB · Needs 16 GB of memory</span></div><span class="pill ok">Installed</span><span class="btn" style="height:24px">Remove</span></div>
+      <div class="mrow"><div class="what"><b>Replace</b><span>Qwen3 4B text encoder · 2.3 GB · Needs 24 GB of memory</span></div><span class="pill">Not installed</span><span class="btn" style="height:24px">Download…</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">The tab is listed in every run that serves a model; the Object finder group only while AI object picking (<code>ai.analysis</code>) is on. Each group is one setup's resources, captioned with the tools that use them; the encoder and decoder are one row, because the person set them up as one thing. The technical name stays secondary, after the feature's name.</p>
+
+</body>
+</html>

@@ -1,0 +1,455 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "ai-tools-workspace",
+  "title": "AI tools in the Develop workspace: Remove, Object and mask Object",
+  "objective": "Make AI object removal and object masks a feature a person finds, sets up and uses without Settings: Remove paints, Object points, Masks › Object makes a stored selection, and each tool sets up its own models through one sheet; object picking stays behind the ai.analysis experiment.",
+  "context_summary": "Decided by the owner on 2026-10-24 (docs/decisions.md, AI tools in the Develop workspace): object detection is a separate tool for removal and for masks; object removal ships on the Generative tier with the Fast tier joining later; object picking (Corrections › Object and Masks › Object) stays behind ai.analysis while Remove is listed by default (ai.generative was removed on main); each tool sets up what it is missing through one sheet. Builds on what is delivered: the generative workflow in the Corrections band's Remove, the setup sheet, the analysis tasks and cache, query.pick-object with Remove's hover overlay, task.select-object, the model mask kind and its commands, the Models tab and the developer fakes for the segmenter and generator. The design is docs/design/ai-tools-workspace.md with its board.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Add setups to the module capability contract (descriptor, module.status, module.setup.install with one combined consent) and declare the remove, object, mask-object and replace setups on luxforge.ai and its developer fakes.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "A setup is the resources one tool needs, grouped into parts named in the feature's words: descriptor setups: [{id, title, introduction, parts: [{name, purpose, resources}]}], at most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares, refused by name at descriptor validation. The introduction moves from each download-artifact capability onto the setup; the delivered sheet's introduction validation (eyebrow, title, lead, at most three steps or one hero, promise) is unchanged. Add the picture kinds Hover and Selected to IntroductionPicture.",
+        "module.status gains setups: [{id, state: installed|missing|installing|failed|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}], derived from resource states, the install memo and the transfer lane, opening nothing. A setup's minimum is the largest of its parts'.",
+        "module.setup.install {module_id, setup, mutation} checks every missing resource's grant first: any missing fails consent-required with data.consent {module_id, setup, grants: [{capability, scope}], disclosure, denied}, the disclosure summed over the missing parts (bytes, every origin, licences, use restrictions, minimum against this machine) with the setup's introduction and parts. Then it checks the transfer lane has room for every missing resource (resource-limit, nothing queued, otherwise), and queues one install job per missing resource in declared order, answering {setup, jobs: [{resource_id, job_id}]}, empty when nothing is missing. Retries follow the mutation envelope's deduplication. A machine below a part's minimum fails not-ready naming it.",
+        "Setups of luxforge.ai: remove (Generative fill: generative-klein-4b), object (Object finder: segmenter-l0-encoder and segmenter-l0-decoder; Generative fill), mask-object (Object finder), replace (Replace: generative-klein-text-encoder). A developer run declares the same setups over its fake resources. Words for the object and mask-object introductions are in the design's sheet section; remove and replace keep their delivered words.",
+        "Recorded delegation: field names inside status rows, the order of checks after consent, and how the disclosure is assembled are the implementer's within this contract."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "The setups, their states, their states and the sheet's facts.",
+          "locator": "Setting up"
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Consent scopes, the mutation envelope, the transfer lane's bounds and introductions.",
+          "locator": "Capability and consent contract"
+        },
+        {
+          "kind": "file",
+          "label": "Introduction pictures",
+          "target": "crates/luxforge-core/src/capabilities/descriptor.rs",
+          "relevance": "IntroductionPicture and the introduction's validation."
+        },
+        {
+          "kind": "file",
+          "label": "AI models",
+          "target": "crates/luxforge-core/src/modules/ai/models.rs",
+          "relevance": "ModelFile, Published and the generative resources."
+        },
+        {
+          "kind": "file",
+          "label": "Analysis models",
+          "target": "crates/luxforge-core/src/modules/ai/analysis/models.rs",
+          "relevance": "The segmenter's two resources and their current introductions."
+        }
+      ],
+      "acceptance_criteria": [
+        "Descriptor validation accepts the four setups and refuses each limit and an undeclared resource by name.",
+        "module.status reports every setup state (installed, missing, installing, failed with the first error, cannot-run below the minimum) with missing and staged bytes, from host state alone.",
+        "module.setup.install refuses consent-required listing every missing scope and the summed disclosure; after each scope is granted it queues exactly the missing installs in declared order, skips installed resources, refuses when the lane lacks room with nothing queued, and deduplicates a retry.",
+        "The same journeys pass through luxforge-json over the developer fakes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit tests for validation, status derivation and install ordering over the fake transport.",
+          "A luxforge-json journey: consent, grants, setup install, status through each state."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core setup",
+          "tools/cargo-cached test -p luxforge-core capabilities"
+        ],
+        "expected_results": [
+          "Any client can set up a tool with one consent answer and one install request, and sees honestly when it cannot."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Let task.fill-generative fill a set of picked objects: the object-artifacts parameter, the removal region of an object artifact with its f64 reference, admission against stale and unknown artifacts, and the objects in the candidates' provenance; store the pick prompt on object model components.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "object-artifacts?: 1 to 8 mask-alpha artifacts published by task.select-object, instead of or beside selection-points. Each must be of this photograph's current source fingerprint and repair prefix (conflict with data.reason stale-selection naming it) and still published (validation: unknown artifact). The region joins each object's removal region and any painted footprint and effect stroke by maximum; the delivered admission (non-empty, candidate cap, half-frame, artifact budget) applies to the joined region.",
+        "The removal region of an object artifact is AI editing's removal region over the artifact's alpha: core where bilinear alpha is at least one half, grayscale disc dilation of half an artifact texel plus 4% of the core's shorter side (at least 2 px, dilation and feather capped as the region rules cap them), a soft outer edge one artifact texel wide, computed only over the artifact's non-zero window. Give it an f64 reference in luxforge-reference and exact-buffer tests.",
+        "Read the artifacts on the module lane in the fill job, never on the owner thread. Candidates' provenance gains objects: [{artifact, prompt}].",
+        "The model payload gains prompt? for class object: {point} or {stroke, radius, candidate?} in content coordinates as task.select-object took it, at most 1,024 points; task.select-object's result carries it, and mask.create-model, mask.add-model and mask.set-model accept and mask.list reports it. Current shapes only: no migration."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "The parameter, the region and the payload field.",
+          "locator": "API"
+        },
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "The removal region's rules, the delivered request, admission and provenance.",
+          "locator": "The removal region"
+        },
+        {
+          "kind": "file",
+          "label": "Generative fill",
+          "target": "crates/luxforge-core/src/modules/ai/generative.rs",
+          "relevance": "The fill job this extends."
+        },
+        {
+          "kind": "file",
+          "label": "Object selection",
+          "target": "crates/luxforge-core/src/modules/ai/objects.rs",
+          "relevance": "task.select-object and the artifact it publishes."
+        },
+        {
+          "kind": "file",
+          "label": "Model kind",
+          "target": "crates/luxforge-core/src/mask/model.rs",
+          "relevance": "The model payload that gains prompt."
+        }
+      ],
+      "acceptance_criteria": [
+        "The object removal region matches its f64 reference exactly on fixtures for a small, a large and a frame-edge object; nothing is allocated outside the window.",
+        "A fill from object artifacts (with and without a painted stroke and an effect stroke) is byte-identical to its input outside its coverage, and its candidates record each object.",
+        "A stale artifact is refused conflict stale-selection and an unknown one validation, before anything is queued; nine artifacts are refused by the schema.",
+        "An object component round-trips its prompt through create, add, set and list; Recompute through luxforge-json (select-object with the stored prompt, then mask.set-model) produces the identical artifact for an unchanged photograph."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Reference and exact-buffer tests for the region; fill tests over the fake generator; payload round-trips."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core ai::",
+          "tools/cargo-cached test -p luxforge-reference",
+          "tools/cargo-cached test -p luxforge-core mask::model"
+        ],
+        "expected_results": [
+          "Any client can remove objects it picked, and a picked mask can be recomputed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the too-small line, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Replace the single-resource setup in state/fill_setup.rs with one derived from module.status setups and the jobs it names; the delivered copy for Remove stays, and Object's and mask Object's lines are the design's table. Set up sends module.setup.install; on consent-required the sheet opens from data.consent; Download sends module.permission.grant for each listed scope then module.setup.install again; Not now sends module.permission.deny for each. Cancel sends job.cancel for every job of the setup.",
+        "The sheet is the delivered setup sheet (state/setup_sheet.rs and its view) with the facts summed over missing parts and an includes list (part name, purpose, size; an installed part shown as installed and not counted). Draw the Hover and Selected picture kinds from the theme as the other four are drawn.",
+        "Settings › Models lists rows per setup part with a caption naming the tools that use it; a part's Remove removes each of its resources; Download… on an uninstalled part opens the sheet for the smallest setup holding it.",
+        "The kind control gains a small download glyph on a kind whose setup is not installed. Record the setup and the open sheet in state.json as today.",
+        "Write the ai-setup smoke scenario over the developer fakes: missing, consent, aggregated progress, a failed part resumed, too small (a forced minimum)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "Lines, sheet, Settings › Models.",
+          "locator": "Setting up"
+        },
+        {
+          "kind": "file",
+          "label": "Board",
+          "target": "docs/design/ai-tools-workspace/board.html",
+          "relevance": "Boards 3, 4 and 6."
+        },
+        {
+          "kind": "file",
+          "label": "Fill setup",
+          "target": "crates/luxforge-app/src/state/fill_setup.rs",
+          "relevance": "The delivered setup this generalises."
+        },
+        {
+          "kind": "file",
+          "label": "Setup sheet",
+          "target": "crates/luxforge-app/src/state/setup_sheet.rs",
+          "relevance": "The delivered sheet."
+        },
+        {
+          "kind": "file",
+          "label": "Models tab",
+          "target": "crates/luxforge-app/src/state/models.rs",
+          "relevance": "The delivered Models tab."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each setup state draws the design's line and action; every button sends exactly the request Copy as JSON request shows.",
+        "One Download grants every missing scope and installs exactly the missing parts; the band shows one bar over them; Cancel stops all; Try again resumes only what is missing.",
+        "A too-small setup offers no button; Settings › Models groups rows by part with their captions.",
+        "The ai-setup scenario passes in the background with captures correlated to state and logs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "State-derivation tests for every setup state; the ai-setup scenario."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app setup",
+          "tools/cargo-cached xtask smoke --scenario ai-setup --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A person sets up any AI tool from the tool itself with one answer."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Deliver the Object kind of the Corrections band: the fourth segment, the crosshair and hover moved from Remove, analysis on entry, click, ⇧-click and ⌥-click selection, the loose drag with One, Several pins and the Nothing hand-off to Remove, the numbered selection, Paint shadow, Generate from object artifacts through the shared Remove group, the Escape order, and the object-remove scenario.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Remove keeps the delivered painting workflow and loses its hover; Object uses the shared picker (object_pick.rs) built for Masks › Object. Entering Object with its setup installed sends module.runtime.load for the encoder and decoder and task.analyse for the photograph on screen, showing Finding objects… until it answers; a new photograph analyses the same way.",
+        "Object is listed only while ai.analysis is on (as the hover is today); turning it off while Object is chosen returns the band to Remove. Rewrite the flag's description to name the two tools (the design's Flags section) and update settings-and-flags.md's ai.analysis row and Gated object picking; other shared documents are the integrator's.",
+        "Click (under 3 pt) sends task.select-object {asset_id, point} and replaces the selection; ⇧ adds; ⌥-click on a selected object removes it locally with no request. A loose drag paints a dashed stroke at the band's Size and sends query.pick-object {stroke, radius, previews: all}: One selects, Several shows numbered pins (click toggles, Return or Use N sends task.select-object with the stroke and each candidate, Escape cancels), Nothing keeps the footprint under the notice whose Return switches to Remove with that stroke as its selection.",
+        "At most 8 objects; selects run one at a time from the desktop with further clicks waiting in a bounded local queue of 8; leaving Object or the photograph drops queued selects and pins. The tint is drawn from each pick's held preview. Paint shadow arms the brush for one stroke sent as effect-points and effect-radius.",
+        "Generate sends task.fill-generative with object-artifacts and any effect stroke; everything after is the delivered workflow. Switching between Remove and Object clears the selection. Escape: cancel a generation, then pins or the notice, then the selection, then leave the mode. The ⋯ menu copies picks, selects, Generate and Accept.",
+        "Write the object-remove scenario over the fake runtime and fake segmenter, and update pick for hover living in Object."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "Every gesture, the group and the status-bar sentence.",
+          "locator": "The Corrections band"
+        },
+        {
+          "kind": "file",
+          "label": "Board",
+          "target": "docs/design/ai-tools-workspace/board.html",
+          "relevance": "Boards 1 and 2."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "The band, its keys and the Escape order.",
+          "locator": "The Corrections band"
+        },
+        {
+          "kind": "file",
+          "label": "Object removal",
+          "target": "crates/luxforge-app/src/app/object_remove.rs",
+          "relevance": "The Object kind of the Corrections band."
+        },
+        {
+          "kind": "file",
+          "label": "Remove state",
+          "target": "crates/luxforge-app/src/state/remove.rs",
+          "relevance": "The shared Remove group."
+        }
+      ],
+      "acceptance_criteria": [
+        "With ai.analysis off the band lists Heal, Clone and Remove only and Remove draws no hover; on, Object is listed and Remove still draws none.",
+        "Every Object gesture sends the request Copy as JSON request shows and the same journey runs through luxforge-json; One, Several and Nothing match query.pick-object for the same stroke.",
+        "A removal of two picked objects and a painted shadow commits one entry through Accept, renders within the GPU's declared tolerance, and is byte-identical outside its coverage.",
+        "The object-remove scenario passes in the background with captures for Finding objects, hover, a click, ⇧ and ⌥, pins, the Nothing hand-off, Paint shadow, a running fill and the result, correlated to state and logs.",
+        "The performance-rules checklist in the design is answered."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Desktop state tests for each gesture and the Escape order; the object-remove and pick scenarios."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app object",
+          "tools/cargo-cached xtask smoke --scenario object-remove --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A person removes an object by pointing at it."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Deliver Object in the Masks panel: the Select group with Object… in New mask and Add component, the picking sub-state of Mask mode, one entry per pick through mask.create-model or mask.add-model, the model component's row with how and when it was picked, the stale note with Recompute and Keep, and the mask-object scenario.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Object… is listed whenever the run declares task.select-object and ai.analysis is on (turning it off leaves the sub-state as Escape does, and a model row offers no Recompute); without the mask-object setup installed it opens the setup sheet. The sub-state follows the range picker's: the open mask, its layer and the sections stay; crosshair and hover as in Object; a click or a loose drag (One, or Several through pins) sends task.select-object and commits mask.create-model (New mask) or mask.add-model in the Add row's mode, labelled Add object (model); it stays armed until Escape or Done.",
+        "The model component row shows class, picked from a point or a stroke, computed time from mask.list and the part name and version; when stale it names the first reason in plain words with Recompute (task.select-object with the stored prompt, then mask.set-model, one entry) and Keep (sends nothing, hides the note until the reasons change). The later Select classes reuse this row.",
+        "Write the mask-object scenario: the menu, the sheet, create and add, the row, a removal that stales it, Recompute and Keep."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "Menu, sub-state, row.",
+          "locator": "Object in the Masks panel"
+        },
+        {
+          "kind": "file",
+          "label": "Masking workspace",
+          "target": "docs/design/masking-workspace.md",
+          "relevance": "The panel, the Add row's mode and the range picker's sub-state.",
+          "locator": "Model selections (phase E)"
+        },
+        {
+          "kind": "file",
+          "label": "Masks state",
+          "target": "crates/luxforge-app/src/state/masks.rs",
+          "relevance": "The panel's state."
+        },
+        {
+          "kind": "file",
+          "label": "Board",
+          "target": "docs/design/ai-tools-workspace/board.html",
+          "relevance": "Board 5."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each pick commits exactly one entry whose request Copy as JSON request shows; the same journey runs through luxforge-json.",
+        "The stored component renders within the GPU's declared tolerance, survives reopen, undo and export, and renders with the segmenter removed.",
+        "A removal under the selection marks it stale with the plain reason; Recompute replaces it in one entry and Keep sends nothing.",
+        "The mask-object scenario passes in the background with correlated captures."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Panel state tests; the mask-object scenario."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app mask_object",
+          "tools/cargo-cached xtask smoke --scenario mask-object --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A person masks an object by pointing at it and can recompute it later."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Record a real network setup of the published removal conditioning: install the remove setup through the real transport from an empty data root on the M4 and generate once.",
+      "status": "pending",
+      "dependencies": [],
+      "extra_context": [
+        "The conditioning klein-4b-removal-conditioning-ba26d15a.lfsdcond (SHA-256 ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141, 15,728,691 bytes) is published on the release models-generative-1 and the module's pinned URL answers it (checked on 2026-10-24 by length, hash and header). What remains is the native run: the remove setup through the real transport from an empty data root on the M4, then one generation, recorded as evidence with the host's load. Nothing else waits on this task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Decision 17 and the generative resource table.",
+          "locator": "The delivered workflow"
+        }
+      ],
+      "acceptance_criteria": [
+        "A network setup from an empty data root installs every part of the remove setup and generates on the M4, recorded with its evidence."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "One network setup and one generation on the M4."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core ai::models"
+        ],
+        "expected_results": [
+          "Remove and Object can be set up by anyone."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Qualify the AI tools natively on the M4 with the pinned segmenter and klein, measure hover, analysis-ready, select and combined residency against their budgets, and hand off the shared documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Run the Object journey and mask Object on corpus photographs (the bridge, the kayaks, the road) at 24 to 60 MP and on a qualified RAW, with the models staged or downloaded: hover pointer-to-overlay against p50 20 ms and p95 33 ms, analysis ready after entering Object against 300 ms at 24 MP and 500 ms at 60 MP, task.select-object against 2 s, and the resident set with the segmenter and klein loaded together; record the host's load. Timing runs once, here.",
+        "Hand-off for the integrator: features.md, the user guide (Remove, Object, Masks › Object, setup, Settings › Models, the ai.analysis experiment's new scope), the roadmap, the tasks README and ai-editing.md's desktop surface and recorded defaults."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI tools workspace design",
+          "target": "docs/design/ai-tools-workspace.md",
+          "relevance": "The native runs and their scope.",
+          "locator": "Acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "AI editing budgets",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "The budgets measured here.",
+          "locator": "Budgets and limits"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Measurement scope and evidence."
+        }
+      ],
+      "acceptance_criteria": [
+        "An evidence package records each figure with its scope and the host's load, and every miss is published; the Object journey removes the corpus objects and the results are reviewed as images.",
+        "The hand-off lists every shared document change."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Native runs with the pinned models; the full verification tier once."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier full --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The AI tools are measured on the owner's Mac and documented."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-007"
+      ]
+    }
+  ]
+}

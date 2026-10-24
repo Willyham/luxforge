@@ -37,6 +37,7 @@ mod collapse;
 mod corrections;
 #[cfg(test)]
 mod model_mask_tests;
+pub(crate) use artifact_store::Binding as ArtifactBinding;
 pub use corrections::{BatchStaleAcknowledgement, StaleAcknowledgement};
 pub(crate) use corrections::{STALE_UNACKNOWLEDGED, acknowledged};
 pub(crate) mod derived_source;

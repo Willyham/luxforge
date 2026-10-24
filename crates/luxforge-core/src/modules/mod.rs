@@ -70,7 +70,7 @@ pub fn current_effect_format(effect_id: &str) -> u32 {
         .map_or(crate::EFFECT_FORMAT, |(_, format)| *format)
 }
 
-pub use ai::DeveloperModels;
+pub use ai::{DeveloperDownloads, DeveloperModels};
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
@@ -115,7 +115,8 @@ pub use corrections::{
     CORRECTIONS_EFFECT, RepairInput, SourceFit, StaleCorrection, StaleReason, fit_correction_source,
 };
 pub(crate) use corrections::{
-    CorrectionsModule, RepairCarrier, selection_prefix as corrections_selection_prefix,
+    CorrectionsModule, RADIUS_MAX as CORRECTION_RADIUS_MAX, RADIUS_MIN as CORRECTION_RADIUS_MIN,
+    RepairCarrier, selection_prefix as corrections_selection_prefix,
     source_identity as corrections_source_identity,
 };
 pub(crate) use corrections::{

@@ -20,7 +20,6 @@ use crate::{
     app::message::{
         Message,
         corrections::{CanvasHit, CorrectionMessage},
-        remove::RemoveMessage,
     },
     brush::{
         ContentMap, Handle, HeldOperation, Hit, Modifiers, SourceChoice, ViewPoint, cursor_rings,
@@ -29,7 +28,7 @@ use crate::{
     state::corrections::Listed,
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size, Vector, keyboard,
+    Color, Point, Rectangle, Renderer, Size, keyboard,
     mouse::{self, Cursor},
     widget::canvas::{
         self, Action, Event, Fill, Frame, Geometry, LineDash, Path, Stroke, Style, fill,
@@ -204,7 +203,13 @@ fn local(cursor: Cursor, bounds: Rectangle) -> Option<Point> {
 }
 
 /// Stroke an outline white over its dark under-stroke, dashed when `dash` is given.
-fn stroke_outline(frame: &mut Frame, path: &Path, width: f32, colour: Color, dash: bool) {
+pub(super) fn stroke_outline(
+    frame: &mut Frame,
+    path: &Path,
+    width: f32,
+    colour: Color,
+    dash: bool,
+) {
     let dashes: &[f32] = if dash { &DASH } else { &[] };
     for (ink, extra) in [(UNDER_INK, UNDER), (colour, 0.0)] {
         frame.stroke(
@@ -222,7 +227,7 @@ fn stroke_outline(frame: &mut Frame, path: &Path, width: f32, colour: Color, das
 
 /// An outline's segments joined into polylines where they meet, so a dash runs along the figure
 /// rather than restarting on every segment.
-fn joined(outline: &Outline) -> Path {
+pub(super) fn joined(outline: &Outline) -> Path {
     Path::new(|builder| {
         let mut end: Option<Point> = None;
         for (a, b) in &outline.segments {
@@ -475,73 +480,101 @@ impl CorrectionsCanvas<'_> {
 }
 
 /// The Remove selection's tint over the photograph.
-const SELECTION_TINT: Color = Color::from_rgba(1.0, 0.27, 0.27, 0.32);
+pub(super) const SELECTION_TINT: Color = Color::from_rgba(1.0, 0.27, 0.27, 0.32);
 /// The progress ring's radius and width, in points.
 const RING_RADIUS: f32 = 14.0;
 const RING_WIDTH: f32 = 3.0;
 
-impl CorrectionsCanvas<'_> {
-    /// One painted path, filled with the selection's tint and outlined.
-    fn selection(
-        &self,
-        frame: &mut Frame,
-        points: &[[f64; 2]],
-        radius: f64,
-        accent: bool,
-        traces: &Traces,
-    ) {
-        if points.is_empty() {
-            return;
-        }
-        let held = HeldOperation {
-            operation: String::new(),
-            points: points.to_vec(),
-            radius,
-            source: None,
-        };
-        let figure = brush_overlay::figure(&self.placement, &held, traces);
-        let footprint = figure.footprint(&self.placement);
-        frame.fill(
-            &filled(footprint.as_deref().unwrap_or(&figure.loops)),
-            Fill {
-                style: Style::Solid(SELECTION_TINT),
-                rule: fill::Rule::EvenOdd,
-            },
-        );
-        let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
-        let outline = brush_overlay::merged(figure.loops);
-        stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
+/// One painted path, filled with the selection's tint and outlined: white, the accent while it is
+/// being painted, dashed for Object's shadow stroke.
+pub(super) fn painted_selection(
+    frame: &mut Frame,
+    placement: &Placement,
+    path: (&[[f64; 2]], f64),
+    accent: bool,
+    dash: bool,
+    traces: &Traces,
+) {
+    let (points, radius) = path;
+    if points.is_empty() {
+        return;
     }
+    let held = HeldOperation {
+        operation: String::new(),
+        points: points.to_vec(),
+        radius,
+        source: None,
+    };
+    let figure = brush_overlay::figure(placement, &held, traces);
+    let footprint = figure.footprint(placement);
+    frame.fill(
+        &filled(footprint.as_deref().unwrap_or(&figure.loops)),
+        Fill {
+            style: Style::Solid(SELECTION_TINT),
+            rule: fill::Rule::EvenOdd,
+        },
+    );
+    let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
+    let outline = brush_overlay::merged(figure.loops);
+    stroke_outline(frame, &joined(&outline), OUTLINE, colour, dash);
+}
 
-    /// The hovered object's tinted coverage over its bounds. The bounds are content coordinates,
-    /// so the image is placed by three of its corners: rotated with the crop and mirrored with a
-    /// flip.
-    fn hovered_object(&self, frame: &mut Frame, hover: &crate::app::remove_hover::HoverOverlay) {
-        let [x0, y0, x1, y1] = hover.bounds;
-        let corner = |x, y| self.placement.canvas_point_unbounded(x, y);
-        let (Some(origin), Some(across), Some(down)) =
-            (corner(x0, y0), corner(x1, y0), corner(x0, y1))
-        else {
-            return;
-        };
-        let (u, v) = (across - origin, down - origin);
-        let (width, height) = (u.x.hypot(u.y), v.x.hypot(v.y));
-        if width < 0.5 || height < 0.5 {
-            return;
-        }
-        frame.with_save(|frame| {
-            frame.translate(Vector::new(origin.x, origin.y));
-            frame.rotate(u.y.atan2(u.x));
-            if u.x * v.y - u.y * v.x < 0.0 {
-                frame.scale_nonuniform(Vector::new(1.0, -1.0));
-            }
-            frame.draw_image(
-                Rectangle::new(Point::ORIGIN, Size::new(width, height)),
-                &hover.handle,
-            );
+/// A running generation's ring at a content position: a dark disc, the track and the accent arc of
+/// its fraction.
+pub(super) fn progress_ring(
+    frame: &mut Frame,
+    placement: &Placement,
+    at: [f64; 2],
+    fraction: Option<f64>,
+) {
+    let Some(centre) = placement.canvas_point(at[0], at[1]) else {
+        return;
+    };
+    let track = Path::circle(centre, RING_RADIUS);
+    frame.fill(&Path::circle(centre, RING_RADIUS + RING_WIDTH), PIN_FILL);
+    frame.stroke(
+        &track,
+        Stroke::default()
+            .with_color(Color { a: 0.3, ..WHITE })
+            .with_width(RING_WIDTH),
+    );
+    let sweep = fraction.unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+    if sweep > 0.0 {
+        let start = -std::f32::consts::FRAC_PI_2;
+        let arc = Path::new(|builder| {
+            builder.arc(canvas::path::Arc {
+                center: centre,
+                radius: RING_RADIUS,
+                start_angle: iced::Radians(start),
+                end_angle: iced::Radians(start + sweep * std::f32::consts::TAU),
+            });
         });
+        frame.stroke(
+            &arc,
+            Stroke::default()
+                .with_color(theme::PHOTO_ANCHOR)
+                .with_width(RING_WIDTH),
+        );
     }
+}
 
+/// The brush's outer ring at a content position and a `+` at the pointer: Object's Paint shadow
+/// cursor.
+pub(super) fn brush_ring(frame: &mut Frame, placement: &Placement, at: [f64; 2], radius: f64) {
+    let spot = HeldOperation {
+        operation: String::new(),
+        points: vec![at],
+        radius,
+        source: None,
+    };
+    let ring = brush_overlay::outline(placement, &spot);
+    stroke_outline(frame, &joined(&ring), OUTLINE, WHITE, false);
+    if let Some(point) = placement.canvas_point(at[0], at[1]) {
+        CorrectionsCanvas::crosshair(frame, point, PLUS_ARM, WHITE);
+    }
+}
+
+impl CorrectionsCanvas<'_> {
     /// Remove's figures: the selection's tint while no candidate is shown in the photograph (a
     /// shown candidate is the photograph's own draft, drawn by the photo surface), the stroke being
     /// painted, and a running generation's ring at the selection's centre.
@@ -551,16 +584,27 @@ impl CorrectionsCanvas<'_> {
         remove: &crate::app::remove::RemoveCanvas<'_>,
         traces: &Traces,
     ) {
-        if let Some(hover) = remove.hover {
-            self.hovered_object(frame, hover);
-        }
         if let Some(points) = remove.selection
             && !remove.shown
         {
-            self.selection(frame, points, remove.radius, false, traces);
+            painted_selection(
+                frame,
+                &self.placement,
+                (points, remove.radius),
+                false,
+                false,
+                traces,
+            );
         }
         if let Some(points) = remove.live {
-            self.selection(frame, points, remove.radius, true, traces);
+            painted_selection(
+                frame,
+                &self.placement,
+                (points, remove.radius),
+                true,
+                false,
+                traces,
+            );
         }
         let Some(fraction) = remove.progress else {
             return;
@@ -573,38 +617,8 @@ impl CorrectionsCanvas<'_> {
             lo = [lo[0].min(*x), lo[1].min(*y)];
             hi = [hi[0].max(*x), hi[1].max(*y)];
         }
-        let Some(centre) = self
-            .placement
-            .canvas_point((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
-        else {
-            return;
-        };
-        let track = Path::circle(centre, RING_RADIUS);
-        frame.fill(&Path::circle(centre, RING_RADIUS + RING_WIDTH), PIN_FILL);
-        frame.stroke(
-            &track,
-            Stroke::default()
-                .with_color(Color { a: 0.3, ..WHITE })
-                .with_width(RING_WIDTH),
-        );
-        let sweep = fraction.unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-        if sweep > 0.0 {
-            let start = -std::f32::consts::FRAC_PI_2;
-            let arc = Path::new(|builder| {
-                builder.arc(canvas::path::Arc {
-                    center: centre,
-                    radius: RING_RADIUS,
-                    start_angle: iced::Radians(start),
-                    end_angle: iced::Radians(start + sweep * std::f32::consts::TAU),
-                });
-            });
-            frame.stroke(
-                &arc,
-                Stroke::default()
-                    .with_color(theme::PHOTO_ANCHOR)
-                    .with_width(RING_WIDTH),
-            );
-        }
+        let centre = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+        progress_ring(frame, &self.placement, centre, fraction);
     }
 }
 
@@ -647,16 +661,6 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                         content: [x, y],
                     }));
                 }
-                // Hover picking: each move over the photograph is a pick.
-                if self.data.remove.is_some_and(|remove| remove.picking) {
-                    let content = cursor
-                        .position_in(bounds)
-                        .and_then(|point| self.placement.content_point(point))
-                        .map(|(x, y)| [x, y]);
-                    return Some(Action::publish(Message::Remove(RemoveMessage::Hover(
-                        content,
-                    ))));
-                }
                 let over = (!self.data.hidden && cursor.position_in(bounds).is_some())
                     .then(|| match self.hit_at(point, state.modifiers) {
                         CanvasHit::Pin(pin) => Some(pin),
@@ -685,9 +689,6 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
                 Some(Self::publish(CorrectionMessage::Release { view, content }))
             }
             Event::Mouse(mouse::Event::CursorLeft) => {
-                if self.data.remove.is_some_and(|remove| remove.picking) {
-                    return Some(Action::publish(Message::Remove(RemoveMessage::Hover(None))));
-                }
                 if state.hovered.take().is_some() {
                     return Some(Action::publish(Message::Corrections(
                         CorrectionMessage::HoverPin(None),
@@ -960,8 +961,6 @@ mod tests {
             radius: 0.05,
             progress: None,
             shown: false,
-            picking: false,
-            hover: None,
         };
         let pressed = Interaction {
             pressed: true,

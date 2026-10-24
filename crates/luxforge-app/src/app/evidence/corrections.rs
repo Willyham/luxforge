@@ -20,6 +20,8 @@ use luxforge_evidence::{CorrectionHandle, CorrectionStep, PressModifier, RemoveS
 
 /// The kind a script chooses Remove by, as the kind control's third segment is titled.
 const REMOVE_KIND: &str = "remove";
+/// The kind control's Object segment, which a `kind` step names as `object`.
+const OBJECT_KIND: &str = "object";
 use serde_json::json;
 use std::{collections::VecDeque, time::Duration};
 
@@ -261,6 +263,21 @@ impl Editor {
                 self.remove_reads.wait = Some(RemoveWait::Done);
                 tasks.push(self.update(Message::Remove(RemoveMessage::Choose)));
             }
+            CorrectionStep::Kind(kind) if kind == OBJECT_KIND => {
+                if !self
+                    .workspace
+                    .corrections
+                    .remove
+                    .as_ref()
+                    .is_some_and(|model| model.object_offered)
+                {
+                    return self.fail_step(
+                        "the kind control has no Object segment: it needs a fill tier and the ai.analysis flag on",
+                    );
+                }
+                self.remove_reads.wait = Some(RemoveWait::Done);
+                tasks.push(self.update(Message::Remove(RemoveMessage::ChooseObject)));
+            }
             CorrectionStep::Kind(kind) => {
                 tasks.push(self.update(correction(CorrectionMessage::Kind(kind))));
             }
@@ -328,26 +345,29 @@ impl Editor {
                 (RemoveMessage::Tier(tier), RemoveUntil::Done)
             }
             RemoveStep::Setup => {
-                // The add-on's button while a prompt shows it, else the setup's main line's.
-                let line = model.addon.as_ref().or_else(|| {
-                    model
-                        .unoffered
-                        .as_ref()
-                        .and_then(|unoffered| unoffered.setup.as_ref())
-                });
+                // The add-on's button while a prompt shows it, else Object's line while its setup
+                // is not installed, else the setup's main line's.
+                let line = model
+                    .addon
+                    .as_ref()
+                    .or_else(|| model.object.as_ref()?.setup.as_ref())
+                    .or_else(|| {
+                        model
+                            .unoffered
+                            .as_ref()
+                            .and_then(|unoffered| unoffered.setup.as_ref())
+                    });
                 match line.and_then(|line| line.action.as_ref()) {
                     Some((_, action)) => (RemoveMessage::Setup(action.clone()), RemoveUntil::Done),
                     None => return Err("Remove offers no setup button".into()),
                 }
             }
             RemoveStep::Accept => (RemoveMessage::Accept, RemoveUntil::Done),
-            RemoveStep::Hover(point) => {
-                if !self.hover_picking() {
-                    return Err(
-                        "a hover step needs the picker offered: the ai.analysis flag on".into(),
-                    );
+            RemoveStep::Shadow => {
+                if model.object.is_none() {
+                    return Err("Paint shadow is Object's: choose the Object kind first".into());
                 }
-                (RemoveMessage::Hover(point), RemoveUntil::Done)
+                (RemoveMessage::Shadow, RemoveUntil::Done)
             }
         };
         self.remove_reads.wait = Some(match wait {

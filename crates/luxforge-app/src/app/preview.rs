@@ -664,6 +664,7 @@ impl Presentation {
             mask_map: None,
             mask_handles: true,
             range_pick: None,
+            object_pick: None,
             corrections: None,
             draft: None,
             gpu: None,

@@ -217,6 +217,12 @@ pub struct Launch {
     move_question: bool,
     /// Show the Select introduction the first time Select is shown, so it can be captured.
     introduction: bool,
+    /// Pace a developer run's model downloads, so a setup's progress can be captured.
+    paced_downloads: bool,
+    /// Cut this developer resource's first transfer halfway, so a failed setup can be captured.
+    cut_download: Option<String>,
+    /// The machine memory model minimums are held against, in place of this machine's.
+    machine_memory: Option<u64>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -249,6 +255,9 @@ impl Launch {
             evidence_catalog: None,
             move_question: false,
             introduction: false,
+            paced_downloads: false,
+            cut_download: None,
+            machine_memory: None,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -371,6 +380,21 @@ impl Launch {
     /// it can be captured. Passed beside `--evidence-dir`.
     pub fn introduction(mut self) -> Self {
         self.introduction = true;
+        self
+    }
+
+    /// Pace the developer models' downloads and cut `cut`'s first transfer halfway, so a setup's
+    /// progress, a failure and its resumption can be captured. Passed beside `--evidence-dir`.
+    pub fn downloads(mut self, paced: bool, cut: Option<&str>) -> Self {
+        self.paced_downloads = paced;
+        self.cut_download = cut.map(str::to_owned);
+        self
+    }
+
+    /// Hold model minimums against `bytes` of memory, so a machine too small for a tool can be
+    /// captured. Passed beside `--evidence-dir`.
+    pub fn machine_memory(mut self, bytes: u64) -> Self {
+        self.machine_memory = Some(bytes);
         self
     }
 
@@ -529,6 +553,15 @@ impl Launch {
                     }
                     if self.introduction {
                         args.push("--evidence-select-introduction".into());
+                    }
+                    if self.paced_downloads {
+                        args.push("--evidence-paced-downloads".into());
+                    }
+                    if let Some(resource) = &self.cut_download {
+                        args.extend(["--evidence-cut-download".into(), resource.into()]);
+                    }
+                    if let Some(bytes) = self.machine_memory {
+                        args.extend(["--evidence-machine-memory".into(), bytes.to_string().into()]);
                     }
                 }
                 Flag::GpuIdentity => {

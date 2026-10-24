@@ -740,6 +740,14 @@ impl Editor {
                 self.put_brush_down();
                 Task::none()
             }
+            // The draft bar of a tool picking objects: its picks are committed already, so its
+            // Cancel and Done leave picking.
+            DraftMessage::Commit | DraftMessage::Cancel
+                if self.gesture.is_none() && self.object_pick.is_some() =>
+            {
+                self.leave_object_pick("cancel");
+                Task::none()
+            }
             DraftMessage::Commit => self.release(),
             DraftMessage::Cancel => self.discard(),
             DraftMessage::Reapply => self.reapply(),

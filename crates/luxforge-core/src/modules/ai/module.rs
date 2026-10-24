@@ -10,7 +10,11 @@ use super::{
     generative,
     models::{DEVELOPER_MODELS, GenerativeModel, ModelFile, PRODUCT_MODELS},
     objects::{self, MAX_PROMPT_POINTS},
-    selection::{EFFECT_POINTS, EFFECT_RADIUS, SELECTION_POINTS, SELECTION_RADIUS, Selection},
+    picked::{PickedObject, PickedObjects},
+    selection::{
+        EFFECT_POINTS, EFFECT_RADIUS, MAX_OBJECTS, OBJECT_ARTIFACTS, SELECTION_POINTS,
+        SELECTION_RADIUS, Selection,
+    },
 };
 use crate::{
     Error, ParameterDescriptor,
@@ -56,7 +60,7 @@ pub(crate) const PICK_OBJECT: &str = "pick-object";
 /// The experiment flag that admits analysis, the picker and the selection of objects.
 pub(crate) const ANALYSIS_FLAG: &str = crate::flags::AI_ANALYSIS;
 /// The highest candidate index `task.select-object` names: a stroke's prompts' candidates.
-const MAX_CANDIDATE_INDEX: i64 = 63;
+const MAX_CANDIDATE_INDEX: i64 = crate::mask::OBJECT_PROMPT_CANDIDATE_MAX as i64;
 
 /// One request of the Generative tier, as `task.fill-generative` checked it.
 #[derive(Clone, Debug)]
@@ -133,6 +137,8 @@ pub(crate) struct AiModule {
     descriptor: ModuleDescriptor,
     models: &'static [GenerativeModel],
     analysis: AnalysisModels,
+    /// The objects `task.select-object` published, which a fill removes by artifact.
+    picked: PickedObjects,
     #[cfg(test)]
     pub(crate) gate: Option<std::sync::Arc<luxforge_testbase::Gate>>,
 }
@@ -198,16 +204,18 @@ impl AiModule {
             id: FILL_GENERATIVE.into(),
             title: "Generative fill".into(),
             notes: format!(
-                "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt}}."
+                "Fills the region a brush selection paints, or the objects task.select-object picked, on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge, joined by maximum with each picked object's removal region (its core where the selection's alpha is at least one half, dilated by half an artifact texel plus 4% of the core's shorter side and feathered over one texel); the effect stroke adds what the object casts. Each object artifact must be a selection task.select-object published of this photograph as it is now, refused conflict (data.reason stale-selection, naming the artifact) otherwise, and an unknown artifact is refused validation, before anything is queued. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance and the objects it removed ({{artifact, prompt}} each); accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt}}."
             ),
             asset: true,
             profile: false,
             uses,
             parameters: vec![
-                path(SELECTION_POINTS, "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points").required(true),
-                radius(SELECTION_RADIUS, "the selection's brush radius").required(true),
+                path(SELECTION_POINTS, "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points; required unless object-artifacts names the region"),
+                radius(SELECTION_RADIUS, "the selection's brush radius; required with selection-points"),
+                ParameterDescriptor::artifacts(OBJECT_ARTIFACTS, 1, MAX_OBJECTS)
+                    .notes("the objects to remove: mask-alpha artifacts task.select-object published of this photograph as it is now, instead of or beside the selection stroke"),
                 path(EFFECT_POINTS, "the effect region: a second stroke over what the object casts, such as its shadow"),
-                radius(EFFECT_RADIUS, "the effect stroke's radius; default the selection's"),
+                radius(EFFECT_RADIUS, "the effect stroke's radius; default the selection's, and required without it"),
                 ParameterDescriptor::enumeration("model", models.iter().map(|model| model.id))
                     .required(true)
                     .notes("the installed generative model to fill with"),
@@ -250,10 +258,12 @@ impl AiModule {
                 queries,
                 capabilities,
                 resources,
+                setups: super::setups::declared(models, &analysis),
                 ..ModuleDescriptor::default()
             },
             models,
             analysis,
+            picked: PickedObjects::default(),
             #[cfg(test)]
             gate: None,
         }
@@ -370,14 +380,20 @@ impl CapabilityModule for AiModule {
             let models = models?;
             return match task_id {
                 ANALYSE => objects::analyse(context, &self.analysis),
-                SELECT_OBJECT => objects::select_object(context, &self.analysis, parameters),
+                SELECT_OBJECT => {
+                    objects::select_object(context, &self.analysis, parameters, &self.picked)
+                }
                 ANALYSE_SCENE => analysis_tasks::analyse_scene(context, &models),
                 ANALYSE_DEPTH => analysis_tasks::analyse_depth(context, &models),
                 _ => Err(Error::validation(format!("unknown task {task_id}"))),
             };
         }
         let request = self.request(task_id, parameters)?;
-        generative::run(&request, context, &|context| {
+        // Resolved again on the lane, against the photograph as the owner admitted it.
+        let objects = self
+            .picked
+            .resolve(request.selection.objects(), context.identity()?)?;
+        generative::run(&request, &objects, context, &|context| {
             #[cfg(test)]
             if let Some(gate) = &self.gate {
                 gate.pass_unless(|| context.is_cancelled());
@@ -410,8 +426,9 @@ impl CapabilityModule for AiModule {
         })
     }
 
-    /// Refuse a region past a candidate, past half the frame, or past the stack's artifact budget,
-    /// from the strokes' supports alone (`O(segments)`).
+    /// Refuse a selection that is not of this photograph as it is now, and a region past a
+    /// candidate, past half the frame, or past the stack's artifact budget, from the strokes'
+    /// supports and the picked objects' recorded rasters alone (`O(segments + objects)`).
     fn admit_task(
         &self,
         task_id: &str,
@@ -443,7 +460,17 @@ impl CapabilityModule for AiModule {
         let stage = admission
             .stage
             .ok_or_else(|| Error::internal("a fill is admitted with the stage it reads"))?;
-        let support = request.selection.support(stage);
+        let objects: Vec<PickedObject> = match &admission.identity {
+            Some(identity) => self.picked.resolve(request.selection.objects(), identity)?,
+            None if request.selection.objects().is_empty() => Vec::new(),
+            None => {
+                return Err(Error::internal(
+                    "a fill of objects is admitted with the photograph it reads",
+                ));
+            }
+        };
+        let rasters: Vec<_> = objects.iter().map(|object| object.raster).collect();
+        let support = request.selection.support(stage, &rasters);
         if support.is_empty() {
             return Err(Error::validation(
                 "the selection covers no pixel of the photograph",
@@ -625,8 +652,9 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-/// The parameters that name one prompt, which the picker and `task.select-object` share.
-fn prompt_parameters() -> Vec<ParameterDescriptor> {
+/// The parameters that name one prompt, which the picker and `task.select-object` share; a stroke
+/// of at most `stroke_points` positions.
+fn prompt_parameters(stroke_points: usize) -> Vec<ParameterDescriptor> {
     let points = |name: &str, min: usize, max: usize, notes: &str| {
         ParameterDescriptor::points(name, min, max).notes(notes)
     };
@@ -648,7 +676,7 @@ fn prompt_parameters() -> Vec<ParameterDescriptor> {
         points(
             "stroke",
             1,
-            POSTED_POINTS_PER_STROKE,
+            stroke_points,
             "a brush stroke's path over one or more objects",
         ),
         ParameterDescriptor::number(
@@ -666,7 +694,7 @@ const PROMPT_NOTES: &str = "A request names exactly one prompt, in the content s
 
 /// `query.pick-object`.
 fn pick_query_descriptor() -> ActionDescriptor {
-    let mut parameters = prompt_parameters();
+    let mut parameters = prompt_parameters(POSTED_POINTS_PER_STROKE);
     parameters.push(
         ParameterDescriptor::enumeration("previews", ["chosen", "all", "none"])
             .default("chosen")
@@ -721,7 +749,8 @@ fn analysis_task_descriptors(analysis: &AnalysisModels) -> Vec<TaskDescriptor> {
             &models,
             Vec::new(),
         ));
-        let mut parameters = prompt_parameters();
+        // A stroke a selection stores as its prompt: at most one stored stroke's positions.
+        let mut parameters = prompt_parameters(crate::mask::OBJECT_PROMPT_POINTS_MAX);
         parameters.push(
             ParameterDescriptor::integer("candidate", 0, MAX_CANDIDATE_INDEX)
                 .notes("the candidate position query.pick-object answered for the same prompt; default the decision's one object"),
@@ -730,7 +759,8 @@ fn analysis_task_descriptors(analysis: &AnalysisModels) -> Vec<TaskDescriptor> {
             SELECT_OBJECT,
             "Select object",
             format!(
-                "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. {PROMPT_NOTES} Result: {{artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, decision, candidate, models}}, the artifact and provenance mask.add-model takes."
+                "Decodes one prompt as query.pick-object does, analysing the photograph first when it is not, chooses its candidate and publishes it as a mask-alpha artifact at the guide's resolution, refined against the guide's edges. Refused validation when the prompt picks nothing or several objects and names no candidate. {PROMPT_NOTES} A stroke holds at most {} positions. Result: {{artifact, width, height, class, model, model_version, input_fingerprint, prefix_hash, prompt, decision, candidate, models}}, the artifact and provenance mask.add-model takes; prompt is {{point, candidate?}} or {{stroke, radius, candidate?}} as this request named it (null for labelled points or a box), which a model component stores and Recompute sends back. The artifact can be removed with task.fill-generative's object-artifacts while the photograph is as it is now.",
+                crate::mask::OBJECT_PROMPT_POINTS_MAX
             ),
             &models,
             parameters,

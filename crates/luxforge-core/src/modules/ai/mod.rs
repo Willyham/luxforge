@@ -9,12 +9,15 @@ mod formats;
 mod generative;
 mod models;
 mod module;
+mod object_region;
 mod objects;
 mod pick;
+mod picked;
 mod segment;
 mod selection;
+mod setups;
 #[cfg(test)]
 mod tests;
 
-pub use models::DeveloperModels;
+pub use models::{DeveloperDownloads, DeveloperModels};
 pub(crate) use module::AiModule;

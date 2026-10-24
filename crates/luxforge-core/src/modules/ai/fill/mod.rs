@@ -126,6 +126,32 @@ impl Coverage {
         self.bounds
     }
 
+    /// The coverages of `parts` joined by their maximum at every pixel, over the tight bounds of
+    /// the pixels above zero; `None` when none is. Allocates the union of the parts' bounds once.
+    pub(crate) fn join(parts: Vec<Self>) -> Option<Self> {
+        let mut parts: Vec<Self> = parts.iter().filter_map(Self::tightened).collect();
+        if parts.len() <= 1 {
+            return parts.pop();
+        }
+        let bounds = parts
+            .iter()
+            .map(Self::bounds)
+            .reduce(crop::union)
+            .unwrap_or(Region::EMPTY);
+        let mut values = vec![0.0_f32; bounds.pixels() as usize];
+        for part in &parts {
+            let b = part.bounds;
+            for (row, line) in part.values.chunks_exact(b.width as usize).enumerate() {
+                let start = ((b.y0 - bounds.y0) as usize + row) * bounds.width as usize
+                    + (b.x0 - bounds.x0) as usize;
+                for (joined, &value) in values[start..start + line.len()].iter_mut().zip(line) {
+                    *joined = joined.max(value);
+                }
+            }
+        }
+        Self { bounds, values }.tightened()
+    }
+
     /// The coverage at stage pixel `(x, y)`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn at(&self, x: u32, y: u32) -> f32 {

@@ -38,12 +38,15 @@ mod permissions;
 mod queries;
 mod resources;
 mod runtime;
+mod setups;
 mod tasks;
 
 pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokeParams};
 pub(crate) use queries::WorkerQuery;
 pub(crate) use resources::{InstallParams, ResourceParams};
 pub(crate) use runtime::{LoadParams, UnloadParams};
+pub use setups::INSTALL_SETUP;
+pub(crate) use setups::SetupInstallParams;
 pub use tasks::TASK_PREFIX;
 pub(crate) use tasks::locked;
 
@@ -877,6 +880,10 @@ impl CapabilityHost {
             "permissions": permissions,
             "jobs": jobs.of_module(&descriptor.id),
         });
+        // Each setup's state, from the same rows, the jobs and this host's memory and backends.
+        if !descriptor.setups.is_empty() {
+            status["setups"] = encode(self.setup_rows(jobs, descriptor, &resources))?;
+        }
         // The module's own fields, from the same rows: what it offers with what is installed now.
         if let Some(hooks) = registry.capabilities(&descriptor.id) {
             let flag =

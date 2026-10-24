@@ -13,6 +13,7 @@ mod crop_draft;
 mod diagnostics;
 mod layout;
 mod mask_draft;
+mod object_pick;
 mod range_pick;
 mod state;
 mod view;
@@ -120,6 +121,15 @@ struct Config {
     /// `--evidence-select-introduction`: the evidence run shows the Select introduction the first
     /// time Select is shown, as a person's launch does, so it can be captured. Evidence runs only.
     evidence_introduction: bool,
+    /// `--evidence-paced-downloads` and `--evidence-cut-download RESOURCE`: a developer evidence
+    /// run's model downloads arrive in paced pieces, so a setup's progress can be captured, and the
+    /// named resource's first transfer is cut halfway, so a failed and resumed setup can be.
+    /// Developer evidence runs only.
+    evidence_downloads: luxforge_core::DeveloperDownloads,
+    /// `--evidence-machine-memory BYTES`: the machine memory the capability host holds model
+    /// minimums against, in place of this machine's, so a machine too small for a tool can be
+    /// captured. Evidence runs only.
+    evidence_memory: Option<u64>,
     /// Whether this launch shows the Select introduction by itself the first time Select is
     /// shown, decided once the arguments are read: a person's launch, or an evidence run that
     /// asks. Off by default, so a test's launch never shows it.
@@ -330,6 +340,24 @@ fn arguments() -> Result<Config, String> {
             Some("--hidden-window") => config.hidden = true,
             Some("--evidence-move-to-applications") => config.evidence_move = true,
             Some("--evidence-select-introduction") => config.evidence_introduction = true,
+            Some("--evidence-paced-downloads") => {
+                config.evidence_downloads.pace = Some(EVIDENCE_DOWNLOAD_PIECE);
+            }
+            Some("--evidence-cut-download") => {
+                config.evidence_downloads.cut = Some(
+                    args.next()
+                        .and_then(|resource| resource.to_str().map(str::to_owned))
+                        .ok_or("--evidence-cut-download requires a resource")?,
+                );
+            }
+            Some("--evidence-machine-memory") => {
+                config.evidence_memory = Some(
+                    args.next()
+                        .and_then(|bytes| bytes.to_str()?.parse().ok())
+                        .filter(|bytes: &u64| *bytes > 0)
+                        .ok_or("--evidence-machine-memory requires a positive byte count")?,
+                );
+            }
             Some("--evidence-gpu-identity") => config.gpu_identity = true,
             Some("--no-gpu-render") => config.no_gpu_render = true,
             Some("--software-adapter") => config.software_adapter = true,
@@ -368,7 +396,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window] [--usage-test-receiver URL] [--evidence-config DIRECTORY] [--evidence-catalog CATALOG] [--evidence-unsupported-catalog start|quit] [--update-fixture FILE] [--evidence-move-to-applications] [--evidence-select-introduction]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\n--usage-test-receiver, in evidence mode only, gives the launch explicit usage statistics test eligibility with a loopback receiver (http on localhost, 127.0.0.0/8 or [::1] with a port) or exactly https://api.luxforge.app/v1/usage/batches?tenant=test: it shows the startup notice and Settings › Privacy, and sends nothing until someone opts in in that run's own isolated preferences; its statistics worker reports a fixed test release and runs on a clock evidence script steps can move forward.\n--update-fixture, in evidence mode only, replaces the platform's update port with one scripted by the JSON file: the mechanism, what each check finds, the download's progress or readiness and a refusal of the next install; it contacts no feed and installs nothing.\n--evidence-move-to-applications, in evidence mode only, shows the Move Luxforge to Applications question once the workspace is usable, wherever the run's app is, so it can be captured; its buttons move nothing.\n--evidence-select-introduction, in evidence mode only, shows the Select introduction the first time Select is shown while the run's preferences say it was not closed, as a launch with its window shown does, so it can be captured.\n--evidence-config, in evidence mode only, keeps an earlier evidence run's host/config directory as this run's configuration, so what one launch stored, such as its usage statistics choice, is what the next one reads.\n--evidence-catalog, in evidence mode only, opens CATALOG as the run's remembered catalog instead of one inside its evidence directory; when this version refuses it as another version's, the run captures the unsupported-catalog sheet, then takes the choice --evidence-unsupported-catalog names, Start a new catalog (start) or Quit (quit), and fails without one.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--software-adapter] [--window-size WIDTH HEIGHT] [--hidden-window] [--usage-test-receiver URL] [--evidence-config DIRECTORY] [--evidence-catalog CATALOG] [--evidence-unsupported-catalog start|quit] [--update-fixture FILE] [--evidence-move-to-applications] [--evidence-select-introduction] [--evidence-paced-downloads] [--evidence-cut-download RESOURCE] [--evidence-machine-memory BYTES]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. On a host whose only graphics adapter is a software one (lavapipe, WARP), the GPU stage is refused the same way until the software adapter is adopted; --software-adapter draws through it on that adapter for this launch, and the session and the status bar name it. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\n--usage-test-receiver, in evidence mode only, gives the launch explicit usage statistics test eligibility with a loopback receiver (http on localhost, 127.0.0.0/8 or [::1] with a port) or exactly https://api.luxforge.app/v1/usage/batches?tenant=test: it shows the startup notice and Settings › Privacy, and sends nothing until someone opts in in that run's own isolated preferences; its statistics worker reports a fixed test release and runs on a clock evidence script steps can move forward.\n--update-fixture, in evidence mode only, replaces the platform's update port with one scripted by the JSON file: the mechanism, what each check finds, the download's progress or readiness and a refusal of the next install; it contacts no feed and installs nothing.\n--evidence-move-to-applications, in evidence mode only, shows the Move Luxforge to Applications question once the workspace is usable, wherever the run's app is, so it can be captured; its buttons move nothing.\n--evidence-select-introduction, in evidence mode only, shows the Select introduction the first time Select is shown while the run's preferences say it was not closed, as a launch with its window shown does, so it can be captured.\n--evidence-paced-downloads, in evidence mode only, makes a developer run's model downloads arrive in paced pieces, so a setup's progress can be captured; --evidence-cut-download cuts the named developer resource's first transfer halfway as a lost connection, keeping what it fetched, so a failed setup and its resumption can be. --evidence-machine-memory, in evidence mode only, holds model minimums against BYTES of memory instead of this machine's.\n--evidence-config, in evidence mode only, keeps an earlier evidence run's host/config directory as this run's configuration, so what one launch stored, such as its usage statistics choice, is what the next one reads.\n--evidence-catalog, in evidence mode only, opens CATALOG as the run's remembered catalog instead of one inside its evidence directory; when this version refuses it as another version's, the run captures the unsupported-catalog sheet, then takes the choice --evidence-unsupported-catalog names, Start a new catalog (start) or Quit (quit), and fails without one.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }
@@ -422,6 +450,18 @@ fn arguments() -> Result<Config, String> {
     // So is the Select introduction: an automated launch never shows it unless its run asks.
     if config.evidence_introduction && config.evidence.is_none() {
         return Err("--evidence-select-introduction requires --evidence-dir".into());
+    }
+    // The developer downloads' pace and cut, and the machine's memory, are an evidence run's; the
+    // pace and cut apply only to the developer models a developer run serves.
+    if config.evidence_downloads != luxforge_core::DeveloperDownloads::default()
+        && config.evidence.is_none()
+    {
+        return Err(
+            "--evidence-paced-downloads and --evidence-cut-download require --evidence-dir".into(),
+        );
+    }
+    if config.evidence_memory.is_some() && config.evidence.is_none() {
+        return Err("--evidence-machine-memory requires --evidence-dir".into());
     }
     config.introduces = state::select_introduction::introduces(
         config.hidden,
@@ -495,6 +535,10 @@ fn arguments() -> Result<Config, String> {
 /// The environment variable that admits the RAW test cameras for this launch, read once at
 /// startup before any source is opened.
 const TEST_CAMERAS: &str = "LUXFORGE_TEST_CAMERAS";
+
+/// Each piece of a paced developer download (`--evidence-paced-downloads`): a download takes eight
+/// pieces, about three seconds, long enough to capture a setup's bar between them.
+const EVIDENCE_DOWNLOAD_PIECE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Admit the RAW test cameras, such as the synthetic HDR bracket body, when the launch's
 /// environment sets [`TEST_CAMERAS`] to `1`: only a harness does, for a journey over files a test

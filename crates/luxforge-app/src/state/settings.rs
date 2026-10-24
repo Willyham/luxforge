@@ -303,7 +303,7 @@ fn update_switches(preferences: &PreferenceWriter) -> Option<Switches> {
 }
 
 /// Milliseconds since the Unix epoch, which the last check's time is said against.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {

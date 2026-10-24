@@ -82,11 +82,10 @@ pub enum RemoveUntil {
 /// `"cancel"` presses Cancel. `{"candidate": 1}` chooses the strip's second candidate. `{"prompt":
 /// "a red bicycle"}` types into the prompt field, replacing what it held. `{"tier": "generative"}`
 /// chooses a Fill tier. `"setup"` presses the setup's button: the Replace add-on's when a prompt
-/// shows it, or else the main line's when AI editing is not set up. `"accept"` presses Accept.
-/// `{"hover": [0.25, 0.25]}` moves the pointer over the photograph at that normalized content
-/// position, as the canvas reports a move while hover picking is on, and waits until the pick it
-/// asks (and any analysis it needs first) has answered; `{"hover": null}` moves it off the
-/// photograph.
+/// shows it, or else the main line's when AI editing is not set up; with Object chosen it is the
+/// Object group's line while the `object` setup is not installed. `"accept"` presses Accept.
+/// `"shadow"` presses Object's Paint shadow. Object's own gestures over the photograph are
+/// [`crate::ObjectStep`]s.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoveStep {
@@ -98,7 +97,7 @@ pub enum RemoveStep {
     Tier(String),
     Setup,
     Accept,
-    Hover(Option<[f64; 2]>),
+    Shadow,
 }
 
 /// The longest prompt a step may type. The field holds what the fill task declares and cuts a
@@ -186,10 +185,6 @@ impl CorrectionStep {
                 fraction(*value, "correction field fraction")
             }
             Self::Remove(RemoveStep::Tier(tier)) => text(tier, "correction remove tier"),
-            Self::Remove(RemoveStep::Hover(Some([x, y]))) => {
-                fraction(*x, "correction remove hover x")?;
-                fraction(*y, "correction remove hover y")
-            }
             Self::Remove(RemoveStep::Prompt(prompt)) if prompt.chars().count() > MAX_PROMPT => Err(
                 format!("correction remove prompt holds at most {MAX_PROMPT} characters"),
             ),

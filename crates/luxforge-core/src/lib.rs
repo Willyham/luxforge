@@ -164,7 +164,7 @@ pub use modules::{
     temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
-pub use modules::{DeveloperModels, HostView, TaskAdmission, TaskNeeds};
+pub use modules::{DeveloperDownloads, DeveloperModels, HostView, TaskAdmission, TaskNeeds};
 pub use modules::{
     MODELS_PROOF_MODULE, PROOF_DECODER_PATH, PROOF_ENCODER_PATH, PROOF_MODEL_RESOURCE,
     PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF, proof_model_files,

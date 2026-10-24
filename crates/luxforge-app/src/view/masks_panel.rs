@@ -17,13 +17,15 @@ use crate::{
         mask_panel::{brush_field_id, draft_field_id},
         message::{
             Message, control::ControlMessage, mask::BrushEdit, mask::DragEdit, mask::KindMenu,
-            mask::MaskMessage, mask::PaintTarget, mask::RowEdit, mask::TypingEdit,
-            view::ViewMessage,
+            mask::MaskMessage, mask::ObjectRequest, mask::PaintTarget, mask::RowEdit,
+            mask::TypingEdit, view::ViewMessage,
         },
     },
     state::{
         histogram::HistogramModel,
-        masks::{ComponentHelp, ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel},
+        masks::{
+            ComponentHelp, ComponentRow, DraftField, MaskDraftModel, MaskRow, MasksModel, ModelRow,
+        },
         tools::{ControlModel, NumberControlStyle, drawn_by_range},
     },
     view::tools_panel::{
@@ -35,16 +37,17 @@ use iced::{
     widget::{Column, Space, column, container, mouse_area, row},
 };
 use luxforge_ui::{
-    CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel, DropEdge,
-    DropdownButtonModel, GridField, GroupRuleModel, HelpAlike, HelpRemedy, HelpSheetModel,
-    HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart, MaskRowMessages, MaskRowModel,
-    MenuEntry, MenuItem, ModeControlModel, NumberFieldModel, OverlayControlModel, OverlayMode,
-    OverlayTint, PatchGesture, PatchHolds, PickBarModel, PickButtonModel, PickLineModel,
-    RenameMessages, SliderModel, StepDrawing, StrokeRowModel, SwatchSlotsModel, ToggleModel,
-    ValueEdit, band_header, caption, compact_toggle, component_note, component_row, drop_feedback,
-    dropdown_button, field_grid, group_rule, header_icon_button, help_sheet as sheet, mask_row,
-    menu_list, menu_list_with_width, mode_control, mode_menu, overlay_control, pick_line, popover,
-    slider, stroke_row, swatch_slots, theme, with_tooltip,
+    ButtonSize, ButtonTone, CombineMode, ComponentRowMessages, ComponentRowModel,
+    CoverageThumbnailModel, DropEdge, DropdownButtonModel, GridField, GroupRuleModel, HelpAlike,
+    HelpRemedy, HelpSheetModel, HelpSheetStep, Icon, IconButtonModel, KeyHint, LeadPart,
+    MaskRowMessages, MaskRowModel, MenuEntry, MenuItem, ModeControlModel, NumberFieldModel,
+    OverlayControlModel, OverlayMode, OverlayTint, PatchGesture, PatchHolds, PickBarModel,
+    PickButtonModel, PickLineModel, RenameMessages, SliderModel, StepDrawing, StrokeRowModel,
+    SwatchSlotsModel, ToggleModel, ValueEdit, band_header, caption, compact_toggle, component_note,
+    component_row, drop_feedback, dropdown_button, field_grid, group_rule, header_icon_button,
+    help_sheet as sheet, mask_row, menu_list, menu_list_with_width, mode_control, mode_menu,
+    overlay_control, pick_line, popover, slider, stroke_row, swatch_slots, text_button, theme,
+    with_tooltip,
 };
 use luxforge_ui::{Element, Token};
 
@@ -509,6 +512,22 @@ pub(crate) fn kind_menu(model: &MasksModel, menu: KindMenu) -> Vec<MenuEntry<Mes
             reason: refusal.clone(),
         }));
     }
+    // The Select group: the model classes picked from the photograph, Object… first.
+    if !model.select.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Heading("Select".into()));
+        for option in &model.select {
+            entries.push(MenuEntry::Item(MenuItem {
+                icon: None,
+                label: option.label.clone(),
+                trailing: Some(option.tag.into()),
+                on_press: refusal
+                    .is_none()
+                    .then(|| mask(MaskMessage::ChooseObject(menu))),
+                reason: refusal.clone(),
+            }));
+        }
+    }
     entries
 }
 
@@ -820,6 +839,15 @@ fn component_view<'a>(
         _ => None,
     };
     let view = popover(view, entries.map(menu_list), close_menu());
+    // A model selection says what picked it, how and when, on every row: whether it is stale is
+    // worth seeing without opening it.
+    let view = match &component.model {
+        Some(row) => Column::new()
+            .push(view)
+            .push(model_lines(component, row, model.enabled))
+            .into(),
+        None => view,
+    };
     if !component.selected {
         return view;
     }
@@ -859,6 +887,62 @@ fn component_view<'a>(
         block = block.push(strokes(component, model.enabled, menu));
     }
     block.into()
+}
+
+/// A model selection's lines under its row: `Object · picked from a point · 2 minutes ago`, the
+/// part and version that computed it, and while it is stale, why, with Recompute and Keep.
+fn model_lines<'a>(
+    component: &'a ComponentRow,
+    row: &'a ModelRow,
+    enabled: bool,
+) -> Element<'a, Message> {
+    let caption = row.caption();
+    let headline = if caption.is_empty() {
+        row.class.clone()
+    } else {
+        format!("{} \u{b7} {caption}", row.class)
+    };
+    let mut lines = Column::new()
+        .push(component_note(headline))
+        .push(component_note(row.part.clone()));
+    if let Some(stale) = &row.stale {
+        let id = component.id.as_str().to_owned();
+        let recompute = text_button(
+            if row.recomputing {
+                "Recomputing\u{2026}"
+            } else {
+                "Recompute"
+            },
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            (enabled && row.recompute_reason.is_none() && !row.recomputing)
+                .then(|| mask(MaskMessage::Recompute(id.clone()))),
+        );
+        let recompute = match &row.recompute_reason {
+            Some(reason) => with_tooltip(
+                recompute,
+                reason.clone(),
+                iced::widget::tooltip::Position::Top,
+            ),
+            None => recompute,
+        };
+        let keep = text_button(
+            "Keep",
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            Some(mask(MaskMessage::Keep(id))),
+        );
+        lines = lines.push(component_note(stale.clone())).push(
+            row![recompute, keep]
+                .spacing(theme::BUTTON_ROW_SPACING)
+                .padding(Padding {
+                    top: 4.0,
+                    left: theme::SPACING,
+                    ..Padding::ZERO
+                }),
+        );
+    }
+    lines.into()
 }
 
 /// A component's menu: Rename, Edit shape or Paint more, Move up, Move down, Delete (Delete mask
@@ -973,6 +1057,20 @@ pub(crate) fn component_copy_menu(
     });
     if component.can_pick {
         entries.push(item("Copy pick request", Some(mask(MaskMessage::CopyPick))));
+    }
+    // A model selection's pick, select and commit, as its Recompute sends them.
+    if let Some(row) = &component.model {
+        let request = |request| {
+            Some(mask(MaskMessage::CopyObject {
+                component: id.clone(),
+                request,
+            }))
+        };
+        if row.prompted {
+            entries.push(item("Copy pick request", request(ObjectRequest::Pick)));
+            entries.push(item("Copy select request", request(ObjectRequest::Select)));
+        }
+        entries.push(item("Copy commit request", request(ObjectRequest::Commit)));
     }
     entries.push(item(
         "Copy rename request",

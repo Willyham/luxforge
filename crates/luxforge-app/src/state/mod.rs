@@ -388,6 +388,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) correction_content: Option<(u32, u32)>,
     /// The Remove mode's selection, jobs and candidates.
     pub(crate) remove: &'a remove::RemovePanel,
+    /// The object-picking session a tool has armed, and the selections this desktop runs.
+    pub(crate) object_pick: Option<&'a crate::object_pick::ObjectPick>,
+    pub(crate) object_selects: &'a crate::object_pick::ObjectSelects,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -958,6 +961,8 @@ mod tests {
                 correction_draft: None,
                 correction_content: None,
                 remove: &self.remove,
+                object_pick: None,
+                object_selects: &crate::object_pick::NO_SELECTS,
                 target: self
                     .mask_panel
                     .selected_mask

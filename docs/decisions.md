@@ -397,9 +397,20 @@ For [AI editing](design/ai-editing.md), together with the two Corrections decisi
 - **Consent to send photo data to a remote provider is remembered** per provider profile and data class until revoked; the capability contract changes with the remote tier.
 - **The repair stage** sits after source development and before colour, in content coordinates, with its own repair primitive (the Corrections decision).
 - **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
-- **Generative fill comes first.** Its workflow (a brush selection in the Remove mode, the candidate strip, Regenerate, Replace and Accept) is built over the fake generator on the inference foundation and the Corrections candidate seam, while the generative models are qualified beside it; the Fast tier, the analysis cache, object picking and Select follow and join the same Remove mode.
+- **Generative fill comes first.** Its workflow (a brush selection in the Remove mode, the candidate strip, Regenerate, Replace and Accept) is built over the fake generator on the inference foundation and the Corrections candidate seam, while the generative models are qualified beside it; the Fast tier, the analysis cache, object picking and Select follow; the Fast tier joins Remove's Fill control, and object picking is the separate Object tool ([AI tools in the Develop workspace](#ai-tools-in-the-develop-workspace)).
 
 Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
+
+## AI tools in the Develop workspace
+
+For [the AI tools in the Develop workspace](design/ai-tools-workspace.md), taken on 2026-10-24:
+
+- **Object detection is a separate tool, for removal and for masks.** Corrections › Object removes objects the person points at; Masks › New mask › Object makes a stored selection; one picker and one download serve both. Remove paints exactly what to fill, with no hover.
+- **Object removal ships on the Generative tier.** The Fast tier joins the Fill control Remove and Object share when its quality study passes.
+- **Object removal stays behind a flag.** `ai.analysis` (AI object picking) keeps gating object picking: Corrections › Object and Masks › Object are listed only while it is on. Remove is listed by default. Downloads stay opt-in.
+- **Each tool sets up what it is missing**, the first time it is chosen, through one sheet and one consent with the combined size. Replace stays an add-on.
+
+The recorded defaults are in the [design](design/ai-tools-workspace.md#decisions).
 
 ## RAW looks
 
@@ -525,6 +536,7 @@ Masking phases A–D are delivered. Brush strokes are content-addressed by a has
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? Current RAW preset white-balance conversion has no calibration; calibrated conversion belongs to the planned Lightroom alignment work, as decided below.
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a single-click add that snaps to the drawn curve, endpoints the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
+- Is [grain](design/grain.md) authorized for implementation, and do its recorded defaults stand: its own section, a fixed seed, luminance-only grain, its order after the vignette and statistically matched reduced-stage frames?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) stand: section names, stage order, mixer layout and vignette style? Implementation is delivered on the recorded defaults. GPU-first settles the renderer paths for spatial gestures and samples.
 - What does the separate review of the existing RAW importer's DNG SDK isotemperature table require? The alignment work's prohibition below does not silently decide its disposition.
 
@@ -552,6 +564,14 @@ Auto tone sets the Basic values automatically ([design](design/auto-tone.md#deci
 - **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
 
 The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. Lightroom fitting still requires the owner's export, per-run consent and owner review.
+
+## Grain planning
+
+For [grain](design/grain.md) ([implementation plan](../tasks/editing/grain.json)):
+
+- **Size is in pixels of the full-resolution output stage**, so the same settings look the same at 100% on every camera and a crop does not change the grain; not relative to the frame.
+
+The section, the fixed seed, luminance-only grain, the order after the vignette and the reduced-stage frames are recorded defaults in the design. Implementation is not authorized; the Lightroom round needs the owner's export.
 
 ## Optional usage statistics planning
 

@@ -217,6 +217,8 @@ pub const SIZE_SECTION_LABEL: f32 = 10.5;
 /// disclosure heading's caption. It is the section label's step of the type scale, so a caption
 /// beside a section label reads as the same size.
 pub const SIZE_SMALL_CAPTION: f32 = SIZE_SECTION_LABEL;
+/// The small download glyph after a Corrections kind whose setup has not run.
+pub const SIZE_SETUP_MARK: f32 = 9.0;
 /// A caption's line: a whole number of points, so the rows stacked under a block of captions (the
 /// histogram's readout) start on a whole point and their 1 px rules stay sharp.
 pub const CAPTION_LINE_HEIGHT: f32 = 14.0;

@@ -211,14 +211,9 @@ pub struct CapabilityDescriptor {
 pub enum CapabilityKind {
     /// Send one declared data class of one asset to a profile's endpoint through its adapter.
     RemoteImageRequest { adapter: String, data: DataClass },
-    /// Install a declared resource from its pinned URL. With an `introduction`, a client asking
-    /// for the download's consent may present the feature it sets up, as the desktop's setup
-    /// sheet does; the disclosure carries it.
-    DownloadArtifact {
-        resource: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        introduction: Option<Introduction>,
-    },
+    /// Install a declared resource from its pinned URL. What the download sets up is introduced by
+    /// the [`SetupDescriptor`] that holds the resource, never by the capability.
+    DownloadArtifact { resource: String },
     /// Hold one declared resource loaded by the host's local inference runtime between tasks, in
     /// a host-owned slot that counts `resident_bytes` against the host's resident budget: opened
     /// as a `model` on the first of `backends` the runtime offers, at `precision`. Loaded by
@@ -242,7 +237,7 @@ pub enum CapabilityKind {
     },
 }
 
-/// What a download's setup says of the feature it sets up, before the person decides: a short
+/// What a setup says of the tool it sets up, before the person decides: a short
 /// label, a title and a lead in the feature's words, how it is used in at most
 /// [`MAX_INTRODUCTION_STEPS`] steps or one `hero` picture, and the promise its footer makes. The
 /// facts of the download itself (its size, origin, cost, licence and what it needs of the machine)
@@ -283,6 +278,10 @@ pub enum IntroductionPicture {
     History,
     /// A selection, a described prompt and the area filled with what it describes.
     Describe,
+    /// The pointer over a photograph, the object under it washed and outlined.
+    Hover,
+    /// Picked objects, each tinted as a selection and numbered in the order picked.
+    Selected,
 }
 
 /// The most steps an introduction shows.
@@ -297,11 +296,11 @@ fn validate_introduction(id: &str, introduction: &Introduction) -> Result<(), Er
     let bounded = |what: &str, text: &str, limit: usize| {
         if text.trim().is_empty() {
             Err(Error::validation(format!(
-                "capability {id}'s introduction declares no {what}"
+                "setup {id}'s introduction declares no {what}"
             )))
         } else if text.chars().count() > limit {
             Err(Error::validation(format!(
-                "capability {id}'s introduction {what} is longer than {limit} characters"
+                "setup {id}'s introduction {what} is longer than {limit} characters"
             )))
         } else {
             Ok(())
@@ -313,17 +312,153 @@ fn validate_introduction(id: &str, introduction: &Introduction) -> Result<(), Er
     bounded("promise", &introduction.promise, MAX_INTRODUCTION_LABEL)?;
     if introduction.steps.len() > MAX_INTRODUCTION_STEPS {
         return Err(Error::validation(format!(
-            "capability {id}'s introduction has more than {MAX_INTRODUCTION_STEPS} steps"
+            "setup {id}'s introduction has more than {MAX_INTRODUCTION_STEPS} steps"
         )));
     }
     if introduction.hero.is_some() && !introduction.steps.is_empty() {
         return Err(Error::validation(format!(
-            "capability {id}'s introduction shows both a hero and steps"
+            "setup {id}'s introduction shows both a hero and steps"
         )));
     }
     for step in &introduction.steps {
         bounded("step title", &step.title, MAX_INTRODUCTION_LABEL)?;
         bounded("step body", &step.body, MAX_INTRODUCTION_TEXT)?;
+    }
+    Ok(())
+}
+
+/// The resources one tool needs, grouped into parts named in the feature's words: what a client
+/// asks the host to install with `module.setup.install`, under one consent answer, and what
+/// `module.status` reports as one state. The setup's introduction is what its sheet says of the
+/// tool; the facts of each download are the disclosure's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetupDescriptor {
+    /// A hyphenated lowercase name, unique within the module.
+    pub id: String,
+    /// The tool it sets up, as a person names it.
+    pub title: String,
+    pub introduction: Introduction,
+    /// 1 to [`MAX_SETUP_PARTS`] parts, in the order they install.
+    pub parts: Vec<SetupPart>,
+}
+
+/// One part of a setup: the resources one feature of the tool needs, under the name a person knows
+/// it by ("Object finder", "Generative fill").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetupPart {
+    pub name: String,
+    /// One line on what the part does for the tool.
+    pub purpose: String,
+    /// Declared resources, each installed by a `download-artifact` capability, in install order.
+    pub resources: Vec<String>,
+}
+
+impl SetupDescriptor {
+    /// Every resource of the setup, in declared order: its parts' in order.
+    pub fn resources(&self) -> impl Iterator<Item = &str> {
+        self.parts
+            .iter()
+            .flat_map(|part| part.resources.iter().map(String::as_str))
+    }
+}
+
+/// The most setups a module declares, parts a setup holds and resources a setup installs.
+pub(crate) const MAX_SETUPS: usize = 8;
+pub(crate) const MAX_SETUP_PARTS: usize = 4;
+pub(crate) const MAX_SETUP_RESOURCES: usize = 5;
+/// The longest a setup's title, a part's name and a part's purpose may be, in characters.
+const MAX_SETUP_LABEL: usize = 80;
+const MAX_SETUP_PURPOSE: usize = 160;
+
+/// A module's setups: at most [`MAX_SETUPS`], each a unique name with a title and a valid
+/// introduction, 1 to [`MAX_SETUP_PARTS`] uniquely named parts with a purpose, and 1 to
+/// [`MAX_SETUP_RESOURCES`] resources together, each declared, installed by a `download-artifact`
+/// capability and named once.
+fn validate_setups(module: &ModuleDescriptor) -> Result<(), Error> {
+    let module_id = &module.id;
+    if module.setups.len() > MAX_SETUPS {
+        return Err(Error::validation(format!(
+            "module {module_id} declares {} setups; at most {MAX_SETUPS}",
+            module.setups.len()
+        )));
+    }
+    let mut seen = HashSet::with_capacity(module.setups.len());
+    for setup in &module.setups {
+        let id = &setup.id;
+        if !valid_name(id) {
+            return Err(Error::validation(format!("invalid setup identity {id}")));
+        }
+        if !seen.insert(id.as_str()) {
+            return Err(Error::validation(format!(
+                "duplicate setup {id} of module {module_id}"
+            )));
+        }
+        let line = |what: &str, text: &str, limit: usize| {
+            if text.trim().is_empty() || text.trim() != text || text.chars().any(char::is_control) {
+                Err(Error::validation(format!(
+                    "setup {id} declares no {what}, or one that is not one plain line"
+                )))
+            } else if text.chars().count() > limit {
+                Err(Error::validation(format!(
+                    "setup {id}'s {what} is longer than {limit} characters"
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        line("title", &setup.title, MAX_SETUP_LABEL)?;
+        validate_introduction(id, &setup.introduction)?;
+        if setup.parts.is_empty() || setup.parts.len() > MAX_SETUP_PARTS {
+            return Err(Error::validation(format!(
+                "setup {id} declares {} parts; it is 1..={MAX_SETUP_PARTS}",
+                setup.parts.len()
+            )));
+        }
+        let mut names = HashSet::with_capacity(setup.parts.len());
+        let mut resources = HashSet::new();
+        for part in &setup.parts {
+            line("part name", &part.name, MAX_SETUP_LABEL)?;
+            line("part purpose", &part.purpose, MAX_SETUP_PURPOSE)?;
+            if !names.insert(part.name.as_str()) {
+                return Err(Error::validation(format!(
+                    "setup {id} declares part {} twice",
+                    part.name
+                )));
+            }
+            if part.resources.is_empty() {
+                return Err(Error::validation(format!(
+                    "setup {id}'s part {} names no resource",
+                    part.name
+                )));
+            }
+            for resource in &part.resources {
+                if module.resource(resource).is_none() {
+                    return Err(Error::validation(format!(
+                        "setup {id} names undeclared resource {resource}"
+                    )));
+                }
+                if !module.capabilities.iter().any(|capability| {
+                    matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held } if held == resource)
+                }) {
+                    return Err(Error::validation(format!(
+                        "setup {id} names resource {resource}, which no download-artifact capability installs"
+                    )));
+                }
+                if !resources.insert(resource.as_str()) {
+                    return Err(Error::validation(format!(
+                        "setup {id} names resource {resource} twice"
+                    )));
+                }
+            }
+        }
+        if resources.len() > MAX_SETUP_RESOURCES {
+            return Err(Error::validation(format!(
+                "setup {id} names {} resources; at most {MAX_SETUP_RESOURCES}",
+                resources.len()
+            )));
+        }
     }
     Ok(())
 }
@@ -557,6 +692,7 @@ pub(crate) fn validate(module: &ModuleDescriptor) -> Result<(), Error> {
     for capability in &module.capabilities {
         validate_capability(module, capability, &mut capabilities)?;
     }
+    validate_setups(module)?;
     let mut tasks = HashSet::with_capacity(module.tasks.len());
     for task in &module.tasks {
         validate_task(module, task, &mut tasks)?;
@@ -769,17 +905,11 @@ fn validate_capability<'a>(
                 )));
             }
         }
-        CapabilityKind::DownloadArtifact {
-            resource,
-            introduction,
-        } => {
+        CapabilityKind::DownloadArtifact { resource } => {
             if module.resource(resource).is_none() {
                 return Err(Error::validation(format!(
                     "capability {id} names undeclared resource {resource}"
                 )));
-            }
-            if let Some(introduction) = introduction {
-                validate_introduction(id, introduction)?;
             }
         }
         CapabilityKind::LocalRuntime {
@@ -1690,48 +1820,9 @@ mod tests {
                 |d| {
                     d.capabilities[1].kind = CapabilityKind::DownloadArtifact {
                         resource: "missing".into(),
-                        introduction: None,
                     }
                 },
                 "capability palette names undeclared resource missing",
-            ),
-            // A download's introduction: present, bounded, a hero or steps.
-            (
-                |d| {
-                    d.capabilities[1].kind = introduced(Introduction {
-                        title: " ".into(),
-                        ..introduction()
-                    })
-                },
-                "capability palette's introduction declares no title",
-            ),
-            (
-                |d| {
-                    d.capabilities[1].kind = introduced(Introduction {
-                        lead: "x".repeat(MAX_INTRODUCTION_TEXT + 1),
-                        ..introduction()
-                    })
-                },
-                "capability palette's introduction lead is longer than 400 characters",
-            ),
-            (
-                |d| {
-                    let step = introduction().steps[0].clone();
-                    d.capabilities[1].kind = introduced(Introduction {
-                        steps: vec![step; MAX_INTRODUCTION_STEPS + 1],
-                        ..introduction()
-                    })
-                },
-                "capability palette's introduction has more than 3 steps",
-            ),
-            (
-                |d| {
-                    d.capabilities[1].kind = introduced(Introduction {
-                        hero: Some(IntroductionPicture::Describe),
-                        ..introduction()
-                    })
-                },
-                "capability palette's introduction shows both a hero and steps",
             ),
             (
                 |d| d.capabilities[0].purpose = String::new(),
@@ -2225,26 +2316,185 @@ mod tests {
         }
     }
 
-    /// The fixture's palette download, introduced by `introduction`.
-    fn introduced(introduction: Introduction) -> CapabilityKind {
-        CapabilityKind::DownloadArtifact {
-            resource: "palette".into(),
-            introduction: Some(introduction),
+    /// The capability descriptor with five further resources, `swatch-1` to `swatch-5`, each
+    /// installed by its own download, and one setup, `tint`, of two parts over the palette and the
+    /// first swatch.
+    fn with_setup() -> ModuleDescriptor {
+        let mut descriptor = capability_descriptor();
+        for n in 1..=5 {
+            let id = format!("swatch-{n}");
+            descriptor.resources.push(ResourceDescriptor {
+                id: id.clone(),
+                ..descriptor.resources[0].clone()
+            });
+            descriptor.capabilities.push(CapabilityDescriptor {
+                id: format!("download-{id}"),
+                kind: CapabilityKind::DownloadArtifact { resource: id },
+                purpose: "Install a swatch.".into(),
+            });
         }
+        descriptor.setups = vec![SetupDescriptor {
+            id: "tint".into(),
+            title: "Tint".into(),
+            introduction: introduction(),
+            parts: vec![
+                SetupPart {
+                    name: "Palette".into(),
+                    purpose: "The gains a tint is drawn from".into(),
+                    resources: vec!["palette".into()],
+                },
+                SetupPart {
+                    name: "Swatches".into(),
+                    purpose: "The colours a tint offers".into(),
+                    resources: vec!["swatch-1".into()],
+                },
+            ],
+        }];
+        descriptor
     }
 
     #[test]
-    fn a_download_introduction_validates_and_round_trips_beside_its_resource() {
-        let mut descriptor = capability_descriptor();
-        descriptor.capabilities[1].kind = introduced(introduction());
-        descriptor
-            .validate()
-            .expect("an introduced download validates");
-        let json = serde_json::to_value(&descriptor.capabilities[1]).expect("serialises");
-        assert_eq!(json["kind"], "download-artifact");
-        assert_eq!(json["resource"], "palette");
-        assert_eq!(json["introduction"]["steps"][0]["picture"], "paint-over");
-        let back: CapabilityDescriptor = serde_json::from_value(json).expect("deserialises");
-        assert_eq!(back, descriptor.capabilities[1]);
+    fn a_setup_validates_and_round_trips_with_its_introduction() {
+        let descriptor = with_setup();
+        descriptor.validate().expect("the setup validates");
+        let json = serde_json::to_value(&descriptor).expect("serialises");
+        let setup = &json["setups"][0];
+        assert_eq!(setup["id"], "tint");
+        assert_eq!(setup["parts"][1]["resources"], json!(["swatch-1"]));
+        assert_eq!(setup["introduction"]["steps"][0]["picture"], "paint-over");
+        assert_eq!(
+            json["capabilities"][1],
+            json!({"id": "palette", "kind": "download-artifact", "resource": "palette",
+                   "purpose": "Install the tint palette."}),
+            "a download introduces nothing itself"
+        );
+        assert_eq!(
+            ModuleDescriptor::deserialize(&json).expect("deserialises"),
+            descriptor
+        );
+        let pictures =
+            serde_json::to_value([IntroductionPicture::Hover, IntroductionPicture::Selected])
+                .unwrap();
+        assert_eq!(pictures, json!(["hover", "selected"]));
+        assert!(
+            capability_descriptor().validate().is_ok()
+                && serde_json::to_value(capability_descriptor()).unwrap()["setups"].is_null(),
+            "a module without setups lists none"
+        );
+    }
+
+    #[test]
+    fn every_setup_limit_and_reference_is_refused_by_name() {
+        type Change = fn(&mut ModuleDescriptor);
+        let cases: Vec<(Change, &str)> = vec![
+            (
+                |d| {
+                    let setup = d.setups[0].clone();
+                    d.setups = (0..=MAX_SETUPS)
+                        .map(|n| SetupDescriptor {
+                            id: format!("tint-{n}"),
+                            ..setup.clone()
+                        })
+                        .collect();
+                },
+                "module test.capabilities declares 9 setups; at most 8",
+            ),
+            (
+                |d| d.setups[0].id = "Tint".into(),
+                "invalid setup identity Tint",
+            ),
+            (
+                |d| d.setups.push(d.setups[0].clone()),
+                "duplicate setup tint of module test.capabilities",
+            ),
+            (
+                |d| d.setups[0].title = " ".into(),
+                "setup tint declares no title",
+            ),
+            (
+                |d| {
+                    d.setups[0].parts = (0..=MAX_SETUP_PARTS)
+                        .map(|n| SetupPart {
+                            name: format!("Part {n}"),
+                            purpose: "A part".into(),
+                            resources: vec![if n == 0 {
+                                "palette".into()
+                            } else {
+                                format!("swatch-{n}")
+                            }],
+                        })
+                        .collect();
+                },
+                "setup tint declares 5 parts; it is 1..=4",
+            ),
+            (
+                |d| d.setups[0].parts.clear(),
+                "setup tint declares 0 parts; it is 1..=4",
+            ),
+            (
+                |d| {
+                    d.setups[0].parts[1].resources = (1..=MAX_SETUP_RESOURCES)
+                        .map(|n| format!("swatch-{n}"))
+                        .collect();
+                },
+                "setup tint names 6 resources; at most 5",
+            ),
+            (
+                |d| d.setups[0].parts[1].resources = vec!["missing".into()],
+                "setup tint names undeclared resource missing",
+            ),
+            (
+                |d| {
+                    d.capabilities
+                        .retain(|capability| capability.id != "download-swatch-1");
+                },
+                "setup tint names resource swatch-1, which no download-artifact capability installs",
+            ),
+            (
+                |d| d.setups[0].parts[1].resources = vec!["palette".into()],
+                "setup tint names resource palette twice",
+            ),
+            (
+                |d| d.setups[0].parts[1].name = "Palette".into(),
+                "setup tint declares part Palette twice",
+            ),
+            (
+                |d| d.setups[0].parts[1].resources.clear(),
+                "setup tint's part Swatches names no resource",
+            ),
+            (
+                |d| d.setups[0].parts[0].purpose = "two\nlines".into(),
+                "setup tint declares no part purpose, or one that is not one plain line",
+            ),
+            // The introduction: present, bounded, a hero or steps.
+            (
+                |d| d.setups[0].introduction.title = " ".into(),
+                "setup tint's introduction declares no title",
+            ),
+            (
+                |d| d.setups[0].introduction.lead = "x".repeat(MAX_INTRODUCTION_TEXT + 1),
+                "setup tint's introduction lead is longer than 400 characters",
+            ),
+            (
+                |d| {
+                    let step = d.setups[0].introduction.steps[0].clone();
+                    d.setups[0].introduction.steps = vec![step; MAX_INTRODUCTION_STEPS + 1];
+                },
+                "setup tint's introduction has more than 3 steps",
+            ),
+            (
+                |d| d.setups[0].introduction.hero = Some(IntroductionPicture::Describe),
+                "setup tint's introduction shows both a hero and steps",
+            ),
+        ];
+        for (change, expected) in cases {
+            let mut descriptor = with_setup();
+            change(&mut descriptor);
+            let detail = rejection(&descriptor);
+            assert!(
+                detail.contains(expected),
+                "expected {expected:?}, got {detail:?}"
+            );
+        }
     }
 }

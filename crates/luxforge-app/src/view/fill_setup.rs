@@ -1,6 +1,8 @@
-//! The setup of AI editing, drawn from a [`SetupLine`]: the Corrections band's setup line. Each
-//! line is its sentence, wrapping in the panel's width, a thin bar while its install runs, and its detail with the one button beside it. The view decides
-//! nothing: a press publishes the line's [`SetupAction`] through the caller's message.
+//! A tool's setup line, drawn from a [`SetupLine`] wherever the tool's group shows it. Each line is
+//! its sentence, wrapping in the panel's width, one thin bar while its install runs, its detail
+//! with the one button beside it, and, for a setup of several parts while it installs or after it
+//! failed, each part's state. The view decides nothing: a press publishes the line's
+//! [`SetupAction`] through the caller's message.
 use crate::{
     app::message::Message,
     state::fill_setup::{SetupAction, SetupLine},
@@ -51,5 +53,23 @@ pub(crate) fn line<'a>(
         (None, Some(press)) => body.push(press),
         (None, None) => body,
     };
+    // Each part's state, a ready one in the accent.
+    for part in &line.parts {
+        body = body.push(
+            row![
+                text(part.name.clone())
+                    .size(theme::SIZE_CAPTION)
+                    .style(theme::ink(Token::TextSecondary)),
+                text(format!("\u{b7} {}", part.text))
+                    .size(theme::SIZE_CAPTION)
+                    .style(theme::ink(if part.ready {
+                        Token::Accent
+                    } else {
+                        Token::TextTertiary
+                    })),
+            ]
+            .spacing(theme::SPACING / 2.0),
+        );
+    }
     body.into()
 }

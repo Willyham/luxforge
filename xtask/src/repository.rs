@@ -1002,6 +1002,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The fake inference runtime's step delay, which stands in for a model's step time in
             // developer runs and in the port's own tests of slow generation.
             "crates/luxforge-core/src/inference/fake.rs",
+            // The developer models' paced download, which stands in for a network's transfer time
+            // in developer runs, so evidence can capture a setup while it downloads.
+            "crates/luxforge-core/src/modules/ai/models.rs",
         ],
         mode: Match::Whole,
         tests: true,

@@ -269,8 +269,7 @@ def stage(args):
             target = version_dir / pin["name"]
             if source.stat().st_size != pin["bytes"]:
                 raise SystemExit(f"{source} is not {pin['bytes']} bytes")
-            # A file that is not its pin would be fetched again from the start, or, for the
-            # conditioning while its release asset is unpublished, fail the install.
+            # A file that is not its pin would be fetched again from the start.
             if sha256_of(source) != pin["sha256"]:
                 raise SystemExit(f"{source} is not the pinned file (SHA-256 {pin['sha256']})")
             if target.exists():

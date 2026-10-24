@@ -15,7 +15,7 @@ use crate::{
     state::{
         corrections::{BandSlider, CorrectionNotice, CorrectionRow, CorrectionsModel, ExpandedRow},
         fill_setup::SetupLine,
-        remove::RemoveModel,
+        remove::{ObjectModel, RemoveModel},
     },
 };
 use iced::{
@@ -26,8 +26,8 @@ use luxforge_ui::{
     ButtonSize, ButtonTone, CorrectionRowMessages, CorrectionRowModel, DropEdge, Element,
     GroupRuleModel, Icon, LabelledButtonModel, MenuEntry, MenuItem, SegmentedModel, SliderModel,
     Token, Tone, ValueEdit, band_header_with_reset, caption, correction_row, drop_feedback,
-    group_rule, inline_notice, labelled_button, menu_list, popover, segmented, segmented_fill,
-    slider, theme,
+    group_rule, inline_notice, labelled_button, menu_list, popover, segmented,
+    segmented_fill_marked, slider, theme,
 };
 
 fn message(message: CorrectionMessage) -> Message {
@@ -150,28 +150,56 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
         None,
     ));
     let options: Vec<String> = model.kinds.iter().map(|kind| kind.option.clone()).collect();
-    // Remove, when a module fills, is the kind control's last segment.
+    // Remove, when a module fills, follows the repair kinds, and Object follows Remove while the
+    // run offers it.
     let removing = model.remove.as_ref().is_some_and(|remove| remove.chosen);
+    let pointing = model
+        .remove
+        .as_ref()
+        .is_some_and(|remove| remove.chosen && remove.object.is_some());
     let mut titles: Vec<String> = model.kinds.iter().map(|kind| kind.title.clone()).collect();
-    if model.remove.is_some() {
+    let mut marked: Vec<usize> = Vec::new();
+    if let Some(remove) = &model.remove {
         titles.push("Remove".into());
+        // A kind whose setup has not run carries the small download glyph.
+        if remove.needs_setup {
+            marked.push(model.kinds.len());
+        }
+        if remove.object_offered {
+            titles.push("Object".into());
+            if remove.object_needs_setup {
+                marked.push(model.kinds.len() + 1);
+            }
+        }
     }
-    group = group.push(segmented_fill(
+    let remove_at = model.kinds.len();
+    group = group.push(segmented_fill_marked(
         &SegmentedModel {
             options: titles,
-            selected: if removing {
-                model.kinds.len()
-            } else {
-                model.new_kind
+            selected: match (removing, pointing) {
+                (true, true) => remove_at + 1,
+                (true, false) => remove_at,
+                _ => model.new_kind,
             },
             enabled: true,
         },
+        &marked,
         move |index| match options.get(index) {
             Some(option) => message(CorrectionMessage::Kind(option.clone())),
-            None => Message::Remove(RemoveMessage::Choose),
+            None if index == remove_at => Message::Remove(RemoveMessage::Choose),
+            None => Message::Remove(RemoveMessage::ChooseObject),
         },
     ));
     if removing {
+        // One line naming what the chosen kind does.
+        group = group.push(note(
+            if pointing {
+                "Point at an object to remove it"
+            } else {
+                "Paint over what to remove"
+            },
+            Token::TextSecondary,
+        ));
         // A selection is painted at the brush's Size; feather, opacity and source are a repair's.
         for field in model.new_fields.iter().take(1) {
             group = group.push(band_slider(
@@ -288,14 +316,29 @@ pub(crate) const PROMPT_ID: &str = "remove-prompt";
 /// A strip cell's preview side, in points.
 const CELL: f32 = 52.0;
 
-/// The **Remove** group: the Fill setting, the Replace prompt, Generate (or Cancel and the
-/// progress while one runs), the candidate strip, Regenerate and Accept, and its Copy as JSON menu.
+/// The **Remove** or **Object** group: Object's own lines first (its setup, Finding objects…, the
+/// selected objects and Paint shadow), then what both kinds share: the Fill setting, the Replace
+/// prompt, Generate (or Cancel and the progress while one runs), the candidate strip, Regenerate
+/// and Accept, and its Copy as JSON menu.
 fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element<'a, Message> {
     let mut group = Column::new().spacing(theme::ROW_SPACING + 2.0);
+    let object = model.object.as_ref();
+    let (label, rule_caption, requests) = match object {
+        Some(_) => (
+            "Object",
+            "next click on the photo",
+            &RemoveRequest::OBJECT[..],
+        ),
+        None => (
+            "Remove",
+            "paint over what to remove",
+            &RemoveRequest::ALL[..],
+        ),
+    };
     let rule = group_rule(
         &GroupRuleModel {
-            label: "Remove".into(),
-            caption: Some("paint over what to remove".into()),
+            label: label.into(),
+            caption: Some(rule_caption.into()),
             caption_accent: false,
             menu_tooltip: Some("Copy as JSON request".into()),
             menu_open: model.menu_open,
@@ -305,8 +348,9 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
     );
     let menu = model.menu_open.then(|| {
         menu_list(
-            RemoveRequest::ALL
-                .into_iter()
+            requests
+                .iter()
+                .copied()
                 .map(|request| {
                     MenuEntry::Item(MenuItem {
                         icon: None,
@@ -324,6 +368,23 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
         menu,
         remove_message(RemoveMessage::Menu(false)),
     ));
+    if let Some(object) = object {
+        // Without its setup the group is the setup's line, and nothing it would refuse.
+        if let Some(line) = &object.setup {
+            group = group.push(setup_line(line, model.setup_enabled));
+            if object.masks_instead {
+                group = group.push(note(
+                    "You can still pick objects for masks in Mask mode.",
+                    Token::TextTertiary,
+                ));
+            }
+            return group.into();
+        }
+        group = group.push(object_lines(
+            object,
+            model.enabled && model.running.is_none(),
+        ));
+    }
     // The Fill setting: the tiers offered, or why none is and the one thing to do about it.
     if model.reading {
         group = group.push(caption("Reading the fill tiers\u{2026}"));
@@ -513,6 +574,61 @@ fn remove_group<'a>(model: &'a RemoveModel, images: RemoveImages<'a>) -> Element
         group = group.push(note(model.hint.clone(), Token::TextTertiary));
     }
     group.into()
+}
+
+/// Object's own lines: Finding objects… until the photograph is analysed, how to pick, a row per
+/// selected object and Paint shadow.
+fn object_lines(object: &ObjectModel, enabled: bool) -> Element<'_, Message> {
+    let mut lines = Column::new().spacing(theme::ROW_SPACING);
+    if object.finding {
+        lines = lines.push(caption(crate::object_pick::FINDING_OBJECTS));
+        lines = lines.push(note(
+            "You can paint with Remove meanwhile.",
+            Token::TextTertiary,
+        ));
+    } else if object.rows.is_empty() {
+        lines = lines.push(note(
+            "Click an object to select it. Drag loosely over one when it's hard to point at.",
+            Token::TextSecondary,
+        ));
+        lines = lines.push(note(
+            "\u{21e7}-click adds another \u{b7} \u{2325}-click takes one away",
+            Token::TextTertiary,
+        ));
+    }
+    for row_model in &object.rows {
+        lines = lines.push(
+            row![
+                text(format!("{} Object", row_model.number))
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(Token::TextLabel)),
+                Space::new().width(Length::Fill),
+                note(
+                    if row_model.selecting {
+                        "selecting\u{2026}"
+                    } else {
+                        "\u{2325}-click to remove"
+                    },
+                    Token::TextTertiary,
+                ),
+            ]
+            .align_y(Alignment::Center),
+        );
+    }
+    if !object.rows.is_empty() {
+        let label = match (object.shadow_armed, object.shadow) {
+            (true, _) => "Painting shadow\u{2026}",
+            (false, true) => "Paint shadow again",
+            (false, false) => "Paint shadow",
+        };
+        lines = lines.push(remove_button(
+            label,
+            ButtonTone::Control,
+            None,
+            enabled.then(|| remove_message(RemoveMessage::Shadow)),
+        ));
+    }
+    lines.into()
 }
 
 /// One slider of the band, over its rail position, with the value the model formats.

@@ -1,7 +1,8 @@
 //! The setup sheet a download that sets up a feature asks through, a guide sheet
 //! ([`super::guide_sheet`]) as the AI editing setup board (`docs/design/ai-editing/setup-board.html`)
 //! draws it: the feature in its own words, how it is used in up to three pictured steps or one hero
-//! picture, the download's facts as three tiles, and the decision in its footer.
+//! picture, the download's facts as three tiles over the parts it includes, and the decision in
+//! its footer.
 //!
 //! The pictures are drawn here from the theme and a fixed sky-water-grass scene, never shipped as
 //! images, so every theme keeps their hierarchy.
@@ -30,6 +31,10 @@ pub enum SetupPicture {
     History,
     /// A selection, the prompt that describes what fills it, and the filled area.
     Describe,
+    /// The pointer over a pole, the pole washed white inside a white outline.
+    Hover,
+    /// Two picked objects, each tinted as a selection and numbered in the order picked.
+    Selected,
 }
 
 /// One step of how the feature is used.
@@ -63,6 +68,17 @@ pub struct SetupFactModel {
     pub tone: FactTone,
 }
 
+/// One part the setup holds, as its includes list names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupIncludeModel {
+    pub name: String,
+    /// What the part does, after its name.
+    pub purpose: String,
+    /// Its size, or `installed ✓` for a part that is installed and not counted.
+    pub size: String,
+    pub installed: bool,
+}
+
 /// Plain data for the setup sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetupSheetModel {
@@ -75,6 +91,8 @@ pub struct SetupSheetModel {
     /// The facts' label, when the steps come first ("Before it can start").
     pub facts_label: Option<String>,
     pub facts: Vec<SetupFactModel>,
+    /// Every part the setup holds, under the facts.
+    pub includes: Vec<SetupIncludeModel>,
     /// Lines under the facts, each with whether it warns: a licence limit, that the machine cannot
     /// run it, that it was declined before, where to remove it later.
     pub notes: Vec<(String, bool)>,
@@ -163,6 +181,9 @@ fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
         model.facts.iter().map(fact).collect::<Vec<_>>(),
         false,
     ));
+    if !model.includes.is_empty() {
+        part = part.push(includes(&model.includes));
+    }
     for (note, warns) in &model.notes {
         part = part.push(
             text(note.clone())
@@ -178,6 +199,51 @@ fn facts<'a, M: 'a>(model: &SetupSheetModel) -> Element<'a, M> {
         Some(label) => guide_section(label, part.into()),
         None => part.into(),
     }
+}
+
+/// The includes list: one line per part in a hairline box, its name and purpose leading and its
+/// size trailing, an installed part's `installed ✓` in the accent.
+fn includes<'a, M: 'a>(parts: &[SetupIncludeModel]) -> Element<'a, M> {
+    let mut list = Column::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            list = list.push(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(1.0)
+                    .style(theme::rule_surface),
+            );
+        }
+        list = list.push(
+            container(
+                row![
+                    row![
+                        text(part.name.clone())
+                            .size(theme::SIZE_CAPTION)
+                            .style(theme::ink(Token::TextSecondary)),
+                        text(format!("\u{b7} {}", part.purpose))
+                            .size(theme::SIZE_CAPTION)
+                            .style(theme::ink(Token::TextTertiary)),
+                    ]
+                    .spacing(theme::SPACING * 0.5)
+                    .width(Length::Fill),
+                    text(part.size.clone())
+                        .size(theme::SIZE_CAPTION)
+                        .style(theme::ink(if part.installed {
+                            Token::Accent
+                        } else {
+                            Token::TextSecondary
+                        })),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding([theme::SPACING * 0.875, theme::SPACING * 1.5]),
+        );
+    }
+    container(list)
+        .width(Length::Fill)
+        .style(theme::outline(Token::Border, 1.0, theme::RADIUS))
+        .into()
 }
 
 /// One fact's tile: its glyph in a tinted box, its headline and its detail.
@@ -225,6 +291,8 @@ fn fact<'a, M: 'a>(fact: &SetupFactModel) -> Element<'a, M> {
 fn picture<'a, M: 'a>(picture: SetupPicture) -> Element<'a, M> {
     match picture {
         SetupPicture::PaintOver => Scene::new(theme::SETUP_SCENE, Subject::PaintedPole).element(),
+        SetupPicture::Hover => Scene::new(theme::SETUP_SCENE, Subject::HoveredPole).element(),
+        SetupPicture::Selected => Scene::new(theme::SETUP_SCENE, Subject::Picked).element(),
         SetupPicture::Candidates => {
             let candidate = |chosen: bool| {
                 container(Scene::new(theme::SETUP_CANDIDATE, Subject::None).element())
@@ -346,6 +414,11 @@ enum Subject {
     None,
     /// A pole, painted over with a brush stroke and the brush's ring.
     PaintedPole,
+    /// A pole under the pointer's crosshair, washed white inside a white outline over a dark
+    /// under-stroke, as Object's hover draws it.
+    HoveredPole,
+    /// A pole and a rock, each tinted as a selection and numbered in the order picked.
+    Picked,
     /// The dashed selection Replace fills.
     Selection,
     /// The bicycle Replace painted into the selection, ringed.
@@ -445,6 +518,96 @@ impl<M> canvas::Program<M, Theme> for Scene {
                         .with_width(1.5),
                 );
             }
+            Subject::HoveredPole => {
+                // The pole, washed white, inside a white outline over a dark under-stroke.
+                let (pole, pole_size) = at(0.613, 0.167, 0.033, 0.738);
+                frame.fill_rectangle(pole, pole_size, theme::SETUP_SCENE_OBJECT);
+                let (arm, arm_size) = at(0.553, 0.238, 0.153, 0.036);
+                frame.fill_rectangle(arm, arm_size, theme::SETUP_SCENE_OBJECT);
+                let (outline, outline_size) = at(0.540, 0.140, 0.180, 0.790);
+                let object = canvas::Path::rounded_rectangle(outline, outline_size, 3.0.into());
+                frame.fill(
+                    &object,
+                    Color {
+                        a: 0.35,
+                        ..Color::WHITE
+                    },
+                );
+                frame.stroke(
+                    &object,
+                    canvas::Stroke::default()
+                        .with_color(Color {
+                            a: 0.6,
+                            ..Color::BLACK
+                        })
+                        .with_width(3.0),
+                );
+                frame.stroke(
+                    &object,
+                    canvas::Stroke::default()
+                        .with_color(Color::WHITE)
+                        .with_width(1.5),
+                );
+                // The pointer's crosshair beside it.
+                let centre = Point::new(0.80 * size.width, 0.45 * size.height);
+                let arm = 6.0;
+                let crosshair = canvas::Path::new(|path| {
+                    path.move_to(Point::new(centre.x - arm, centre.y));
+                    path.line_to(Point::new(centre.x + arm, centre.y));
+                    path.move_to(Point::new(centre.x, centre.y - arm));
+                    path.line_to(Point::new(centre.x, centre.y + arm));
+                });
+                frame.stroke(
+                    &crosshair,
+                    canvas::Stroke::default()
+                        .with_color(Color {
+                            a: 0.6,
+                            ..Color::BLACK
+                        })
+                        .with_width(3.0),
+                );
+                frame.stroke(
+                    &crosshair,
+                    canvas::Stroke::default()
+                        .with_color(Color::WHITE)
+                        .with_width(1.5),
+                );
+            }
+            Subject::Picked => {
+                // Two objects, each tinted as a selection, numbered in the order picked.
+                let (pole, pole_size) = at(0.613, 0.167, 0.033, 0.738);
+                frame.fill_rectangle(pole, pole_size, theme::SETUP_SCENE_OBJECT);
+                let (rock, rock_size) = at(0.200, 0.640, 0.180, 0.200);
+                let rock_path = canvas::Path::rounded_rectangle(
+                    rock,
+                    rock_size,
+                    (rock_size.height / 2.0).into(),
+                );
+                frame.fill(&rock_path, theme::SETUP_SCENE_OBJECT);
+                let tint = Color { a: 0.45, ..accent };
+                let (first, first_size) = at(0.585, 0.140, 0.090, 0.790);
+                frame.fill(
+                    &canvas::Path::rounded_rectangle(first, first_size, 3.0.into()),
+                    tint,
+                );
+                frame.fill(&rock_path, tint);
+                for (number, centre) in [
+                    ("1", Point::new(first.x + first_size.width, first.y)),
+                    ("2", Point::new(rock.x + rock_size.width, rock.y)),
+                ] {
+                    frame.fill(&canvas::Path::circle(centre, 6.0), accent);
+                    frame.fill_text(canvas::Text {
+                        content: number.into(),
+                        position: centre,
+                        color: Color::WHITE,
+                        size: 9.0.into(),
+                        font: theme::FONT_SEMIBOLD,
+                        align_x: iced::widget::text::Alignment::Center,
+                        align_y: iced::alignment::Vertical::Center,
+                        ..canvas::Text::default()
+                    });
+                }
+            }
             Subject::Selection | Subject::Bicycle => {
                 let (area, area_size) = at(0.322, 0.30, 0.311, 0.38);
                 let outline = canvas::Path::rounded_rectangle(area, area_size, 10.0.into());
@@ -526,12 +689,33 @@ mod tests {
             facts: [FactTone::Plain, FactTone::Met, FactTone::Unmet]
                 .map(fact)
                 .to_vec(),
+            includes: vec![
+                SetupIncludeModel {
+                    name: "Object finder".into(),
+                    purpose: "finds the object under the pointer".into(),
+                    size: "133 MB".into(),
+                    installed: false,
+                },
+                SetupIncludeModel {
+                    name: "Generative fill".into(),
+                    purpose: "fills the space where it was".into(),
+                    size: "installed \u{2713}".into(),
+                    installed: true,
+                },
+            ],
             notes: vec![("It can't run on this Mac.".into(), true)],
             promise: "Your photos stay on this computer.".into(),
             allow: Some("Download 2.5 GB".into()),
             dismiss: "Not now".into(),
         };
         let _: Element<'_, bool> = setup_sheet(&steps, true, false);
+        let pointing = SetupSheetModel {
+            steps: [SetupPicture::Hover, SetupPicture::Selected]
+                .map(step)
+                .to_vec(),
+            ..steps.clone()
+        };
+        let _: Element<'_, bool> = setup_sheet(&pointing, true, false);
         let hero = SetupSheetModel {
             hero: Some(SetupPicture::Describe),
             steps: Vec::new(),

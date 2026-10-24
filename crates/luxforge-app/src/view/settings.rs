@@ -318,6 +318,21 @@ fn copy_menu<'a>(
     target: MenuTarget,
     copy: Message,
 ) -> (Element<'a, Message>, Option<Element<'a, Message>>) {
+    copies_menu(
+        name,
+        open,
+        target,
+        vec![("Copy as JSON request".to_owned(), copy)],
+    )
+}
+
+/// The trailing More button and, when open, the inline menu with one item per copy.
+fn copies_menu<'a>(
+    name: &str,
+    open: bool,
+    target: MenuTarget,
+    copies: Vec<(String, Message)>,
+) -> (Element<'a, Message>, Option<Element<'a, Message>>) {
     let button = icon_button(
         &IconButtonModel {
             icon: Icon::More,
@@ -328,24 +343,31 @@ fn copy_menu<'a>(
         Some(Message::View(ViewMessage::OpenMenu(target))),
     );
     let menu = open.then(|| {
-        inline_menu(vec![
-            ("Copy as JSON request".to_owned(), copy),
-            ("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu)),
-        ])
+        inline_menu(
+            copies
+                .into_iter()
+                .chain([("Cancel".to_owned(), Message::View(ViewMessage::CloseMenu))])
+                .collect(),
+        )
     });
     (button, menu)
 }
 
-/// One model: its title over its version, size and state, its trade-off, its use restriction,
-/// what it needs and, when this machine has too little memory, that it cannot be installed here;
-/// Remove when it is installed or a partial download is kept.
+/// One model or setup part: its title, the tools that use a part, its size and state, its
+/// trade-off, its use restriction, what it needs and, when this machine has too little memory,
+/// that it cannot be installed here; Download… while a part is not installed, and Remove when
+/// something of it is installed or a partial download is kept.
 fn model_row_view(model_row: &ModelRow) -> Element<'_, Message> {
-    let mut text = column![
-        label(model_row.title.clone()),
-        caption(format!("{} \u{b7} {}", model_row.detail, model_row.state)),
-    ]
-    .spacing(theme::ROW_SPACING)
-    .width(Length::Fill);
+    let mut text = column![label(model_row.title.clone())]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill);
+    if let Some(tools) = &model_row.caption {
+        text = text.push(caption(tools.clone()));
+    }
+    text = text.push(caption(format!(
+        "{} \u{b7} {}",
+        model_row.detail, model_row.state
+    )));
     if let Some(tradeoff) = &model_row.tradeoff {
         text = text.push(caption(tradeoff.clone()));
     }
@@ -361,11 +383,25 @@ fn model_row_view(model_row: &ModelRow) -> Element<'_, Message> {
         ));
     }
     let mut trailing = row![].spacing(theme::SPACING).align_y(Alignment::Center);
-    let mut menu = None;
+    let mut copies = Vec::new();
+    if let Some(download) = &model_row.download {
+        trailing = trailing.push(text_button(
+            "Download\u{2026}",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            model_row
+                .enabled
+                .then(|| Message::Capability(CapabilityMessage::Setup(download.clone()))),
+        ));
+        copies.push((
+            "Copy Download request",
+            CapabilityMessage::CopySetupRequest(download.clone()),
+        ));
+    }
     if model_row.removable {
-        let remove = Message::Capability(CapabilityMessage::Remove {
+        let remove = Message::Capability(CapabilityMessage::RemoveResources {
             module_id: model_row.module_id.clone(),
-            resource: model_row.resource_id.clone(),
+            resources: model_row.remove.clone(),
         });
         trailing = trailing.push(text_button(
             "Remove",
@@ -373,18 +409,37 @@ fn model_row_view(model_row: &ModelRow) -> Element<'_, Message> {
             ButtonSize::Compact,
             model_row.enabled.then_some(remove),
         ));
-        let (button, open) = copy_menu(
+        copies.push((
+            "Copy Remove request",
+            CapabilityMessage::CopyModelRequest {
+                module_id: model_row.module_id.clone(),
+                resources: model_row.remove.clone(),
+                request: ModelRequest::Remove,
+            },
+        ));
+    }
+    let mut menu = None;
+    if !copies.is_empty() {
+        // One button's menu copies its request; a part partly downloaded offers Download… and
+        // Remove, and the menu names which request each line copies.
+        let only = copies.len() == 1;
+        let copies = copies
+            .into_iter()
+            .map(|(label, copy)| {
+                (
+                    if only { "Copy as JSON request" } else { label }.to_owned(),
+                    Message::Capability(copy),
+                )
+            })
+            .collect();
+        let (button, open) = copies_menu(
             &model_row.title,
             model_row.menu_open,
             MenuTarget::Model {
                 module_id: model_row.module_id.clone(),
                 resource_id: model_row.resource_id.clone(),
             },
-            Message::Capability(CapabilityMessage::CopyModelRequest {
-                module_id: model_row.module_id.clone(),
-                resource: model_row.resource_id.clone(),
-                request: ModelRequest::Remove,
-            }),
+            copies,
         );
         trailing = trailing.push(button);
         menu = open;
@@ -417,7 +472,7 @@ fn resident_row_view(resident: &ResidentRow) -> Element<'_, Message> {
         },
         Message::Capability(CapabilityMessage::CopyModelRequest {
             module_id: resident.module_id.clone(),
-            resource: resident.resource_id.clone(),
+            resources: vec![resident.resource_id.clone()],
             request: ModelRequest::Unload,
         }),
     );

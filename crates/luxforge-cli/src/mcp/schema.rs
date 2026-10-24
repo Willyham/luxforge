@@ -547,6 +547,19 @@ fn kind_schema(
             json!({"type": "string"}),
             "An artifact id of a derived artifact published in this catalog".to_owned(),
         ),
+        ParameterKind::Artifacts {
+            artifacts_min,
+            artifacts_max,
+        } => (
+            json!({
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": artifacts_min,
+                "maxItems": artifacts_max,
+                "uniqueItems": true,
+            }),
+            "Distinct artifact ids of derived artifacts published in this catalog".to_owned(),
+        ),
         ParameterKind::Points {
             points_min,
             points_max,

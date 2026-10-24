@@ -386,7 +386,7 @@ fn plan_geometry(
             mask.validate()?;
             next.masks.push(mask);
             Ok(Planned {
-                label: format!("Add {}", spoken(kind)),
+                label: format!("Add {}", spoken_geometry(kind, parameters)),
                 mask: Some(mask_id),
                 component: Some(component_id),
                 ..Planned::default()
@@ -406,9 +406,13 @@ fn plan_geometry(
             // creating a selection of nothing.
             mask.validate()?;
             let base = if mode == ComponentMode::Add {
-                format!("Add {}", spoken(kind))
+                format!("Add {}", spoken_geometry(kind, parameters))
             } else {
-                format!("Add {} {}", mode.as_str(), spoken(kind))
+                format!(
+                    "Add {} {}",
+                    mode.as_str(),
+                    spoken_geometry(kind, parameters)
+                )
             };
             let id = mask.id.clone();
             Ok(Planned {
@@ -453,7 +457,13 @@ fn plan_geometry(
                 .cloned()
                 .ok_or_else(|| rules::unknown_kind(&component.kind))?;
             for (field, value) in parameters {
-                payload.insert(field.clone(), canonical(value));
+                // Only an optional field of a kind's own declaration may be null (the generic
+                // check refuses one anywhere else), and a null clears it.
+                if value.is_null() {
+                    payload.remove(field);
+                } else {
+                    payload.insert(field.clone(), canonical(value));
+                }
             }
             component.payload = Value::Object(payload);
             // A later edit to a component names that component, so the row says which one it was.
@@ -1061,6 +1071,13 @@ fn plan_sample(
     })
 }
 
+/// A component a geometry method adds, as its history label says it: its kind (`linear`), or for a
+/// model selection the class it selected and that a model selected it (`object (model)`), so a
+/// picked object's entry reads `Add object (model)` and a sky's `Add sky (model)`.
+fn spoken_geometry(kind: &str, parameters: &Map<String, Value>) -> String {
+    crate::mask::model::spoken_selection(kind, parameters).unwrap_or_else(|| spoken(kind))
+}
+
 /// The one label rule: the command's own text, prefixed with the mask's name whenever the resulting
 /// stack carries more than one mask, because a history list shared with every other module cannot
 /// afford `Update Linear 1` alone.
@@ -1157,11 +1174,11 @@ fn component_at(recipe: &Recipe, target: &MaskTarget) -> Result<(usize, usize), 
 /// The declared payload fields of one component kind: the names of the parameters that kind's own
 /// module declares, so a geometry parameter and a stored field are one spelling because they are one
 /// declaration.
-fn geometry_fields(kind: &str) -> Option<Vec<String>> {
+fn geometry_fields(kind: &str) -> Option<Vec<(String, bool)>> {
     component_parameters(kind, true).map(|parameters| {
         parameters
             .into_iter()
-            .map(|parameter| parameter.name)
+            .map(|parameter| (parameter.name, parameter.required))
             .collect()
     })
 }
@@ -1173,12 +1190,17 @@ fn geometry_fields(kind: &str) -> Option<Vec<String>> {
 fn geometry_payload(kind: &str, parameters: &Map<String, Value>) -> Result<Value, Error> {
     let fields = geometry_fields(kind).ok_or_else(|| rules::unknown_kind(kind))?;
     let mut payload = Map::new();
-    for field in &fields {
-        let value = parameters.get(field).ok_or_else(|| {
-            Error::validation(format!(
-                "missing required parameter {field} for a {kind} component"
-            ))
-        })?;
+    for (field, required) in &fields {
+        // An optional field (a model selection's prompt) is stored only when it is sent; a null
+        // sends nothing.
+        let value = match parameters.get(field) {
+            Some(Value::Null) | None if !required => continue,
+            value => value.ok_or_else(|| {
+                Error::validation(format!(
+                    "missing required parameter {field} for a {kind} component"
+                ))
+            })?,
+        };
         payload.insert(field.clone(), canonical(value));
     }
     // A sampling kind's list starts empty and present, rather than absent until the first pick: a

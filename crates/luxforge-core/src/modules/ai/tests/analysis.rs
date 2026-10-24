@@ -10,11 +10,11 @@ use crate::modules::ai::analysis::models::{
     FAKE_SUBJECT,
 };
 
-const ANALYSE: &str = "task.analyse";
+pub(super) const ANALYSE: &str = "task.analyse";
 const PICK: &str = "query.pick-object";
-const SELECT: &str = "task.select-object";
+pub(super) const SELECT: &str = "task.select-object";
 
-trait Analysis {
+pub(super) trait Analysis {
     fn analysis_flag(&self, on: bool);
     /// A task, waiting through any preparation its read asks for: its finished job.
     fn task(&self, method: &str, params: Value) -> Value;
@@ -62,7 +62,7 @@ impl Analysis for Owner {
 }
 
 /// The owner with the analysis flag on and the fake segmenter installed.
-fn segmenter_ready(fixture: &Fixture) -> Owner {
+pub(super) fn segmenter_ready(fixture: &Fixture) -> Owner {
     let owner = fixture.start();
     owner.analysis_flag(true);
     owner.install(&FAKE_SEGMENTER_ENCODER.file);
@@ -221,11 +221,13 @@ fn analyse_once_then_pick_and_select_from_the_cache() {
     assert_eq!(job["result"]["result"]["cached"], false, "{job}");
     assert_eq!(owner.pick(point.clone()).unwrap()["decision"], "one");
 
-    // Removing a model forgets everything the module computed.
-    owner.ok(
+    // Removing a model forgets everything the module computed. The pick below waits for the
+    // removal to finish, so it reads the model as removed rather than racing the transfer lane.
+    let removed = owner.ok(
         "module.resource.remove",
         json!({"module_id": AI_MODULE, "resource_id": FAKE_SEGMENTER_DECODER.file.resource}),
     );
+    owner.finished(&removed["job_id"]);
     let cache = &owner.status(AI_MODULE)["runtime"]["analysis_cache"];
     assert_eq!(cache["entries"], 0, "{cache}");
     assert_eq!(cache["bytes"], 0, "{cache}");

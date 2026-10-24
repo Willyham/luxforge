@@ -14,15 +14,33 @@ pub(crate) enum RemoveRequest {
     Cancel,
     /// The chosen candidate's preview read.
     Preview,
+    /// What the group's setup button sends: Set up, Resume, Try again, Add or Cancel.
+    Setup,
+    /// Object: the last `query.pick-object` the gesture sent.
+    Pick,
+    /// Object: the `task.select-object` each selected object was picked with.
+    Select,
 }
 
 impl RemoveRequest {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Generate,
         Self::Regenerate,
         Self::Accept,
         Self::Cancel,
         Self::Preview,
+        Self::Setup,
+    ];
+    /// The Object group's menu: the picks and the selects before the fill's own.
+    pub(crate) const OBJECT: [Self; 8] = [
+        Self::Pick,
+        Self::Select,
+        Self::Generate,
+        Self::Regenerate,
+        Self::Accept,
+        Self::Cancel,
+        Self::Preview,
+        Self::Setup,
     ];
 
     /// The menu's line for it.
@@ -33,6 +51,9 @@ impl RemoveRequest {
             Self::Accept => "Copy Accept request",
             Self::Cancel => "Copy Cancel request",
             Self::Preview => "Copy preview read request",
+            Self::Setup => "Copy setup request",
+            Self::Pick => "Copy pick request",
+            Self::Select => "Copy select requests",
         }
     }
 }
@@ -41,6 +62,11 @@ impl RemoveRequest {
 pub(crate) enum RemoveMessage {
     /// The kind control's Remove segment: the next press paints the selection.
     Choose,
+    /// The kind control's Object segment: the next click picks an object to remove.
+    ChooseObject,
+    /// Object's Paint shadow: the brush is armed for one stroke, the fill's effect region (or
+    /// put down again).
+    Shadow,
     /// The Fill setting chose this tier.
     Tier(String),
     /// The Replace prompt's text, as typed.
@@ -55,8 +81,8 @@ pub(crate) enum RemoveMessage {
     Candidate { job_id: String, candidate: u8 },
     /// Commit the chosen candidate.
     Accept,
-    /// A setup button: install a model through the capability block's install and its consent
-    /// notice, or cancel its install.
+    /// A setup button: install the setup, through the setup sheet when a grant is missing, or
+    /// cancel each of its install jobs.
     Setup(crate::state::fill_setup::SetupAction),
     /// The group's menu opened or closed.
     Menu(bool),
@@ -79,21 +105,5 @@ pub(crate) enum RemoveMessage {
         job_id: String,
         candidate: u8,
         result: Result<Arc<DecodedPreview>, String>,
-    },
-    /// The pointer over the photograph while hover picking is on, in normalized content
-    /// coordinates; `None` when it left the photograph.
-    Hover(Option<[f64; 2]>),
-    /// `query.pick-object` answered for the position it was asked at, decoded off the update loop.
-    Picked {
-        asset: luxforge_core::AssetId,
-        revision: u64,
-        point: [f64; 2],
-        result: Result<Box<crate::app::remove_hover::Picked>, CallError>,
-    },
-    /// The analysis hover picking started ended.
-    Analysed {
-        asset: luxforge_core::AssetId,
-        revision: u64,
-        result: Result<(), String>,
     },
 }

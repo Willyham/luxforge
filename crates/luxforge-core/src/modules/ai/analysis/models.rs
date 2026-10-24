@@ -16,8 +16,7 @@
 //! task, the picker and the selection task run end to end without a model.
 use crate::{
     capabilities::descriptor::{
-        CapabilityDescriptor, CapabilityKind, Introduction, IntroductionPicture, IntroductionStep,
-        ModelKind, ResourceDescriptor,
+        CapabilityDescriptor, CapabilityKind, ModelKind, ResourceDescriptor,
     },
     inference::Precision,
     modules::ai::models::{ModelFile, Published},
@@ -111,51 +110,6 @@ const SEGMENTER_PURPOSE: &str = "Set up object picking: this downloads the model
 const SCENE_PURPOSE: &str = "Set up Select: this downloads a model that finds the sky, the subject \
     and people in a photo. It runs on this computer, so your photos stay on it";
 
-/// What setting up the segmenter says of the feature.
-fn segmenter_introduction() -> Introduction {
-    let step = |title: &str, body: &str, picture| IntroductionStep {
-        title: title.into(),
-        body: body.into(),
-        picture,
-    };
-    Introduction {
-        eyebrow: "AI editing".into(),
-        title: "Pick an object by pointing at it".into(),
-        lead: "Hold the pointer over something in the photo and Luxforge outlines the whole \
-            object, ready to remove or to mask. It runs entirely on this computer, so your photos \
-            never leave it."
-            .into(),
-        hero: None,
-        steps: vec![
-            step(
-                "Point at it",
-                "Move over the photo: the object under the pointer is outlined as you go.",
-                IntroductionPicture::PaintOver,
-            ),
-            step(
-                "Click or paint",
-                "Click to choose it, or paint across several and choose among them.",
-                IntroductionPicture::Candidates,
-            ),
-        ],
-        promise: "Your photos stay on this computer.".into(),
-    }
-}
-
-/// What setting up a scene or depth model says of the feature.
-fn scene_introduction() -> Introduction {
-    Introduction {
-        eyebrow: "AI editing".into(),
-        title: "Masks that find what is in the photo".into(),
-        lead: "Select finds the sky, the subject and people in a photo so a mask can follow them. \
-            It runs entirely on this computer, so your photos never leave it."
-            .into(),
-        hero: Some(IntroductionPicture::PaintOver),
-        steps: Vec::new(),
-        promise: "Your photos stay on this computer.".into(),
-    }
-}
-
 /// Where Hugging Face redirects a pinned download.
 const HUGGING_FACE_REDIRECTS: &[&str] = &[
     "https://us.aws.cdn.hf.co",
@@ -180,7 +134,6 @@ pub(crate) const L0_ENCODER: SessionModel = SessionModel {
         resource: "segmenter-l0-encoder",
         title: "Object picking: image encoder (EfficientViT-SAM L0)",
         purpose: SEGMENTER_PURPOSE,
-        introduction: segmenter_introduction,
         version: L0_VERSION,
         bytes: &[],
         published: Some(Published {
@@ -211,7 +164,6 @@ pub(crate) const L0_DECODER: SessionModel = SessionModel {
         resource: "segmenter-l0-decoder",
         title: "Object picking: prompt decoder (EfficientViT-SAM L0)",
         purpose: SEGMENTER_PURPOSE,
-        introduction: segmenter_introduction,
         version: L0_VERSION,
         bytes: &[],
         published: Some(Published {
@@ -237,13 +189,11 @@ pub(crate) const L0_DECODER: SessionModel = SessionModel {
 
 /// One developer fake's model: a pinned file whose first line names the fake, installed by
 /// `download-<resource>` and held by `run-<resource>`.
-#[allow(clippy::too_many_arguments)]
 const fn fake(
     role: Role,
     [resource, download, runtime]: [&'static str; 3],
     title: &'static str,
     purpose: &'static str,
-    introduction: fn() -> Introduction,
     bytes: &'static [u8],
     sha256: &'static str,
     classes: &'static [&'static str],
@@ -254,7 +204,6 @@ const fn fake(
             resource,
             title,
             purpose,
-            introduction,
             version: "1",
             bytes,
             published: None,
@@ -288,7 +237,6 @@ pub(crate) const FAKE_SEGMENTER_ENCODER: SessionModel = fake(
     ],
     "Developer fake segmenter encoder",
     SEGMENTER_PURPOSE,
-    segmenter_introduction,
     b"LFFAKE1 segmenter-encoder\nLuxforge developer fake segmenter encoder, version 1.\n",
     "f0e5823d04812120d2ef9796eb3c2d4502c882542c7f8e306eacfd2bf65fe6fa",
     &[],
@@ -302,7 +250,6 @@ pub(crate) const FAKE_SEGMENTER_DECODER: SessionModel = fake(
     ],
     "Developer fake segmenter decoder",
     SEGMENTER_PURPOSE,
-    segmenter_introduction,
     b"LFFAKE1 segmenter-decoder\nLuxforge developer fake segmenter decoder, version 1.\n",
     "b9c2e8b6a9ed7520cc72b3074f5082544811b08d05fd5b4402ee5b9168b3058a",
     &[],
@@ -316,7 +263,6 @@ pub(crate) const FAKE_SEMANTIC: SessionModel = fake(
     ],
     "Developer fake semantic model",
     SCENE_PURPOSE,
-    scene_introduction,
     b"LFFAKE1 semantic\nLuxforge developer fake semantic model, version 1.\n",
     "96e7da45c5a49c27cae1b3c1dfbcdf7adb0db92d71f9fe6d72184aa7ea74a51a",
     FAKE_CLASSES,
@@ -326,7 +272,6 @@ pub(crate) const FAKE_SUBJECT: SessionModel = fake(
     ["fake-subject", "download-fake-subject", "run-fake-subject"],
     "Developer fake salient-subject model",
     SCENE_PURPOSE,
-    scene_introduction,
     b"LFFAKE1 subject\nLuxforge developer fake salient-subject model, version 1.\n",
     "1d8f08df28c0ed4cb9df647f68a89d8d21d5b82c48b5f4f6bcd5c2796dba28cb",
     &[],
@@ -336,7 +281,6 @@ pub(crate) const FAKE_PEOPLE: SessionModel = fake(
     ["fake-people", "download-fake-people", "run-fake-people"],
     "Developer fake people detector",
     SCENE_PURPOSE,
-    scene_introduction,
     b"LFFAKE1 people\nLuxforge developer fake people detector, version 1.\n",
     "e026a362af7d5031c647f77d898caf3c62cc5f9ccb2c6ca8e3e85413665e093f",
     &[],
@@ -346,7 +290,6 @@ pub(crate) const FAKE_DEPTH: SessionModel = fake(
     ["fake-depth", "download-fake-depth", "run-fake-depth"],
     "Developer fake depth model",
     SCENE_PURPOSE,
-    scene_introduction,
     b"LFFAKE1 depth\nLuxforge developer fake depth model, version 1.\n",
     "79c59458a4c2f7b90f987c8fb2a6054e8ebfa27bcd38fc5f511ac80c3ab41cc4",
     &[],

@@ -23,6 +23,7 @@ use crate::{
         corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
+        object_pick_canvas::ObjectPickCanvas,
         range_pick_canvas::RangePickCanvas,
     },
 };
@@ -354,6 +355,15 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::DismissExport => {
                         Message::Export(crate::app::message::export::ExportMessage::Dismiss)
                     }
+                    NoticeAction::UseObjects => Message::ObjectPick(
+                        crate::app::message::object_pick::ObjectPickMessage::Use,
+                    ),
+                    NoticeAction::DismissObjects => Message::ObjectPick(
+                        crate::app::message::object_pick::ObjectPickMessage::Escape,
+                    ),
+                    NoticeAction::RemovePainted => Message::ObjectPick(
+                        crate::app::message::object_pick::ObjectPickMessage::Done,
+                    ),
                 },
             )
         })
@@ -746,6 +756,7 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     let mask_handles = surfaces.mask_handles;
     let range_pick = surfaces.range_pick;
+    let object_pick = surfaces.object_pick;
     let corrections = surfaces.corrections;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
@@ -847,6 +858,43 @@ fn plain<'a>(
                                             scale_factor: model.scale_factor,
                                         },
                                         data.rectangle,
+                                    )
+                                    .covered(model.covered),
+                                )
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                            )
+                            .padding(iced::Padding {
+                                top: rect.y,
+                                left: rect.x,
+                                right: 0.0,
+                                bottom: 0.0,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .into(),
+                        ])
+                        .into(),
+                        None => photo,
+                    },
+                    // A tool picking objects: its crosshair, hover, stroke and pins, mapped
+                    // through the same contained rectangle the photograph is drawn into.
+                    None if object_pick.is_some() => match object_pick.and_then(|data| {
+                        let rect = fit_rect((width, height), available)?;
+                        let view = CanvasView::fit(data.map.output(), rect.size())?;
+                        Some((data, view, rect))
+                    }) {
+                        Some((data, view, rect)) => stack([
+                            photo,
+                            iced::widget::container(
+                                canvas(
+                                    ObjectPickCanvas::new(
+                                        Placement {
+                                            map: data.map.clone(),
+                                            view,
+                                            scale_factor: model.scale_factor,
+                                        },
+                                        data,
                                     )
                                     .covered(model.covered),
                                 )
@@ -1028,6 +1076,29 @@ fn plain<'a>(
                                             scale_factor: model.scale_factor,
                                         },
                                         data.rectangle,
+                                    )
+                                    .covered(model.covered),
+                                )
+                                .width(box_width)
+                                .height(box_height)
+                                .into(),
+                            ])
+                            .into(),
+                            None => photo,
+                        }
+                    }
+                    None if object_pick.is_some() => {
+                        match object_pick.zip(CanvasView::percent(value, model.scale_factor)) {
+                            Some((data, view)) => stack([
+                                photo,
+                                canvas(
+                                    ObjectPickCanvas::new(
+                                        Placement {
+                                            map: data.map.clone(),
+                                            view,
+                                            scale_factor: model.scale_factor,
+                                        },
+                                        data,
                                     )
                                     .covered(model.covered),
                                 )
@@ -1775,6 +1846,7 @@ mod tests {
             mask_map: None,
             mask_handles: true,
             range_pick: None,
+            object_pick: None,
             corrections: None,
             draft: None,
             gpu: None,

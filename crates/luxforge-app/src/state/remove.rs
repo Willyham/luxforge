@@ -7,14 +7,17 @@
 //! from its own `module.status` answer (`fill_tiers`), and every candidate's label from the job
 //! that published it. Everything here is plain data the app layer turns into requests; nothing is
 //! a request until a gesture sends one.
-use crate::state::{
-    Inputs,
-    fill_setup::{self, SetupLine, SetupModel},
-    settings,
+use crate::{
+    object_pick::{self, Held},
+    state::{
+        Inputs,
+        fill_setup::{self, SetupLine, SetupModel},
+        settings,
+    },
 };
 use luxforge_core::{
-    AssetId, CandidateRead, CandidateState, ModuleDescriptor, ParameterKind, flags::FlagList,
-    jobs::JobStatus,
+    AssetId, CandidateRead, CandidateState, ModuleDescriptor, ParameterKind,
+    capabilities::setups::SetupState, flags::FlagList, jobs::JobStatus, mask::ObjectPrompt,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -135,18 +138,67 @@ pub(crate) fn tier_title(tier: &str) -> String {
     crate::state::corrections::kind_title(tier)
 }
 
-/// The painted selection: one stroke of the Corrections brush on one photograph, the radius it was
-/// painted at, and the seed its first Generate starts from, drawn once per selection so Generate is
-/// reproducible and its request copyable.
+/// The selection on one photograph: Remove's painted stroke, or Object's picked objects with an
+/// optional painted shadow, and the seed its first Generate starts from, drawn once per selection
+/// so Generate is reproducible and its request copyable.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoveSelection {
     pub(crate) asset: AssetId,
-    /// The stroke as posted: the host's own stored path at `radius`.
+    /// Remove's stroke as posted: the host's own stored path at `radius`. Empty in Object.
     pub(crate) points: Vec<[f64; 2]>,
     pub(crate) radius: f64,
     pub(crate) seed: u64,
-    /// Which selection this is, counted per window: a new stroke starts a new strip.
+    /// Which selection this is, counted per window: a new stroke or object starts a new strip.
     pub(crate) serial: u64,
+    /// Object's selected objects, in the order they were picked.
+    pub(crate) objects: Vec<SelectedObject>,
+    /// Object's Paint shadow stroke: the fill's effect region.
+    pub(crate) effect: Option<EffectStroke>,
+}
+
+impl RemoveSelection {
+    /// A selection with nothing in it yet, on `asset`.
+    pub(crate) fn empty(asset: AssetId, serial: u64, seed: u64, radius: f64) -> Self {
+        Self {
+            asset,
+            points: Vec::new(),
+            radius,
+            seed,
+            serial,
+            objects: Vec::new(),
+            effect: None,
+        }
+    }
+
+    /// Nothing is painted or picked: Generate has nothing to fill.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.points.is_empty() && self.objects.is_empty()
+    }
+
+    /// An object whose `task.select-object` has not answered yet.
+    pub(crate) fn selecting(&self) -> bool {
+        self.objects.iter().any(|object| object.artifact.is_none())
+    }
+}
+
+/// One object of Object's selection: the prompt it was picked with, what its pick drew, and the
+/// `mask-alpha` artifact `task.select-object` published for it once that answers.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SelectedObject {
+    /// Which pick this is, counted per window: the selection its answer fills in.
+    pub(crate) ticket: u64,
+    pub(crate) prompt: ObjectPrompt,
+    /// The pick's bounds, tint and coverage, drawn and hit-tested at once.
+    pub(crate) held: Option<Held>,
+    pub(crate) artifact: Option<String>,
+}
+
+/// Paint shadow's one stroke, as posted at the band's Size: the fill's `effect-points` and
+/// `effect-radius`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EffectStroke {
+    pub(crate) points: Vec<[f64; 2]>,
+    pub(crate) radius: f64,
 }
 
 /// One fill job this desktop started, as its last read said.
@@ -196,8 +248,14 @@ pub(crate) struct RemoveNotice {
 /// and candidates are the owner's, read back.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RemovePanel {
-    /// Remove is the kind the next press paints.
+    /// Remove (or, with `object`, Object) is the kind the next press uses.
     pub(crate) chosen: bool,
+    /// Object is the chosen kind rather than Remove: the next click picks.
+    pub(crate) object: bool,
+    /// Paint shadow is armed: the next press in Object paints the effect stroke.
+    pub(crate) shadow: bool,
+    /// How many objects this window has picked, which numbers each pick's ticket.
+    pub(crate) tickets: u64,
     /// The tier the Fill setting chose; the first offered one until then.
     pub(crate) tier: Option<String>,
     pub(crate) selection: Option<RemoveSelection>,
@@ -231,6 +289,12 @@ impl RemovePanel {
         self.selection
             .as_ref()
             .filter(|selection| &selection.asset == asset)
+    }
+
+    /// The selection on `asset`, when something is painted or picked in it.
+    pub(crate) fn filled_on(&self, asset: &AssetId) -> Option<&RemoveSelection> {
+        self.selection_on(asset)
+            .filter(|selection| !selection.is_empty())
     }
 
     /// The jobs of the selection on screen, oldest first.
@@ -315,6 +379,7 @@ impl RemovePanel {
     /// The selection and strip go: a new stroke, Escape, an accept that committed.
     pub(crate) fn clear_draft(&mut self) {
         self.selection = None;
+        self.shadow = false;
         self.candidate = None;
         self.notice = None;
         // Finished jobs are forgotten with their strip; a running one stays until it ends, since
@@ -360,12 +425,42 @@ pub(crate) struct StripCell {
     pub(crate) label: String,
 }
 
+/// One row of Object's selection: `1 Object · ⌥-click to remove`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectRow {
+    pub(crate) number: usize,
+    /// Its `task.select-object` has not answered yet.
+    pub(crate) selecting: bool,
+}
+
+/// The Object kind's part of the band model.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ObjectModel {
+    /// The `object` setup's line while it is not installed: the group shows it in place of the
+    /// gestures, and the kind control marks Object.
+    pub(crate) setup: Option<SetupLine>,
+    /// The photograph is being analysed: the group says Finding objects….
+    pub(crate) finding: bool,
+    pub(crate) rows: Vec<ObjectRow>,
+    /// A shadow stroke is painted, and Paint shadow is armed.
+    pub(crate) shadow: bool,
+    pub(crate) shadow_armed: bool,
+    /// The fill cannot run on this machine but the object finder can.
+    pub(crate) masks_instead: bool,
+}
+
 /// The Remove part of the Corrections band, while Remove is chosen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RemoveModel {
     pub(crate) module: String,
-    /// Remove is the chosen kind.
+    /// Remove (or Object) is the chosen kind.
     pub(crate) chosen: bool,
+    /// The run offers Object: `ai.analysis` is on and the picker and selection task are declared.
+    pub(crate) object_offered: bool,
+    /// Object's setup has not run: the kind control marks Object with the download glyph.
+    pub(crate) object_needs_setup: bool,
+    /// Object is the chosen kind, and its part.
+    pub(crate) object: Option<ObjectModel>,
     pub(crate) enabled: bool,
     pub(crate) tiers: Vec<TierOption>,
     pub(crate) tier: usize,
@@ -378,6 +473,8 @@ pub(crate) struct RemoveModel {
     pub(crate) addon: Option<SetupLine>,
     /// Nothing is in flight for the fill module, so a setup button may send; Cancel always may.
     pub(crate) setup_enabled: bool,
+    /// Remove's setup has not run: the kind control marks Remove with the download glyph.
+    pub(crate) needs_setup: bool,
     /// `Generate`, or `Replace` with a prompt.
     pub(crate) action: String,
     /// Why Generate cannot be pressed now.
@@ -483,7 +580,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         sentence: running_sentence(job),
         cancelling: job.cancelling,
     });
-    let selection = asset.is_some_and(|asset| panel.selection_on(asset).is_some());
+    let object_offered = object_pick::select_module(inputs.modules, flags).is_some();
+    let held = asset.and_then(|asset| panel.filled_on(asset));
+    let selection = held.is_some();
+    let object = (panel.object && object_offered).then(|| object_model(inputs, module, held));
+    let session = inputs
+        .object_pick
+        .filter(|session| session.purpose == object_pick::PickUse::Object);
     let strip_rows = asset.map(|asset| panel.strip(asset)).unwrap_or_default();
     let chosen_candidate = panel.candidate.as_ref();
     let strip: Vec<StripCell> = strip_rows
@@ -532,8 +635,14 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
                     unoffered.reason.clone()
                 }),
         )
+    } else if let Some(setup) = object.as_ref().and_then(|object| object.setup.as_ref()) {
+        Some(setup.reason.clone())
+    } else if !selection && object.is_some() {
+        Some("Point at an object first".into())
     } else if !selection {
         Some("Paint over what to remove first".into())
+    } else if held.is_some_and(RemoveSelection::selecting) {
+        Some("Selecting objects\u{2026}".into())
     } else if let Some(addon) = &addon {
         Some(addon.reason.clone())
     } else if busy {
@@ -549,9 +658,47 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         .is_some_and(|job| job.status == JobStatus::Ready && job.next_seed.is_some());
     // Why no tier is offered: what the person can do next.
     let why = unoffered.as_ref().map(|unoffered| unoffered.reason.clone());
+    let objects = held.map_or(0, |held| held.objects.len());
+    let object_hint = object.as_ref().and_then(|object| {
+        if let Some(setup) = &object.setup {
+            return Some(setup.reason.clone());
+        }
+        if let Some(pins) = session.and_then(|session| session.pins.as_ref()) {
+            let found = pins.pins.len();
+            return Some(match pins.chosen() {
+                0 => format!(
+                    "{found} objects found \u{b7} click the numbers to choose \u{b7} Esc cancels"
+                ),
+                chosen => format!(
+                    "{found} objects found \u{b7} click the numbers to choose \u{b7} Use {chosen} \u{21b5} \u{b7} Esc cancels"
+                ),
+            });
+        }
+        if session.is_some_and(|session| session.nothing.is_some()) {
+            return Some(format!(
+                "{} \u{b7} Remove the painted area \u{21b5} \u{b7} Esc cancels",
+                object_pick::NOTHING_FOUND
+            ));
+        }
+        if object.shadow_armed {
+            return Some(
+                "Corrections \u{b7} Object \u{b7} paint the shadow to remove with the objects \u{b7} [ ] sizes the brush \u{b7} Esc puts it down"
+                    .into(),
+            );
+        }
+        if object.finding {
+            return Some(format!(
+                "{} \u{b7} Remove can paint meanwhile",
+                object_pick::FINDING_OBJECTS
+            ));
+        }
+        (!selection).then(|| OBJECT_IDLE.to_owned())
+    });
     let hint = match (&running, selection, strip.is_empty()) {
         (Some(running), _, _) => format!("{} \u{b7} Esc cancels", running.sentence),
+        (None, _, _) if object_hint.is_some() => object_hint.unwrap_or_default(),
         (None, _, _) if why.is_some() => why.unwrap_or_default(),
+        (None, true, true) if object.is_some() => object_sentence(objects, &panel.prompt),
         (None, false, _) => "Paint over what to remove \u{b7} [ ] sizes the brush".into(),
         (None, true, true) => format!("{action} fills the selection \u{b7} Esc clears it"),
         (None, true, false) => {
@@ -561,6 +708,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
     Some(RemoveModel {
         module: module.id.clone(),
         chosen: panel.chosen,
+        object_offered,
+        object_needs_setup: object_offered
+            && fill_setup::group(
+                module,
+                inputs.capabilities.module(&module.id),
+                fill_setup::OBJECT,
+            )
+            .is_some_and(|line| line.state.is_some() && !line.installed),
+        object,
         enabled,
         tiers: options,
         tier: tier_index,
@@ -570,6 +726,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         prompt_max: chosen.map_or(PROMPT_FALLBACK, |tier| prompt_max(module, &tier.task)),
         addon,
         setup_enabled: setup.as_ref().is_some_and(|setup| setup.enabled),
+        needs_setup: setup
+            .as_ref()
+            .is_some_and(|setup| setup.main.state.is_some() && !setup.main.installed),
         action,
         generate_reason,
         selection,
@@ -588,6 +747,74 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         hint,
         menu_open: inputs.view_state.menu.as_ref() == Some(&crate::state::MenuTarget::Remove),
     })
+}
+
+/// The status bar's sentence while Object holds `count` objects and no candidate: what adds, takes
+/// away, fills and clears.
+pub(crate) fn object_sentence(count: usize, prompt: &str) -> String {
+    let action = if prompt.trim().is_empty() {
+        "Generate"
+    } else {
+        "Replace"
+    };
+    let them = if count == 1 { "it" } else { "them" };
+    format!(
+        "{} \u{b7} \u{21e7}-click adds \u{b7} \u{2325}-click takes away \u{b7} {action} \u{21b5} fills {them} \u{b7} Esc clears {them}",
+        objects_selected(count)
+    )
+}
+
+/// What Object says with nothing selected and the photograph analysed.
+pub(crate) const OBJECT_IDLE: &str = "Corrections \u{b7} Object \u{b7} click to select the object \u{b7} drag loosely to find an object \u{b7} \u{21e7} adds \u{b7} \u{2325} takes away";
+
+/// `2 objects selected`.
+pub(crate) fn objects_selected(count: usize) -> String {
+    if count == 1 {
+        "1 object selected".into()
+    } else {
+        format!("{count} objects selected")
+    }
+}
+
+/// Object's part of the band: its setup's line until it is installed, Finding objects…, a row per
+/// selected object and Paint shadow's state.
+fn object_model(
+    inputs: &Inputs<'_>,
+    module: &ModuleDescriptor,
+    held: Option<&RemoveSelection>,
+) -> ObjectModel {
+    let capabilities = inputs.capabilities.module(&module.id);
+    let line = fill_setup::group(module, capabilities, fill_setup::OBJECT);
+    let finder = fill_setup::group(module, capabilities, fill_setup::MASK_OBJECT);
+    let cannot = |line: &SetupLine| {
+        matches!(
+            line.state,
+            Some(SetupState::CannotRun | SetupState::Unavailable)
+        )
+    };
+    let masks_instead =
+        line.as_ref().is_some_and(cannot) && finder.as_ref().is_some_and(|f| !cannot(f));
+    ObjectModel {
+        setup: line.filter(|line| !line.installed),
+        finding: inputs.object_pick.is_some_and(|session| {
+            session.purpose == object_pick::PickUse::Object && session.finding_objects()
+        }),
+        rows: held
+            .map(|held| {
+                held.objects
+                    .iter()
+                    .enumerate()
+                    .map(|(index, object)| ObjectRow {
+                        number: index + 1,
+                        selecting: object.artifact.is_none(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        shadow: held.is_some_and(|held| held.effect.is_some()),
+        shadow_armed: inputs.remove.shadow,
+        masks_instead,
+    }
 }
 
 /// How many candidates a job was asked for: the count its result names, or what a running job's
@@ -612,6 +839,16 @@ impl RemoveModel {
     pub(crate) fn summary(&self) -> Value {
         json!({
             "chosen": self.chosen,
+            "object_offered": self.object_offered,
+            "object_needs_setup": self.object_needs_setup,
+            "object": self.object.as_ref().map(|object| json!({
+                "setup": object.setup.as_ref().map(SetupLine::summary),
+                "finding": object.finding,
+                "rows": object.rows.iter().map(|row| json!({"number": row.number, "selecting": row.selecting})).collect::<Vec<_>>(),
+                "shadow": object.shadow,
+                "shadow_armed": object.shadow_armed,
+                "masks_instead": object.masks_instead,
+            })),
             "enabled": self.enabled,
             "reading": self.reading,
             "tiers": self.tiers.iter().map(|tier| tier.tier.clone()).collect::<Vec<_>>(),
@@ -622,6 +859,7 @@ impl RemoveModel {
             })),
             "prompt": self.prompt,
             "addon": self.addon.as_ref().map(SetupLine::summary),
+            "needs_setup": self.needs_setup,
             "action": self.action,
             "generate_reason": self.generate_reason,
             "selection": self.selection,
@@ -673,10 +911,12 @@ mod tests {
     #[test]
     fn an_unoffered_tier_shows_the_setup_when_a_model_or_runtime_is_missing() {
         let main = SetupLine {
-            resource: Some("m-file".into()),
+            setup: "remove".into(),
+            state: Some(luxforge_core::capabilities::setups::SetupState::Missing),
             text: "Remove objects and fill in parts of a photo.".into(),
             detail: Some("One-time download \u{b7} 20 B".into()),
             progress: None,
+            parts: Vec::new(),
             action: None,
             installed: false,
             reason: "Set up AI editing first".into(),
