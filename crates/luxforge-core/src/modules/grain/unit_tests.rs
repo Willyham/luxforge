@@ -428,6 +428,71 @@ fn the_identity_follows_the_compile() {
     assert!(!Grain::new(f64::NAN, 25.0, 50.0, Footprint::FULL).is_finite());
 }
 
+// ---- The GPU program's words ---------------------------------------------------------------------
+
+/// The program's words are the compile's six steps and the five `f32` coefficients the per-pixel
+/// path multiplies by, at full resolution and at reduced footprints; two units that describe
+/// themselves alike carry identical words; a neutral unit, a GPU-shaped draft's, carries `4 beta =
+/// 0`, which the program returns untouched.
+#[test]
+fn gpu_words_are_the_compiles_steps_and_narrowed_coefficients() {
+    let footprints = [
+        Footprint::FULL,
+        Footprint { x: 2.0, y: 2.0 },
+        Footprint { x: 3.7, y: 3.65 },
+    ];
+    let mut units = Vec::new();
+    for amount in [0.0, 1.0, 50.0, 100.0] {
+        for size in [0.0, 25.0, 100.0] {
+            for roughness in [0.0, 50.0, 100.0] {
+                for footprint in footprints {
+                    units.push(Grain::new(amount, size, roughness, footprint));
+                    units.push(Grain::new(amount, size, roughness, footprint));
+                }
+            }
+        }
+    }
+    let dynamic: Vec<&dyn PointwiseColor> = units
+        .iter()
+        .map(|unit| unit as &dyn PointwiseColor)
+        .collect();
+    crate::render::gpu::testing::assert_uniforms_follow_descriptions(&dynamic);
+    for unit in &units {
+        let description = unit.gpu().expect("every grain unit has a program");
+        assert!(std::ptr::eq(description.program, &PROGRAM));
+        let words = description.words;
+        let steps: Vec<u32> = unit.field.steps.iter().flatten().copied().collect();
+        assert_eq!(&words[..6], steps.as_slice(), "{}", unit.describe());
+        let coefficients = [
+            unit.field.fine_gain as f32,
+            unit.field.coarse_gain as f32,
+            unit.field.clump_gain as f32,
+            (4.0 * unit.field.beta) as f32,
+            (0.5 * CURVATURE * unit.field.variance) as f32,
+        ];
+        assert_eq!(
+            &words[6..],
+            coefficients.map(f32::to_bits).as_slice(),
+            "{}",
+            unit.describe()
+        );
+        assert_eq!(f32::from_bits(words[9]) == 0.0, unit.amount == 0.0);
+    }
+}
+
+/// The program's component keys are the CPU's `component_key`, which the hash vectors freeze.
+#[test]
+fn the_programs_keys_are_the_component_keys() {
+    use crate::render::gpu::testing::wgsl_u32;
+    for (name, component) in [
+        ("lf_grain_film_key_fine", FINE),
+        ("lf_grain_film_key_coarse", COARSE),
+        ("lf_grain_film_key_clump", CLUMP),
+    ] {
+        assert_eq!(wgsl_u32(&PROGRAM, name), component_key(component), "{name}");
+    }
+}
+
 // ---- The reduced-stage statistics ----------------------------------------------------------------
 
 fn fft(re: &mut [f64], im: &mut [f64]) {

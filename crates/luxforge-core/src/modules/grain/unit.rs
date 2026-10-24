@@ -39,6 +39,19 @@ use crate::{
         srgb::{decode_f32, encode_f32},
     },
     modules::{PointwiseColor, Stage},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
+};
+
+/// The grain unit's GPU program (`unit.wgsl`): the six lattice steps and the five coefficients the
+/// per-pixel path multiplies by, eleven words. A finish-stage unit, so the plan places it in output
+/// space after the geometry tail, at the stage pixel the CPU unit is handed; the steps carry the
+/// stage's footprint, so a reduced stage evaluates the study's reduced-stage field there.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_grain_film",
+    source: include_str!("unit.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 11,
+    enabled: true,
 };
 
 // ---- Frozen constants (the study's "Constants" table) --------------------------------------------
@@ -489,6 +502,31 @@ impl PointwiseColor for Grain {
             "grain(amount={}, size={}, roughness={}, footprint={}x{})",
             self.amount, self.size, self.roughness, self.footprint.x, self.footprint.y
         )
+    }
+
+    /// The six steps as the compile computed them, then the gains, `4 beta` and the mean
+    /// correction's coefficient as the `f32` values `apply_row` multiplies by: pure functions of
+    /// the strengths and the footprint the description writes. A neutral GPU-shaped unit carries
+    /// `4 beta = 0`, which the program returns untouched.
+    fn gpu(&self) -> Option<GpuDescription> {
+        let [fine, coarse, clump] = self.field.steps;
+        Some(GpuDescription::new(
+            &PROGRAM,
+            [fine, coarse, clump]
+                .into_iter()
+                .flatten()
+                .chain(
+                    [
+                        self.fine_gain,
+                        self.coarse_gain,
+                        self.clump_gain,
+                        self.four_beta,
+                        self.correction,
+                    ]
+                    .map(f32::to_bits),
+                )
+                .collect(),
+        ))
     }
 }
 

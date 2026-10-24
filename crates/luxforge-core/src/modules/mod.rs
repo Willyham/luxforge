@@ -48,6 +48,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
+    &grain::GRAIN_PROGRAM,
     &presence::PRESENCE_PROGRAM,
     &crate::repair::REPAIR_PROGRAM,
 ];

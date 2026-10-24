@@ -19,6 +19,9 @@
 //! crop re-lays the pattern without changing its size.
 mod unit;
 
+/// The grain unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use unit::PROGRAM as GRAIN_PROGRAM;
+
 use super::{
     ColorOperation, EffectStage, PointwiseColor, Processing,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
