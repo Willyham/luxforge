@@ -1,16 +1,18 @@
-//! The setup sheet over the workspace, when a download the desktop started was refused for want of
-//! consent and its capability introduces the feature it sets up
-//! (`docs/design/ai-editing/setup-board.html`). It is modal: the person answers it before the
-//! workspace takes another press or key, with the same Allow and Don't allow the consent notice
-//! sends ([`crate::state::capabilities::OpenConsent`]).
+//! The setup sheet over the workspace, when a setup install the desktop asked for was refused for
+//! want of consent ([board](../../../../docs/design/ai-tools-workspace/board.html), board 4). It is
+//! modal: the person answers it before the workspace takes another press or key. Download grants
+//! every scope the refusal named and asks for the setup again; Not now denies each
+//! ([`crate::state::capabilities::SetupConsent::requests`]).
 //!
-//! The feature's words and pictures are the module's introduction; the facts are the disclosure's,
-//! as the notice states them: the size, where it comes from, its cost and licence, any limit the
-//! licence puts on the person's results, and what it needs of this machine against what this
-//! machine has. A machine below the model's minimum is told so and offered no Download.
+//! The tool's words and pictures are the setup's introduction; the facts are summed over the parts
+//! still missing: the size, every origin and the licences, any limit a licence puts on the
+//! person's results, and the setup's memory minimum against what this machine has. The includes
+//! list names every part with its purpose and size, an installed one marked and not counted. A
+//! machine below the minimum is told so and offered no Download.
 use crate::state::{
     Inputs,
-    capabilities::{cost, hosts, human_bytes, introduced, sentence},
+    capabilities::{cost, human_bytes, sentence, unique_hosts},
+    fill_setup::this_machine,
     host_commands::glyphs,
     models::memory_text,
 };
@@ -31,6 +33,8 @@ pub(crate) struct SetupSheet {
     /// The facts' label while steps come first.
     pub(crate) facts_label: Option<String>,
     pub(crate) facts: Vec<SetupFact>,
+    /// Every part the setup holds: its name, purpose and size, or that it is installed.
+    pub(crate) includes: Vec<SetupInclude>,
     /// Lines under the facts, each with whether it warns.
     pub(crate) notes: Vec<(String, bool)>,
     pub(crate) promise: String,
@@ -38,13 +42,20 @@ pub(crate) struct SetupSheet {
     pub(crate) allow: Option<String>,
     /// The other action's label: Not now, or Close when nothing can be allowed.
     pub(crate) dismiss: String,
+    /// The setup it installs.
+    pub(crate) setup: String,
+    /// The requests Download sends, as Copy as JSON request copies them.
+    pub(crate) allow_requests: Vec<Value>,
+    /// The requests Not now (or Close) sends.
+    pub(crate) dismiss_requests: Vec<Value>,
 }
 
 impl SetupSheet {
-    /// What a captured frame records of the sheet: its words, its pictures, its facts and notes,
-    /// and its two actions.
+    /// What a captured frame records of the sheet: its words, its pictures, its facts, includes
+    /// and notes, and its two actions with the requests each sends.
     pub(crate) fn summary(&self) -> Value {
         json!({
+            "setup": self.setup,
             "title": self.title,
             "eyebrow": self.eyebrow,
             "hero": self.hero,
@@ -58,10 +69,20 @@ impl SetupSheet {
                 "detail": fact.detail,
                 "unmet": fact.kind.unmet(),
             })).collect::<Vec<_>>(),
+            "includes": self.includes.iter().map(|part| json!({
+                "name": part.name,
+                "purpose": part.purpose,
+                "size": part.size,
+                "installed": part.installed,
+            })).collect::<Vec<_>>(),
             "notes": self.notes.iter().map(|(note, _)| note).collect::<Vec<_>>(),
             "promise": self.promise,
             "allow": self.allow,
             "dismiss": self.dismiss,
+            "requests": {
+                "allow": self.allow.as_ref().map(|_| &self.allow_requests),
+                "dismiss": self.dismiss_requests,
+            },
         })
     }
 }
@@ -84,6 +105,16 @@ pub(crate) struct SetupFact {
     pub(crate) detail: String,
 }
 
+/// One part the setup holds, as the includes list names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SetupInclude {
+    pub(crate) name: String,
+    pub(crate) purpose: String,
+    /// `2.5 GB`, or `installed ✓` for a part already installed, which is not counted.
+    pub(crate) size: String,
+    pub(crate) installed: bool,
+}
+
 /// What a fact states, which sets its glyph and tone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FactKind {
@@ -103,54 +134,56 @@ impl FactKind {
     }
 }
 
-/// The sheet, while a download that introduces its feature waits for the person's answer.
+/// The sheet, while a setup install waits for the person's answer.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
-    let open = inputs.capabilities.consent.as_ref()?;
-    let consent = &open.consent;
-    if !introduced(consent) {
-        return None;
-    }
+    let consent = inputs.capabilities.setup_consent.as_ref()?;
     let disclosure = &consent.disclosure;
-    let introduction = disclosure.introduction.as_ref()?;
-    let machine = if cfg!(target_os = "macos") {
-        "Mac"
-    } else {
-        "computer"
-    };
-    let size = disclosure.bytes.map(human_bytes);
-    let mut facts = Vec::new();
-    if let Some(size) = &size {
-        facts.push(SetupFact {
-            kind: FactKind::Size,
-            headline: format!("{size} download"),
-            detail: if disclosure.requirements.is_some() {
-                "Once, then it works offline".into()
-            } else {
-                "One-time download".into()
-            },
-        });
-    }
-    let hosts = hosts(disclosure);
+    let introduction = &disclosure.introduction;
+    let machine = this_machine();
+    let size = human_bytes(disclosure.bytes);
+    let missing_parts = disclosure
+        .parts
+        .iter()
+        .filter(|part| !part.installed)
+        .count();
+    let mut facts = vec![SetupFact {
+        kind: FactKind::Size,
+        headline: format!("{size} download"),
+        detail: match missing_parts {
+            0 | 1 => "Once, then it works offline".into(),
+            2 => "Two parts, once, then offline".into(),
+            count => format!("{count} parts, once, then offline"),
+        },
+    }];
+    let hosts = unique_hosts(disclosure.origins.iter());
     if !hosts.is_empty() {
+        // Each download's cost, each once, before the licences.
+        let costs = disclosure
+            .downloads
+            .iter()
+            .map(|download| cost(download.cost))
+            .fold(Vec::new(), |mut costs, cost| {
+                if !costs.contains(&cost) {
+                    costs.push(cost);
+                }
+                costs
+            });
         facts.push(SetupFact {
             kind: FactKind::Origin,
             headline: format!("From {}", hosts.join(" and ")),
-            detail: [Some(cost(disclosure.cost)), disclosure.license.as_deref()]
+            detail: costs
                 .into_iter()
-                .flatten()
+                .map(str::to_owned)
+                .chain(disclosure.licenses.iter().cloned())
                 .collect::<Vec<_>>()
                 .join(" \u{b7} "),
         });
     }
-    let needed = disclosure
-        .requirements
-        .as_ref()
-        .and_then(|requirements| requirements.min_memory_bytes);
     // Whether this machine fits is the host's answer, carried in the disclosure with the memory it
     // was measured against.
     let met = disclosure.fits;
     let unmet = met == Some(false);
-    if let Some(needed) = needed {
+    if let Some(needed) = disclosure.minimum_memory {
         facts.push(SetupFact {
             kind: FactKind::Memory(met),
             headline: format!("Needs {} of memory", memory_text(needed)),
@@ -161,10 +194,25 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
             },
         });
     }
-    let mut notes = Vec::new();
-    if let Some(restriction) = &disclosure.use_restriction {
-        notes.push((sentence(restriction), true));
-    }
+    let includes = disclosure
+        .parts
+        .iter()
+        .map(|part| SetupInclude {
+            name: part.name.clone(),
+            purpose: part.purpose.clone(),
+            size: if part.installed {
+                "installed \u{2713}".into()
+            } else {
+                human_bytes(part.bytes)
+            },
+            installed: part.installed,
+        })
+        .collect();
+    let mut notes: Vec<(String, bool)> = disclosure
+        .use_restrictions
+        .iter()
+        .map(|restriction| (sentence(restriction), true))
+        .collect();
     if unmet {
         notes.push((format!("It can't run on this {machine}."), true));
     } else {
@@ -181,6 +229,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
     }
     let hint = |key: &str, action: &str| (key.to_owned(), action.to_owned());
     let undo = glyphs(Chord::command('Z'));
+    let placeholder = || json!({"request_id": "<per press>", "actor": crate::state::ACTOR});
     Some(SetupSheet {
         eyebrow: introduction.eyebrow.clone(),
         title: introduction.title.clone(),
@@ -206,12 +255,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> Option<SetupSheet> {
             .collect(),
         facts_label: (!introduction.steps.is_empty()).then(|| "Before it can start".into()),
         facts,
+        includes,
         notes,
         promise: introduction.promise.clone(),
-        allow: (!unmet).then(|| match &size {
-            Some(size) => format!("Download {size}"),
-            None => "Download".into(),
-        }),
+        allow: (!unmet).then(|| format!("Download {size}")),
         dismiss: if unmet { "Close" } else { "Not now" }.into(),
+        setup: consent.setup.clone(),
+        allow_requests: consent.requests(true, placeholder),
+        dismiss_requests: consent.requests(false, placeholder),
     })
 }

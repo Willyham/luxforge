@@ -29,7 +29,14 @@ use crate::{
     },
     inference::Precision,
 };
-use std::{io::Write, sync::Arc};
+use std::{
+    io::Write,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 /// The origin every developer model's URL is under.
 pub(crate) const DEVELOPER_ORIGIN: &str = "https://developer.luxforge.invalid";
@@ -276,7 +283,11 @@ pub(crate) const FAKE_GENERATOR: ModelFile = ModelFile {
     download: "download-fake-generator",
     files: &[],
     tradeoff: None,
-    min_memory_bytes: None,
+    // Two gigabytes, which every machine a developer run is on has and which covers the model, the
+    // held candidates and the analysis cache, so the setup sheet's memory fact
+    // and a machine below the minimum (an evidence run's `--evidence-machine-memory`) can be shown
+    // over the fakes as over the qualified model.
+    min_memory_bytes: Some(2 * GIB),
     redirect_origins: &[],
 };
 
@@ -443,23 +454,85 @@ pub(crate) const PRODUCT_MODELS: &[GenerativeModel] = &[KLEIN];
 /// The models a developer run offers: the fake first, then the qualified model.
 pub(crate) const DEVELOPER_MODELS: &[GenerativeModel] = &[FAKE_MODEL, KLEIN];
 
+/// How a developer run's transport hands over the developer models: each file whole at once, or,
+/// in an evidence run that asks, in [`PIECES`] paced pieces, checking for a cancel after each, and
+/// with the first transfer of one named resource cut halfway as a lost connection. A frame can then
+/// be captured while a setup installs, once it was interrupted and once it resumed: the staged
+/// bytes resume with a `Range` request, which the developer transport answers as a server does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeveloperDownloads {
+    /// The pause after each piece; `None` hands each file over whole.
+    pub pace: Option<Duration>,
+    /// The resource whose first transfer is cut halfway.
+    pub cut: Option<String>,
+}
+
+/// How many pieces a paced developer download arrives in.
+const PIECES: usize = 8;
+
 /// A transport that answers the developer models' URLs from memory and passes every other request
 /// to the transport it wraps: what a developer run installs its fake models through. Only a
 /// developer host wraps its transport in it.
 #[derive(Debug)]
 pub struct DeveloperModels {
     inner: Arc<dyn Transport>,
+    downloads: DeveloperDownloads,
+    /// The named resource's transfer has been cut once.
+    cut_done: AtomicBool,
 }
 
 impl DeveloperModels {
     /// `inner`, answering the developer models' URLs itself.
     pub fn wrap(inner: Arc<dyn Transport>) -> Arc<dyn Transport> {
-        Arc::new(Self { inner })
+        Self::wrap_with(inner, DeveloperDownloads::default())
+    }
+
+    /// `inner`, answering the developer models' URLs itself as `downloads` says.
+    pub fn wrap_with(
+        inner: Arc<dyn Transport>,
+        downloads: DeveloperDownloads,
+    ) -> Arc<dyn Transport> {
+        Arc::new(Self {
+            inner,
+            downloads,
+            cut_done: AtomicBool::new(false),
+        })
     }
 
     /// A run's transport: `inner` wrapped in a developer run, `inner` itself otherwise.
     pub fn for_run(developer: bool, inner: Arc<dyn Transport>) -> Arc<dyn Transport> {
-        if developer { Self::wrap(inner) } else { inner }
+        Self::for_run_with(developer, inner, DeveloperDownloads::default())
+    }
+
+    /// A run's transport, its developer downloads handed over as `downloads` says.
+    pub fn for_run_with(
+        developer: bool,
+        inner: Arc<dyn Transport>,
+        downloads: DeveloperDownloads,
+    ) -> Arc<dyn Transport> {
+        if developer {
+            Self::wrap_with(inner, downloads)
+        } else {
+            inner
+        }
+    }
+
+    /// The byte a `Range: bytes=N-` request asks to start from, when it is inside the file.
+    fn offset(request: &TransportRequest, length: u64) -> u64 {
+        request
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("range"))
+            .and_then(|(_, value)| {
+                value
+                    .trim()
+                    .strip_prefix("bytes=")?
+                    .strip_suffix('-')?
+                    .parse()
+                    .ok()
+            })
+            .filter(|offset| *offset < length)
+            .unwrap_or(0)
     }
 
     fn file(request: &TransportRequest) -> Option<ModelFile> {
@@ -483,7 +556,7 @@ impl Transport for DeveloperModels {
     fn send(
         &self,
         request: &TransportRequest,
-        options: SendOptions<'_>,
+        mut options: SendOptions<'_>,
         sink: &mut dyn Write,
     ) -> Result<TransportResponse, Error> {
         let Some(file) = Self::file(request) else {
@@ -497,14 +570,53 @@ impl Transport for DeveloperModels {
                 file.resource, options.max_response_bytes
             )));
         }
-        sink.write_all(file.bytes)
-            .map_err(|error| Error::file_access(format!("writing {}: {error}", file.resource)))?;
-        (options.progress)(length, Some(length));
+        // A resumed transfer is answered from the byte it asks for, as a server answers a range.
+        let offset = Self::offset(request, length);
+        let body = &file.bytes[offset as usize..];
+        let status = if offset > 0 { 206 } else { 200 };
+        let mut fields = vec![("content-length".to_owned(), body.len().to_string())];
+        if offset > 0 {
+            fields.push((
+                "content-range".to_owned(),
+                format!("bytes {offset}-{}/{length}", length - 1),
+            ));
+        }
+        if let Some(head) = options.head.as_mut() {
+            head(status, &fields)?;
+        }
+        let write = |sink: &mut dyn Write, piece: &[u8]| {
+            sink.write_all(piece)
+                .map_err(|error| Error::file_access(format!("writing {}: {error}", file.resource)))
+        };
+        let cut = self.downloads.cut.as_deref() == Some(file.resource)
+            && !self.cut_done.swap(true, Ordering::SeqCst);
+        if self.downloads.pace.is_none() && !cut {
+            write(sink, body)?;
+            (options.progress)(body.len() as u64, Some(body.len() as u64));
+        } else {
+            let piece = body.len().div_ceil(PIECES).max(1);
+            let mut written = 0;
+            for chunk in body.chunks(piece) {
+                if cut && written >= body.len() / 2 {
+                    return Err(Error::file_access(format!(
+                        "the connection to {} was lost",
+                        DEVELOPER_ORIGIN.trim_start_matches("https://")
+                    )));
+                }
+                write(sink, chunk)?;
+                written += chunk.len();
+                (options.progress)(written as u64, Some(body.len() as u64));
+                if let Some(pace) = self.downloads.pace {
+                    std::thread::sleep(pace);
+                }
+                options.control.checkpoint()?;
+            }
+        }
         Ok(TransportResponse {
-            status: 200,
-            headers: vec![("content-length".into(), length.to_string())],
+            status,
+            headers: fields,
             final_url: request.endpoint.url.clone(),
-            received: length,
+            received: body.len() as u64,
         })
     }
 }

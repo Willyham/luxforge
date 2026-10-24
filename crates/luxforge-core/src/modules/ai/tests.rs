@@ -792,6 +792,69 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
     let _ = fs::remove_dir_all(&root);
 }
 
+/// An evidence run's developer downloads arrive in paced pieces, the named resource's first
+/// transfer cut halfway as a lost connection: the install fails resumably, keeping what it staged,
+/// and the next one resumes from there with a range the developer transport answers, and installs.
+#[test]
+fn a_cut_developer_download_keeps_its_staged_bytes_and_resumes_from_them() {
+    let fixture = Fixture::new("cut-download");
+    let owner = Owner::start(
+        &fixture.root.join("catalog.sqlite"),
+        registry(&fixture.gate),
+        HostConfig {
+            transport: DeveloperModels::wrap_with(
+                MemoryTransport::new(|_, answer| answer.whole(404, b"")),
+                super::DeveloperDownloads {
+                    pace: Some(Duration::from_millis(1)),
+                    cut: Some(FAKE_GENERATOR.resource.into()),
+                },
+            ),
+            ..fixture.host(true)
+        },
+    );
+    owner.ok_as(
+        owner.admin,
+        GRANT,
+        json!({
+            "module_id": AI_MODULE,
+            "capability": FAKE_GENERATOR.download,
+            "scope": {"resource": FAKE_GENERATOR.resource, "version": FAKE_GENERATOR.version,
+                      "origin": DEVELOPER_ORIGIN},
+        }),
+    );
+    let install = || {
+        let queued = owner.ok(
+            INSTALL,
+            json!({"module_id": AI_MODULE, "resource_id": FAKE_GENERATOR.resource}),
+        );
+        owner.finished(&queued["job_id"])
+    };
+    let cut = install();
+    assert_eq!(cut["status"], "failed", "{cut}");
+    assert_eq!(
+        cut["error"]["message"], "the connection to developer.luxforge.invalid was lost",
+        "{cut}"
+    );
+    let row = |owner: &Owner| {
+        owner.ok("module.resource.list", json!({"module_id": AI_MODULE}))["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == FAKE_GENERATOR.resource)
+            .cloned()
+            .unwrap()
+    };
+    let half = (FAKE_GENERATOR.bytes.len() as u64).div_ceil(2);
+    let staged = row(&owner)["staged_bytes"].as_u64().unwrap();
+    assert!(
+        (half..FAKE_GENERATOR.bytes.len() as u64).contains(&staged),
+        "half the file is kept: {staged}"
+    );
+    let resumed = install();
+    assert_eq!(resumed["status"], "ready", "{resumed}");
+    assert_eq!(row(&owner)["state"], "installed");
+}
+
 #[test]
 fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
     use super::analysis::models::{L0_DECODER, L0_ENCODER};

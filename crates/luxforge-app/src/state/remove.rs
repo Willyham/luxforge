@@ -378,6 +378,8 @@ pub(crate) struct RemoveModel {
     pub(crate) addon: Option<SetupLine>,
     /// Nothing is in flight for the fill module, so a setup button may send; Cancel always may.
     pub(crate) setup_enabled: bool,
+    /// Remove's setup has not run: the kind control marks Remove with the download glyph.
+    pub(crate) needs_setup: bool,
     /// `Generate`, or `Replace` with a prompt.
     pub(crate) action: String,
     /// Why Generate cannot be pressed now.
@@ -570,6 +572,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         prompt_max: chosen.map_or(PROMPT_FALLBACK, |tier| prompt_max(module, &tier.task)),
         addon,
         setup_enabled: setup.as_ref().is_some_and(|setup| setup.enabled),
+        needs_setup: setup
+            .as_ref()
+            .is_some_and(|setup| setup.main.state.is_some() && !setup.main.installed),
         action,
         generate_reason,
         selection,
@@ -622,6 +627,7 @@ impl RemoveModel {
             })),
             "prompt": self.prompt,
             "addon": self.addon.as_ref().map(SetupLine::summary),
+            "needs_setup": self.needs_setup,
             "action": self.action,
             "generate_reason": self.generate_reason,
             "selection": self.selection,
@@ -673,10 +679,12 @@ mod tests {
     #[test]
     fn an_unoffered_tier_shows_the_setup_when_a_model_or_runtime_is_missing() {
         let main = SetupLine {
-            resource: Some("m-file".into()),
+            setup: "remove".into(),
+            state: Some(luxforge_core::capabilities::setups::SetupState::Missing),
             text: "Remove objects and fill in parts of a photo.".into(),
             detail: Some("One-time download \u{b7} 20 B".into()),
             progress: None,
+            parts: Vec::new(),
             action: None,
             installed: false,
             reason: "Set up AI editing first".into(),
