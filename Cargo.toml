@@ -51,7 +51,7 @@ iced = { version = "=0.14.0", default-features = false, features = ["advanced", 
 # The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite
 # job.wait detects socket EOF without polling or a thread per wait; no runtime worker is spawned.
-tokio = { version = "=1.53.1", default-features = false, features = ["time"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["time"] }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
 rayon = "=1.12.0"
 # An independent EXIF reader and writer for the export metadata tests only. Already in the lockfile
