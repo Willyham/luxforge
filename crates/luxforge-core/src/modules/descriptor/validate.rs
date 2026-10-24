@@ -4,11 +4,11 @@
 use super::chord::{Chord, host_chord};
 use super::types::{
     ActionControl, ActionDescriptor, BrushEdit, BrushSource, CanvasInteraction, ChoiceControl,
-    ColorControl, Control, CurveControl, EffectStage, GroupControl, IdentityKind, MAX_OPERATIONS,
-    MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout, NumberControl, PRESET_SETTINGS,
-    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, QueryChoiceControl,
-    RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN, TaskControl, ToggleControl,
-    ViewControl, WheelControl,
+    ColorControl, Control, CurveControl, EffectStage, GroupControl, IdentityKind,
+    MAX_ARTIFACTS_PARAMETER, MAX_OPERATIONS, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
+    NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
+    PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
+    TaskControl, ToggleControl, ViewControl, WheelControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -1670,6 +1670,13 @@ fn declared_parameters(
                 parameter.kind.name()
             )));
         }
+        if parameter.kind.task_only() && kind != "task" {
+            return Err(Error::validation(format!(
+                "parameter {} of {kind} {id} declares kind {}, which only a task declares",
+                parameter.name,
+                parameter.kind.name()
+            )));
+        }
         // An identity names one of the host's own objects, which only the host's commands address;
         // a module edits through the host's `mask` target and never names a mask itself. The one
         // exception is the identity of a correction in the module's own ordered list, which its
@@ -1754,6 +1761,18 @@ pub(crate) fn check_declaration(parameter: &ParameterDescriptor) -> Result<(), E
                 "parameter {} declares invalid path point bounds; 1..={} is the limit",
                 parameter.name,
                 crate::path::POSTED_POINTS_PER_STROKE
+            )));
+        }
+        ParameterKind::Artifacts {
+            artifacts_min,
+            artifacts_max,
+        } if *artifacts_min < 1
+            || *artifacts_max > MAX_ARTIFACTS_PARAMETER
+            || artifacts_min > artifacts_max =>
+        {
+            return Err(Error::validation(format!(
+                "parameter {} declares invalid artifact bounds; 1..={MAX_ARTIFACTS_PARAMETER} is the limit",
+                parameter.name
             )));
         }
         ParameterKind::Curve {

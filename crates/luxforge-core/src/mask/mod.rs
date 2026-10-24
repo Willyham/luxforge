@@ -85,8 +85,10 @@ pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use model::{
     ALPHA_KIND, ALPHA_SIDE_MAX, FEATHER_DEFAULT as MODEL_FEATHER_DEFAULT, ModelSelection,
+    OBJECT_CLASS, OBJECT_PROMPT_CANDIDATE_MAX, OBJECT_PROMPT_POINTS_MAX, ObjectPrompt,
     THRESHOLD_DEFAULT as MODEL_THRESHOLD_DEFAULT, check_alpha,
 };
+pub(crate) use model::{nonzero_rect, raster_support, sample_alpha};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
 pub use range::Picked;
 pub use range::REFINE_DEFAULT;

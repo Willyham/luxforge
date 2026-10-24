@@ -32,8 +32,12 @@ pub struct TaskNeeds {
 
 /// What the host knows once it has bound a task's request, for the module's admission
 /// ([`CapabilityModule::admit_task`]): nothing has been read or allocated yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskAdmission {
+    /// The asset's repair stage as it is now (its source and repair prefix), for a task that
+    /// takes an asset and declares `reads`: what a request naming another photograph's state is
+    /// refused against.
+    pub(crate) identity: Option<crate::capabilities::read::StageIdentity>,
     /// The size of the stage the task reads, for a task that declares `reads`.
     pub stage: Option<Stage>,
     /// The bytes of every artifact the asset's current stack binds.

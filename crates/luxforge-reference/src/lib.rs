@@ -38,6 +38,7 @@ pub mod panorama;
 pub mod presence;
 pub mod preview_error;
 pub mod range;
+pub mod removal;
 pub mod repair;
 mod rng;
 pub mod scene;

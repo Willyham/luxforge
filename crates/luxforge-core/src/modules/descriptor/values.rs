@@ -131,6 +131,38 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 )));
             }
         }
+        ParameterKind::Artifacts {
+            artifacts_min,
+            artifacts_max,
+        } => {
+            let Some(ids) = value.as_array() else {
+                return Err(Error::validation(format!(
+                    "parameter {name} must be an array of artifact identities"
+                )));
+            };
+            if ids.len() < *artifacts_min || ids.len() > *artifacts_max {
+                return Err(Error::validation(format!(
+                    "parameter {name} must name {artifacts_min}..={artifacts_max} artifacts, not {}",
+                    ids.len()
+                )));
+            }
+            for (index, id) in ids.iter().enumerate() {
+                let valid = id
+                    .as_str()
+                    .is_some_and(|text| crate::ArtifactId::parse(text).is_ok());
+                if !valid {
+                    return Err(Error::validation(format!(
+                        "parameter {name} item {index} must be an artifact identity"
+                    )));
+                }
+                if ids[..index].contains(id) {
+                    return Err(Error::validation(format!(
+                        "parameter {name} names artifact {} twice",
+                        id.as_str().unwrap_or_default()
+                    )));
+                }
+            }
+        }
         ParameterKind::Curve {
             points_min,
             points_max,

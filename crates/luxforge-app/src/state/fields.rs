@@ -222,6 +222,7 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .to_string(),
         // An artifact identity has no default and nothing sensible to seed.
         ParameterKind::Artifact => String::new(),
+        ParameterKind::Artifacts { .. } => "[]".into(),
         ParameterKind::Curve {
             fixed_x,
             points_min,
@@ -332,6 +333,13 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
         ParameterKind::Artifact => luxforge_core::ArtifactId::parse(text.trim())
             .map(|id| Value::from(id.as_str()))
             .map_err(|_| format!("{name} must be an artifact identity")),
+        ParameterKind::Artifacts { .. } => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON list of artifact identities"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
         ParameterKind::Curve { .. } => serde_json::from_str::<Value>(text.trim())
             .map_err(|_| format!("{name} must be a JSON curve point list"))
             .and_then(|value| {
@@ -402,6 +410,7 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
         ParameterKind::Boolean => value.as_bool().unwrap().to_string(),
         ParameterKind::Artifact => value.as_str().unwrap().to_owned(),
         ParameterKind::Curve { .. }
+        | ParameterKind::Artifacts { .. }
         | ParameterKind::Points { .. }
         | ParameterKind::Settings
         | ParameterKind::SettingsOrigin
