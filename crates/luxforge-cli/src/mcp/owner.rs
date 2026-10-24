@@ -6,10 +6,18 @@
 //! two traits. [`Owner`] attaches lazily, at the first call that needs the owner, keeps one
 //! connection for as long as it lasts, so session-scoped state carries from call to call, and
 //! attaches again after a lost one, warning that the old session's state is gone.
-use super::schema::{MethodInputs, SchemaError};
+//!
+//! Each target also says how its registry's changes are learnt ([`ListChanges`]): on a second
+//! connection to the same owner ([`Target::again`]), or, for an owner that serves one connection,
+//! after the adapter's own calls that can change it. A typed profile's [`Changes`] announces them.
+use super::{
+    changes::{Changes, Registry},
+    protocol::ClientInfo,
+    schema::{MethodInputs, SchemaError},
+};
 use crate::{
     Paths,
-    live::{CONNECTION_LOST, LiveClient, PROTOCOL_ERROR, failure, find_session},
+    live::{CONNECTION_LOST, LiveClient, LiveSession, PROTOCOL_ERROR, failure, find_session},
 };
 use luxforge_core::ApiFailure;
 use serde_json::{Value, json};
@@ -77,6 +85,13 @@ pub trait Target: Send {
     fn list_changes(&self) -> ListChanges {
         ListChanges::Watch
     }
+
+    /// With [`ListChanges::Watch`], a target that reaches the owner of the last attachment again,
+    /// for the watch's own connection: the same owner, never another found since. `None` when
+    /// there is none to reach, and nothing is watched.
+    fn again(&self) -> Option<Box<dyn Target>> {
+        None
+    }
 }
 
 /// The running desktop's live session: the one the registry of running sessions lists, or the
@@ -84,16 +99,34 @@ pub trait Target: Send {
 pub struct LiveTarget {
     pub catalog: Option<PathBuf>,
     pub paths: Option<Paths>,
+    /// The session the last attachment found.
+    pub found: Option<LiveSession>,
 }
 
 impl Target for LiveTarget {
     fn attach(&mut self, label: &str) -> Result<Attached, ApiFailure> {
         let session = find_session(self.catalog.as_deref(), self.paths.as_ref())?;
-        let (client, schema) = LiveClient::connect_as(&session, label)?;
+        self.found = Some(session.clone());
+        SessionTarget(session).attach(label)
+    }
+
+    fn again(&self) -> Option<Box<dyn Target>> {
+        let found = self.found.clone()?;
+        Some(Box::new(SessionTarget(found)))
+    }
+}
+
+/// One live session found already: the second connection of an attachment reaches the same
+/// session the first did, never another the registry lists by then.
+struct SessionTarget(LiveSession);
+
+impl Target for SessionTarget {
+    fn attach(&mut self, label: &str) -> Result<Attached, ApiFailure> {
+        let (client, schema) = LiveClient::connect_as(&self.0, label)?;
         Ok(Attached {
             connection: Box::new(client),
             schema,
-            catalog: session.catalog,
+            catalog: self.0.catalog.clone(),
         })
     }
 }
@@ -106,12 +139,19 @@ pub struct Session {
     /// read refuses the whole answer.
     pub inputs: Result<MethodInputs, SchemaError>,
     pub catalog: PathBuf,
+    /// Which attachment this is, counted from 1 for the life of the adapter.
+    attachment: u64,
 }
 
 impl Session {
     /// The registry's entry for `method`.
     pub fn entry(&self, method: &str) -> Option<&Value> {
         self.schema["methods"].get(method)
+    }
+
+    fn adopt(&mut self, registry: Registry) {
+        self.schema = registry.schema;
+        self.inputs = registry.inputs;
     }
 }
 
@@ -121,6 +161,13 @@ pub struct Owner {
     session: Option<Session>,
     /// A session was attached before and has ended: the next attachment replaces it.
     ended: bool,
+    /// How many attachments there have been.
+    attachments: u64,
+    /// Where a typed profile learns of each attachment's registry and of its changes; `None`
+    /// where nothing listens, as in the compact tools' own tests.
+    changes: Option<Changes>,
+    /// Warnings an answer that carries none (a tool list) left for the next result.
+    kept: Vec<ApiFailure>,
 }
 
 impl Owner {
@@ -129,15 +176,24 @@ impl Owner {
             target,
             session: None,
             ended: false,
+            attachments: 0,
+            changes: None,
+            kept: Vec::new(),
         }
     }
 
-    /// The session, attaching first when there is none or the owner has closed the open one.
-    /// With it, the [`SESSION_REPLACED`] warning when this attachment replaces an ended one.
+    /// Report each attachment's registry, and the newer ones learnt while it lasts, to `changes`.
+    pub fn report_to(&mut self, changes: Changes) {
+        self.changes = Some(changes);
+    }
+
+    /// The session, attaching first when there is none or the owner has closed the open one,
+    /// naming the adapter after `client`. With it, the [`SESSION_REPLACED`] warning when this
+    /// attachment replaces an ended one, and any [kept](Self::keep_warnings) before.
     pub fn session(
         &mut self,
-        label: &str,
-    ) -> Result<(&mut Session, Option<ApiFailure>), ApiFailure> {
+        client: &ClientInfo,
+    ) -> Result<(&mut Session, Vec<ApiFailure>), ApiFailure> {
         if self
             .session
             .as_ref()
@@ -146,16 +202,22 @@ impl Owner {
             eprintln!("luxforge-mcp: the catalog owner closed this connection");
             self.end();
         }
-        let mut warning = None;
+        let mut warnings = std::mem::take(&mut self.kept);
         if self.session.is_none() {
-            let attached = self.target.attach(label)?;
+            let attached = match self.target.attach(&client.label()) {
+                Ok(attached) => attached,
+                Err(error) => {
+                    self.kept = warnings;
+                    return Err(error);
+                }
+            };
             eprintln!(
                 "luxforge-mcp: attached to the session of {}",
                 attached.catalog.display()
             );
             if self.ended {
                 self.ended = false;
-                warning = Some(ApiFailure {
+                warnings.push(ApiFailure {
                     code: SESSION_REPLACED.into(),
                     message: "the connection to Luxforge ended and this call attached again: the \
                               drafts, previews, selections and jobs owned by clients of the old \
@@ -169,15 +231,42 @@ impl Owner {
             if let Err(error) = &inputs {
                 eprintln!("luxforge-mcp: the session's registry cannot be offered: {error}");
             }
-            self.session = Some(Session {
-                connection: attached.connection,
+            self.attachments += 1;
+            let registry = Registry {
                 schema: attached.schema,
                 inputs,
+            };
+            if let Some(changes) = &self.changes {
+                // An owner the adapter alone calls is never watched: its own calls are read.
+                let again = match self.target.list_changes() {
+                    ListChanges::Watch => self.target.again(),
+                    ListChanges::OwnCalls => None,
+                };
+                changes.attached(self.attachments, &registry, again, &client.watch_label());
+            }
+            self.session = Some(Session {
+                connection: attached.connection,
+                schema: registry.schema,
+                inputs: registry.inputs,
                 catalog: attached.catalog,
+                attachment: self.attachments,
             });
         }
         let session = self.session.as_mut().expect("attached above");
-        Ok((session, warning))
+        // A newer registry the second connection read since the last call.
+        if let Some(registry) = self
+            .changes
+            .as_ref()
+            .and_then(|changes| changes.adopt(session.attachment))
+        {
+            session.adopt(registry);
+        }
+        Ok((session, warnings))
+    }
+
+    /// Keep `warnings` for the next result that can carry them.
+    pub fn keep_warnings(&mut self, warnings: Vec<ApiFailure>) {
+        self.kept.extend(warnings);
     }
 
     /// End the session: its connection is lost or cannot carry another request. The next call
@@ -226,13 +315,18 @@ impl Owner {
             Ok(schema) => {
                 if schema != session.schema {
                     eprintln!("luxforge-mcp: the registry changed after {cause}");
-                    session.inputs = MethodInputs::read(&schema);
-                    if let Err(error) = &session.inputs {
+                    let inputs = MethodInputs::read(&schema);
+                    if let Err(error) = &inputs {
                         eprintln!(
                             "luxforge-mcp: the session's registry cannot be offered: {error}"
                         );
                     }
-                    session.schema = schema;
+                    let registry = Registry { schema, inputs };
+                    // A typed profile announces the list when it changed.
+                    if let Some(changes) = &self.changes {
+                        changes.read_again(session.attachment, &registry);
+                    }
+                    session.adopt(registry);
                 }
             }
             Err(error) => {

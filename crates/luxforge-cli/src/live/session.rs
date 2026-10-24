@@ -82,7 +82,9 @@ fn describe(running: &RunningSession) -> Value {
     }
 }
 
-/// An open catalog's live session, read from the session file beside it.
+/// An open catalog's live session, read from the session file beside it. A clone reaches the same
+/// session again, as the MCP adapter's second connection does.
+#[derive(Clone)]
 pub struct LiveSession {
     /// The catalog whose session this is.
     pub catalog: PathBuf,

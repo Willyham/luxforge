@@ -115,7 +115,7 @@ fn error_code(outcome: &ToolOutcome) -> &str {
 
 #[test]
 fn the_compact_tools_are_fixed_with_valid_input_schemas_and_names() {
-    let tools = Profile::Compact.tools();
+    let tools = compact_tools();
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
@@ -562,11 +562,13 @@ fn a_cancellation_stops_the_call_at_its_next_hold() {
     let cancel = Cancel::default();
     cancel.cancel();
     let mut warnings = Vec::new();
+    let arguments = arguments(json!({"method": "edit.set-basic",
+                                     "params": {"asset_id": AssetId::new(), "exposure": 1}}));
     let stopped = super::call(
         &mut owner,
         &client(),
-        &arguments(json!({"method": "edit.set-basic",
-                          "params": {"asset_id": AssetId::new(), "exposure": 1}})),
+        call_arguments(&arguments).unwrap(),
+        Naming::Compact,
         &cancel,
         true,
         &mut warnings,
@@ -577,3 +579,5 @@ fn a_cancellation_stops_the_call_at_its_next_hold() {
     );
     assert!(script.methods_called().is_empty());
 }
+
+mod typed;

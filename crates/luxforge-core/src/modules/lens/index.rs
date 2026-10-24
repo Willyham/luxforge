@@ -79,7 +79,7 @@ impl LensIndex {
 static START: Once = Once::new();
 static INDEX: OnceLock<Result<Arc<LensIndex>, Error>> = OnceLock::new();
 #[cfg(test)]
-static PARSER_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
+static PARSER_THREAD: OnceLock<(std::thread::ThreadId, Option<String>)> = OnceLock::new();
 #[cfg(test)]
 static PARSE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -122,22 +122,31 @@ fn load(path: Option<&Path>) -> Result<Arc<LensIndex>, Error> {
         .map_err(|_| missing())?;
     LensIndex::parse(&bytes).map(Arc::new)
 }
+/// The thread the one parse runs on: its own, which ends with the parse, rather than the shared
+/// Rayon pool, so assembling the module registry starts no pool in a process that never renders,
+/// such as `luxforge-mcp` listing the built-in registry.
+const PARSER: &str = "luxforge-lens-index";
 pub(crate) fn load_in_background() {
     START.call_once(|| {
-        rayon::spawn(|| {
+        let parse = std::thread::Builder::new().name(PARSER.into()).spawn(|| {
             #[cfg(test)]
             {
-                let _ = PARSER_THREAD.set(std::thread::current().id());
+                let current = std::thread::current();
+                let _ = PARSER_THREAD.set((current.id(), current.name().map(Into::into)));
                 PARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
             let path = resolve_path();
             let _ = INDEX.set(load(path.as_deref()));
-        })
+        });
+        // A thread the system refuses leaves the index unavailable, never a waiter blocked.
+        if parse.is_err() {
+            let _ = INDEX.set(Err(missing()));
+        }
     });
 }
 /// Block until the one background parse has finished, starting it if nothing has, whether it
 /// loaded or failed. For the source worker before a new import completes, never the catalog owner
-/// or a UI thread: the parse runs on the shared pool, so the caller must not be a pool thread.
+/// or a UI thread.
 pub(crate) fn wait_ready() {
     #[cfg(test)]
     if TEST_INDEX.with(|cell| cell.borrow().is_some()) {
@@ -223,7 +232,13 @@ mod tests {
         load_in_background();
         luxforge_testbase::wait_for("the one background index parse", || INDEX.get().map(|_| ()));
         load_in_background();
-        assert_ne!(caller, *PARSER_THREAD.get().unwrap());
+        let (parser, name) = PARSER_THREAD.get().unwrap();
+        assert_ne!(caller, *parser);
+        assert_eq!(
+            name.as_deref(),
+            Some(PARSER),
+            "its own thread, not the Rayon pool's"
+        );
         assert_eq!(PARSE_COUNT.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(!INDEX.get().unwrap().as_ref().unwrap().lenses.is_empty());
     }

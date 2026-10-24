@@ -45,10 +45,29 @@ fn the_flags_choose_the_catalog_profile_and_pictures() {
 }
 
 #[test]
-fn typed_profiles_and_unknown_or_repeated_flags_are_usage_errors() {
+fn the_typed_profiles_offer_every_namespace_or_those_named() {
+    let profile = |args: &[&str]| match parsed(args) {
+        Ok(Parsed::Serve(options)) => options.profile,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        profile(&["--tools", "all"]),
+        Profile::Typed(Namespaces::All)
+    );
+    assert_eq!(
+        profile(&["--tools", "edit,asset"]),
+        Profile::Typed(Namespaces::Only(vec!["edit".into(), "asset".into()]))
+    );
+    let unknown = parsed(&["--tools", "edit,nope"]).unwrap_err();
+    assert!(unknown.contains("nope"), "{unknown}");
+}
+
+#[test]
+fn unknown_or_repeated_flags_are_usage_errors() {
     for args in [
-        &["--tools", "all"][..],
-        &["--tools", "edit,asset"],
+        &["--tools", "edit,nope"][..],
+        &["--tools", ""],
+        &["--tools", "all", "--tools", "compact"],
         &["--tools"],
         &["--catalog"],
         &["--catalog", "a", "--catalog", "b"],
@@ -60,11 +79,6 @@ fn typed_profiles_and_unknown_or_repeated_flags_are_usage_errors() {
     ] {
         assert!(parsed(args).is_err(), "{args:?}");
     }
-    assert!(
-        parsed(&["--tools", "all"])
-            .unwrap_err()
-            .contains("--tools compact")
-    );
     assert!(parsed(&["--headless"]).unwrap_err().contains("--catalog"));
 }
 
@@ -72,7 +86,7 @@ fn typed_profiles_and_unknown_or_repeated_flags_are_usage_errors() {
 fn a_usage_error_exits_2_with_the_failure_on_standard_error() {
     let mut stderr = Vec::new();
     let status = run(
-        ["--tools".into(), "all".into()],
+        ["--tools".into(), "nope".into()],
         &mut std::io::empty(),
         Box::new(std::io::sink()),
         &mut stderr,

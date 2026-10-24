@@ -1038,6 +1038,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/sparkle_port.rs",
             // The MCP adapter's request queue, its one worker asleep until a request arrives.
             "crates/luxforge-cli/src/mcp/serve.rs",
+            // A typed MCP profile's event watch, asleep until a listener and a session to watch.
+            "crates/luxforge-cli/src/mcp/changes.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1162,6 +1164,11 @@ const SOURCE_RULES: &[SourceRule] = &[
             // A headless MCP adapter's two readers of its `luxforge-json` child, its answers and
             // its standard error, each blocking on its pipe and ending with the child.
             "crates/luxforge-cli/src/mcp/headless.rs",
+            // A typed MCP profile's one event watch, holding `events.wait` on its own connection
+            // and ending with the adapter.
+            "crates/luxforge-cli/src/mcp/changes.rs",
+            // The lens profile index's one parse, once a process, ending when it has parsed.
+            "crates/luxforge-core/src/modules/lens/index.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",

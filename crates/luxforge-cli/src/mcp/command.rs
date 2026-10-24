@@ -2,11 +2,12 @@
 //! input ends.
 use super::{
     adapter::Adapter,
+    changes::Changes,
     config,
     headless::{self, HEADLESS_FAILED, HeadlessTarget},
     owner::{LiveTarget, Owner, Target},
     serve::{self, Output, Subscriptions},
-    tools::{Profile, Tools},
+    tools::{Namespaces, Profile, Tools},
 };
 use crate::{
     Paths,
@@ -19,7 +20,8 @@ use std::{
     path::PathBuf,
 };
 
-const HELP: &str = "luxforge-mcp [--catalog PATH] [--headless] [--tools compact] [--no-images]
+const HELP: &str =
+    "luxforge-mcp [--catalog PATH] [--headless] [--tools compact|all|NS[,NS...]] [--no-images]
 luxforge-mcp config CLIENT [--headless] [--catalog PATH]
 
 A Model Context Protocol server for the Luxforge desktop's live session, on standard input and
@@ -40,8 +42,13 @@ never starts Luxforge or another catalog owner.
                   which is never sent again). Nothing is retried: the next call that needs the
                   owner starts a new one. Its standard error is forwarded to this one's, and it
                   ends when this server does.
---tools compact   the tools offered. compact, the default, is three tools over the whole registry:
-                  luxforge_methods, luxforge_describe and luxforge_call.
+--tools PROFILE   the tools offered. compact, the default, is three tools over the whole registry:
+                  luxforge_methods, luxforge_describe and luxforge_call. all is one tool per
+                  method, named after it with . replaced by _ (asset_state), and NS[,NS...] one
+                  per method in the namespaces named, such as asset,edit,history,job,preview; a
+                  namespace this build's registry has no method in is refused. The typed list is
+                  this build's registry until the server reaches its catalog owner, then the
+                  owner's, and clients that subscribe are told when it changes.
 --no-images       never attach pictures to results; their paths are still returned as data.
 --help, --version print this help or the version, without serving.
 
@@ -103,16 +110,18 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String> {
                 }
                 tools = true;
                 let value = args.next().ok_or("--tools requires a profile")?;
-                match value.to_str() {
-                    Some("compact") => options.profile = Profile::Compact,
-                    _ => {
+                options.profile = match value.to_str() {
+                    Some("compact") => Profile::Compact,
+                    Some("all") => Profile::Typed(Namespaces::All),
+                    Some(list) => Profile::Typed(Namespaces::read(list)?),
+                    None => {
                         return Err(format!(
-                            "--tools {} is not available: typed tool profiles (all, or a list of \
-                             namespaces) are not built yet; use --tools compact",
+                            "--tools {} is not a profile: give compact, all, or namespaces \
+                             separated by commas",
                             value.to_string_lossy()
                         ));
                     }
-                }
+                };
             }
             Some("--no-images") => {
                 if !options.images {
@@ -155,6 +164,7 @@ fn target(options: &Options, paths: Option<Paths>) -> Result<Box<dyn Target>, St
         (catalog, _) => Ok(Box::new(LiveTarget {
             catalog: catalog.clone(),
             paths,
+            found: None,
         })),
     }
 }
@@ -212,16 +222,23 @@ pub fn run(
         }
     };
     let subscriptions = Subscriptions::default();
+    let output = Output::new(stdout);
     let owner = Owner::new(target);
+    let namespaces = match &options.profile {
+        Profile::Compact => None,
+        Profile::Typed(namespaces) => Some(namespaces.clone()),
+    };
+    let changes = Changes::new(namespaces, output.clone(), subscriptions.clone());
     let adapter = Adapter::new(
         Tools {
             profile: options.profile,
             images: options.images,
         },
         owner,
-        subscriptions.clone(),
+        changes.clone(),
     );
-    serve::serve(stdin, Output::new(stdout), subscriptions, adapter);
+    serve::serve(stdin, output, subscriptions, adapter);
+    changes.close();
     0
 }
 

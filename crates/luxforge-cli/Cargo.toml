@@ -33,6 +33,10 @@ uuid.workspace = true
 # Cross-checks the MCP adapter's generated input schemas against the 2020-12 metaschema and its own
 # request check; never a dependency of a binary.
 jsonschema.workspace = true
+# An independent MCP client of the real luxforge-mcp, used by one integration test only
+# (`tests/mcp/interop.rs`), on a current-thread runtime of the Tokio the workspace already locks.
+rmcp.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "process"] }
 luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }

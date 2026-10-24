@@ -1,8 +1,8 @@
 //! A catalog owner serving a live session from this test process, as the desktop serves one, and
 //! a person's own client of it; and a proxy in front of a session that can cut a connection.
 use luxforge_core::{
-    ApiRequest, ClientAuthority, ClientId, LocalServer, LocalSessionInfo, OwnerHandle,
-    live_session_file,
+    ApiRequest, ClientAuthority, ClientId, HostConfig, LocalServer, LocalSessionInfo,
+    ModuleRegistry, OwnerHandle, live_session_file,
 };
 use luxforge_testbase::{Gate, paths, wait_until};
 use serde_json::{Value, json};
@@ -33,12 +33,33 @@ impl Live {
     /// Start the owner and its session, the session file at `session_file` (beside the catalog
     /// when `None`). `None` where the host forbids a loopback listener and the run declares it.
     pub fn start(label: &str, session_file: Option<&Path>) -> Option<Self> {
+        Self::start_as(label, session_file, false)
+    }
+
+    /// [`Self::start`] with a preference directory in the scratch directory, so `flags.set`
+    /// stores and announces its change; its source jobs are never held.
+    pub fn start_with_preferences(label: &str, session_file: Option<&Path>) -> Option<Self> {
+        Self::start_as(label, session_file, true)
+    }
+
+    fn start_as(label: &str, session_file: Option<&Path>, preferences: bool) -> Option<Self> {
         let scratch = paths::temp_dir(label);
         let catalog = scratch.join("catalog.sqlite");
         let sources = Arc::new(Gate::new());
         let hold = sources.clone();
-        let (owner, join) =
-            OwnerHandle::start_holding_sources(&catalog, Arc::new(move || hold.pass())).unwrap();
+        let (owner, join) = if preferences {
+            OwnerHandle::start_with_host(
+                &catalog,
+                Arc::new(ModuleRegistry::builtin()),
+                HostConfig {
+                    preferences_dir: Some(scratch.join("preferences")),
+                    ..HostConfig::unconfigured()
+                },
+            )
+        } else {
+            OwnerHandle::start_holding_sources(&catalog, Arc::new(move || hold.pass()))
+        }
+        .unwrap();
         let file = session_file.map_or_else(|| live_session_file(&catalog), Path::to_path_buf);
         let server = match LocalServer::start(owner.clone(), &file) {
             Ok(server) => server,
@@ -198,13 +219,18 @@ pub fn registry_under(home: &Path) -> PathBuf {
 /// forwards each connection's requests one at a time and reports each request's method. Once,
 /// for the method `cut` names, it forwards the request and reads the owner's answer, then closes
 /// the client's connection without passing the answer on, as a desktop that quit mid-answer
-/// would.
+/// would. While `hiding` is set, its `schema.list` answers leave out the `history.*` methods, as
+/// a registry a flag has not yet extended would.
 pub struct Proxy {
     address: SocketAddr,
     stopping: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
     pub methods: Receiver<String>,
+    pub hiding: Arc<AtomicBool>,
 }
+
+/// The prefix of the methods a hiding proxy leaves out of `schema.list`.
+pub const HIDDEN: &str = "history.";
 
 impl Proxy {
     /// Stand a proxy in front of `live`, whose session file is at `real`, and point the catalog's
@@ -226,8 +252,10 @@ impl Proxy {
         let (report, methods) = channel();
         let upstream = info.address;
         let cutting = Arc::new(AtomicBool::new(cut.is_some()));
+        let hiding = Arc::new(AtomicBool::new(false));
         let accept = {
             let stopping = stopping.clone();
+            let hiding = hiding.clone();
             std::thread::spawn(move || {
                 for client in listener.incoming() {
                     if stopping.load(Ordering::SeqCst) {
@@ -236,7 +264,10 @@ impl Proxy {
                     let client = client.unwrap();
                     let report = report.clone();
                     let cutting = cutting.clone();
-                    std::thread::spawn(move || forward(client, upstream, report, cut, &cutting));
+                    let hiding = hiding.clone();
+                    std::thread::spawn(move || {
+                        forward(client, upstream, report, cut, &cutting, &hiding);
+                    });
                 }
             })
         };
@@ -245,6 +276,7 @@ impl Proxy {
             stopping,
             accept: Some(accept),
             methods,
+            hiding,
         }
     }
 }
@@ -265,6 +297,7 @@ fn forward(
     report: Sender<String>,
     cut: Option<&'static str>,
     cutting: &AtomicBool,
+    hiding: &AtomicBool,
 ) {
     let mut to_client = client.try_clone().unwrap();
     let owner = TcpStream::connect(upstream).unwrap();
@@ -283,6 +316,14 @@ fn forward(
         if Some(method.as_str()) == cut && cutting.swap(false, Ordering::SeqCst) {
             let _ = to_client.shutdown(Shutdown::Both);
             break;
+        }
+        if method == "schema.list" && hiding.load(Ordering::SeqCst) {
+            let mut response: Value = serde_json::from_str(&answer).unwrap();
+            response["result"]["methods"]
+                .as_object_mut()
+                .unwrap()
+                .retain(|name, _| !name.starts_with(HIDDEN));
+            answer = response.to_string() + "\n";
         }
         if to_client.write_all(answer.as_bytes()).is_err() {
             break;

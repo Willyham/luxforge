@@ -111,6 +111,14 @@ The [MCP adapter](../design/mcp.md#schema-generation)'s generated input schemas 
 
 The adapter binary, `luxforge-mcp`, adds no package to the lockfile: it names `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it, to encode the pictures it attaches. Its process tests hold every message it writes to the MCP specification's own `schema.json` for 2026-07-28 and 2025-11-25, vendored unmodified under `crates/luxforge-cli/tests/mcp/spec/` with their source commit, checksums and the specification project's licence (Apache-2.0, with earlier contributions under MIT) in `THIRD_PARTY.md`. They are test inputs; no binary includes them.
 
+The adapter's [independent client test](../design/mcp.md#verification), `tests/mcp/interop.rs`, drives the real `luxforge-mcp` through `rmcp` 3.7.0 (Apache-2.0), the official MCP Rust SDK, pinned exactly in the workspace manifest with no default features and only `client` and `transport-child-process`, so no server, macros or HTTP transport. It is a development dependency of `luxforge-cli` used by that test alone, on a current-thread runtime of the Tokio 1.53.1 the workspace already locks, with `rt`, `sync` and `process` asked for. It adds 19 packages to the lockfile:
+
+- Apache-2.0: `rmcp` 3.7.0;
+- MIT: `tokio-util` 0.7.20 and `tokio-stream` 0.1.19, which `rmcp` needs, and `tokio-macros` 2.7.2, from the Tokio `macros` feature it asks for;
+- MIT or Apache-2.0: `chrono` 0.4.45, which `rmcp`'s protocol types use, with `iana-time-zone` 0.1.65; `process-wrap` 10.0.1, its child-process transport; `signal-hook-registry` 1.4.8, from Tokio's `process`; and, on Windows and Haiku only, `iana-time-zone-haiku` 0.1.2 and `windows` 0.62.2, `windows-core` 0.62.2, `windows-collections` 0.3.2, `windows-future` 0.3.2, `windows-implement` 0.60.2, `windows-interface` 0.59.3, `windows-numerics` 0.3.1, `windows-result` 0.4.1, `windows-strings` 0.5.1 and `windows-threading` 0.2.1.
+
+Every one is under a licence `deny.toml` allows, and `cargo xtask audit`'s graph includes them: their licences and sources pass, and they bring no advisory of their own, though `rmcp` and `process-wrap` join the paths to the workspace's Tokio, so a Tokio advisory lists them too. No build that ships links any of them: the Tokio features they add are unified only into a build of `luxforge-cli`'s tests.
+
 As with every other dependency, passing the automated checks is not the deferred manual review.
 
 ## Usage statistics dependencies

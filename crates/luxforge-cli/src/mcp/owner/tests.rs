@@ -1,6 +1,7 @@
 //! The owner over a scripted target: a target that is its owner's only client reads the registry
 //! again after its own registry-changing calls, and one that others share never does.
 use super::*;
+use crate::mcp::protocol::ClientInfo;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -58,7 +59,7 @@ fn attached(list_changes: ListChanges) -> (Owner, Arc<Mutex<State>>) {
         state: state.clone(),
         list_changes,
     }));
-    owner.session("Claude Code via MCP").unwrap();
+    owner.session(&ClientInfo::default()).unwrap();
     (owner, state)
 }
 
@@ -78,8 +79,8 @@ fn an_only_client_reads_the_registry_again_after_its_own_flag_change() {
         json!({"flags": []}),
         "the call's own answer is kept"
     );
-    let (session, warning) = owner.session("Claude Code via MCP").unwrap();
-    assert!(warning.is_none());
+    let (session, warning) = owner.session(&ClientInfo::default()).unwrap();
+    assert!(warning.is_empty());
     assert_eq!(session.schema, registry(1));
     assert!(session.inputs.is_ok());
     // Other calls, and a refused flag change, read nothing again.
@@ -101,5 +102,8 @@ fn a_shared_owner_leaves_list_changes_to_the_watch() {
         .push_back(Ok(json!({"flags": []})));
     owner.call("flags.set", json!({"flag": "f"})).unwrap();
     assert_eq!(state.lock().unwrap().calls, ["flags.set"]);
-    assert_eq!(owner.session("x").unwrap().0.schema, registry(0));
+    assert_eq!(
+        owner.session(&ClientInfo::default()).unwrap().0.schema,
+        registry(0)
+    );
 }

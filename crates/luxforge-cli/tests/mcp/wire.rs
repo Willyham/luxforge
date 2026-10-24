@@ -95,11 +95,17 @@ pub fn conforms(era: Era, name: &str, value: &Value) {
 }
 
 /// Hold a message the server wrote to the schema of the era of the request it answers (`asked`),
-/// or, for a message that answers none, to both.
+/// or, for a message that answers none, to both. A notification tagged with a subscription is a
+/// modern one; an untagged one is a legacy client's, since a modern client hears only from its
+/// subscriptions.
 fn check(message: &Value, asked: Option<&(Era, String)>) {
+    let tagged = message["params"]["_meta"]
+        .get("io.modelcontextprotocol/subscriptionId")
+        .is_some();
     let eras: Vec<Era> = match asked {
         Some((era, _)) => vec![*era],
-        None if message.get("method").is_some() => vec![Era::Modern],
+        None if message.get("method").is_some() && tagged => vec![Era::Modern],
+        None if message.get("method").is_some() => vec![Era::Legacy],
         None => vec![Era::Modern, Era::Legacy],
     };
     for era in eras {

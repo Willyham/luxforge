@@ -44,6 +44,9 @@ tiff = { version = "=0.11.3", default-features = false, features = ["deflate"] }
 # metaschema and the generated input schemas. No default features, so no HTTP or file retrieval,
 # TLS stack or IDNA data; the adapter's own request check never links it.
 jsonschema = { version = "=0.60.1", default-features = false }
+# The official MCP Rust SDK as an independent client of `luxforge-mcp`, in one integration test
+# only: no server, macros or HTTP transports, only the client and its child-process transport.
+rmcp = { version = "=3.7.0", default-features = false, features = ["client", "transport-child-process"] }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 # The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite

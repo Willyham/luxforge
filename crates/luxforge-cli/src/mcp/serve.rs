@@ -7,7 +7,7 @@ use crate::live::command::{Line, next_line};
 use luxforge_core::MAX_REQUEST_BYTES;
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     io::{BufRead, Write},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
@@ -65,18 +65,50 @@ impl Output {
     }
 }
 
-/// The open `subscriptions/listen` requests, by identity: the worker opens one, and the client's
-/// cancellation closes it with no further message.
+/// The open `subscriptions/listen` requests, by identity, each with whether it honours
+/// `toolsListChanged`: the worker opens one, and the client's cancellation closes it with no
+/// further message.
 #[derive(Clone, Default)]
-pub struct Subscriptions(Arc<Mutex<BTreeSet<String>>>);
+pub struct Subscriptions(Arc<Mutex<BTreeMap<String, Subscription>>>);
+
+/// One open subscription.
+struct Subscription {
+    /// The `subscriptions/listen` request's identity, which tags each notification on it.
+    id: Value,
+    tools: bool,
+}
 
 impl Subscriptions {
-    pub fn open(&self, key: String) {
-        lock(&self.0).insert(key);
+    /// Open the subscription `id`, `tools` whether it honours `toolsListChanged`, once
+    /// `acknowledge` has written its acknowledgement: no notification on it can be written
+    /// before that, as the subscriptions pattern requires.
+    pub fn open(&self, id: &Value, tools: bool, acknowledge: impl FnOnce()) {
+        let mut open = lock(&self.0);
+        acknowledge();
+        open.insert(
+            id.to_string(),
+            Subscription {
+                id: id.clone(),
+                tools,
+            },
+        );
     }
 
     fn close(&self, key: &str) -> bool {
-        lock(&self.0).remove(key)
+        lock(&self.0).remove(key).is_some()
+    }
+
+    /// Whether an open subscription honours `toolsListChanged`.
+    pub fn tools(&self) -> bool {
+        lock(&self.0).values().any(|open| open.tools)
+    }
+
+    /// Run `write` with the identity of each open subscription that honours `toolsListChanged`,
+    /// holding the set meanwhile, so none opens or closes in between.
+    pub fn each_tools(&self, mut write: impl FnMut(&Value)) {
+        for open in lock(&self.0).values().filter(|open| open.tools) {
+            write(&open.id);
+        }
     }
 }
 

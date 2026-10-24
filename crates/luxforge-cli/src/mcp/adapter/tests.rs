@@ -5,10 +5,41 @@ use crate::{
     mcp::{
         owner::{Attached, Target},
         protocol::{INVALID_REQUEST, UNSUPPORTED_PROTOCOL_VERSION},
-        tools::Profile,
+        serve::{Output, Subscriptions},
+        tools::{Namespaces, Profile},
     },
 };
 use luxforge_core::ApiFailure;
+use std::{
+    io::Write,
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, Sender, channel},
+    },
+};
+
+/// What the adapter writes itself, rather than answering through the worker.
+struct Lines(Arc<Mutex<Sender<Value>>>);
+
+impl Write for Lines {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        for line in bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let _ = self
+                .0
+                .lock()
+                .unwrap()
+                .send(serde_json::from_slice(line).unwrap());
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// No Luxforge is running.
 struct Closed;
@@ -19,15 +50,31 @@ impl Target for Closed {
     }
 }
 
-fn adapter() -> Adapter {
-    Adapter::new(
+/// An adapter offering `profile` with no Luxforge running, and what it writes itself.
+fn adapter_with(profile: Profile) -> (Adapter, Receiver<Value>) {
+    let (written, output) = channel();
+    let namespaces = match &profile {
+        Profile::Compact => None,
+        Profile::Typed(namespaces) => Some(namespaces.clone()),
+    };
+    let changes = Changes::new(
+        namespaces,
+        Output::new(Box::new(Lines(Arc::new(Mutex::new(written))))),
+        Subscriptions::default(),
+    );
+    let adapter = Adapter::new(
         Tools {
-            profile: Profile::Compact,
+            profile,
             images: true,
         },
         Owner::new(Box::new(Closed)),
-        Subscriptions::default(),
-    )
+        changes,
+    );
+    (adapter, output)
+}
+
+fn adapter() -> Adapter {
+    adapter_with(Profile::Compact).0
 }
 
 fn modern_params(extra: Value) -> Value {
@@ -86,13 +133,18 @@ fn a_request_without_a_version_before_initialize_is_refused_and_an_unknown_versi
 
 #[test]
 fn initialize_selects_legacy_semantics_for_the_process() {
-    let mut adapter = adapter();
-    let initialized = ask(
-        &mut adapter,
-        "initialize",
-        json!({"protocolVersion": "2025-06-18", "capabilities": {},
-               "clientInfo": {"name": "legacy", "version": "1"}}),
+    let (mut adapter, written) = adapter_with(Profile::Compact);
+    let answers = adapter.handle(
+        &Request {
+            id: json!(1),
+            method: "initialize".into(),
+            params: json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "legacy", "version": "1"}}),
+        },
+        &Cancel::default(),
     );
+    assert!(answers.is_empty(), "written before any list change");
+    let initialized = written.recv().unwrap();
     assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "luxforge-mcp");
     assert!(initialized["result"].get("resultType").is_none());
@@ -150,22 +202,59 @@ fn ping_is_legacy_only_and_unknown_methods_and_cursors_are_refused() {
 }
 
 #[test]
-fn a_subscription_is_acknowledged_with_nothing_honoured_and_held_open() {
-    let adapter = adapter();
-    let request = Request {
-        id: json!("listen"),
-        method: "subscriptions/listen".into(),
-        params: modern_params(json!({"notifications": {"toolsListChanged": true}})),
-    };
-    let answers = adapter.listen(&request);
-    assert_eq!(
-        answers,
-        [
+fn a_subscription_is_acknowledged_with_what_the_profile_honours_and_held_open() {
+    for (profile, honoured) in [
+        (Profile::Compact, json!({})),
+        (
+            Profile::Typed(Namespaces::All),
+            json!({"toolsListChanged": true}),
+        ),
+    ] {
+        let (adapter, written) = adapter_with(profile);
+        let request = Request {
+            id: json!("listen"),
+            method: "subscriptions/listen".into(),
+            params: modern_params(json!({"notifications": {"toolsListChanged": true}})),
+        };
+        assert!(
+            adapter.listen(&request).is_empty(),
+            "no response: the stream stays open"
+        );
+        assert_eq!(
+            written.recv().unwrap(),
             json!({"jsonrpc": "2.0", "method": "notifications/subscriptions/acknowledged",
                 "params": {"_meta": {"io.modelcontextprotocol/subscriptionId": "listen"},
-                           "notifications": {}}})
-        ],
-        "an acknowledgement and no response: the stream stays open"
+                           "notifications": honoured}}),
+        );
+        adapter.changes.close();
+    }
+}
+
+#[test]
+fn a_typed_profile_advertises_list_changes_and_lists_the_built_in_registry_without_a_session() {
+    let (mut adapter, _) = adapter_with(Profile::Typed(Namespaces::Only(vec!["asset".into()])));
+    let discovered = ask(&mut adapter, "server/discover", modern_params(json!({})));
+    assert_eq!(
+        discovered["result"]["capabilities"],
+        json!({"tools": {"listChanged": true}})
+    );
+    let listed = ask(&mut adapter, "tools/list", modern_params(json!({})));
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert!(!tools.is_empty());
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool["name"].as_str().unwrap().starts_with("asset_"))
+    );
+    assert_eq!(listed["result"]["ttlMs"], TYPED_TTL_MS);
+    let call = ask(
+        &mut adapter,
+        "tools/call",
+        modern_params(json!({"name": "asset_state", "arguments": {"asset_id": "a"}})),
+    );
+    assert_eq!(
+        call["result"]["structuredContent"]["error"]["code"],
+        "no-session"
     );
 }
 

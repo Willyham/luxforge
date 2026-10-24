@@ -152,7 +152,7 @@ fn a_request_cancelled_while_it_runs_is_not_answered() {
     let (started, starts) = channel();
     let (release, released) = channel();
     let subscriptions = Subscriptions::default();
-    subscriptions.open(json!(9).to_string());
+    subscriptions.open(&json!(9), false, || {});
     let server = {
         let subscriptions = subscriptions.clone();
         std::thread::spawn(move || {
@@ -190,5 +190,5 @@ fn a_request_cancelled_while_it_runs_is_not_answered() {
     assert_eq!(output.recv().unwrap(), json!({"answered": "next"}));
     drop(feed);
     server.join().unwrap();
-    assert!(!lock(&subscriptions.0).contains(&json!(9).to_string()));
+    assert!(!lock(&subscriptions.0).contains_key(&json!(9).to_string()));
 }

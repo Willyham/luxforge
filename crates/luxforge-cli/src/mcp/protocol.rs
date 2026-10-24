@@ -170,6 +170,7 @@ const ACTOR_LIMIT: usize = 128;
 /// What the adapter calls itself to the desktop when the client gives no name.
 pub const UNNAMED_CLIENT: &str = "MCP client";
 const VIA: &str = " via MCP";
+const WATCH: &str = " (tool list)";
 
 impl ClientInfo {
     /// Read an `Implementation` object; anything else names nothing.
@@ -190,13 +191,24 @@ impl ClientInfo {
     /// The label the adapter identifies itself with: "*title or name* via MCP", the client's part
     /// shortened so the whole is at most 64 characters, or [`UNNAMED_CLIENT`].
     pub fn label(&self) -> String {
+        self.label_ending("")
+    }
+
+    /// The label of the adapter's second connection, which watches the registry for a typed
+    /// profile: "*title or name* via MCP (tool list)", within the same 64 characters, so the
+    /// desktop's list of clients never shows it as a second agent.
+    pub fn watch_label(&self) -> String {
+        self.label_ending(WATCH)
+    }
+
+    fn label_ending(&self, ending: &str) -> String {
         match self.title.as_ref().or(self.name.as_ref()) {
             Some(client) => {
-                let room = LABEL_LIMIT - VIA.chars().count();
+                let room = LABEL_LIMIT - VIA.chars().count() - ending.chars().count();
                 let client: String = client.chars().take(room).collect();
-                format!("{}{VIA}", client.trim_end())
+                format!("{}{VIA}{ending}", client.trim_end())
             }
-            None => UNNAMED_CLIENT.to_owned(),
+            None => format!("{UNNAMED_CLIENT}{ending}"),
         }
     }
 
@@ -304,6 +316,22 @@ pub fn error(id: Option<&Value>, error: &RpcError) -> Value {
 /// A notification from the server.
 pub fn notification(method: &str, params: Value) -> Value {
     json!({"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+/// The tag of a notification on a modern subscription: the `subscriptions/listen` request's
+/// identity.
+pub const SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
+
+/// The method that announces a change of the tool list.
+pub const TOOLS_CHANGED: &str = "notifications/tools/list_changed";
+
+/// `notifications/tools/list_changed`: on the modern subscription `subscription`, tagged with its
+/// identity, or, with none, as the legacy revisions send it, without parameters.
+pub fn tools_changed(subscription: Option<&Value>) -> Value {
+    match subscription {
+        Some(id) => notification(TOOLS_CHANGED, json!({"_meta": {SUBSCRIPTION_ID: id}})),
+        None => json!({"jsonrpc": "2.0", "method": TOOLS_CHANGED}),
+    }
 }
 
 #[cfg(test)]
