@@ -7,7 +7,7 @@
 use super::{super::SourceTaskKind, Call, Owner, change, retried, selected};
 use crate::{
     AssetId, Error, MutationOutcome,
-    api::{ClientAuthority, announce_once, methods::value},
+    api::{announce_once, methods::value},
     catalog_types::{
         AssetRowId, EmptyRemovedAnswer, MAX_LIBRARY_BATCH,
         api::{AssetTargets, LibraryRequest},
@@ -69,8 +69,8 @@ fn targeted(
     })?)
 }
 
-/// `catalog.empty-removed`: refused with `forbidden` to a client without permission authority;
-/// otherwise delete the removed photographs' records, at most [`MAX_LIBRARY_BATCH`] of them, in
+/// `catalog.empty-removed`, which only a client with permission authority reaches (the method table
+/// declares it and the catalog owner refuses anyone else): delete the removed photographs' records, at most [`MAX_LIBRARY_BATCH`] of them, in
 /// one transaction ([`EditorService::empty_removed`](crate::EditorService::empty_removed)),
 /// announce it as one event, and queue the collection that removes the files of the artifacts it
 /// deleted, as `artifact.collect` queues one: should the source queue be full, those files are
@@ -80,12 +80,6 @@ pub(in crate::api) fn catalog_empty_removed(
     call: &Call<'_>,
     _: LibraryRequest,
 ) -> Result<Value, Error> {
-    if owner.authority(call.client) != ClientAuthority::Permissions {
-        return Err(Error::forbidden(
-            "emptying Removed permanently deletes photographs' history and needs permission \
-             authority: only the desktop or luxforge-json --permission-authority may",
-        ));
-    }
     let (emptied, collection) = owner.service.empty_removed(MAX_LIBRARY_BATCH)?;
     let Emptied {
         assets,

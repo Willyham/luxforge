@@ -6914,6 +6914,7 @@
           "job_id",
           "candidate"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.add-correction": {
@@ -7022,6 +7023,7 @@
           "points",
           "radius"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.apply-settings": {
@@ -7072,6 +7074,7 @@
           "settings",
           "origin"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.auto-tone": {
@@ -7087,6 +7090,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7179,6 +7183,7 @@
           "width",
           "height"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.crop-fit": {
@@ -7280,6 +7285,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.crop-reset": {
@@ -7293,6 +7299,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.delete-correction": {
@@ -7319,6 +7326,7 @@
           "mutation",
           "operation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.pick-raw-neutral": {
@@ -7359,6 +7367,7 @@
           "x",
           "y"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -7401,6 +7410,7 @@
           "operation",
           "index"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.reset-basic": {
@@ -7416,6 +7426,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7440,6 +7451,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.reset-curve": {
@@ -7455,6 +7467,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7481,6 +7494,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7505,6 +7519,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.reset-look": {
@@ -7518,6 +7533,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -7536,6 +7552,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7560,6 +7577,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.reset-presence": {
@@ -7575,6 +7593,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7599,6 +7618,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.select-lens-profile": {
@@ -7650,6 +7670,7 @@
           "mutation",
           "profile"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.set-basic": {
@@ -7808,6 +7829,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7858,6 +7880,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -7996,6 +8019,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -8050,6 +8074,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -8592,6 +8617,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -8644,6 +8670,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.set-presence": {
@@ -8702,6 +8729,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "target": {
           "default": null,
@@ -8769,6 +8797,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -8800,6 +8829,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -8831,6 +8861,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset",
         "sources": [
           "raw"
@@ -8903,6 +8934,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.transform": {
@@ -8934,6 +8966,7 @@
           "mutation",
           "transform"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.update-correction": {
@@ -9069,6 +9102,7 @@
           "mutation",
           "operation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-colour-range": {
@@ -9127,6 +9161,7 @@
           "mask",
           "mode"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-colour-range-sample": {
@@ -9213,6 +9248,7 @@
           "g",
           "b"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-linear": {
@@ -9319,6 +9355,7 @@
           "x1",
           "y1"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-luminance-range": {
@@ -9420,6 +9457,7 @@
           "mask",
           "mode"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-model": {
@@ -9564,6 +9602,7 @@
           "input_fingerprint",
           "prefix_hash"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-radial": {
@@ -9700,6 +9739,7 @@
           "angle",
           "feather"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.add-stroke": {
@@ -9845,6 +9885,7 @@
           "flow",
           "erase"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.create-colour-range": {
@@ -9875,6 +9916,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.create-linear": {
@@ -9953,6 +9995,7 @@
           "x1",
           "y1"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.create-luminance-range": {
@@ -10026,6 +10069,7 @@
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.create-model": {
@@ -10142,6 +10186,7 @@
           "input_fingerprint",
           "prefix_hash"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.create-radial": {
@@ -10250,6 +10295,7 @@
           "angle",
           "feather"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.delete": {
@@ -10276,6 +10322,7 @@
           "mutation",
           "mask"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.delete-colour-range-sample": {
@@ -10327,6 +10374,7 @@
           "component",
           "index"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.delete-component": {
@@ -10365,6 +10413,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.delete-stroke": {
@@ -10415,6 +10464,7 @@
           "component",
           "stroke"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.duplicate": {
@@ -10441,6 +10491,7 @@
           "mutation",
           "mask"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.list": {
@@ -10566,6 +10617,7 @@
           "x",
           "y"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.pick-luminance-range": {
@@ -10669,6 +10721,7 @@
           "x",
           "y"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.rename": {
@@ -10707,6 +10760,7 @@
           "mask",
           "name"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.rename-component": {
@@ -10757,6 +10811,7 @@
           "component",
           "name"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.reorder": {
@@ -10796,6 +10851,7 @@
           "mask",
           "index"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.reorder-component": {
@@ -10847,6 +10903,7 @@
           "component",
           "index"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.sample-input": {
@@ -11024,6 +11081,7 @@
           "mask",
           "amount"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-colour-range": {
@@ -11078,6 +11136,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-component-invert": {
@@ -11127,6 +11186,7 @@
           "component",
           "invert"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-component-mode": {
@@ -11181,6 +11241,7 @@
           "component",
           "mode"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-invert": {
@@ -11218,6 +11279,7 @@
           "mask",
           "invert"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-linear": {
@@ -11321,6 +11383,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-luminance-range": {
@@ -11418,6 +11481,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-model": {
@@ -11558,6 +11622,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "mask.set-radial": {
@@ -11691,6 +11756,7 @@
           "mask",
           "component"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "query.auto-tone": {
@@ -12068,7 +12134,8 @@
         "required": [
           "mutation",
           "asset_id"
-        ]
+        ],
+        "reversible": true
       },
       "task.fill-generative": {
         "mutates": true,
@@ -12185,7 +12252,8 @@
           "selection-points",
           "selection-radius",
           "model"
-        ]
+        ],
+        "reversible": true
       },
       "task.select-object": {
         "mutates": true,
@@ -12289,7 +12357,8 @@
         "required": [
           "mutation",
           "asset_id"
-        ]
+        ],
+        "reversible": true
       }
     }
   }

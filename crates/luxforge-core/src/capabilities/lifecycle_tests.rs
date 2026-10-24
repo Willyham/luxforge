@@ -257,9 +257,14 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
         refused.message,
         "granting a permission needs permission authority"
     );
-    // Every request is parsed before its handler runs, so a malformed one is refused as malformed
-    // whoever sends it; it grants nothing either way.
-    assert_eq!(owner.fail(GRANT, json!({})).code, "validation");
+    // Authority is checked before anything is parsed, so an edit client is refused even a
+    // malformed grant as forbidden; a malformed one from the authority is refused as malformed.
+    // It grants nothing either way.
+    assert_eq!(owner.fail(GRANT, json!({})).code, "forbidden");
+    assert_eq!(
+        owner.fail_as(owner.admin, GRANT, json!({})).code,
+        "validation"
+    );
     let granted = owner.ok_as(owner.admin, GRANT, request.clone());
     assert_eq!(granted["outcome"], json!("committed"));
     assert_eq!(granted["deduplicated"], json!(false));

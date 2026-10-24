@@ -3,7 +3,7 @@
 //! write of `preferences.json`; nothing here touches a catalog, a photograph or the network.
 use super::{Call, Owner};
 use crate::{
-    ClientAuthority, Error,
+    Error,
     api::{
         announce_once,
         methods::value,
@@ -33,17 +33,13 @@ pub(in crate::api) fn read(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Resu
 }
 
 /// `usage.prompt.claim`: only the host's own client with permission authority may claim the one
-/// startup notice; a claim that wrote the record is announced.
+/// startup notice, which the method table declares and the catalog owner checks; a claim that wrote
+/// the record is announced.
 pub(in crate::api) fn claim(
     owner: &mut Owner,
     call: &Call<'_>,
     _: UsageClaim,
 ) -> Result<Value, Error> {
-    if owner.authority(call.client) != ClientAuthority::Permissions {
-        return Err(Error::forbidden(
-            "claiming the usage statistics notice needs permission authority",
-        ));
-    }
     let usage = owner.host.usage_consent();
     let show_prompt = usage.claim_published(&owner.host.preferences)?;
     if show_prompt.value {
