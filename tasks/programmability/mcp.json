@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Add the registry markers the adapter needs to schema.list: permission-only authority, effect markers on every mutating method, and image result fields.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "authority: \"permissions\" on methods that only permission authority may call at all: module.permission.grant, usage.prompt.claim, update.install, update.move-to-applications, catalog.empty-removed (today stated only in notes). A method needing permission authority for one argument value, such as usage.set {enabled: true}, stays unmarked and keeps its note. The marker is taken from the same place the forbidden check is made, or a test holds the two equal, so they cannot drift.",
@@ -58,7 +58,7 @@
     {
       "id": "TASK-002",
       "description": "Add client identity and the connected-client list to the core: session.identify, session.clients and session.disconnect, with connections recorded in the event log; luxforge-ctl identifies itself.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "session.identify {label}: session-scoped, 1–64 characters, names the calling client; a later call replaces the label.",
@@ -116,7 +116,7 @@
     {
       "id": "TASK-003",
       "description": "Generate JSON Schema 2020-12 input schemas from the parameter vocabulary for every registry method, as a library module in luxforge-cli.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Input: a method's schema.list entry. Output: an object schema with properties, required and additionalProperties: false; the envelope never appears. The kind mapping is the design's: integer/number with minimum/maximum, enum, boolean, string with maxLength, text as string with its byte bound in the description (checked by the adapter, not maxLength), identity as the identifier's wire type, points/curve as arrays of pairs with minItems/maxItems, color/artifact/settings/settings-origin in their wire forms, json as {} with its notes, default copied, unit/step/soft range/precision in the description.",
@@ -173,7 +173,7 @@
     {
       "id": "TASK-004",
       "description": "Build luxforge-mcp: the dual-era stdio server with the compact profile, attaching to the running desktop's live session.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -241,7 +241,7 @@
     {
       "id": "TASK-005",
       "description": "Add the typed profiles: one generated tool per method for --tools all or a namespace list, with annotations, list-change notifications and an independent rmcp client test.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -294,7 +294,7 @@
     {
       "id": "TASK-006",
       "description": "Add headless mode: --headless --catalog PATH runs the adapter over its own luxforge-json child.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -339,7 +339,7 @@
     {
       "id": "TASK-007",
       "description": "Package luxforge-mcp beside luxforge-ctl in the macOS bundle and the Linux tarball, and add luxforge-mcp config CLIENT with the core snippet generator.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -389,7 +389,7 @@
     {
       "id": "TASK-008",
       "description": "Build Settings › Agents in the desktop: the bundled luxforge-mcp path, per-client configuration with Copy, and the connected live clients with Disconnect, with its boards.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-007"

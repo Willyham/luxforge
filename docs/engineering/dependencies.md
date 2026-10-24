@@ -1,6 +1,6 @@
 # Dependency policy
 
-Project code is GPL-3.0-or-later. Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64 and Linux x64 graphs. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
+Project code is GPL-3.0-or-later. Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64 and Linux x64 graphs. Those graphs include packages that only a development dependency reaches, so their advisories and sources are checked; the licence check skips them, as cargo-deny does by default and `deny.toml` leaves unchanged. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
 
 ```sh
 cargo install --locked --version 0.20.2 --root .tools/cargo-deny cargo-deny
@@ -107,7 +107,9 @@ The [MCP adapter](../design/mcp.md#schema-generation)'s generated input schemas 
 - MIT: `jsonschema`, `jsonschema-regex`, `jsonschema-value` and `referencing` 0.60.1, `fancy-regex` 0.19.2, `fluent-uri` 0.4.1, `email_address` 0.2.9, `uuid-simd` and `vsimd` 0.8.0, `outref` 0.5.2, `data-encoding` 2.11.1, `micromap` 0.3.0, and `strum` and `strum_macros` 0.28.0;
 - MIT or Apache-2.0: `fraction` 0.17.0, `num` 0.4.3, `num-bigint` 0.4.8, `num-iter` 0.1.46, `num-rational` 0.4.2, `num-cmp` 0.1.0, `bytecount` 0.6.9, `heck` 0.5.0, `ref-cast` and `ref-cast-impl` 1.0.27, and `allocator-api2` 0.2.21;
 - Apache-2.0: `unicode-general-category` 1.1.0;
-- MIT-0: `borrow-or-share` 0.2.4, which `deny.toml`'s allowlist does not name. The graph cargo-deny checks under `cargo xtask audit` leaves out packages that only a development dependency reaches, so none of these is checked there; no build that ships links any of them.
+- MIT-0: `borrow-or-share` 0.2.4, which `deny.toml`'s allowlist does not name.
+
+These packages are in the graph `cargo xtask audit` checks, so their advisories and sources are checked there. Its licence check skips packages that only a development dependency reaches, so `borrow-or-share`'s MIT-0 passes unchecked rather than allowed. Whether to allow MIT-0, add an exception for it or replace `jsonschema` is an open owner decision, and `deny.toml` is unchanged until it is made. No build that ships links any of these packages.
 
 The adapter binary, `luxforge-mcp`, adds no package to the lockfile: it names `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it, to encode the pictures it attaches. Its process tests hold every message it writes to the MCP specification's own `schema.json` for 2026-07-28 and 2025-11-25, vendored unmodified under `crates/luxforge-cli/tests/mcp/spec/` with their source commit, checksums and the specification project's licence (Apache-2.0, with earlier contributions under MIT) in `THIRD_PARTY.md`. They are test inputs; no binary includes them.
 
@@ -117,7 +119,7 @@ The adapter's [independent client test](../design/mcp.md#verification), `tests/m
 - MIT: `tokio-util` 0.7.20 and `tokio-stream` 0.1.19, which `rmcp` needs, and `tokio-macros` 2.7.2, from the Tokio `macros` feature it asks for;
 - MIT or Apache-2.0: `chrono` 0.4.45, which `rmcp`'s protocol types use, with `iana-time-zone` 0.1.65; `process-wrap` 10.0.1, its child-process transport; `signal-hook-registry` 1.4.8, from Tokio's `process`; and, on Windows and Haiku only, `iana-time-zone-haiku` 0.1.2 and `windows` 0.62.2, `windows-core` 0.62.2, `windows-collections` 0.3.2, `windows-future` 0.3.2, `windows-implement` 0.60.2, `windows-interface` 0.59.3, `windows-numerics` 0.3.1, `windows-result` 0.4.1, `windows-strings` 0.5.1 and `windows-threading` 0.2.1.
 
-Every one is under a licence `deny.toml` allows, and `cargo xtask audit`'s graph includes them: their licences and sources pass, and they bring no advisory of their own, though `rmcp` and `process-wrap` join the paths to the workspace's Tokio, so a Tokio advisory lists them too. No build that ships links any of them: the Tokio features they add are unified only into a build of `luxforge-cli`'s tests.
+Every one is under a licence `deny.toml` allows, though as development-only packages the licence check skips them. `cargo xtask audit`'s graph includes them: their sources pass, and they bring no advisory of their own, though `rmcp` and `process-wrap` join the paths to the workspace's Tokio, so a Tokio advisory lists them too. No build that ships links any of them: the Tokio features they add are unified only into a build of `luxforge-cli`'s tests.
 
 As with every other dependency, passing the automated checks is not the deferred manual review.
 

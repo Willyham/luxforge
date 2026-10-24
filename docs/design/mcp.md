@@ -1,6 +1,6 @@
 # MCP adapter
 
-Status: planned, awaiting implementation authorization ([task plan](../../tasks/programmability/mcp.json)). Nothing here is built yet.
+Status: implemented ([task plan](../../tasks/programmability/mcp.json), [feature status](../features.md), [user guide](../user-guide.md#connecting-an-agent)). Verified on Linux by the unit and process tests, the `rmcp` interoperability test and the `settings-agents` scenario under Xvfb. Open: the rendered journey and the M4 runs, the macOS release rehearsal, Windows, and qualification with real clients ([verification](#verification)).
 
 `luxforge-mcp` is a Model Context Protocol server. It lets an agent (Claude Code, Claude Desktop, Codex, Cursor and other MCP clients) operate Luxforge through the same operation registry that the desktop, `luxforge-json` and `luxforge-ctl` use. It is an adapter and has no feature logic of its own. Every tool it offers is a registry method, every edit is an ordinary API transaction with the same history, undo and conflict behaviour as a person's, and every argument schema is generated from `schema.list`. There is no hand-written copy.
 
@@ -72,7 +72,7 @@ One generator turns the live `schema.list` into tools. Which tools are offered i
 | `all` | One typed tool per registry method |
 | `NS[,NS…]` | One typed tool per method in the named namespaces, e.g. `asset,edit,query,render,history,job,preview` |
 
-The default is compact, because the full registry is 233 methods. Their notes and parameters are about 275,000 characters, roughly 75,000 tokens of tool definitions. Typed tools are opt-in, for clients that defer large tool lists or for a person who wants to approve operations one by one.
+The default is compact, because the full registry is about 240 methods. Their notes and parameters are nearly 290,000 characters, roughly 80,000 tokens of tool definitions. Typed tools are opt-in, for clients that defer large tool lists or for a person who wants to approve operations one by one.
 
 ### The compact profile
 
@@ -213,7 +213,7 @@ The adapter has no polling loop: waits are the owner's held `events.wait` and `j
 
 ## Implementation
 
-What is built today: the live-session adapter and headless mode with the compact and typed profiles and list-change notifications, `config` with its client configuration, packaging beside `luxforge-ctl`, and the `rmcp` interoperability test.
+Everything above is built: the core additions, the live-session adapter and headless mode with the compact and typed profiles and list-change notifications, `config` with its client configuration, packaging beside `luxforge-ctl`, Settings › Agents with its `settings-agents` scenario, and the `rmcp` interoperability test.
 
 ### Command line
 

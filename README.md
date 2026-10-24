@@ -98,12 +98,12 @@ Luxforge is pre-release. Everything is v0, formats can change between builds, an
 
 ### Built for scripts and agents
 
-- **The JSON API** covers every operation, and the **`luxforge-ctl`** command line drives the photograph open in the running editor (see [Scripting it](#scripting-it)).
+- **The JSON API** covers every operation, the **`luxforge-ctl`** command line drives the photograph open in the running editor, and the **`luxforge-mcp`** server connects AI agents such as Claude Code, Codex and Cursor to it (see [Scripting it](#scripting-it)).
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top. Every edit is attributed in history.
 
 ### On the way
 
-Generative Remove and Replace on local models are in progress behind an experiment flag. Automatic updates are built but not yet live. An MCP adapter, Lightroom catalog import and broader Windows and Linux verification are planned. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet, and the [roadmap](docs/plan.md) has what comes next.
+Generative Remove and Replace on local models are in progress behind an experiment flag. Automatic updates are built but not yet live. Lightroom catalog import and broader Windows and Linux verification are planned. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet, and the [roadmap](docs/plan.md) has what comes next.
 
 ## Scripting it
 
@@ -128,6 +128,8 @@ target/release/luxforge-ctl call edit.set-basic --asset asset-… --params '{"ex
 target/release/luxforge-ctl call edit.auto-tone --asset asset-…
 ```
 
+To let an AI agent work in the running editor, connect it to `luxforge-mcp`, a Model Context Protocol server built alongside it. **Settings › Agents** shows the configuration for Claude Code, Claude Desktop, Codex, Cursor and other MCP clients with a Copy button, and lists the agents connected now; `luxforge-mcp config claude-code` prints the same text. An agent's edits land in history under its name, and an agent can never grant consent or permissions ([connecting an agent](docs/user-guide.md#connecting-an-agent)).
+
 ## How it's built
 
 Luxforge is written in Rust with a deliberately small core. The core owns the catalog, recipes, history and undo, rendering and the command service. Each tool (Basic, the colour mixer, crop and the rest) is a module that declares its parameters, controls and processing. The desktop builds its panels from those declarations, and the API generates `edit.*` methods from the same ones, so the two can't drift apart.
@@ -148,7 +150,7 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 | `luxforge-update`, `luxforge-sparkle`, `luxforge-install` | Signed update feeds, the macOS Sparkle bridge and the Linux updater, and moving the app into Applications |
 | `luxforge-ui` | The widget library (built on [iced](https://iced.rs)), with no dependency on the core |
 | `luxforge-app` | The desktop app |
-| `luxforge-cli` | The headless `luxforge-json` and live-session `luxforge-ctl` binaries, and where the application keeps its files; builds without the GUI stack |
+| `luxforge-cli` | The headless `luxforge-json`, live-session `luxforge-ctl` and MCP server `luxforge-mcp` binaries, and where the application keeps its files; builds without the GUI stack |
 | `luxforge-evidence` | The evidence script's step types, shared by the desktop and `xtask` so a scripted run and a hand-written one read the same shape |
 | `luxforge-reference` | Independent f64 references (colour, mask, mixer, Presence, range, tone, vignette, white balance) that production is tested against; depends on no workspace crate |
 | `luxforge-testbase` | The one gate and hang-bounded wait every test orders its steps by; depends on no workspace crate, never shipped |
