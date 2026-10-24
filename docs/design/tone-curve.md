@@ -75,7 +75,7 @@ The delivered host places a new layer by its effect's stage and declared order a
 
 Why after Basic: the curve finishes the global tone shaping Basic starts, in the same encoded domain, so the composition is one monotone luminance map a person reads from the plot. Why before the mixer: the mixer addresses the colours of the toned photograph, and its order-10 place is kept. Why not after the mixer: a luminance curve after Oklab hue and chroma changes would still be hue-preserving, but the panel would then read top to bottom in an order the pipeline did not follow. The neutral picker samples the stage the Basic layer receives, so the curve never sits in front of it.
 
-Canonical stack for a fully edited photograph: source (RAW only) → Detail restoration → Basic → **Tone curve** → mixer → presence → orientation → lens correction → perspective → crop → vignette.
+Canonical stack for a fully edited photograph: source (RAW only) → Detail restoration → Basic → **Tone curve** → mixer → presence → orientation → lens correction → perspective → crop → vignette → grain.
 
 ## Processing contract
 
@@ -246,7 +246,7 @@ The existing limits hold unchanged; the unit adds no allocation, queue, timer or
 
 The Tone curve, [Detail](detail.md), and [lens and perspective](lens-and-perspective.md) modules share these contracts:
 
-- **Panel and registry order** (`linked_modules`): Crop, transform, straighten · Presets · (Pixel) · (RAW) · (Look, on a RAW photo) · Basic · **Tone curve** · Detail · Presence · Colour mixer · Lens correction · Perspective · Vignette · (Controls). The registry array, its doc comment and `the_one_assembly_serves_test_modules_only_in_developer_mode` in `registry/tests.rs` cover this order.
+- **Panel and registry order** (`linked_modules`): Crop, transform, straighten · Presets · (Pixel) · (RAW) · (Look, on a RAW photo) · Basic · **Tone curve** · Detail · Presence · Colour mixer · Lens correction · Perspective · Vignette · Grain · (Controls). The registry array, its doc comment and `the_one_assembly_serves_test_modules_only_in_developer_mode` in `registry/tests.rs` cover this order.
 - **Compile context.** `CompileStage` carries actual and full-resolution dimensions and sampling scale through `ToolModule::compile` and `FieldPatch::compile`; the curve ignores stage and scale.
 - **The field-patch framework** (`modules/field_patch.rs`) has `Values::curve`, restoration and geometry shapes, and non-presettable actions, covered by framework tests.
 - **Generated and registry files**: the descriptor snapshot, the conformance `KNOWN` list, the smoke `SCENARIOS`, the fixture `TABLE` in `xtask/src/fixtures.rs`, and the reference crate's `lib.rs` and `tests/studies/main.rs` hold the curve's entries; the descriptor snapshot is regenerated from the registry.

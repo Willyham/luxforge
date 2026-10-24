@@ -22,7 +22,7 @@ No additional HSL modes, Point Color, targeted adjustment, B&W mixer, LUT loadin
 - `crates/luxforge-core/src/presets/mapping.rs`: the grading rows of the Lightroom preset mapper ([presets](presets.md#mapping)).
 - `crates/luxforge-reference/src/grade.rs` and `grade_response.rs`, their studies, `fixtures/mixer/grade-cases.json`, `xtask/src/grade_align.rs`, the `grading` smoke scenario, the grading section of `editor-acceptance` and the grading recipes of the GPU corpus.
 
-Canonical placement is Basic → RAW look when present → Tone curve → mixer → Presence → geometry → vignette, with Detail and repairs in their declared stages. Stored layers are never reordered to manufacture that order. The host owns masked-layer placement and blending.
+Canonical placement is Basic → RAW look when present → Tone curve → mixer → Presence → geometry → vignette → grain, with Detail and repairs in their declared stages. Stored layers are never reordered to manufacture that order. The host owns masked-layer placement and blending.
 
 ## Controls
 

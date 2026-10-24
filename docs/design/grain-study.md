@@ -1,6 +1,6 @@
 # Grain study: the frozen hash, field, application and reduced-stage rule
 
-Status: frozen. The `luxforge.grain` module that implements it is not built yet. This document, the independent [`f64` reference](../../crates/luxforge-reference/src/grain.rs) and the checked-in [oracle fixtures](../../fixtures/grain/README.md) are the complete specification the production unit, in f32 Rust and in WGSL, is checked against. It answers the [processing contract](grain.md#processing-contract) of the [grain design](grain.md): one `PointwiseColor` in the finish stage, a pure function of the output pixel's position, the three sliders and one frozen seed.
+Status: frozen, and implemented by the [`luxforge.grain` module](grain.md). This document, the independent [`f64` reference](../../crates/luxforge-reference/src/grain.rs) and the checked-in [oracle fixtures](../../fixtures/grain/README.md) are the complete specification the production unit, in f32 Rust and in WGSL, is checked against. It answers the [processing contract](grain.md#processing-contract) of the [grain design](grain.md): one `PointwiseColor` in the finish stage, a pure function of the output pixel's position, the three sliders and one frozen seed.
 
 No value here claims Lightroom equivalence. The amplitudes and mappings are this study's own, chosen for clearly visible film grain at Amount 100; Lightroom's responses are fitted later by the [alignment round](grain.md#verification-and-acceptance).
 
