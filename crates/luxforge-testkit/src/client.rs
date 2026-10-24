@@ -9,7 +9,6 @@
 use luxforge_core::{
     ApiRequest, ApiResponse, ClientId, HostConfig, ModuleRegistry, OwnerHandle, Recipe,
     RegistryOptions,
-    flags::{LaunchFlags, RANGE_MASKS},
 };
 use luxforge_testbase::try_wait_for;
 use serde_json::{Value, json};
@@ -209,15 +208,6 @@ pub fn recipe(owner: &OwnerHandle, client: ClientId, asset: &Value) -> Checked<R
         .map_err(|error| format!("asset.state answered an unreadable recipe: {error}"))
 }
 
-/// A host with no settings directory that forces the luminance and colour range mask experiment
-/// on, as a check that creates range masks starts its owner with.
-pub fn range_masks_host() -> HostConfig {
-    HostConfig {
-        launch_flags: LaunchFlags::resolve(None, &[(RANGE_MASKS, json!(true), "test")]),
-        ..HostConfig::unconfigured()
-    }
-}
-
 /// A catalog owner that is stopped and joined however the check using it ends. It dereferences to
 /// its [`OwnerHandle`], so every free function above takes it too.
 pub struct Owner {
@@ -232,7 +222,7 @@ impl Owner {
         Self::start_with_host(catalog, registry, HostConfig::unconfigured(), actor)
     }
 
-    /// [`Self::start`] on a capability host, such as [`range_masks_host`].
+    /// [`Self::start`] on a capability host.
     pub fn start_with_host(
         catalog: &Path,
         registry: ModuleRegistry,

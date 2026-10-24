@@ -1,4 +1,4 @@
-//! The Generative tier through the catalog owner exactly as a client drives it: the flag, the
+//! The Generative tier through the catalog owner exactly as a client drives it: the
 //! developer models installed through the ordinary grant and install job, Generate and Regenerate,
 //! the candidates' listing and chunks, an accept from another client, undo, redo and a reopen that
 //! renders the accepted patch with no model; cancellation, the lock a running fill holds on its
@@ -115,10 +115,9 @@ impl Fixture {
         )
     }
 
-    /// The flag on and the generator installed: the tier offered.
+    /// The generator installed: the tier offered.
     fn ready(&self) -> Owner {
         let owner = self.start();
-        owner.flag(true);
         owner.install(&FAKE_GENERATOR);
         owner
     }
@@ -170,7 +169,6 @@ fn with(mut params: Value, extra: Value) -> Value {
 
 /// What these tests ask of the owner besides the shared harness.
 trait Ai {
-    fn flag(&self, on: bool);
     fn install(&self, file: &ModelFile);
     /// The fill, waiting through any preparation its read asks for, as a client does.
     fn fill(&self, params: Value) -> Result<Value, ApiFailure>;
@@ -190,10 +188,6 @@ trait Ai {
 }
 
 impl Ai for Owner {
-    fn flag(&self, on: bool) {
-        self.ok("flags.set", json!({"flag": "ai.generative", "value": on}));
-    }
-
     fn install(&self, file: &ModelFile) {
         self.ok_as(
             self.admin,
@@ -464,25 +458,15 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     assert_eq!(fixture.controls().generations(), 7);
 }
 
-/// `ai.generative-gpu-sharing` is read as each fill is requested, reaches every generation of
-/// its job, and is recorded in the job's result.
+/// Every generation of a fill's job shares the GPU.
 #[test]
 #[slow]
-fn the_gpu_sharing_flag_reaches_each_generation_of_the_requests_made_while_it_is_on() {
+fn every_generation_shares_the_gpu() {
     let fixture = Fixture::new("gpu-sharing");
     let [asset, _] = fixture.assets.clone();
     let owner = fixture.ready();
-    let whole = owner.generate(with(selection(&asset), json!({"seed": 1})));
-    assert_eq!(whole["result"]["result"]["share_gpu"], false, "{whole}");
-    assert_eq!(fixture.controls().shared_generations(), 0);
-
-    owner.ok(
-        "flags.set",
-        json!({"flag": crate::flags::AI_GENERATIVE_GPU_SHARING, "value": true}),
-    );
-    let sliced = owner.generate(with(selection(&asset), json!({"seed": 2, "candidates": 2})));
-    assert_eq!(sliced["result"]["result"]["share_gpu"], true, "{sliced}");
-    assert_eq!(fixture.controls().generations(), 3);
+    owner.generate(with(selection(&asset), json!({"seed": 1, "candidates": 2})));
+    assert_eq!(fixture.controls().generations(), 2);
     assert_eq!(fixture.controls().shared_generations(), 2);
 }
 
@@ -646,34 +630,22 @@ fn every_refusal_is_named_and_generates_nothing() {
             .collect()
     };
 
-    // Nothing set up: the flag is off and the model is not installed, listed together.
+    // Nothing set up: the model is not installed.
     let tiers = owner.status(AI_MODULE)["fill_tiers"].clone();
     assert_eq!(tiers[0]["offered"], false);
     assert_eq!(
         tiers[0]["missing"],
-        json!([
-            {"kind": "flag", "id": "ai.generative", "state": "off"},
-            {"kind": "model", "id": "generative", "state": "not-installed"},
-        ])
+        json!([{"kind": "model", "id": "generative", "state": "not-installed"}])
     );
     let refused = owner.fill(selection(&asset)).unwrap_err();
     assert_eq!(refused.code, "not-ready", "{refused:?}");
     let missing = requirements(&refused);
-    // Declared by the task and named by its needs, the flag is one requirement.
-    assert_eq!(
-        missing
-            .iter()
-            .filter(|(kind, id)| kind == "flag" && id == "ai.generative")
-            .count(),
-        1,
-        "{missing:?}"
-    );
     assert!(
-        missing.iter().any(|(_, id)| id.contains("fake-generator")),
+        missing.iter().all(|(kind, _)| kind != "flag")
+            && missing.iter().any(|(_, id)| id.contains("fake-generator")),
         "{missing:?}"
     );
 
-    owner.flag(true);
     owner.install(&FAKE_GENERATOR);
     // A prompt needs the text encoder: refused by name, so a client offers its download.
     let replace = with(selection(&asset), json!({"prompt": "a red bicycle"}));
@@ -741,15 +713,6 @@ fn every_refusal_is_named_and_generates_nothing() {
     assert_eq!(
         owner.history_labels(&asset)[0],
         "Add Replace \"a red bicycle\" 1"
-    );
-
-    // The flag off again refuses before anything runs.
-    owner.flag(false);
-    let refused = owner.fill(selection(&asset)).unwrap_err();
-    assert_eq!(refused.code, "not-ready");
-    assert_eq!(
-        requirements(&refused),
-        [("flag".into(), "ai.generative".into())]
     );
     assert_eq!(fixture.controls().generations(), 2);
 }
@@ -852,9 +815,9 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
             L0_DECODER.file.resource,
         ]
     );
-    // The fill task declares its experiment, so a client hides it without reading the status.
+    // The fill task is behind no flag.
     let task = descriptor.task(FILL_GENERATIVE).unwrap();
-    assert_eq!(task.flags, ["ai.generative"]);
+    assert!(task.flags.is_empty());
     // The segmenter's tasks and the picker under theirs; no scene or depth model is qualified, so
     // neither analysis is declared.
     for id in ["analyse", "select-object"] {
@@ -875,13 +838,13 @@ fn an_ordinary_run_offers_klein_pinned_and_held_against_the_machine_floor() {
             resource.url
         );
         assert_eq!(resource.license, "Apache-2.0");
-        // Offered only under its feature's experiment, which a client reads from the descriptor.
-        let flag = if resource.id.starts_with("segmenter-") {
-            "ai.analysis"
-        } else {
-            "ai.generative"
-        };
-        assert_eq!(resource.flag.as_deref(), Some(flag), "{}", resource.id);
+        // An analysis model is offered only under its experiment, which a client reads from the
+        // descriptor; a generative one always.
+        let flag = resource
+            .id
+            .starts_with("segmenter-")
+            .then_some("ai.analysis");
+        assert_eq!(resource.flag.as_deref(), flag, "{}", resource.id);
         assert!(resource.use_restriction.is_none());
         assert!(resource.tradeoff.is_some());
         assert_eq!(resource.sha256.len(), 64);

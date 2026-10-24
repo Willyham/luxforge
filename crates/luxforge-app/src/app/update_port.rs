@@ -942,14 +942,7 @@ impl Shared {
         self: &'a Arc<Self>,
         mut state: MutexGuard<'a, State>,
     ) -> MutexGuard<'a, State> {
-        let mut followed = vec![Channel::Default];
-        if state
-            .policy
-            .as_ref()
-            .is_some_and(|policy| policy.prerelease_channel)
-        {
-            followed.push(Channel::Prerelease);
-        }
+        let followed = [Channel::Default, Channel::Prerelease];
         let cancel = Cancel::new();
         state.checking = Some(cancel.clone());
         state.status_mut().checking = true;

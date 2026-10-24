@@ -14,32 +14,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 /// Developer mode: the desktop serves the test modules and shows the components gallery.
 pub const DEVELOPER: &str = "developer";
 
-/// The luminance and colour range mask kinds can be created: offered in the desktop's New mask and
-/// Add component menus and accepted by `mask.create-<kind>` and `mask.add-<kind>`. Off, existing
-/// range components still render, list and edit; only a new one is refused, naming this flag.
-pub const RANGE_MASKS: &str = "masks.range-selections";
-
-/// The Generative fill tier's experiment: whether a fill may be generated with a generative model
-/// (`docs/design/ai-editing.md`). It gates whether the tier is offered, never how an accepted
-/// patch renders.
-pub const AI_GENERATIVE: &str = "ai.generative";
-
-/// A generative fill shares the GPU: the generator runs its GPU work in short slices and waits
-/// for each, so the interface's frames run between them (`docs/design/ai-editing.md`, "Sharing
-/// the GPU"). Off, a fill holds the GPU for whole denoising steps. It changes how long a fill
-/// takes and how the editor draws meanwhile, never what an accepted patch renders.
-pub const AI_GENERATIVE_GPU_SHARING: &str = "ai.generative-gpu-sharing";
-
 /// The analysis and object picking experiment (`docs/design/ai-editing.md`, "Analysis and the
 /// per-photo cache"): whether the analysis tasks, `query.pick-object` and `task.select-object` are
 /// offered and the desktop draws the hover overlay. It gates what is offered, never how a stored
 /// selection renders.
 pub const AI_ANALYSIS: &str = "ai.analysis";
-
-/// The update check follows the `prerelease` channel as well as the default one, so release
-/// candidates are offered: how they are qualified (`docs/design/auto-update.md`). Off, a
-/// pre-release is never offered.
-pub const PRERELEASE_CHANNEL: &str = "updates.prerelease-channel";
 
 /// When a flag's consumer reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,9 +66,6 @@ pub struct FlagSpec {
     pub description: &'static str,
     pub kind: FlagKind,
     pub applies: Applies,
-    /// The toggle this flag refines, which it changes nothing without: Settings lists the flag
-    /// only while that toggle is on. `flags.list` and `flags.set` take it either way.
-    pub requires: Option<&'static str>,
 }
 
 impl FlagSpec {
@@ -132,8 +108,7 @@ impl FlagSpec {
     }
 }
 
-/// Every product flag, in the order Settings lists them. The Generative tier's experiment stays
-/// until the owner accepts the tier (`docs/design/ai-editing.md`).
+/// Every product flag, in the order Settings lists them.
 const FLAGS: &[FlagSpec] = &[
     FlagSpec {
         id: DEVELOPER,
@@ -143,31 +118,6 @@ const FLAGS: &[FlagSpec] = &[
             default: cfg!(debug_assertions),
         },
         applies: Applies::Launch,
-        requires: None,
-    },
-    FlagSpec {
-        id: RANGE_MASKS,
-        title: "Luminance and colour range masks",
-        description: "Offers the luminance and colour range kinds for a new mask or component; existing ones work either way.",
-        kind: FlagKind::Toggle { default: false },
-        applies: Applies::Live,
-        requires: None,
-    },
-    FlagSpec {
-        id: AI_GENERATIVE,
-        title: "Generative fill",
-        description: "Offers the Generative fill tier in Remove when a generative model is installed; an accepted fill renders the same either way.",
-        kind: FlagKind::Toggle { default: false },
-        applies: Applies::Live,
-        requires: None,
-    },
-    FlagSpec {
-        id: AI_GENERATIVE_GPU_SHARING,
-        title: "Share the GPU during generative fill",
-        description: "Runs a generative fill's GPU work in short slices so the editor keeps drawing while it runs; a fill may take a little longer.",
-        kind: FlagKind::Toggle { default: false },
-        applies: Applies::Live,
-        requires: Some(AI_GENERATIVE),
     },
     FlagSpec {
         id: AI_ANALYSIS,
@@ -175,15 +125,6 @@ const FLAGS: &[FlagSpec] = &[
         description: "Analyses the photo with the installed segmenter so the pointer can pick objects in Remove, and offers the analysis and object selection tasks; nothing renders differently either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
-        requires: None,
-    },
-    FlagSpec {
-        id: PRERELEASE_CHANNEL,
-        title: "Pre-release updates",
-        description: "Offers release candidates from the pre-release update channel as well as releases.",
-        kind: FlagKind::Toggle { default: false },
-        applies: Applies::Live,
-        requires: None,
     },
 ];
 
@@ -212,7 +153,6 @@ const PROOF_FLAGS: &[FlagSpec] = &[
             default: "first",
         },
         applies: Applies::Live,
-        requires: None,
     },
     FlagSpec {
         id: "proof.number",
@@ -225,7 +165,6 @@ const PROOF_FLAGS: &[FlagSpec] = &[
             default: 50.0,
         },
         applies: Applies::Live,
-        requires: None,
     },
 ];
 
@@ -260,9 +199,6 @@ pub struct ListedFlag {
     /// `toggle`, `choice` or `number`.
     pub kind: String,
     pub applies: Applies,
-    /// The toggle this flag refines: Settings lists the flag only while that toggle is on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requires: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<ListedOption>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,7 +367,6 @@ pub(crate) fn list(
                 description: flag.description.into(),
                 kind: kind.into(),
                 applies: flag.applies,
-                requires: flag.requires.map(str::to_owned),
                 options,
                 min: range.map(|(min, _, _)| min),
                 max: range.map(|(_, max, _)| max),
@@ -640,53 +575,11 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            ids(false),
-            [
-                "developer",
-                RANGE_MASKS,
-                AI_GENERATIVE,
-                AI_GENERATIVE_GPU_SHARING,
-                AI_ANALYSIS,
-                PRERELEASE_CHANNEL
-            ]
-        );
+        assert_eq!(ids(false), ["developer", AI_ANALYSIS]);
         assert_eq!(
             ids(true),
-            [
-                "developer",
-                RANGE_MASKS,
-                AI_GENERATIVE,
-                AI_GENERATIVE_GPU_SHARING,
-                AI_ANALYSIS,
-                PRERELEASE_CHANNEL,
-                "proof.choice",
-                "proof.number"
-            ]
+            ["developer", AI_ANALYSIS, "proof.choice", "proof.number"]
         );
-    }
-
-    #[test]
-    fn a_refining_flag_requires_a_listed_toggle_and_its_listing_names_it() {
-        for flag in listed(true) {
-            if let Some(parent) = flag.requires {
-                let parent = find(parent, false).expect("a listed product flag");
-                assert!(
-                    matches!(parent.kind, FlagKind::Toggle { .. }),
-                    "{}",
-                    flag.id
-                );
-                assert!(parent.requires.is_none(), "{} nests", flag.id);
-            }
-        }
-        let (_, store) = store("flags-requires");
-        let listed = list(&store, &LaunchFlags::default(), false).unwrap();
-        let requires = |id: &str| listed.flag(id).unwrap().requires.clone();
-        assert_eq!(
-            requires(AI_GENERATIVE_GPU_SHARING).as_deref(),
-            Some(AI_GENERATIVE)
-        );
-        assert_eq!(requires(AI_GENERATIVE), None);
     }
 
     #[test]
@@ -695,7 +588,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][6]["options"][1],
+            text["flags"][2]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -734,7 +627,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][6]["id"], "proof.choice",
+            listed["flags"][2]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -742,7 +635,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][6]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][2]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

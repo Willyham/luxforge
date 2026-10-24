@@ -282,7 +282,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `stack.inspect` | Exempt (read) | Reads an HDR stack. |
 | `stack.set-expanded` | Exempt (internal) | How a view shows an HDR stack: session view state, as `view.set` and `workspace.set` are; changes no library item. |
 | `task.analyse` | Exempt (internal) | Prepares the analysis `query.pick-object` reads while the `ai.analysis` experiment is on, and edits nothing. |
-| `task.fill-generative` | Exempt (internal) | Generates candidates while the `ai.generative` experiment is on, and edits nothing; accepting one is `edit.accept-correction-patch`, which records the commit. |
+| `task.fill-generative` | Exempt (internal) | Generates candidates, and edits nothing; accepting one is `edit.accept-correction-patch`, which records the commit. |
 | `task.select-object` | Exempt (internal) | Publishes a picked object's selection raster and edits nothing; the `mask.create-model` or `mask.add-model` that uses it records the commit. |
 | `theme.delete` | `interaction` theme-delete | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `theme.export` | `interaction` `theme-export` | When it answers: the desktop writes the file it returns. |

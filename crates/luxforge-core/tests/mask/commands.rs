@@ -31,18 +31,12 @@ struct Session {
 
 impl Session {
     fn open(name: &str) -> Self {
-        Self::open_on(name, luxforge_core::HostConfig::unconfigured())
-    }
-
-    /// [`Self::open`] on `host`, such as one that forces the range mask experiment on.
-    fn open_on(name: &str, host: luxforge_core::HostConfig) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
         std::fs::copy(paths::jpeg(), &source).expect("the fixture copies");
-        let owner = Owner::start_with_host(
+        let owner = Owner::start(
             &dir.join("catalog.sqlite"),
             luxforge_core::ModuleRegistry::builtin(),
-            host,
             ACTOR,
         )
         .expect("an owner");
@@ -760,11 +754,10 @@ fn components(listing: &Value) -> Vec<Value> {
 /// **API parity for picks.** The same picks, through an independent JSON client of the owner — where
 /// each defers its pixel read to the tile service — and directly through `EditorService::run_action`,
 /// which reads through the reference: the area query answers the same points, every pick commits the
-/// same values under the same label, and each refusal is the same refusal. That a pick runs with the
-/// range-selection experiment off is the owner's own test (`api::owner::experiment_tests`).
+/// same values under the same label, and each refusal is the same refusal.
 #[test]
 fn picks_answer_alike_through_the_owner_and_the_service() {
-    let owner = Session::open_on("pick-owner", luxforge_testkit::client::range_masks_host());
+    let owner = Session::open("pick-owner");
     let mut direct = Direct::open("pick-direct");
     let drag = json!({"x": 0.1, "y": 0.2, "width": 0.4, "height": 0.3});
 

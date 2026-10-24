@@ -458,11 +458,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 
     // The owner that writes the catalog is stopped before the reopen, so nothing the fresh owner
     // reads is held in the first one's memory.
-    let (owner, join) = OwnerHandle::start_with_host(
-        &catalog,
-        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
-        luxforge_testkit::client::range_masks_host(),
-    )?;
+    let (owner, join) = OwnerHandle::start(&catalog)?;
     let written = luxforge_core::open_source(&fixture)
         .map_err(Into::into)
         .and_then(|source| write_catalog(&owner, &fixture, &source));
@@ -481,11 +477,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 
     // The reopen. A fresh owner over the same catalog returns the masks, their components, the
     // layers bound to them and the history, with the identities the first one wrote.
-    let (reopened, reopened_join) = OwnerHandle::start_with_host(
-        &catalog,
-        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
-        luxforge_testkit::client::range_masks_host(),
-    )?;
+    let (reopened, reopened_join) = OwnerHandle::start(&catalog)?;
     let restart = (|| -> Result<Value> {
         let client = reopened.register();
         prepare(&reopened, client, &written.asset)?;

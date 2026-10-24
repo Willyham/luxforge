@@ -72,7 +72,6 @@ fn an_agent_generates_regenerates_accepts_and_the_patch_renders_without_the_mode
     }
     let asset =
         client.open(&paths::jpeg().canonicalize().unwrap(), "cli-test")["asset"]["id"].clone();
-    client.call("flags.set", json!({"flag": "ai.generative", "value": true}));
     client.call(
         "module.permission.grant",
         json!({

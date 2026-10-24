@@ -84,18 +84,6 @@ pub(crate) fn start_owner(
     .unwrap()
 }
 
-/// A launch that forces the range mask experiment on, as a test host may force a live flag: for
-/// the tests that create luminance and colour range masks.
-pub(crate) fn range_masks_config() -> Config {
-    Config {
-        launch_flags: luxforge_core::flags::LaunchFlags::resolve(
-            None,
-            &[(luxforge_core::flags::RANGE_MASKS, json!(true), "test")],
-        ),
-        ..Config::default()
-    }
-}
-
 /// The flags read through `flags.list` and taken up as the launch's own read is.
 pub(crate) fn read_flags(editor: &mut Editor) {
     let flags = crate::app::tasks::call(&editor.owner, editor.client, "flags.list", json!({}))

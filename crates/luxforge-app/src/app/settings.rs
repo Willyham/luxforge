@@ -133,11 +133,6 @@ impl Editor {
                         // its event like another client's.
                         self.resync();
                         let flag = written.map(|(flag, _)| flag).unwrap_or_default();
-                        let updates = if flag == luxforge_core::flags::PRERELEASE_CHANNEL {
-                            self.read_updates()
-                        } else {
-                            Task::none()
-                        };
                         self.status.text = format!("Could not change {flag}: {reason}");
                         self.event(
                             "flag_set_failed",
@@ -145,7 +140,7 @@ impl Editor {
                         );
                         self.settings.error = Some(reason);
                         // The row showed the change it asked for; read back what is stored.
-                        Task::batch([self.read_flags(), updates])
+                        self.read_flags()
                     }
                 };
                 if self.settings.closing && self.settings.idle() {
@@ -239,11 +234,12 @@ impl Editor {
         {
             self.settings.open = Some(SettingsTab::General);
         }
-        self.remove_follow_flags()
+        self.remove_follow_flags();
+        Task::none()
     }
 
     /// Read the flags alone, off the update loop: what a live flag gates outside the sheet (the
-    /// range mask kinds the Masks panel offers, Remove and the models a flagged feature uses)
+    /// object picker and the models a flagged feature uses)
     /// follows the person's choice from launch on. A read
     /// that follows another client's `change` is counted until it answers.
     pub(crate) fn read_flag_values(&mut self, change: bool) -> Task<Message> {

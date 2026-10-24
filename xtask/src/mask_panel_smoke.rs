@@ -174,7 +174,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .no_draft()
             .masks(0),
         // The range kinds turned on, since Face intersects a luminance range.
-        crate::mask_range_smoke::range_experiment("range-experiment"),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
         quiet("mask-mode", WorkspaceStep::default().mode(MASK_MODE)),
     ];

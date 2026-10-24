@@ -11,7 +11,7 @@
 use crate::state::{
     capabilities::{ModuleCapabilities, capitalised, human_bytes, job},
     models::{held, memory_text},
-    remove::{FillTier, fill_module, shown_tiers, stale},
+    remove::{FillTier, fill_module, shown_tiers},
 };
 use luxforge_core::{
     ModuleDescriptor,
@@ -381,9 +381,7 @@ pub(crate) fn derive(
     fill_module(std::slice::from_ref(module), flags)?;
     let title = &module.title;
     let status = state.status.as_ref();
-    // A status read before a flag changed is being read again: until it answers, it is not read.
     let tiers = status
-        .filter(|status| !stale(&status.fill_tiers, flags))
         .map(|status| shown_tiers(module, &status.fill_tiers, flags))
         .unwrap_or_default();
     let tier = tiers.first();

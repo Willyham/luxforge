@@ -63,7 +63,7 @@ The macOS enclosure is the notarized ZIP. The Linux enclosure is the tarball.
 
 **Versions.** The build number orders releases on every platform. It is `CFBundleVersion` on macOS and the build number in `build.json` on Linux, and it is the workflow run number. The feed generator refuses a set of releases whose build numbers do not rise with their versions, so renaming the workflow cannot silently reorder them.
 
-**Channels.** Clients follow only the default channel. The pre-release channel is followed only when the Experiments flag `updates.prerelease-channel` is on, which is how release candidates are qualified.
+**Channels.** Clients follow the default and `prerelease` channels, so a release candidate is offered as a release is; that is how release candidates are qualified.
 
 **Regeneration.** The feeds are regenerated on every release from the update records of every published release, so the release history is the only source of truth.
 
@@ -227,7 +227,7 @@ Luxforge's preferences are authoritative: the macOS port applies them to Sparkle
 **How the core does it.** The model lives in `luxforge_core::update`.
 
 - **The port.** `HostConfig::updates` holds an optional `UpdatePort`, which the desktop implements per platform.
-  - The owner calls `attach` once as it starts, then `apply` with an `UpdatePolicy`. It applies the policy again whenever `update_checks`, `update_install_automatically`, the skipped version or the pre-release flag changes.
+  - The owner calls `attach` once as it starts, then `apply` with an `UpdatePolicy`. It applies the policy again whenever `update_checks`, `update_install_automatically`, or the skipped version changes.
   - `status`, `check`, `request_install`, `skip` and `move_to_applications` each return at once. The port does its work on its own workers.
   - The port reports changes through the owner's `UpdateNotifier`, which never blocks, whatever thread signals it.
 - **No updater.** A host with no port, such as `luxforge-json`, reports `unavailable` with `headless`. A desktop that must not update itself passes an `UnavailablePort` naming its reason: `development-build` for a development build, `no-update-key` for a release without the key. An unavailable mechanism is never asked to check.
@@ -239,8 +239,7 @@ Luxforge's preferences are authoritative: the macOS port applies them to Sparkle
 - **The skipped version** is `update_skipped_version` in `preferences.json`. Only `update.skip` writes it, and `preferences.read` shows it. `preferences.set` cannot change or reset it, as for the usage statistics record. `update.skip` takes any client, as `preferences.set` does.
 - **Rules the core decides.** Ports cannot decide these differently:
   - `catalog_format_change` compares the feed item's `luxforge:catalogFormat` with the build's catalog format.
-  - `UpdatePolicy::installs_automatically` is true only while checks and automatic installation are both on, for a followed, unskipped version with no catalog format change.
-  - A pre-release item is not offered while `updates.prerelease-channel` is off.
+  - `UpdatePolicy::installs_automatically` is true only while checks and automatic installation are both on, for an unskipped version with no catalog format change.
 - **Install and move.** `update.install` and `update.move-to-applications` carry a `{request_id, actor}` envelope, and the owner answers a retry with its first answer.
   - Each `not-ready` refusal names a `data.reason`: the mechanism's reason, `notify-only` (a `linux-notify` installation), `no-update` or `not-supported` (a port that cannot move).
   - A `conflict` names the running jobs in `data.jobs`. The jobs that hold an update back are export, batch export, HDR merge, develop picks, batch settings, module install and removal, and tasks. Previews, analysis, source preparation and listings do not.
@@ -259,7 +258,7 @@ Automatic installation, when the person turns it on, downloads in the background
 
 All update interface is Luxforge's own, themed like the rest of the workspace. On macOS that means a custom Sparkle user driver, not Sparkle's standard windows.
 
-The desktop decides nothing about updates: it shows what `update.status` reports and every control sends one command. It reads the status at launch, whenever the event sync sees an `update.*`, preference or flag event, when the Settings sheet opens and after its own update preference is saved. Every read and call runs off the update loop.
+The desktop decides nothing about updates: it shows what `update.status` reports and every control sends one command. It reads the status at launch, whenever the event sync sees an `update.*` or preference event, when the Settings sheet opens and after its own update preference is saved. Every read and call runs off the update loop.
 
 - **The offer.** An available, unskipped update from a mechanism that is not `unavailable` appears as a non-modal card at the bottom of the workspace, above the usage statistics notice where both show and in Select as well as Develop. It takes no focus and holds no key, and it sits between the side panels above the tool strip, so it covers none of the photograph's controls. It is not drawn while the [Select introduction](select-introduction.md) is open. It reads "Luxforge 0.2.0 is available", with Release notes, Install and relaunch, Later and Skip this version.
   - While the update downloads it says "Downloading… 45%" over a progress bar (the received size while the length is unknown); once verified it says "Downloaded and ready to install."; an update that installs automatically adds "It installs when you next quit Luxforge."
@@ -305,7 +304,7 @@ An evidence launch scripts what the port reports with `--update-fixture FILE` ([
 **The bridge** (`luxforge-sparkle`). Sparkle runs on AppKit's main thread, which is iced's update loop. Every command the port sends is queued onto the main dispatch queue and returns at once; Sparkle reads the feed, downloads, verifies and extracts on its own threads. An `SPUUpdater` runs with a user driver and a delegate defined in Rust (`define_class!`), so no Sparkle window is shown. Each Sparkle callback becomes a plain `Event` for the port, which only records it and wakes whoever waits:
 
 - **User driver.** The found update (version, build, release notes link, channel, length and `luxforge:catalogFormat` from the item's properties), download progress, extraction, readiness, installation, errors and "no update". The found and ready reply blocks are held and answered from the port's commands, with Install, Dismiss or Skip. The permission request is answered with automatic checks on.
-- **Delegate.** `allowedChannelsForUpdater:` follows the pre-release flag. `updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:` postpones a relaunch until the catalog has closed. The cycle's end, aborts and "no update" end a check. Sparkle's own release notes and permission prompt are refused.
+- **Delegate.** `allowedChannelsForUpdater:` allows the `prerelease` channel. `updater:shouldPostponeRelaunchForUpdate:untilInvokingBlock:` postpones a relaunch until the catalog has closed. The cycle's end, aborts and "no update" end a check. Sparkle's own release notes and permission prompt are refused.
 
 **The port** (`app/sparkle_port.rs`). Every `UpdatePort` call returns at once.
 

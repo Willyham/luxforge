@@ -362,7 +362,6 @@ def editor(args):
         before = uptime()
         client = Json(args.json, root, timed=True)
         installed = install(client)
-        client.call("flags.set", {"flag": "ai.generative", "value": True})
         status = client.call("module.status", {"module_id": AI})
         tier = status["fill_tiers"][0]
         if not tier["offered"]:

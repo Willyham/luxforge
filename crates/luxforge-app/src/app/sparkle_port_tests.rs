@@ -1,6 +1,6 @@
 //! The Sparkle port driven through the catalog owner's `update.*` commands against a scripted
 //! bridge, which records every command and answers as Sparkle does, on a thread of its own: the
-//! preferences applied to Sparkle, channel filtering, the catalog format guard, a requested install
+//! preferences applied to Sparkle, the channels followed, the catalog format guard, a requested install
 //! through the quit path, an automatic one, skips, a check while an offer is held, a postponed
 //! relaunch and a cancelled installation at quit.
 use super::*;
@@ -315,29 +315,20 @@ fn sparkle_takes_the_persons_preferences_and_never_downloads_on_its_own() {
 }
 
 #[test]
-fn sparkle_follows_the_prerelease_channel_only_with_its_flag() {
+fn sparkle_follows_the_prerelease_channel() {
     let fixture = Fixture::new("channels", sparkle(None));
     let listener = PortListener(fixture.port.shared.clone());
-    assert!(listener.allowed_channels().is_empty());
-    fixture
-        .port
-        .apply(&UpdatePolicy::new(true, false, true, None));
     assert_eq!(listener.allowed_channels(), vec!["prerelease".to_owned()]);
-    fixture
-        .port
-        .apply(&UpdatePolicy::new(true, false, false, None));
-    assert!(listener.allowed_channels().is_empty());
-    // An item outside the followed channels is dismissed, never offered.
+    fixture.port.apply(&UpdatePolicy::new(true, false, None));
+    // A release candidate is offered as a release is.
     let mut prerelease = item("0.3.0-rc.1", 50, Some(CATALOG_FORMAT));
     prerelease.channel = Some("prerelease".into());
     fixture.sparkle.raise(Event::Found {
         item: prerelease,
         stage: Stage::NotDownloaded,
     });
-    wait_until("the dismissal", || {
-        fixture.sparkle.answers() == vec![(Reply::Found, Choice::Dismiss)]
-    });
-    assert_eq!(fixture.port.status().available, None);
+    wait_until("the offer", || fixture.port.status().available.is_some());
+    assert!(fixture.port.status().available.unwrap().prerelease);
 }
 
 #[test]
@@ -350,7 +341,7 @@ fn sparkle_items_read_as_the_core_compares_them() {
     assert!(!update.prerelease);
     // An item that does not state its catalog format counts as a change.
     let unknown = feed_update_from(&item("0.2.0", 42, None));
-    assert!(UpdatePolicy::new(true, true, false, None).changes_catalog_format(&unknown));
+    assert!(UpdatePolicy::new(true, true, None).changes_catalog_format(&unknown));
     assert_eq!(JOURNEY_KEY, "LuxforgeUpdateJourney");
 }
 
@@ -633,9 +624,7 @@ fn sparkle_nothing_newer_and_failures_are_reported() {
 #[test]
 fn sparkle_download_progress_is_reported_in_steps() {
     let fixture = Fixture::new("progress", Box::new(|_| Vec::new()));
-    fixture
-        .port
-        .apply(&UpdatePolicy::new(true, false, false, None));
+    fixture.port.apply(&UpdatePolicy::new(true, false, None));
     let raise = |event| fixture.sparkle.raise(event);
     raise(Event::Found {
         item: item("0.2.0", 42, Some(CATALOG_FORMAT)),

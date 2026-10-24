@@ -521,7 +521,7 @@ fn checks_are_due_shortly_after_launch_then_daily_and_only_while_they_are_on() {
     let shared = &port.shared;
     let launched = Instant::now();
     let mut state = State {
-        policy: Some(UpdatePolicy::new(true, false, false, None)),
+        policy: Some(UpdatePolicy::new(true, false, None)),
         ..State::default()
     };
     // Nothing is due before an owner attaches.
@@ -531,7 +531,7 @@ fn checks_are_due_shortly_after_launch_then_daily_and_only_while_they_are_on() {
     let checked = launched + Duration::from_secs(30);
     state.last_finished = Some(checked);
     assert_eq!(shared.due(&state), Some(checked + CHECK_INTERVAL));
-    state.policy = Some(UpdatePolicy::new(false, true, false, None));
+    state.policy = Some(UpdatePolicy::new(false, true, None));
     assert_eq!(shared.due(&state), None);
 }
 

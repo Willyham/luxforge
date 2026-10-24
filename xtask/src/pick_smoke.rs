@@ -2,9 +2,8 @@
 //! hover, click, box and brush") on the real editor, background-only, with correlated state, log
 //! and capture, over the developer fake segmenter.
 //!
-//! One developer launch on the four-quadrant fixture. A second client turns on `ai.generative`
-//! (which offers Remove) and `ai.analysis` (which offers the picker), and the fake segmenter's two
-//! files are granted and installed through the API. Remove is chosen, and the pointer moves over
+//! One developer launch on the four-quadrant fixture. A second client turns on `ai.analysis`
+//! (which offers the picker), and the fake segmenter's two files are granted and installed through the API. Remove is chosen, and the pointer moves over
 //! the top-left quadrant: the first pick is refused for want of an analysis, the desktop runs
 //! `task.analyse` once, asks again, and draws the picked object over its bounds, washed white
 //! inside a white outline. The fake decoder's masks follow colour similarity, so the object is the
@@ -53,7 +52,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     };
     let mut steps = vec![
         Step::opened("opened").no_draft(),
-        flag("generative", "ai.generative"),
         flag("analysis", "ai.analysis"),
     ];
     for resource in SEGMENTER {

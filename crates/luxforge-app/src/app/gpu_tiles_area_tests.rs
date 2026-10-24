@@ -30,7 +30,7 @@ const WIDTH: u32 = 900;
 const HEIGHT: u32 = 600;
 
 /// A catalog owner over one imported photograph, its tiles answered by `tiles` (the reference's
-/// service when `None`), with the range mask experiment forced on so the masks can be created.
+/// service when `None`).
 struct Host {
     owner: OwnerHandle,
     join: Option<std::thread::JoinHandle<()>>,
@@ -56,7 +56,6 @@ impl Host {
             Arc::new(ModuleRegistry::builtin()),
             HostConfig {
                 tiles,
-                launch_flags: crate::app::testing::range_masks_config().launch_flags,
                 ..HostConfig::unconfigured()
             },
         )

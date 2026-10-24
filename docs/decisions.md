@@ -575,7 +575,7 @@ Copying settings between photographs: **adjustments only** in the first delivery
 
 For colour and luminance range masks ([design](design/range-masks.md)):
 
-- **Creation stays behind `masks.range-selections`**, off by default.
+- **Offered without a flag.** New mask, Add component and the API create both range kinds.
 - **Lightroom-style picking.** Creating a range mask arms an eyedropper. Colour: a click replaces the samples with that colour, Shift+click adds one (at most five), a drag samples an area. Luminance: a click sets a band around the clicked tone, a drag sets the band to the area's tonal span. Escape, Enter or Done ends picking. The band slider, number fields, swatch slots and Refine remain.
 - **A mask with no bound layer is read, not refused**, as the picking flow needs: an unbound mask reads its input where a first Basic adjustment would take it.
 

@@ -2230,9 +2230,8 @@ pub(crate) fn sync_now(
             .iter()
             .any(|event| event.method.starts_with("usage."));
     // The update status follows the port's own events, `update.skip` and `update.install`, and
-    // the preferences and the flag its policy is read from.
-    let updates = flags
-        || preferences
+    // the preferences its policy is read from.
+    let updates = preferences
         || events
             .events
             .iter()

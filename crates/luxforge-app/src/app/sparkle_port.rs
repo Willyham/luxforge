@@ -300,17 +300,6 @@ impl State {
                 self.checked(CheckOutcome::Found);
                 self.status.error = None;
                 self.finish_waiting(after);
-                let follows = self
-                    .policy
-                    .as_ref()
-                    .is_none_or(|policy| policy.follows(&update));
-                if !follows {
-                    // Sparkle follows only the channels the delegate allows; an item outside them
-                    // is not offered.
-                    shared.send(Command::Answer(Reply::Found, Choice::Dismiss));
-                    self.status.available = None;
-                    return;
-                }
                 self.held = Some(Held::Found(stage));
                 self.status.ready = stage == Stage::Installing;
                 self.status.available = Some(update.clone());
@@ -441,12 +430,9 @@ impl Listener for PortListener {
         }
     }
 
+    /// The `prerelease` channel as well as the default one, so a release candidate is offered.
     fn allowed_channels(&self) -> Vec<String> {
-        let state = self.0.lock();
-        match &state.policy {
-            Some(policy) if policy.prerelease_channel => vec!["prerelease".into()],
-            _ => Vec::new(),
-        }
+        vec!["prerelease".into()]
     }
 
     fn postpone_relaunch(&self) -> bool {

@@ -55,9 +55,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use declare::HOST_MODULE;
 pub(crate) use declare::descriptor;
-pub use declare::{
-    all, canvas, canvas_pick, controls, experiment, find, find_query, geometry, pick, sample,
-};
+pub use declare::{all, canvas, canvas_pick, controls, find, find_query, geometry, pick, sample};
 pub use list::{
     ComponentReport, MaskListing, MaskReport, MaskedLayer, ModelReport, ModelStale, StrokeColour,
     StrokeReport, StrokeSettings,

@@ -341,7 +341,7 @@ fn gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed()
     use crate::app::gpu_preview::SurfaceReport;
     use crate::app::gpu_window_tests::deliver_until;
     use crate::app::message::{Message, draft::DraftMessage};
-    use crate::app::testing::{finish, range_masks_config, real_photo_launched, slide};
+    use crate::app::testing::{finish, real_photo_launched, slide};
     let test = "gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed";
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-gpu-sixteen-{}.sqlite",
@@ -349,7 +349,8 @@ fn gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed()
     ));
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/s0/orientation-1.jpg");
-    let (mut editor, asset, agent) = real_photo_launched(&catalog, &fixture, range_masks_config());
+    let (mut editor, asset, agent) =
+        real_photo_launched(&catalog, &fixture, crate::Config::default());
     let masks: Vec<luxforge_core::MaskId> = (0..MAX_MASKED_SPATIAL_LAYERS)
         .map(|index| desktop_mask(&mut editor, &asset, agent, index))
         .collect();

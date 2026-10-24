@@ -579,7 +579,7 @@ mod tests {
         parse(json!({
             "mechanism": mechanism, "reason": null,
             "current": {"version": "0.1.0", "build": 41},
-            "checks": true, "install_automatically": false, "prerelease_channel": false,
+            "checks": true, "install_automatically": false,
             "checking": false, "last_check": {"at_ms": 1_000, "outcome": "found"},
             "available": {"version": "0.2.0", "build": 42,
                           "notes_url": "https://github.com/luxforge/luxforge/releases/tag/v0.2.0",

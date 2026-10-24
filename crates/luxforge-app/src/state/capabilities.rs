@@ -42,7 +42,7 @@ pub(crate) fn declares(module: &ModuleDescriptor) -> bool {
 
 /// A module the desktop draws a capability block for: it declares settings, or a resource or task
 /// that is not behind an experiment flag that is off. A module whose every resource and task waits
-/// on such a flag, as AI editing's wait on `ai.generative`, shows nothing until it is on.
+/// on such a flag shows nothing until it is on.
 pub(crate) fn declares_offered(module: &ModuleDescriptor, flags: Option<&FlagList>) -> bool {
     module.settings.is_some()
         || module

@@ -166,7 +166,7 @@ Maximum along a stroke and screen union across strokes is deliberate: one pass o
 
 ### Luminance range and colour range (phase D)
 
-Creating either is an experiment behind the live flag `masks.range-selections`, off by default ([gated mask kinds](settings-and-flags.md#gated-mask-kinds)). Off, the New mask and Add component menus, their kind keys and the palette leave both kinds out, and `mask.create-<kind>`, `mask.add-<kind>` and a `draft.begin` of either are refused as `not-ready` with `data.flag` naming the flag. A range component that already exists renders, lists, edits, samples and deletes whatever the flag says.
+The New mask and Add component menus, their kind keys and the palette offer both kinds, and `mask.create-<kind>` and `mask.add-<kind>` create them.
 
 Both read the **input pixel of the operation they modulate**, which costs nothing during a render (the value is in the row being processed) and costs one existing `O(layers)` sample at a point query.
 
