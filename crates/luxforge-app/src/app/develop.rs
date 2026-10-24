@@ -158,6 +158,8 @@ pub(crate) struct Develop {
     pub(crate) strip: SelectPreviews,
     /// Both caches were emptied when Select was shown, so they are not emptied again.
     released: bool,
+    /// The Develop folder remembered across launches ([`crate::app::remembered`]).
+    pub(crate) remembered: crate::app::remembered::FolderMemory,
     /// The large previews' read batches, which a test runs against its owner in place of the tasks.
     #[cfg(test)]
     pub(crate) reads: Vec<loupe_frames::ReadBatch>,
@@ -180,6 +182,7 @@ impl Default for Develop {
             frames: LoupeFrames::waking(FRAMES_BUDGET_BYTES, post),
             strip: SelectPreviews::waking(STRIP_BUDGET_BYTES, post),
             released: true,
+            remembered: Default::default(),
             #[cfg(test)]
             reads: Vec::new(),
         }
@@ -504,6 +507,7 @@ impl Editor {
             DevelopMessage::FolderFound { serial, result } => {
                 self.folder_found(serial, result);
             }
+            DevelopMessage::Remembered(result) => return self.develop_folder_remembered(result),
             DevelopMessage::Step(delta) => {
                 let Some(index) = self
                     .develop
@@ -1711,6 +1715,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         editor.present_cached();
     }
     editor.follow_switch();
+    tasks.push(editor.remember_develop_folder_preference());
     editor.follow_timing();
     if editor.evidence.is_some() {
         editor.develop_evidence_after();

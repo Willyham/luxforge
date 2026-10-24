@@ -1,5 +1,5 @@
-//! Remembered state: the workspace switches, the brush and the last export the desktop keeps
-//! across launches with no Settings row of their own
+//! Remembered state: the workspace switches, the brush, the last export and the Develop folder the
+//! desktop keeps across launches with no Settings row of their own
 //! ([design](../../../../docs/design/preferences.md#behaviour)).
 //!
 //! At launch the session and the Masks panel's brush start from the stored values; afterwards each
@@ -7,18 +7,78 @@
 //! ([`Editor::store_preferences`]), which keeps one call in flight and merges the rest, so a held
 //! key writes at most one call plus one waiting. A change is stored only when it differs from what
 //! the desktop already shows of the preference, so the launch's own seeding writes nothing.
-use super::{Editor, message::Message, tasks};
+//!
+//! The Develop folder ([develop from
+//! folders](../../../../docs/design/develop-from-folders.md#develops-folder)) is remembered with
+//! the identity of the catalog holding it (`catalog.info`'s `catalog_id`). Every launch reads that
+//! identity, and `folder.list` when the remembered folder is this catalog's, in one owner task
+//! ([`remembered_folder_now`]). A launch with no file to open then views the folder in Select, as
+//! pressing it does (`browse.view`, which makes it the Develop folder), when the catalog still
+//! lists it and nothing was chosen meanwhile; otherwise it starts as it would with nothing
+//! remembered, saying nothing. From then on each change of the Develop folder is stored.
+use super::{
+    Editor,
+    message::{Message, develop::DevelopMessage},
+    select::Reread,
+    tasks::{self, owner_task},
+};
 use crate::{
     mask_draft::{Brush, NEUTRAL_BRUSH},
-    state::preferences::PreferenceChange,
+    state::{preferences::PreferenceChange, select as model},
 };
 use iced::Task;
 use luxforge_core::{
-    ClientSession, WorkspaceState,
-    preferences::{BrushPreference, ExportLast, WorkspacePreference},
+    ClientId, ClientSession, OwnerHandle, WorkspaceState,
+    catalog_types::{CatalogFolderId, CatalogFolders, CatalogInfo, ViewSource},
+    preferences::{BrushPreference, DevelopFolderPreference, ExportLast, WorkspacePreference},
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
+
+/// What a launch found of the remembered Develop folder: this catalog's identity, and the folder
+/// when it is this catalog's and the catalog still lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RememberedFolder {
+    pub(crate) catalog_id: String,
+    pub(crate) folder: Option<CatalogFolderId>,
+}
+
+/// The remembered Develop folder as this launch follows it.
+#[derive(Debug, Default)]
+pub(crate) struct FolderMemory {
+    /// The launch opened no file, so it views the remembered folder again once it is found.
+    pub(crate) restore: bool,
+    /// This catalog's identity, once read. Until then no change of the Develop folder is stored.
+    pub(crate) catalog_id: Option<String>,
+    /// The Develop folder as last compared with the preference, so each change is stored once.
+    pub(crate) considered: Option<CatalogFolderId>,
+}
+
+/// `catalog.info`, then `folder.list` when `remembered` names this catalog: the body of the
+/// launch's owner task, which a test runs as the task would.
+pub(crate) fn remembered_folder_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    remembered: Option<&DevelopFolderPreference>,
+) -> Result<RememberedFolder, String> {
+    fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+    let (info, _) = tasks::call(owner, client, "catalog.info", json!({}))?;
+    let catalog_id = parse::<CatalogInfo>(info)?.catalog_id;
+    let folder = match remembered {
+        Some(remembered) if remembered.catalog_id == catalog_id => {
+            let (folders, _) = tasks::call(owner, client, "folder.list", json!({}))?;
+            parse::<CatalogFolders>(folders)?
+                .folders
+                .iter()
+                .any(|folder| folder.id == remembered.folder_id)
+                .then(|| remembered.folder_id.clone())
+        }
+        _ => None,
+    };
+    Ok(RememberedFolder { catalog_id, folder })
+}
 
 /// The five workspace switches a session holds that the desktop remembers. The canvas mode, the
 /// mask overlay mode and zoom are left out: they are not remembered.
@@ -152,6 +212,90 @@ impl Editor {
                 }),
             _ => Task::none(),
         }
+    }
+}
+
+impl Editor {
+    /// The launch's read of this catalog's identity and the remembered Develop folder, off the
+    /// update loop.
+    pub(super) fn read_remembered_folder(&self) -> Task<Message> {
+        let remembered = self.preferences.applied_develop_folder().cloned();
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || remembered_folder_now(&owner, client, remembered.as_ref()),
+            |result| Message::Develop(DevelopMessage::Remembered(result)),
+        )
+    }
+
+    /// The launch's read answered. A launch with no file to open views the remembered folder in
+    /// Select, as pressing it does, when the catalog still lists it and neither a view nor a
+    /// Develop folder was chosen meanwhile; the status line keeps what the launch said. A folder
+    /// gone, another catalog's or a failed read leaves the launch as it is, the stored folder
+    /// kept.
+    pub(crate) fn develop_folder_remembered(
+        &mut self,
+        result: Result<RememberedFolder, String>,
+    ) -> Task<Message> {
+        let restore = std::mem::take(&mut self.develop.remembered.restore);
+        let found = match result {
+            Ok(found) => found,
+            Err(reason) => {
+                self.event("develop_folder_unread", || json!({"reason": reason}));
+                return Task::none();
+            }
+        };
+        self.develop.remembered.catalog_id = Some(found.catalog_id);
+        let Some(folder) = found.folder else {
+            return Task::none();
+        };
+        if !restore || self.select.state.query.is_some() || self.develop_folder().is_some() {
+            return Task::none();
+        }
+        self.event("develop_folder_restored", || json!({"folder": folder}));
+        let task = self.evaluate(model::source_query(ViewSource::CatalogFolder {
+            folder_id: folder,
+            subfolders: true,
+        }));
+        self.select.reread = Reread::Quiet;
+        task
+    }
+
+    /// After every message: once this catalog's identity is known, a Develop folder that changed
+    /// since it was last compared is stored when the preference does not already hold it, and a
+    /// Develop folder this catalog's preference named that is now gone stores `null`. A preference
+    /// for another catalog is left alone while this one holds no folder; nothing is stored while the
+    /// preferences are unreadable.
+    pub(super) fn remember_develop_folder_preference(&mut self) -> Task<Message> {
+        let Some(catalog_id) = self.develop.remembered.catalog_id.clone() else {
+            return Task::none();
+        };
+        let now = self.select.state.catalog.develop_folder.as_ref();
+        if self.develop.remembered.considered.as_ref() == now {
+            return Task::none();
+        }
+        self.develop.remembered.considered = now.cloned();
+        if self.preferences.stored().is_none() {
+            return Task::none();
+        }
+        let held = self.preferences.applied_develop_folder();
+        let change = match now {
+            Some(folder)
+                if held.is_none_or(|held| {
+                    held.catalog_id != catalog_id || held.folder_id != *folder
+                }) =>
+            {
+                Some(DevelopFolderPreference {
+                    catalog_id,
+                    folder_id: folder.clone(),
+                })
+            }
+            None if held.is_some_and(|held| held.catalog_id == catalog_id) => None,
+            _ => return Task::none(),
+        };
+        self.store_preferences(PreferenceChange {
+            develop_folder: Some(change),
+            ..PreferenceChange::default()
+        })
     }
 }
 
