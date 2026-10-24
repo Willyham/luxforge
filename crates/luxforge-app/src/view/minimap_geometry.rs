@@ -728,6 +728,7 @@ mod tests {
             mask_map: None,
             mask_handles: false,
             range_pick: None,
+            object_pick: None,
             corrections: None,
             draft: Some(&draft),
             gpu: None,

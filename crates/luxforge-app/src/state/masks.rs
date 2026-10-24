@@ -24,7 +24,7 @@ use crate::{
 use luxforge_core::{
     ComponentId, ComponentMode, Control, MaskId, MaskOverlayColour, MaskOverlayMode,
     mask::{
-        commands::{self, ComponentReport, MaskReport},
+        commands::{self, ComponentReport, MaskReport, ModelStale},
         rules,
     },
 };
@@ -237,6 +237,27 @@ pub(crate) struct MaskPanel {
     /// row's Copy as JSON gives it after the picker is put down. Only the most recent pick is kept;
     /// it is dropped when its component is no longer listed.
     pub(crate) last_pick: Option<(MaskId, ComponentId, crate::range_pick::PickArea)>,
+    /// Masks › Object while it picks: a sub-state of Mask mode, as the range picker is, whose
+    /// session is the editor's [`crate::object_pick::ObjectPick`].
+    pub(crate) object: Option<MaskObject>,
+    /// Object… was chosen before the module's status was read, from New mask (`true`) or Add
+    /// component: it is chosen again once the status says whether its setup is installed.
+    pub(crate) object_choice: Option<bool>,
+    /// The stale reasons Keep accepted, by component: its note stays hidden until they change.
+    /// View state; nothing is sent.
+    pub(crate) kept: std::collections::HashMap<ComponentId, Vec<ModelStale>>,
+}
+
+/// Masks › Object while it picks: which menu chose it, and the mask its picks go into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MaskObject {
+    /// Chosen from New mask: the first pick creates a mask, and the later ones add to it.
+    pub(crate) create: bool,
+    /// The mask the next pick is added to: the open mask for Add component, and the mask the first
+    /// pick created for New mask.
+    pub(crate) mask: Option<MaskId>,
+    /// A create is on its way: the masks listed before it, so the one it made can be told apart.
+    pub(crate) creating: Option<Vec<MaskId>>,
 }
 
 impl Default for MaskPanel {
@@ -261,6 +282,9 @@ impl Default for MaskPanel {
             typed_create: false,
             picker: None,
             last_pick: None,
+            object: None,
+            object_choice: None,
+            kept: Default::default(),
         }
     }
 }
@@ -356,6 +380,80 @@ pub(crate) struct ComponentRow {
     pub(crate) menu_open: bool,
     /// The open gesture edits this component, so its fields are the gesture's.
     pub(crate) drafting: bool,
+    /// A model selection's row: what picked it, how, when and with what, and whether it is stale.
+    pub(crate) model: Option<ModelRow>,
+}
+
+/// A `model` component's row (`docs/design/ai-tools-workspace.md`, "Object in the Masks panel"):
+/// the class, how and when it was picked and the model's part and version, and when `mask.list`
+/// reports it stale, why, with Recompute and Keep.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelRow {
+    /// `Object`.
+    pub(crate) class: String,
+    /// `picked from a point` or `picked from a stroke`; `None` for a selection with no prompt.
+    pub(crate) picked: Option<&'static str>,
+    /// When its raster was published, said against now: `2 minutes ago`.
+    pub(crate) computed: Option<String>,
+    /// The part of the setup that computed it and its version: `Object finder, version a2f0c592`.
+    pub(crate) part: String,
+    /// The first stale reason in plain words, while it is stale and Keep has not hidden it.
+    pub(crate) stale: Option<String>,
+    /// Every stale reason, in the order `mask.list` declares them; empty while current.
+    pub(crate) reasons: Vec<ModelStale>,
+    /// Why Recompute is not offered, when it is not: the experiment off, no stored prompt, or an
+    /// edit the panel cannot take now.
+    pub(crate) recompute_reason: Option<String>,
+    /// A Recompute of this component is waiting or running.
+    pub(crate) recomputing: bool,
+    /// It holds the prompt it was picked from, so its pick and select can be copied.
+    pub(crate) prompted: bool,
+}
+
+impl ModelRow {
+    /// The row's first line after the class: `picked from a point · 2 minutes ago`.
+    pub(crate) fn caption(&self) -> String {
+        [self.picked.map(str::to_owned), self.computed.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    }
+}
+
+/// The stale note's reason in plain words, for the first reason `mask.list` gives.
+pub(crate) fn stale_words(reason: ModelStale) -> &'static str {
+    match reason {
+        ModelStale::Source => "the original changed after this was picked",
+        ModelStale::RepairPrefix => "an object was removed after this was picked",
+        ModelStale::ModelVersion => "the object finder was updated after this was picked",
+    }
+}
+
+/// One entry of the kind menus' Select group: a model class picked from the photograph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectOption {
+    pub(crate) label: String,
+    /// Its setup is not installed, so choosing it opens the setup sheet.
+    pub(crate) needs_setup: bool,
+}
+
+/// Masks › Object while it picks, as the draft bar, the canvas notices and a captured frame read
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ObjectModel {
+    pub(crate) create: bool,
+    pub(crate) mask: Option<MaskId>,
+    /// The draft bar's lead: `New mask`, or the name of the mask the picks go into.
+    pub(crate) title: String,
+    /// The photograph is being analysed: `Finding objects…`.
+    pub(crate) finding: bool,
+    /// The numbered pins up, and how many are chosen.
+    pub(crate) pins: Option<(usize, usize)>,
+    /// A loose stroke found nothing.
+    pub(crate) nothing: bool,
+    /// Selections waiting, running or waiting to commit for this tool.
+    pub(crate) selecting: usize,
 }
 
 /// One component kind's help sheet, as the open row offers it.
@@ -561,6 +659,11 @@ pub(crate) struct MasksModel {
     pub(crate) brush_visible: bool,
     /// The range picker while it is armed on a component of the open mask.
     pub(crate) picker: Option<PickerModel>,
+    /// The kind menus' Select group: listed while the run offers `task.select-object` and the
+    /// `ai.analysis` experiment is on.
+    pub(crate) select: Vec<SelectOption>,
+    /// Masks › Object while it picks.
+    pub(crate) object: Option<ObjectModel>,
 }
 
 /// The armed range picker, as the pick bar and a captured frame read it.
@@ -626,6 +729,8 @@ impl Default for MasksModel {
             count: String::new(),
             brush_visible: false,
             picker: None,
+            select: Vec::new(),
+            object: None,
         }
     }
 }
@@ -727,6 +832,16 @@ impl MasksModel {
                 "renaming": row.renaming,
                 "menu_open": row.menu_open,
                 "drafting": row.drafting,
+                "model": row.model.as_ref().map(|model| serde_json::json!({
+                    "class": model.class,
+                    "picked": model.picked,
+                    "computed": model.computed,
+                    "part": model.part,
+                    "stale": model.stale,
+                    "reasons": model.reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>(),
+                    "recompute_reason": model.recompute_reason,
+                    "recomputing": model.recomputing,
+                })),
             })).collect::<Vec<_>>(),
             "brush": serde_json::json!({
                 "fields": self.brush.fields.iter()
@@ -783,6 +898,19 @@ impl MasksModel {
                 "rectangle": picker.rectangle,
                 "waiting": picker.waiting,
                 "mapped": picker.mapped,
+            })),
+            "select": self.select.iter().map(|option| serde_json::json!({
+                "label": option.label,
+                "needs_setup": option.needs_setup,
+            })).collect::<Vec<_>>(),
+            "object": self.object.as_ref().map(|object| serde_json::json!({
+                "create": object.create,
+                "mask": object.mask.as_ref().map(MaskId::as_str),
+                "title": object.title,
+                "finding": object.finding,
+                "pins": object.pins.map(|(up, chosen)| serde_json::json!({"up": up, "chosen": chosen})),
+                "nothing": object.nothing,
+                "selecting": object.selecting,
             })),
         })
     }
@@ -1044,7 +1172,142 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         count: format!("{} of {}", reports.len(), luxforge_core::MASKS_PER_RECIPE),
         brush_visible,
         picker: picker_model(inputs, open),
+        select: select_options(inputs),
+        object: object_model(inputs, reports),
     }
+}
+
+/// The Select group's Object entry.
+pub(crate) const OBJECT_ENTRY: &str = "Object\u{2026}";
+
+/// The kind menus' Select group: Object… while the run offers `task.select-object` and the
+/// experiment is on, marked when its setup is not installed.
+fn select_options(inputs: &Inputs<'_>) -> Vec<SelectOption> {
+    if crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_none()
+    {
+        return Vec::new();
+    }
+    vec![SelectOption {
+        label: OBJECT_ENTRY.to_owned(),
+        needs_setup: !setup_installed(inputs, crate::app::object_pick::SetupId::MaskObject),
+    }]
+}
+
+/// Whether every resource of `setup` is installed, as the module's status last read them.
+fn setup_installed(inputs: &Inputs<'_>, setup: crate::app::object_pick::SetupId) -> bool {
+    use luxforge_core::capabilities::resources::ResourceState;
+    inputs
+        .modules
+        .iter()
+        .filter(|module| module.is_available())
+        .find_map(|module| Some((module, module.setup(setup.as_str())?)))
+        .is_some_and(|(module, declared)| {
+            let status = inputs.capabilities.module(&module.id).status.as_ref();
+            status.is_some_and(|status| {
+                declared.resources().all(|resource| {
+                    status.resources.iter().any(|row| {
+                        row.id == resource && row.state == ResourceState::Installed
+                    })
+                })
+            })
+        })
+}
+
+/// Masks › Object while it picks.
+fn object_model(inputs: &Inputs<'_>, reports: &[MaskReport]) -> Option<ObjectModel> {
+    let object = inputs.mask_panel.object.as_ref()?;
+    let session = inputs
+        .object_pick
+        .filter(|session| session.purpose == crate::object_pick::PickUse::Mask)?;
+    let title = object
+        .mask
+        .as_ref()
+        .and_then(|mask| reports.iter().find(|report| &report.id == mask))
+        .map_or_else(|| "New mask".to_owned(), |report| report.name.clone());
+    let selects = inputs.object_selects;
+    let selecting = selects.queued.len()
+        + usize::from(selects.running.is_some())
+        + usize::from(selects.answered.is_some());
+    Some(ObjectModel {
+        create: object.create,
+        mask: object.mask.clone(),
+        title,
+        finding: session.finding_objects(),
+        pins: session
+            .pins
+            .as_ref()
+            .map(|pins| (pins.pins.len(), pins.chosen())),
+        nothing: session.nothing.is_some(),
+        selecting,
+    })
+}
+
+/// A `model` component's row, from what `mask.list` reports of it.
+fn model_row(
+    inputs: &Inputs<'_>,
+    mask: &MaskId,
+    component: &ComponentReport,
+    refusal: Option<&str>,
+) -> Option<ModelRow> {
+    use crate::object_pick::SelectFor;
+    let model = component.model.as_ref()?;
+    let reasons = model.stale.clone().unwrap_or_default();
+    let kept = inputs.mask_panel.kept.get(&component.id) == Some(&reasons);
+    let stale = reasons
+        .first()
+        .filter(|_| !kept)
+        .map(|reason| format!("Needs recompute \u{b7} {}", stale_words(*reason)));
+    let offered =
+        crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_some();
+    let recompute_reason = if !offered {
+        Some("Turn on AI object picking to recompute".to_owned())
+    } else if model.prompt.is_none() {
+        Some("This selection does not record how it was picked".to_owned())
+    } else {
+        refusal.map(str::to_owned)
+    };
+    let selects = inputs.object_selects;
+    let recomputing = selects
+        .running
+        .iter()
+        .map(|(purpose, _)| purpose)
+        .chain(selects.queued.iter().map(|(purpose, _, _)| purpose))
+        .chain(selects.answered.iter().map(|(purpose, _)| purpose))
+        .any(|purpose| {
+            matches!(purpose, SelectFor::Recompute { mask: held, component: id }
+                if held == mask && id == &component.id)
+        });
+    Some(ModelRow {
+        class: sentence(&model.class),
+        picked: model.prompt.as_ref().map(|prompt| match prompt {
+            luxforge_core::mask::ObjectPrompt::Point { .. } => "picked from a point",
+            luxforge_core::mask::ObjectPrompt::Stroke { .. } => "picked from a stroke",
+        }),
+        computed: model.computed_ms.map(|at| {
+            crate::state::update::ago(crate::state::settings::now_ms().saturating_sub(at))
+        }),
+        part: model_part(inputs, &model.model, &model.model_version),
+        stale,
+        reasons,
+        recompute_reason,
+        recomputing,
+        prompted: model.prompt.is_some(),
+    })
+}
+
+/// The part of a setup whose resources hold `model`, by its name in the feature's words, and the
+/// version's last segment: `Object finder, version a2f0c592`. The model's own identity stands in
+/// when no setup names it.
+fn model_part(inputs: &Inputs<'_>, model: &str, version: &str) -> String {
+    let part = inputs
+        .modules
+        .iter()
+        .flat_map(|module| module.setups.iter())
+        .flat_map(|setup| setup.parts.iter())
+        .find(|part| part.resources.iter().any(|resource| resource == model))
+        .map_or(model, |part| part.name.as_str());
+    let version = version.rsplit('-').next().unwrap_or(version);
+    format!("{part}, version {version}")
 }
 
 /// The armed range picker, while it is armed on a component of the open mask.
@@ -1290,6 +1553,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 drafting: inputs.mask_draft.is_some_and(|draft| {
                     draft.brush().is_none() && draft.component.as_ref() == Some(&component.id)
                 }),
+                model: model_row(inputs, &report.id, component, refusal),
             }
         })
         .collect()

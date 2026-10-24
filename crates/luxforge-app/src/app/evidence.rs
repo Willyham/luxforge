@@ -8,6 +8,7 @@ mod develop;
 mod grid;
 mod long_work;
 mod loupe;
+mod mask_object;
 mod minimap;
 mod select;
 mod select_catalog;
@@ -638,6 +639,9 @@ pub(crate) enum Settle {
     Minimap,
     /// A `window_size` step's window reports the size it asked for.
     Window,
+    /// Masks › Object has finished what a step started: no pick, analysis, load, selection,
+    /// commit or capability round trip in flight, and the newest frame on screen.
+    MaskObject,
 }
 
 impl Settle {
@@ -685,6 +689,7 @@ impl Settle {
             Self::Corrections => "corrections",
             Self::Minimap => "minimap",
             Self::Window => "window",
+            Self::MaskObject => "mask_object",
         }
     }
 
@@ -2496,6 +2501,11 @@ impl Editor {
         if !self.mask_mode_active() {
             return self.fail_step("a mask step needs Mask mode");
         }
+        // Masks › Object's steps wait for what they started, picks and selections included.
+        let step = match step {
+            MaskStep::Object(step) => return self.mask_object_step(step),
+            step => step,
+        };
         let overlay = self.mask_coverage_target().is_some();
         let selecting = matches!(step, MaskStep::SelectComponent(Some(_)));
         // A drag is several messages; every other gesture is exactly one.
@@ -2903,6 +2913,7 @@ impl Editor {
                 )
             }
             MaskStep::Drag { .. } => unreachable!("a drag is answered above"),
+            MaskStep::Object(_) => unreachable!("an object step is answered above"),
         };
         if matches!(expect, Expect::Redraw) {
             let task = self.dispatch(message);
@@ -6435,6 +6446,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_window_size();
     editor.settle_when_quiet();
     editor.settle_corrections();
+    editor.settle_mask_object();
     editor.settle_capability();
     editor.settle_agent_host();
     let arrows = editor.loupe_arrows_when_warm();

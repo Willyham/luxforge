@@ -2,6 +2,7 @@
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
 use crate::app::Editor;
+use crate::app::message::object_pick::ObjectPickMessage;
 use crate::app::message::{
     Message,
     crop::CropMessage,
@@ -179,6 +180,9 @@ pub(crate) struct KeyContext {
     /// The range picker is armed in Mask mode: Escape cancels a drag in progress or puts the
     /// eyedropper down, and Return puts it down, before either reaches the mode.
     pub(crate) range_picking: bool,
+    /// A tool picks objects: Escape drops a press, then pins or the Nothing notice, then leaves
+    /// picking; Return uses the chosen pins, or else leaves picking.
+    pub(crate) object_picking: bool,
     /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
@@ -629,6 +633,19 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
     // The armed eyedropper answers Escape and Return ahead of the mode: Escape cancels a drag in
     // progress, keeping the eyedropper, or puts it down, and Return is the pick bar's Done. A
     // second Escape then leaves Mask mode as ever.
+    // A tool picking objects answers the same two keys ahead of the mode: Escape steps back one
+    // thing at a time and Return uses the chosen pins or leaves picking.
+    if context.object_picking && !context.drafting {
+        match key {
+            Key::Named(Named::Escape) => {
+                return Some(Message::ObjectPick(ObjectPickMessage::Escape));
+            }
+            Key::Named(Named::Enter) if !*repeat && plain(modifiers) => {
+                return Some(Message::ObjectPick(ObjectPickMessage::Done));
+            }
+            _ => {}
+        }
+    }
     if context.range_picking && !context.drafting {
         match key {
             Key::Named(Named::Escape) => return Some(Message::Mask(MaskMessage::PickEscape)),
@@ -1506,6 +1523,7 @@ mod tests {
             select_menu_open: false,
             loupe_open: false,
             range_picking: false,
+            object_picking: false,
             merge_sheet_open: false,
             develop_confirm: false,
             filmstrip: false,

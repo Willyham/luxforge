@@ -20,6 +20,7 @@ pub(crate) mod history;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask;
+pub(crate) mod object_pick;
 pub(crate) mod move_to_applications;
 pub(crate) mod overlay;
 pub(crate) mod palette;
@@ -69,6 +70,8 @@ pub(crate) enum Message {
     Corrections(corrections::CorrectionMessage),
     /// One change of the Corrections band's Remove mode.
     Remove(remove::RemoveMessage),
+    /// One object-picking gesture or answer, whichever tool is picking.
+    ObjectPick(object_pick::ObjectPickMessage),
     /// One decision about, or owner answer for, the open slider or mask gesture's core draft.
     Draft(draft::DraftMessage),
     /// One Presets-section change.

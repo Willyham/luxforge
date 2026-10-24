@@ -164,6 +164,29 @@ pub(crate) enum MaskMessage {
     Hover(Option<String>),
     /// `render.transform` answered for the mask gesture it names: the affine it maps pointers with.
     Transform(GestureId, Result<MappingDescriptor, String>),
+    /// The Select group's Object… in a kind menu: pick objects into a new mask or, from Add
+    /// component, into the open one, or set up the object finder first.
+    ChooseObject(KindMenu),
+    /// A model component's Recompute: its stored prompt selected again, then `mask.set-model`.
+    Recompute(String),
+    /// A model component's Keep: its stale note hidden until the reasons change. Sends nothing.
+    Keep(String),
+    /// One of a model component's requests, copied as JSON.
+    CopyObject {
+        component: String,
+        request: ObjectRequest,
+    },
+}
+
+/// Which of a model component's requests its Copy as JSON request copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectRequest {
+    /// `query.pick-object` for its stored prompt.
+    Pick,
+    /// `task.select-object` for its stored prompt.
+    Select,
+    /// `mask.set-model` with the selection it holds, as Recompute commits it.
+    Commit,
 }
 
 /// Which kind menu a kind was chosen from.

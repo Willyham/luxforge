@@ -256,6 +256,10 @@ pub(crate) enum NoticeAction {
     ExportAnyway,
     /// Let the export held for its stale frozen patches go.
     DismissExport,
+    /// Use the numbered objects chosen among a loose stroke's pins.
+    UseObjects,
+    /// Put a loose stroke's pins or its Nothing found away, as Escape does.
+    DismissObjects,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -487,11 +491,55 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
     PhotoView::default()
 }
 
+/// What Masks › Object's bar says after its lead: how to pick.
+pub(crate) const OBJECT_HINT: &str = "click an object \u{b7} drag loosely to find one";
+
+/// Masks › Object's bar while it picks in Mask mode: `New mask · Object · click an object · drag
+/// loosely to find one · Cancel esc`, led by the mask's name once the picks go into one. Each pick
+/// commits on its own, so the bar offers only Cancel, which leaves picking.
+fn object_draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
+    let object = inputs.mask_panel.object.as_ref()?;
+    inputs.object_pick?;
+    if inputs.session.workspace.mode != MASK_MODE {
+        return None;
+    }
+    let title = object
+        .mask
+        .as_ref()
+        .and_then(|mask| {
+            inputs
+                .document
+                .masks
+                .as_ref()?
+                .masks
+                .iter()
+                .find(|report| &report.id == mask)
+        })
+        .map_or_else(|| "New mask".to_owned(), |report| report.name.clone());
+    Some(DraftBar {
+        crop_ratios: Vec::new(),
+        crop_enabled: false,
+        title,
+        subject: Some("Object".into()),
+        kind: None,
+        icon: luxforge_core::mask::kind_icon("model"),
+        readout: OBJECT_HINT.into(),
+        can_apply: false,
+        conflicted: false,
+        apply_reason: None,
+        done: false,
+        cancel_only: true,
+    })
+}
+
 /// The bar over the open mask shape gesture or crop draft: its title, its own numbers, and whether
 /// Apply can run, which is the app's one release refusal and never a rule of the bar's own.
 fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
     if let Some(draft) = inputs.mask_draft {
         return Some(mask_draft_bar(inputs, draft));
+    }
+    if let Some(bar) = object_draft_bar(inputs) {
+        return Some(bar);
     }
     // A correction's bar names it in the accent and says what the gesture does; its release
     // commits, so it offers only Cancel.
@@ -637,6 +685,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             None => {}
         }
     }
+    notices.extend(object_notice(inputs));
     // An export refused for its entry's stale frozen patches waits here for the person's answer:
     // nothing is acknowledged without Export anyway, which acknowledges what this card names.
     if let Some(stale) = inputs.export_held {
@@ -660,6 +709,48 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         ));
     }
     notices
+}
+
+/// What a tool picking objects says over the canvas: `Finding objects…` until the photograph is
+/// analysed, the numbered pins' question while a loose stroke found several, and `Nothing found
+/// here` while one found none.
+fn object_notice(inputs: &Inputs<'_>) -> Option<Notice> {
+    let session = inputs.object_pick?;
+    let shown = match session.purpose {
+        crate::object_pick::PickUse::Mask => inputs.session.workspace.mode == MASK_MODE,
+    };
+    if !shown {
+        return None;
+    }
+    if session.finding_objects() {
+        return Some(Notice {
+            tone: NoticeTone::Neutral,
+            icon: NoticeIcon::Information,
+            title: crate::object_pick::FINDING_OBJECTS.into(),
+            body: "The object under the pointer is outlined once the photograph is read.".into(),
+            actions: Vec::new(),
+        });
+    }
+    if let Some(pins) = &session.pins {
+        let chosen = pins.chosen();
+        return Some(Notice {
+            tone: NoticeTone::Neutral,
+            icon: NoticeIcon::Information,
+            title: format!("{} objects here", pins.pins.len()),
+            body: "Click the numbered objects to use, then press Return.".into(),
+            actions: vec![
+                (format!("Use {chosen}"), NoticeAction::UseObjects),
+                ("Cancel".into(), NoticeAction::DismissObjects),
+            ],
+        });
+    }
+    session.nothing.as_ref().map(|_| Notice {
+        tone: NoticeTone::Neutral,
+        icon: NoticeIcon::Triangle,
+        title: crate::object_pick::NOTHING_FOUND.into(),
+        body: "Click the object, or draw loosely around it again.".into(),
+        actions: vec![("Cancel".into(), NoticeAction::DismissObjects)],
+    })
 }
 
 /// The card an export held for its stale frozen patches shows: each patch by name with what

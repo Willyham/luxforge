@@ -138,6 +138,9 @@ pub(crate) mod loupe;
 pub(crate) mod loupe_frames;
 pub(crate) mod loupe_region;
 pub(crate) mod mask_coverage;
+pub(crate) mod mask_object;
+#[cfg(test)]
+mod mask_object_tests;
 pub(crate) mod mask_panel;
 pub(crate) mod masks;
 #[cfg(test)]
@@ -180,6 +183,7 @@ mod preview_read;
 mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
+pub(crate) mod object_pick;
 mod query_choice;
 pub(crate) mod range_picker;
 mod relaunch;
@@ -497,6 +501,10 @@ pub(crate) struct Editor {
     /// Remove's stroke in progress, its decoded candidate previews and its last request
     /// ([`remove`]).
     pub(crate) remove_reads: remove::Remove,
+    /// The object-picking session a tool has armed ([`crate::object_pick`]).
+    pub(crate) object_pick: Option<crate::object_pick::ObjectPick>,
+    /// The `task.select-object` requests this desktop runs, one at a time.
+    pub(crate) object_selects: crate::object_pick::ObjectSelects,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
@@ -789,6 +797,8 @@ impl Editor {
             correction_reads: Default::default(),
             remove: Default::default(),
             remove_reads: Default::default(),
+            object_pick: None,
+            object_selects: Default::default(),
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
@@ -1213,6 +1223,8 @@ impl Editor {
             correction_draft: self.correction_draft_info(),
             correction_content: self.correction_content(),
             remove: &self.remove,
+            object_pick: self.object_pick.as_ref(),
+            object_selects: &self.object_selects,
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
@@ -1311,6 +1323,7 @@ impl Editor {
             Message::Mask(message) => self.mask_message(message),
             Message::Corrections(message) => self.correction_message(message),
             Message::Remove(message) => self.remove_message(message),
+            Message::ObjectPick(message) => self.object_pick_message(message),
             Message::Draft(message) => self.draft_message(message),
             Message::Preset(message) => self.preset_update(message),
             Message::CopySettings(message) => self.copy_settings_update(message),
@@ -1381,6 +1394,7 @@ impl Editor {
             mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             mask_handles: self.session.workspace.mask_handles,
             range_pick: self.range_pick_canvas(),
+            object_pick: self.object_pick_canvas(),
             corrections: self.correction_canvas(),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
@@ -1602,6 +1616,7 @@ impl Editor {
                 (menu, letters)
             }),
             range_picking: self.mask_mode_active() && self.mask_panel.picker.is_some(),
+            object_picking: self.object_pick.is_some(),
             mask_keys: self.mask_mode_active()
                 && self
                     .mask_shape()

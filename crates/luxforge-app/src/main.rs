@@ -13,6 +13,7 @@ mod crop_draft;
 mod diagnostics;
 mod layout;
 mod mask_draft;
+mod object_pick;
 mod range_pick;
 mod state;
 mod view;
