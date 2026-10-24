@@ -73,7 +73,7 @@
       }
     },
     {
-      "id": "TASK-003",
+      "id": "TASK-002",
       "description": "Let task.fill-generative fill a set of picked objects: the object-artifacts parameter, the removal region of an object artifact with its f64 reference, admission against stale and unknown artifacts, and the objects in the candidates' provenance; store the pick prompt on object model components.",
       "status": "in_progress",
       "dependencies": [],
@@ -139,7 +139,7 @@
       }
     },
     {
-      "id": "TASK-004",
+      "id": "TASK-003",
       "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the too-small line, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
       "status": "pending",
       "dependencies": [
@@ -206,12 +206,12 @@
       }
     },
     {
-      "id": "TASK-005",
+      "id": "TASK-004",
       "description": "Deliver the Object kind of the Corrections band: the fourth segment, the crosshair and hover moved from Remove, analysis on entry, click, ⇧-click and ⌥-click selection, the loose drag with One, Several pins and the Nothing hand-off to Remove, the numbered selection, Paint shadow, Generate from object artifacts through the shared Remove group, the Escape order, and the object-remove scenario.",
       "status": "pending",
       "dependencies": [
-        "TASK-003",
-        "TASK-004"
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "Remove keeps the delivered painting workflow and loses its hover; app/remove_hover.rs serves Object instead. Entering Object with its setup installed sends module.runtime.load for the encoder and decoder and task.analyse for the photograph on screen, showing Finding objects… until it answers; a new photograph analyses the same way.",
@@ -278,12 +278,12 @@
       }
     },
     {
-      "id": "TASK-006",
+      "id": "TASK-005",
       "description": "Deliver Object in the Masks panel: the Select group with Object… in New mask and Add component, the picking sub-state of Mask mode, one entry per pick through mask.create-model or mask.add-model, the model component's row with how and when it was picked, the stale note with Recompute and Keep, and the mask-object scenario.",
       "status": "pending",
       "dependencies": [
-        "TASK-003",
-        "TASK-004"
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "Object… is listed whenever the run declares task.select-object and ai.analysis is on (turning it off leaves the sub-state as Escape does, and a model row offers no Recompute); without the mask-object setup installed it opens the setup sheet. The sub-state follows the range picker's: the open mask, its layer and the sections stay; crosshair and hover as in Object; a click or a loose drag (One, or Several through pins) sends task.select-object and commits mask.create-model (New mask) or mask.add-model in the Add row's mode, labelled Add object (model); it stays armed until Escape or Done.",
@@ -339,7 +339,7 @@
       }
     },
     {
-      "id": "TASK-007",
+      "id": "TASK-006",
       "description": "Record a real network setup of the published removal conditioning: install the remove setup through the real transport from an empty data root on the M4 and generate once.",
       "status": "pending",
       "dependencies": [],
@@ -372,12 +372,12 @@
       }
     },
     {
-      "id": "TASK-008",
+      "id": "TASK-007",
       "description": "Qualify the AI tools natively on the M4 with the pinned segmenter and klein, measure hover, analysis-ready, select and combined residency against their budgets, and hand off the shared documentation.",
       "status": "pending",
       "dependencies": [
-        "TASK-005",
-        "TASK-006"
+        "TASK-004",
+        "TASK-005"
       ],
       "extra_context": [
         "Run the Object journey and mask Object on corpus photographs (the bridge, the kayaks, the road) at 24 to 60 MP and on a qualified RAW, with the models staged or downloaded: hover pointer-to-overlay against p50 20 ms and p95 33 ms, analysis ready after entering Object against 300 ms at 24 MP and 500 ms at 60 MP, task.select-object against 2 s, and the resident set with the segmenter and klein loaded together; record the host's load. Timing runs once, here.",
@@ -428,27 +428,27 @@
       "wave": 1,
       "task_ids": [
         "TASK-001",
-        "TASK-003",
-        "TASK-007"
+        "TASK-002",
+        "TASK-006"
       ]
     },
     {
       "wave": 2,
       "task_ids": [
-        "TASK-004"
+        "TASK-003"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-005",
-        "TASK-006"
+        "TASK-004",
+        "TASK-005"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-008"
+        "TASK-007"
       ]
     }
   ]
