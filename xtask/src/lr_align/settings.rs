@@ -288,7 +288,11 @@ pub fn baseline(kind: Kind) -> Fields {
     // Highlight Priority, the style Luxforge's vignette follows.
     put("PostCropVignetteStyle", unsigned(1.0));
     put("PostCropVignetteHighlightContrast", unsigned(0.0));
+    // Grain's Size and Roughness at their defaults, so a grain variant's Amount acts on them in
+    // any catalog. No seed is written: Luxforge carries none, and grain is measured as statistics.
     put("GrainAmount", unsigned(0.0));
+    put("GrainSize", unsigned(25.0));
+    put("GrainFrequency", unsigned(50.0));
     put("ConvertToGrayscale", Field::Text("False"));
     put("LensProfileEnable", unsigned(0.0));
     put("LensManualDistortionAmount", signed(0.0));

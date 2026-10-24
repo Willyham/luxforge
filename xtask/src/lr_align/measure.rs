@@ -30,9 +30,9 @@ use super::{FORMAT, NEUTRAL, readback, targets};
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, BoxRect, CURVE_EFFECT, Component, ComponentMode, CropPayload, CropStage,
-    DETAIL_EFFECT, Layer, LinearSettings, MIXER_EFFECT, Mask, ModuleRegistry, PERSPECTIVE_EFFECT,
-    PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, RenderSource,
-    SourceImage, VIGNETTE_EFFECT, open_source, render,
+    DETAIL_EFFECT, GRAIN_EFFECT, Layer, LinearSettings, MIXER_EFFECT, Mask, ModuleRegistry,
+    PERSPECTIVE_EFFECT, PRESENCE_EFFECT, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions,
+    RenderSource, SourceImage, VIGNETTE_EFFECT, open_source, render,
 };
 use luxforge_reference::lr_align::{self as la, Lab, Target};
 use luxforge_reference::srgb;
@@ -50,6 +50,27 @@ const FRAME_BUDGET: f64 = 8e9;
 const THUMB: u32 = 240;
 /// The side of the 1:1 crops a spatial setting's sheet shows.
 const CROP: u32 = 160;
+/// The grey every grain statistic a family is fitted on is read at: the greys target's middle
+/// grey and the spatial chart's corners outside the zone plate.
+const GRAIN_GREY: u8 = 128;
+/// The side of the windows grain is read in on the spatial chart's corners, and on its edge
+/// panels' plateaus.
+const GRAIN_WINDOW: usize = 256;
+const PLATEAU_WINDOW: usize = 128;
+/// The tiles, in pixels, whose local variance the clumping statistic spreads over.
+const GRAIN_TILE: usize = 8;
+/// A grain statistic still this far from Lightroom's after the best value, in percent of the
+/// statistic, makes the setting a level C candidate.
+const GRAIN_RESIDUAL: f64 = 10.0;
+/// The largest difference in the tone weight (each grey's strength over the mid grey's) on the
+/// greys target, at the family's strongest value, before it differs in kind.
+const GRAIN_TONE_WEIGHT: f64 = 0.25;
+/// The largest difference in the mean shift (`L*`) at any grey before it differs in kind.
+const GRAIN_MEAN_SHIFT: f64 = 0.5;
+/// The range the ratio of Lightroom's half-power frequency on the 6000 × 4000 chart to the
+/// 2400 × 1600 chart's may keep, relative to Luxforge's, before its grain size follows the
+/// picture's size rather than its pixels (decided G1).
+const GRAIN_PICTURE_SIZE: (f64, f64) = (0.8, 1.25);
 
 pub fn run(root: &Path, mut a: Args) -> Result {
     let round: u32 = a
@@ -150,6 +171,8 @@ enum Sampling {
     /// Cells laid out in normalized coordinates, this many across: a photograph, whose frames
     /// from the two editors may differ in size by their own default crops.
     Normalized(u32),
+    /// Grain: `L*` in the subject's flat windows ([`grain_windows`]), pixel by pixel.
+    Grain,
 }
 
 /// What a contact sheet shows of a frame.
@@ -158,6 +181,183 @@ enum View {
     Whole,
     /// A 1:1 crop at the centre of a spatial chart's named panel.
     Panel(&'static str),
+    /// A 1:1 crop at the centre of the subject's first mid-grey grain window.
+    Grain,
+}
+
+/// One flat window grain is read in: its grey's code and its square in the frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GrainWindow {
+    tone: u8,
+    x: u32,
+    y: u32,
+    side: usize,
+}
+
+/// One window's `L*`, row-major, kept at single precision: a frame's windows are held for every
+/// value of a family's dense grid.
+struct WindowValues {
+    window: GrainWindow,
+    lstar: Vec<f32>,
+}
+
+/// `side`-pixel windows tiling the rectangle `(x, y, width, height)`, as many as fit, centred in it.
+fn tile_windows(
+    tone: u8,
+    (x, y, width, height): (u32, u32, u32, u32),
+    side: usize,
+) -> Vec<GrainWindow> {
+    let s = side as u32;
+    let (columns, rows) = (width / s, height / s);
+    let (x0, y0) = (x + (width - columns * s) / 2, y + (height - rows * s) / 2);
+    let mut out = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            out.push(GrainWindow {
+                tone,
+                x: x0 + column * s,
+                y: y0 + row * s,
+                side,
+            });
+        }
+    }
+    out
+}
+
+/// The flat windows a grain measurement reads on a target: 2 × 2 windows inside each grey of the
+/// greys target; on the spatial chart, the four corners of the zone plate's square that lie
+/// outside its disc (flat mid grey) and the plateaus either side of the hard and soft vertical
+/// edges. Each window lies inside its flat area with a margin, so the comparison of a grain
+/// variant with its neutral reads grain alone.
+fn grain_windows(layout: &Value) -> Vec<GrainWindow> {
+    let mut out = Vec::new();
+    if layout["kind"] == "patches" && layout["window"].is_u64() {
+        let side = layout["window"].as_u64().unwrap_or(0) as usize;
+        let size = layout["patch"].as_u64().unwrap_or(0) as u32;
+        let inset = layout["inset"].as_u64().unwrap_or(0) as u32;
+        for patch in layout["patches"].as_array().into_iter().flatten() {
+            let (x, y) = (
+                patch["x"].as_u64().unwrap_or(0) as u32,
+                patch["y"].as_u64().unwrap_or(0) as u32,
+            );
+            let tone = patch["code"][0].as_u64().unwrap_or(0) as u8;
+            out.extend(tile_windows(
+                tone,
+                (x + inset, y + inset, size - 2 * inset, size - 2 * inset),
+                side,
+            ));
+        }
+        return out;
+    }
+    if layout["kind"] != "spatial" {
+        return out;
+    }
+    let plate = &layout["zone_plate"];
+    let (Some(centre), Some(radius)) = (plate["centre"][0].as_f64(), plate["radius"].as_f64())
+    else {
+        return out;
+    };
+    let tone = plate["mean"].as_u64().unwrap_or(u64::from(GRAIN_GREY)) as u8;
+    // A corner square of side `corner` lies outside the disc with four pixels to spare.
+    let corner = ((centre - radius / std::f64::consts::SQRT_2).floor() - 4.0).max(0.0) as u32;
+    let square = (2.0 * centre).round() as u32;
+    for (x, y) in [
+        (0, 0),
+        (square - corner, 0),
+        (0, square - corner),
+        (square - corner, square - corner),
+    ] {
+        out.extend(tile_windows(tone, (x, y, corner, corner), GRAIN_WINDOW));
+    }
+    for name in ["vertical-edge", "vertical-edge-soft"] {
+        let Some(panel_entry) = layout["panels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|p| p["name"] == name)
+        else {
+            continue;
+        };
+        let Some((x, y, side, _)) = rect_of(&panel_entry["rect"]) else {
+            continue;
+        };
+        let margin = side / 16;
+        let half = side / 2;
+        for (tone, from) in [("dark", x), ("light", x + half)] {
+            let code = panel_entry[tone].as_u64().unwrap_or(0) as u8;
+            out.extend(tile_windows(
+                code,
+                (
+                    from + margin,
+                    y + margin,
+                    half - 2 * margin,
+                    side - 2 * margin,
+                ),
+                PLATEAU_WINDOW,
+            ));
+        }
+    }
+    out
+}
+
+/// Each window's `L*` in `frame`.
+fn window_values(frame: &Frame, windows: &[GrainWindow]) -> Vec<WindowValues> {
+    windows
+        .iter()
+        .map(|window| {
+            let mut lstar = Vec::with_capacity(window.side * window.side);
+            for y in window.y..window.y + window.side as u32 {
+                for x in window.x..window.x + window.side as u32 {
+                    lstar.push(self::lstar(frame.linear(x, y)) as f32);
+                }
+            }
+            WindowValues {
+                window: *window,
+                lstar,
+            }
+        })
+        .collect()
+}
+
+/// One tone's grain on one subject: the difference of a variant's windows from its neutral's.
+#[derive(Clone, Debug)]
+struct GrainTone {
+    tone: u8,
+    grain: la::Grain,
+}
+
+/// The grain of `adjusted` over `neutral`, per tone, darkest first.
+fn grain_tones(neutral: &[WindowValues], adjusted: &[WindowValues]) -> Vec<GrainTone> {
+    let mut tones: Vec<(u8, usize, Vec<Vec<f64>>)> = Vec::new();
+    for (n, a) in neutral.iter().zip(adjusted) {
+        if n.window != a.window {
+            continue;
+        }
+        let difference: Vec<f64> = a
+            .lstar
+            .iter()
+            .zip(&n.lstar)
+            .map(|(a, n)| f64::from(*a) - f64::from(*n))
+            .collect();
+        match tones
+            .iter_mut()
+            .find(|(tone, side, _)| *tone == n.window.tone && *side == n.window.side)
+        {
+            Some((_, _, windows)) => windows.push(difference),
+            None => tones.push((n.window.tone, n.window.side, vec![difference])),
+        }
+    }
+    tones.sort_by_key(|(tone, side, _)| (*tone, *side));
+    tones
+        .into_iter()
+        .map(|(tone, side, windows)| {
+            let refs: Vec<&[f64]> = windows.iter().map(Vec::as_slice).collect();
+            GrainTone {
+                tone,
+                grain: la::grain(&refs, side, GRAIN_TILE),
+            }
+        })
+        .collect()
 }
 
 /// A spatial chart's measures of one frame.
@@ -185,6 +385,8 @@ struct Reduced {
     /// `L*` at a quarter of the frame's size on each axis, for positional measures.
     plane: Option<(usize, Vec<f64>)>,
     dots: Vec<[f64; 2]>,
+    /// `L*` in the subject's grain windows, read only for [`Sampling::Grain`].
+    grain: Vec<WindowValues>,
     thumb: Option<image::RgbImage>,
 }
 
@@ -377,6 +579,22 @@ fn thumbnail(frame: &Frame, layout: &Value, view: View) -> image::RgbImage {
             }
             None => (0, 0, frame.width, frame.height),
         },
+        View::Grain => match grain_windows(layout)
+            .into_iter()
+            .find(|w| w.tone == GRAIN_GREY)
+        {
+            Some(window) => {
+                let side = CROP.min(window.side as u32);
+                let half = window.side as u32 / 2;
+                (
+                    window.x + half - side / 2,
+                    window.y + half - side / 2,
+                    side,
+                    side,
+                )
+            }
+            None => (0, 0, frame.width, frame.height),
+        },
     };
     let (w, h) = (
         w.min(frame.width - x0.min(frame.width)),
@@ -400,10 +618,11 @@ fn reduce(frame: &Frame, subject: &Subject, sampling: Sampling, view: Option<Vie
     let samples = match sampling {
         Sampling::Patches => patches.clone(),
         Sampling::Cells(side) => cells(frame, side),
-        Sampling::Dots => Vec::new(),
+        Sampling::Dots | Sampling::Grain => Vec::new(),
         Sampling::Normalized(columns) => normalized_cells(frame, columns),
     };
     let same = (frame.width, frame.height) == (subject.width, subject.height);
+    let grain = same && sampling == Sampling::Grain;
     let energy = if subject.photo().is_some() {
         let (width, plane) = quarter_plane(frame);
         la::band_energy(&plane, width, &PHOTO_BANDS)
@@ -416,12 +635,17 @@ fn reduce(frame: &Frame, subject: &Subject, sampling: Sampling, view: Option<Vie
         samples,
         energy,
         patches,
-        spatial: (same && subject.layout["kind"] == "spatial")
+        spatial: (same && !grain && subject.layout["kind"] == "spatial")
             .then(|| spatial(frame, &subject.layout))
             .flatten(),
         plane: (same && subject.id == "flat").then(|| quarter_plane(frame)),
         dots: if subject.id == "grid" {
             frame_dots(frame)
+        } else {
+            Vec::new()
+        },
+        grain: if grain {
+            window_values(frame, &grain_windows(&subject.layout))
         } else {
             Vec::new()
         },
@@ -781,6 +1005,7 @@ fn effect_of(action: &str) -> Option<&'static str> {
         "set-detail" => DETAIL_EFFECT,
         "set-curve" => CURVE_EFFECT,
         "set-perspective" => PERSPECTIVE_EFFECT,
+        "set-grain" => GRAIN_EFFECT,
         _ => return None,
     })
 }
@@ -864,6 +1089,9 @@ fn luxforge_scale(effect: &str, key: &str) -> (f64, (f64, f64), bool) {
         (e, _) if e == DETAIL_EFFECT => (0.0, (0.0, 100.0), false),
         (e, "midpoint" | "feather") if e == VIGNETTE_EFFECT => (50.0, (0.0, 100.0), false),
         (e, _) if e == PERSPECTIVE_EFFECT => (0.0, (-100.0, 100.0), true),
+        (e, "size") if e == GRAIN_EFFECT => (25.0, (0.0, 100.0), false),
+        (e, "roughness") if e == GRAIN_EFFECT => (50.0, (0.0, 100.0), false),
+        (e, _) if e == GRAIN_EFFECT => (0.0, (0.0, 100.0), false),
         _ => (0.0, (-100.0, 100.0), false),
     }
 }
@@ -881,7 +1109,10 @@ fn lightroom_range(setting: &str) -> (f64, f64) {
         | "ColorNoiseReduction"
         | "ColorNoiseReductionDetail"
         | "PostCropVignetteMidpoint"
-        | "PostCropVignetteFeather" => (0.0, 100.0),
+        | "PostCropVignetteFeather"
+        | "GrainAmount"
+        | "GrainSize"
+        | "GrainFrequency" => (0.0, 100.0),
         "CropAngle" => (-45.0, 45.0),
         _ => (-100.0, 100.0),
     }
@@ -894,6 +1125,9 @@ fn grid(low: f64, high: f64, step: f64) -> Vec<f64> {
 
 /// How a family's subject is sampled.
 fn sampling_of(area: &str, subject: &str) -> Sampling {
+    if area == "grain" {
+        return Sampling::Grain;
+    }
     match subject {
         "wedge" | "patches" => Sampling::Patches,
         "surround" if !matches!(area, "presence" | "detail") => Sampling::Patches,
@@ -906,6 +1140,9 @@ fn sampling_of(area: &str, subject: &str) -> Sampling {
 }
 
 fn view_of(family: &str, subject: &str) -> View {
+    if family.starts_with("grain") {
+        return View::Grain;
+    }
     match subject {
         "edges" | "edges-24mp" => {
             if family.starts_with("colour-noise") {
@@ -963,6 +1200,8 @@ struct Measures {
     size: Option<(u32, u32)>,
     /// A photograph's band energy at [`PHOTO_BANDS`] over its editor's own neutral's.
     energy: Vec<f64>,
+    /// Grain per tone, the variant less its editor's own neutral in `L*`.
+    grain: Vec<GrainTone>,
 }
 
 /// A profile normalized by its value at its far end, and its 25, 50 and 75% crossings.
@@ -993,6 +1232,11 @@ fn measures(subject: &Subject, neutral: &Reduced, adjusted: &Reduced) -> Measure
         size: Some((adjusted.width, adjusted.height)),
         ..Measures::default()
     };
+    if !adjusted.grain.is_empty() {
+        // Grain: the variant's difference from its neutral, per tone, in the flat windows.
+        m.grain = grain_tones(&neutral.grain, &adjusted.grain);
+        return m;
+    }
     if subject.photo().is_some() {
         // A photograph: its band energy at three scales and how far its tone response depends on
         // more than each cell's own lightness.
@@ -1144,6 +1388,61 @@ enum Response {
     Rotation,
     /// The dot grid's keystone along its rows (`true`) or columns, in percent.
     Keystone(bool),
+    /// One grain statistic at the mid grey, pooled over the subjects, compared in percent.
+    Grain(Statistic),
+}
+
+/// The grain statistic a grain family is fitted on, each read at the mid grey ([`GRAIN_GREY`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Statistic {
+    /// Amount: the deviation of `L*`.
+    Strength,
+    /// Size: the radially averaged spectrum's half-power frequency.
+    Size,
+    /// Roughness: the clumping, the spread of the local variance over [`GRAIN_TILE`]-pixel tiles.
+    Roughness,
+}
+
+impl Statistic {
+    fn of(self, grain: &la::Grain) -> f64 {
+        match self {
+            Self::Strength => grain.deviation,
+            Self::Size => grain.half_power,
+            Self::Roughness => grain.clumping,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Strength => "deviation of L* at the mid grey",
+            Self::Size => "half-power frequency at the mid grey (cycles a pixel)",
+            Self::Roughness => "clumping at the mid grey (spread of 8-pixel local variance)",
+        }
+    }
+}
+
+/// `statistic` of one editor's grain at the mid grey on each subject, pooled as the geometric
+/// mean over the subjects that hold it, so each subject weighs alike whatever its window count.
+fn grain_statistic(statistic: Statistic, subjects: &[Measures]) -> f64 {
+    let values: Vec<f64> = subjects
+        .iter()
+        .filter_map(|m| m.grain.iter().find(|t| t.tone == GRAIN_GREY))
+        .map(|t| statistic.of(&t.grain))
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect();
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    (values.iter().map(|v| v.ln()).sum::<f64>() / values.len() as f64).exp()
+}
+
+/// Two grain statistics' distance: the magnitude of their log ratio, in percent.
+fn percent_apart(a: f64, b: f64) -> f64 {
+    if a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite() {
+        100.0 * (a / b).ln().abs()
+    } else {
+        f64::INFINITY
+    }
 }
 
 struct Spec<'f> {
@@ -1194,7 +1493,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     let sampling = |s: &str| {
         if ctx.subject(s).photo().is_some() {
             Sampling::Normalized(PHOTO_COLUMNS)
-        } else if spec.response == Response::Colour {
+        } else if matches!(spec.response, Response::Colour | Response::Grain(_)) {
             sampling_of(&spec.area, s)
         } else {
             Sampling::Dots
@@ -1331,14 +1630,31 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
         }
         out
     };
-    let grid_measure = |reduced: &Reduced| -> f64 {
+    // One editor's scalar response at one value, over its own neutral on every subject: the dot
+    // grid's measure on the first subject, or a grain statistic pooled over all of them.
+    let scalar_measure = |neutral: &[Reduced], side: &[&Reduced]| -> f64 {
         match spec.response {
-            Response::Rotation => la::grid_angle(&reduced.dots).unwrap_or(f64::NAN),
+            Response::Rotation => la::grid_angle(&side[0].dots).unwrap_or(f64::NAN),
             Response::Keystone(vertical) => {
-                la::keystone(&reduced.dots, vertical).unwrap_or(f64::NAN)
+                la::keystone(&side[0].dots, vertical).unwrap_or(f64::NAN)
+            }
+            Response::Grain(statistic) => {
+                let per: Vec<Measures> = spec
+                    .subjects
+                    .iter()
+                    .enumerate()
+                    .map(|(si, s)| measures(ctx.subject(s), &neutral[si], side[si]))
+                    .collect();
+                grain_statistic(statistic, &per)
             }
             Response::Colour => f64::NAN,
         }
+    };
+    let lux_at = |u: f64| -> Vec<&Reduced> { lux[&key(u)].reduced.iter().collect() };
+    let lr_at = |vi: usize| -> Vec<&Reduced> {
+        (0..spec.subjects.len())
+            .map(|si| &lr[si][vi].as_ref().expect("present").0)
+            .collect()
     };
     let scalar_distance = |response: Response| {
         move |target: &f64, candidate: &f64| -> f64 {
@@ -1347,6 +1663,7 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
             }
             match response {
                 Response::Keystone(_) => (target.ln() - candidate.ln()).abs() * 100.0,
+                Response::Grain(_) => percent_apart(*target, *candidate),
                 _ => (target - candidate).abs(),
             }
         }
@@ -1358,6 +1675,15 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     // The distance from each Lightroom response at every value of a grid refined between the
     // dense values, for `lr-align fold`'s joint fit.
     let mut distances = Value::Null;
+    // A scalar response's value at every dense value, which the fit and the response curve share.
+    let scalar_responses: Vec<f64> = if spec.response == Response::Colour {
+        Vec::new()
+    } else {
+        spec.dense
+            .iter()
+            .map(|u| scalar_measure(&lux_neutral, &lux_at(*u)))
+            .collect()
+    };
     let fit = match spec.response {
         Response::Colour => {
             let dense_labs: Vec<Vec<Lab>> =
@@ -1372,23 +1698,14 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
             )
         }
         response => {
-            let responses: Vec<f64> = spec
-                .dense
-                .iter()
-                .map(|u| grid_measure(&lux[&key(*u)].reduced[0]))
-                .collect();
+            let responses: &[f64] = &scalar_responses;
             let measured: Vec<(f64, f64)> = present
                 .iter()
-                .map(|vi| {
-                    (
-                        spec.values[*vi].1,
-                        grid_measure(&lr[0][*vi].as_ref().expect("present").0),
-                    )
-                })
+                .map(|vi| (spec.values[*vi].1, scalar_measure(&lr_neutral, &lr_at(*vi))))
                 .collect();
             la::fit_by(
                 &spec.dense,
-                &responses,
+                responses,
                 &measured,
                 scalar_distance(response),
                 Some(|a: &f64, b: &f64, t: f64| a + t * (b - a)),
@@ -1397,7 +1714,12 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
             )
         }
     };
-    if spec.response == Response::Colour && spec.base.is_empty() {
+    // A map a later family may hold this setting through: a colour fit's, or grain Amount's.
+    if matches!(
+        spec.response,
+        Response::Colour | Response::Grain(Statistic::Strength)
+    ) && spec.base.is_empty()
+    {
         let mut points: Vec<(f64, f64)> = fit
             .points
             .iter()
@@ -1473,9 +1795,9 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
                 Some(target.distance(&cal_labs)),
             )
         } else {
-            let lr_g = grid_measure(lr_side[0]);
-            let cal_g = grid_measure(cal_side[0]);
-            let id_g = id_side.as_ref().map(|s| grid_measure(s[0]));
+            let lr_g = scalar_measure(&lr_neutral, &lr_side);
+            let cal_g = scalar_measure(&lux_neutral, &cal_side);
+            let id_g = id_side.as_ref().map(|s| scalar_measure(&lux_neutral, s));
             let d = scalar_distance(spec.response);
             (Some(lr_g), id_g, Some(cal_g), Some(d(&lr_g, &cal_g)))
         };
@@ -1510,7 +1832,8 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
     let lux_curve: Vec<[f64; 2]> = spec
         .dense
         .iter()
-        .map(|u| {
+        .enumerate()
+        .map(|(index, u)| {
             let side = &lux[&key(*u)];
             let y = match spec.response {
                 Response::Colour => {
@@ -1518,16 +1841,210 @@ fn numeric(ctx: &Context, spec: &Spec) -> Result<Outcome> {
                     sign_of(*u, spec.lux_default)
                         * Target::new(&neutral_labs, l).size(&neutral_labs)
                 }
-                _ => grid_measure(&side.reduced[0]),
+                _ => scalar_responses[index],
             };
             [*u, y]
         })
         .collect();
+    let grain_json = matches!(spec.response, Response::Grain(_)).then(|| grain_points(spec, &rows));
     let mut outcome = finish(ctx, spec, &fit, rows, lux_curve, sheet, missing)?;
+    if let Some(grain) = grain_json {
+        outcome.entry["grain"] = grain;
+    }
     if !distances.is_null() {
         outcome.entry["distances"] = distances;
     }
     Ok(outcome)
+}
+
+/// One editor's grain on one subject as JSON: per tone, every statistic.
+fn grain_json(m: &Measures) -> Value {
+    Value::Array(
+        m.grain
+            .iter()
+            .map(|t| {
+                let g = &t.grain;
+                json!({
+                    "tone": t.tone, "mean": g.mean, "deviation": g.deviation,
+                    "kurtosis": g.kurtosis, "clumping": g.clumping, "peak": g.peak,
+                    "half_power": g.half_power,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// A grain family's statistics at every point, per subject and tone, for Lightroom, Luxforge at
+/// the identity and Luxforge calibrated: what a later fold reads beside the fitted statistic.
+fn grain_points(spec: &Spec, rows: &[Row]) -> Value {
+    Value::Array(
+        rows.iter()
+            .map(|r| {
+                let subjects: serde_json::Map<String, Value> = spec
+                    .subjects
+                    .iter()
+                    .enumerate()
+                    .map(|(si, s)| {
+                        (
+                            s.clone(),
+                            json!({
+                                "lightroom": grain_json(&r.lr[si]),
+                                "identity": r.identity.as_ref().map(|m| grain_json(&m[si])),
+                                "calibrated": grain_json(&r.cal[si]),
+                            }),
+                        )
+                    })
+                    .collect();
+                json!({"label": r.label, "lightroom": r.value, "subjects": subjects})
+            })
+            .collect(),
+    )
+}
+
+/// One tone's grain in a subject's measures.
+fn tone_of(m: &Measures, tone: u8) -> Option<&la::Grain> {
+    m.grain.iter().find(|t| t.tone == tone).map(|t| &t.grain)
+}
+
+/// How a grain family differs in kind from Luxforge's grain, judged at its strongest value (its
+/// largest Lightroom value) through the calibrated renders: the tone weight and the mean shift on
+/// the greys target, and whether the grain's size follows the picture's size between the spatial
+/// chart's two sizes.
+fn grain_reasons(spec: &Spec, rows: &[Row]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let index = |name: &str| spec.subjects.iter().position(|s| s == name);
+    let Some(row) = rows.iter().max_by(|a, b| a.value.total_cmp(&b.value)) else {
+        return reasons;
+    };
+    if let Some(si) = index("greys") {
+        let weight = |m: &Measures| -> Vec<(u8, f64)> {
+            let mid = tone_of(m, GRAIN_GREY).map_or(f64::NAN, |g| g.deviation);
+            m.grain
+                .iter()
+                .map(|t| (t.tone, t.grain.deviation / mid))
+                .collect()
+        };
+        let (lr, cal) = (weight(&row.lr[si]), weight(&row.cal[si]));
+        let worst = lr
+            .iter()
+            .filter_map(|(tone, l)| {
+                let c = cal.iter().find(|(t, _)| t == tone)?.1;
+                ((l - c).is_finite()).then_some((*tone, l - c))
+            })
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
+        if let Some((tone, gap)) = worst
+            && gap.abs() > GRAIN_TONE_WEIGHT
+        {
+            reasons.push(format!(
+                "differs in kind: tone weight at {}, grey {tone}'s strength over the mid grey's {gap:+.2} from Luxforge calibrated's",
+                row.label
+            ));
+        }
+        let shift = row.lr[si]
+            .grain
+            .iter()
+            .filter_map(|t| {
+                let c = tone_of(&row.cal[si], t.tone)?.mean;
+                Some((t.tone, t.grain.mean - c))
+            })
+            .filter(|(_, d)| d.is_finite())
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
+        if let Some((tone, gap)) = shift
+            && gap.abs() > GRAIN_MEAN_SHIFT
+        {
+            reasons.push(format!(
+                "differs in kind: Lightroom's grain moves grey {tone}'s mean {gap:+.2} L* from Luxforge calibrated's at {}",
+                row.label
+            ));
+        }
+    }
+    if let (Some(small), Some(large)) = (index("edges"), index("edges-24mp")) {
+        let ratio = |side: &[Measures]| -> f64 {
+            let f = |si: usize| tone_of(&side[si], GRAIN_GREY).map_or(f64::NAN, |g| g.half_power);
+            f(large) / f(small)
+        };
+        let relative: Vec<f64> = rows
+            .iter()
+            .map(|r| ratio(&r.lr) / ratio(&r.cal))
+            .filter(|v| v.is_finite())
+            .collect();
+        let typical = la::median(&relative);
+        if typical.is_finite() && !(GRAIN_PICTURE_SIZE.0..=GRAIN_PICTURE_SIZE.1).contains(&typical)
+        {
+            reasons.push(format!(
+                "differs in kind: Lightroom's grain size follows the picture's size, its half-power frequency on the 6000 × 4000 chart {typical:.2} times the 2400 × 1600 chart's relative to Luxforge calibrated's (median over the points)"
+            ));
+        }
+    }
+    reasons
+}
+
+/// A grain family's page tables: per subject, each tone's strength and mean shift, and the
+/// mid grey's size and roughness statistics.
+fn grain_tables(spec: &Spec, rows: &[Row]) -> String {
+    let mut page = String::from(
+        "\n## Grain\n\nEvery statistic is read on the variant less its editor's own neutral, in L*, in flat windows: 2 × 2 windows of 256 pixels inside each grey of the greys target, and on the spatial chart its corners outside the zone plate (mid grey, 256-pixel windows) and the plateaus either side of its hard and soft vertical edges (128-pixel windows). Each cell is Lightroom / Luxforge / Luxforge calibrated.\n",
+    );
+    let triple = |pick: &dyn Fn(&la::Grain) -> f64, r: &Row, si: usize, tone: u8| -> String {
+        let at = |m: &Measures| tone_of(m, tone).map(pick);
+        format!(
+            "{} / {} / {}",
+            number(at(&r.lr[si])),
+            number(r.identity.as_ref().and_then(|m| at(&m[si]))),
+            number(at(&r.cal[si]))
+        )
+    };
+    for (si, s) in spec.subjects.iter().enumerate() {
+        let tones: Vec<u8> = rows
+            .first()
+            .map(|r| r.cal[si].grain.iter().map(|t| t.tone).collect())
+            .unwrap_or_default();
+        let header = |what: &str| {
+            format!(
+                "\n### {s}: {what}\n\n| Lightroom | {} |\n|---|{}\n",
+                tones
+                    .iter()
+                    .map(|t| format!("grey {t}"))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                "---|".repeat(tones.len())
+            )
+        };
+        for (what, pick) in [
+            (
+                "strength per tone (deviation of ΔL*)",
+                (|g: &la::Grain| g.deviation) as fn(&la::Grain) -> f64,
+            ),
+            ("mean shift per tone (mean ΔL*)", |g: &la::Grain| g.mean),
+        ] {
+            page += &header(what);
+            for r in rows {
+                page += &format!(
+                    "| {} | {} |\n",
+                    r.label,
+                    tones
+                        .iter()
+                        .map(|t| triple(&pick, r, si, *t))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
+            }
+        }
+        page += &format!(
+            "\n### {s}: size and roughness at grey {GRAIN_GREY}\n\nSpectrum peak and half-power frequency in cycles a pixel; clumping, the spread of the local variance over {GRAIN_TILE}-pixel tiles; kurtosis, 3 for a Gaussian.\n\n| Lightroom | peak | half-power | clumping | kurtosis |\n|---|---|---|---|---|\n"
+        );
+        for r in rows {
+            page += &format!(
+                "| {} | {} | {} | {} | {} |\n",
+                r.label,
+                triple(&|g| g.peak, r, si, GRAIN_GREY),
+                triple(&|g| g.half_power, r, si, GRAIN_GREY),
+                triple(&|g| g.clumping, r, si, GRAIN_GREY),
+                triple(&|g| g.kurtosis, r, si, GRAIN_GREY),
+            );
+        }
+    }
+    page
 }
 
 /// How finely [`distance_table`] refines between dense values.
@@ -1591,6 +2108,9 @@ fn residual_unit(response: Response) -> &'static str {
         Response::Colour => "median ΔE2000",
         Response::Rotation => "degrees",
         Response::Keystone(_) => "% keystone",
+        Response::Grain(Statistic::Strength) => "% grain strength",
+        Response::Grain(Statistic::Size) => "% grain half-power frequency",
+        Response::Grain(Statistic::Roughness) => "% grain clumping",
     }
 }
 
@@ -1615,6 +2135,7 @@ fn finish(
         Response::Colour => "signed median ΔE2000 from neutral",
         Response::Rotation => "grid rotation (degrees, clockwise)",
         Response::Keystone(_) => "keystone ratio",
+        Response::Grain(statistic) => statistic.name(),
     };
     let response = svg(
         ctx,
@@ -1726,6 +2247,21 @@ fn finish(
     let worst_residual = worst(|r| Some(r.point.residual));
     let worst_identity = worst(|r| r.point.identity);
     let mut reasons = Vec::new();
+    if let Response::Grain(statistic) = spec.response {
+        let at: Vec<String> = rows
+            .iter()
+            .filter(|r| r.point.residual > GRAIN_RESIDUAL)
+            .map(|r| r.label.clone())
+            .collect();
+        if !at.is_empty() {
+            reasons.push(format!(
+                "the grain's {} still differs by more than {GRAIN_RESIDUAL}% after the best value at {}",
+                statistic.name(),
+                at.join(", ")
+            ));
+        }
+        reasons.extend(grain_reasons(spec, &rows));
+    }
     if spec.response == Response::Colour && worst_residual.is_some_and(|w| w > BEHAVIOUR_RESIDUAL) {
         let at: Vec<String> = rows
             .iter()
@@ -2006,6 +2542,47 @@ fn finish(
 /// The kind-specific tables of a numeric family's page, and their charts.
 fn measure_tables(ctx: &Context, spec: &Spec, rows: &[Row]) -> Result<String> {
     let mut page = String::new();
+    if matches!(spec.response, Response::Grain(_)) {
+        // The tone weight at the strongest value: each grey's strength on the greys target.
+        if let (Some(si), Some(r)) = (
+            spec.subjects.iter().position(|s| s == "greys"),
+            rows.iter().max_by(|a, b| a.value.total_cmp(&b.value)),
+        ) {
+            let curve = |m: &Measures| -> Vec<[f64; 2]> {
+                m.grain
+                    .iter()
+                    .map(|t| [f64::from(t.tone), t.grain.deviation])
+                    .collect()
+            };
+            let chart = report::chart(
+                &format!("{} {}: grain strength per grey", spec.id, r.label),
+                "grey (sRGB code)",
+                "deviation of ΔL*",
+                &[
+                    Series::new(
+                        "Luxforge (identity)",
+                        LUXFORGE,
+                        Mark::Line,
+                        r.identity
+                            .as_ref()
+                            .map(|m| curve(&m[si]))
+                            .unwrap_or_default(),
+                    ),
+                    Series::new(
+                        "Luxforge calibrated",
+                        CALIBRATED,
+                        Mark::Dashed,
+                        curve(&r.cal[si]),
+                    ),
+                    Series::new("Lightroom", LIGHTROOM, Mark::Points, curve(&r.lr[si])),
+                ],
+            );
+            let link = svg(ctx, &format!("{}-tones-{}", spec.id, r.label), chart)?;
+            page += &format!("\n![tone weight {}]({link})\n", r.label);
+        }
+        page += &grain_tables(spec, rows);
+        return Ok(page);
+    }
     let triple = |pick: &dyn Fn(&Measures) -> Option<f64>, r: &Row, si: usize| -> String {
         format!(
             "{} / {} / {}",
@@ -2371,6 +2948,8 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
         (e, "radius") if e == DETAIL_EFFECT => grid(0.5, 3.0, 0.1),
         (e, "sharpening") if e == DETAIL_EFFECT => grid(0.0, 150.0, 10.0),
         (e, _) if e == PERSPECTIVE_EFFECT => grid(-100.0, 100.0, 10.0),
+        // Grain's statistics are cheap to read, and its round's values lie on this grid.
+        (e, _) if e == GRAIN_EFFECT => grid(0.0, 100.0, 5.0),
         _ if lux_range.0 >= 0.0 => grid(lux_range.0, lux_range.1, if cells { 10.0 } else { 5.0 }),
         _ => grid(
             lux_range.0,
@@ -2387,6 +2966,9 @@ fn plan<'f>(ctx: &'f Context, family: &Value) -> Result<Method<'f>> {
     let response = match field.as_str() {
         "vertical" if effect == PERSPECTIVE_EFFECT => Response::Keystone(true),
         "horizontal" if effect == PERSPECTIVE_EFFECT => Response::Keystone(false),
+        "amount" if effect == GRAIN_EFFECT => Response::Grain(Statistic::Strength),
+        "size" if effect == GRAIN_EFFECT => Response::Grain(Statistic::Size),
+        "roughness" if effect == GRAIN_EFFECT => Response::Grain(Statistic::Roughness),
         _ => Response::Colour,
     };
     let lr_default = lr_default_of(&setting);
@@ -3607,7 +4189,12 @@ fn measure(
         .into_iter()
         .flatten()
         .filter(|f| f["id"] != NEUTRAL)
-        .filter(|f| only.is_none_or(|only| only.iter().any(|o| f["id"] == o.as_str())))
+        .filter(|f| {
+            only.is_none_or(|only| {
+                only.iter()
+                    .any(|o| f["id"] == o.as_str() || f["area"] == o.as_str())
+            })
+        })
         .collect();
     let mut entries = Vec::new();
     for family in families {
@@ -3742,8 +4329,9 @@ fn summary(report: &Value) -> String {
     }
     let geometric: Vec<&Value> = families
         .iter()
-        .filter(|f| f["unit"].is_string() && f["unit"] != "median ΔE2000")
+        .filter(|f| f["unit"].is_string() && f["unit"] != "median ΔE2000" && f["area"] != "grain")
         .collect();
+    let grain: Vec<&Value> = families.iter().filter(|f| f["area"] == "grain").collect();
     text += "\n## Geometry (own units)\n\n| family | unit | worst residual | identity residual |\n|---|---|---|---|\n";
     for f in geometric {
         text += &format!(
@@ -3754,6 +4342,25 @@ fn summary(report: &Value) -> String {
             number(f["worst_residual"].as_f64()),
             number(f["worst_identity_residual"].as_f64()),
         );
+    }
+    if !grain.is_empty() {
+        text += "\n## Grain (statistics)\n\nGrain is random, so each setting is fitted on one statistic of the variant less its neutral at the mid grey, pooled over the greys and the spatial chart at both sizes; residuals are the statistic's remaining difference in percent, over every point.\n\n| family | unit | worst residual | identity residual | direction | C candidate |\n|---|---|---|---|---|---|\n";
+        for f in grain {
+            text += &format!(
+                "| [{}]({}) | {} | {} | {} | {} | {} |\n",
+                f["family"].as_str().unwrap_or_default(),
+                f["page"].as_str().unwrap_or_default(),
+                f["unit"].as_str().unwrap_or_default(),
+                number(f["worst_residual"].as_f64()),
+                number(f["worst_identity_residual"].as_f64()),
+                f["direction"].as_str().unwrap_or("–"),
+                if f["candidate"] == true {
+                    "**yes**"
+                } else {
+                    "no"
+                },
+            );
+        }
     }
     text += "\n## Level C candidates\n\nReported for the owner's review; nothing here changes a control.\n\n";
     for f in families.iter().filter(|f| f["candidate"] == true) {
@@ -4002,6 +4609,184 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(other.contains("round 1, not 2"), "{other}");
+    }
+
+    /// A round of `families` generated by the rig in `directory/round`, whose "exports" are
+    /// Luxforge's own study renders of every variant of every target family, each through the
+    /// recipe its family's measurement renders it with: returns the round and its exports.
+    fn own_round(directory: &Path, families: Vec<rounds::Family>) -> (PathBuf, PathBuf) {
+        let round = directory.join("round");
+        generate(
+            &Plan {
+                round: 1,
+                families,
+                photos: Vec::new(),
+                excluded: Vec::new(),
+            },
+            &round,
+        )
+        .unwrap();
+        let exports = round.join("exports");
+        fs::create_dir(&exports).unwrap();
+        let manifest = read_json(&round.join("manifest.json")).unwrap();
+        let ctx = Context {
+            manifest: &manifest,
+            exports: exports.clone(),
+            out: directory.join("unused"),
+            registry: ModuleRegistry::developer(),
+            render: RenderContext::new(),
+            subjects: open_subjects(&manifest, &round, None).unwrap(),
+            variants: HashMap::new(),
+            ledger: Mutex::new(Ledger::default()),
+            maps: Mutex::new(HashMap::new()),
+        };
+        let write = |subject: &str, id: &str, recipe: &Recipe| {
+            let Kind::Target { source, .. } = &ctx.subject(subject).kind else {
+                panic!("a target")
+            };
+            let study = render(
+                &ctx.registry,
+                source,
+                recipe,
+                RenderOptions::default(),
+                &ctx.render,
+            )
+            .unwrap()
+            .study_frame16()
+            .unwrap();
+            let xmp = "<x crs:ProcessVersion=\"11.0\"/>";
+            fs::write(
+                exports.join(format!("{id}.tif")),
+                crate::tiff_reader::write(study.width, study.height, &study.rgb, Some(xmp)),
+            )
+            .unwrap();
+        };
+        let mut neutral = BTreeSet::new();
+        for family in manifest["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["id"] != NEUTRAL)
+        {
+            let Method::Numeric(spec) = plan(&ctx, family).unwrap() else {
+                panic!("a numeric family")
+            };
+            for subject in &spec.subjects {
+                if neutral.insert(subject.clone()) {
+                    write(subject, &format!("{subject}__{NEUTRAL}"), &empty());
+                }
+                for (label, value) in &spec.values {
+                    write(
+                        subject,
+                        &format!("{subject}__{}__{label}", spec.id),
+                        &(spec.recipe)(*value),
+                    );
+                }
+            }
+        }
+        (round, exports)
+    }
+
+    /// Every grain family of a measured round of Luxforge's own renders fits as the identity: each
+    /// Lightroom value inside its point's span, no residual beyond the rig's resolution ([`la::TIE`]
+    /// in percent of the statistic), no candidate, and per-tone statistics for every subject.
+    fn assert_grain_identity(report: &Value, out: &Path, subjects: &[&str]) {
+        let families: Vec<&Value> = report["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["area"] == "grain")
+            .collect();
+        let ids: Vec<&str> = families
+            .iter()
+            .map(|f| f["family"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["grain-amount", "grain-size", "grain-roughness"]);
+        for family in families {
+            assert_eq!(family["candidate"], false, "{family}");
+            assert_eq!(family["direction"], "Increasing", "{family}");
+            for point in family["points"].as_array().unwrap() {
+                let value = point["lightroom"].as_f64().unwrap();
+                let span = [0, 1].map(|end| point["span"][end].as_f64().unwrap());
+                assert!(
+                    span[0] - 1e-9 <= value && value <= span[1] + 1e-9,
+                    "{point}"
+                );
+                assert!(point["residual"].as_f64().unwrap() < la::TIE, "{point}");
+            }
+            for point in family["grain"].as_array().unwrap() {
+                for subject in subjects {
+                    let tones = point["subjects"][subject]["lightroom"].as_array().unwrap();
+                    let expected = if *subject == "greys" { 6 } else { 5 };
+                    assert_eq!(tones.len(), expected, "{subject}: {point}");
+                    for tone in tones {
+                        assert!(tone["deviation"].as_f64().unwrap() > 0.0, "{tone}");
+                    }
+                }
+            }
+            assert!(out.join(family["page"].as_str().unwrap()).exists());
+            let sheet = format!("sheets/{}.png", family["family"].as_str().unwrap());
+            assert!(out.join(sheet).exists());
+        }
+    }
+
+    /// A round of grain's three families on the greys and the 2400 × 1600 chart, whose "exports"
+    /// are Luxforge's own renders: every grain field fits as the identity, Size and Roughness
+    /// holding Amount 50 through Amount's own fitted map.
+    #[test]
+    #[slow]
+    fn a_grain_round_of_its_own_renders_measures_as_the_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let keep = ["0", "+25", "+50", "+100"];
+        let families: Vec<rounds::Family> = rounds::round_one()
+            .into_iter()
+            .filter(|f| f.area == "grain")
+            .map(|mut f| {
+                f.subjects = vec![
+                    rounds::Subject::Target("greys"),
+                    rounds::Subject::Target("edges"),
+                ];
+                f.steps.retain(|step| keep.contains(&step.label.as_str()));
+                f
+            })
+            .collect();
+        let (round, exports) = own_round(directory.path(), families);
+        let out = directory.path().join("measured");
+        measure(1, &round, &exports, &out, Some(&["grain".to_owned()])).unwrap();
+        let report = read_json(&out.join("lr-align.json")).unwrap();
+        assert_grain_identity(&report, &out, &["greys", "edges"]);
+        let size = report["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["family"] == "grain-size")
+            .unwrap();
+        assert_eq!(
+            size["held"],
+            json!(["GrainAmount 50 held at Luxforge amount 50.000, through its own fitted map"])
+        );
+    }
+
+    /// The whole grain identity round, every value on all three subjects including the 6000 × 4000
+    /// chart, written as evidence under `LUXFORGE_LR_ALIGN_GRAIN_EVIDENCE` (a new directory):
+    /// `round/`, its `exports/` of Luxforge's own renders, and `measured/`, the measurement.
+    #[test]
+    #[ignore = "writes the grain identity round's evidence; set LUXFORGE_LR_ALIGN_GRAIN_EVIDENCE"]
+    fn write_the_grain_identity_round() {
+        let directory = PathBuf::from(
+            std::env::var_os("LUXFORGE_LR_ALIGN_GRAIN_EVIDENCE")
+                .expect("LUXFORGE_LR_ALIGN_GRAIN_EVIDENCE names a new directory"),
+        );
+        fs::create_dir(&directory).unwrap();
+        let families: Vec<rounds::Family> = rounds::round_one()
+            .into_iter()
+            .filter(|f| f.area == "grain")
+            .collect();
+        let (round, exports) = own_round(&directory, families);
+        let out = directory.join("measured");
+        measure(1, &round, &exports, &out, Some(&["grain".to_owned()])).unwrap();
+        let report = read_json(&out.join("lr-align.json")).unwrap();
+        assert_grain_identity(&report, &out, &["greys", "edges", "edges-24mp"]);
     }
 
     /// A round on one synthetic RAW photograph (the test-camera DNG body), its Exposure and

@@ -10,6 +10,8 @@
 //! setting this rig compares through its own counterpart, because the importer does not map it
 //! (Detail, crop, perspective, lens profiles and gradient corrections). A gradient correction is
 //! reported as a summary, so its geometry is read back by this rig's own parse of the same text.
+//! Grain at Amount 0 imports no grain: the reader may list its three settings as neutral rather
+//! than transfer them.
 use super::settings::{Field, Fields, corrections};
 use luxforge_core::{ModuleRegistry, inspect_preset};
 use serde_json::{Map, Value, json};
@@ -41,6 +43,17 @@ const PRESENCE: &str = "set-presence";
 const MIXER: &str = "set-mixer";
 const VIGNETTE: &str = "set-vignette";
 const DETAIL: &str = "set-detail";
+const GRAIN: &str = "set-grain";
+
+/// Whether `name` is one of grain's settings written at a neutral Amount, which the importer
+/// imports as no grain at all and so may list as neutral rather than transfer.
+fn neutral_grain(name: &str, fields: &Fields) -> bool {
+    matches!(name, "GrainAmount" | "GrainSize" | "GrainFrequency")
+        && matches!(
+            fields.get("GrainAmount"),
+            Some(Field::Number { value, .. }) if *value == 0.0
+        )
+}
 
 /// The Luxforge control each Lightroom setting the rounds write is compared with, and how it gets
 /// there; `None` for a setting with no counterpart, which the rounds hold at its default.
@@ -66,6 +79,9 @@ pub fn counterpart(name: &str) -> Option<(&'static str, &'static str, How)> {
         "PostCropVignetteMidpoint" => transfer(VIGNETTE, "midpoint"),
         "PostCropVignetteRoundness" => transfer(VIGNETTE, "roundness"),
         "PostCropVignetteFeather" => transfer(VIGNETTE, "feather"),
+        "GrainAmount" => transfer(GRAIN, "amount"),
+        "GrainSize" => transfer(GRAIN, "size"),
+        "GrainFrequency" => transfer(GRAIN, "roughness"),
         "SplitToningShadowHue" => transfer(MIXER, "grade-shadows-hue"),
         "SplitToningShadowSaturation" => transfer(MIXER, "grade-shadows-saturation"),
         "SplitToningHighlightHue" => transfer(MIXER, "grade-highlights-hue"),
@@ -314,6 +330,7 @@ pub fn read_back(
             continue;
         }
         match counterpart(name) {
+            Some(_) if list == "neutral" && neutral_grain(name, fields) => {}
             Some((action, target, How::Transfer)) => {
                 if list != "mapped" {
                     return Err(format!("{name} is {list}, not transferred"));

@@ -52,6 +52,11 @@ const AROUND_FIFTY: [f64; 8] = [0.0, 10.0, 25.0, 40.0, 60.0, 75.0, 90.0, 100.0];
 /// The coarser grids photographs and the pairs are sampled on.
 const COARSE: [f64; 4] = [-100.0, -50.0, 50.0, 100.0];
 const COARSE_EXPOSURE: [f64; 4] = [-2.0, -1.0, 1.0, 2.0];
+/// Grain's Amount, at the baseline's Size 25 and Roughness 50.
+const GRAIN_AMOUNTS: [f64; 5] = [10.0, 25.0, 50.0, 75.0, 100.0];
+/// Grain's Size and Roughness across their ranges, each with Amount held at [`GRAIN_HELD`].
+const GRAIN_SWEEP: [f64; 6] = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0];
+const GRAIN_HELD: f64 = 50.0;
 
 /// A value as a variant label: `+25`, `-0.5`, `0`.
 pub fn label(value: f64) -> String {
@@ -460,6 +465,44 @@ fn detail(on: &[Subject], photographs: bool) -> Vec<Family> {
     ]
 }
 
+/// Grain, measured as statistics on the flat greys and the spatial chart at both sizes (whose
+/// corners outside the zone plate are flat mid grey): Amount at the baseline's Size 25 and
+/// Roughness 50, then Size and Roughness across their ranges with Amount 50 held. Grain is
+/// random, so no pixel is compared between the editors; the 6000 × 4000 chart shows whether
+/// Lightroom's grain size follows the picture's size.
+fn grain() -> Vec<Family> {
+    let on = [Target("greys"), Target("edges"), Target("edges-24mp")];
+    let amount = || vec![("GrainAmount", unsigned(GRAIN_HELD))];
+    vec![
+        sweep(
+            "grain-amount",
+            "grain",
+            &on,
+            "GrainAmount",
+            &GRAIN_AMOUNTS,
+            unsigned,
+        ),
+        held(
+            "grain-size",
+            "grain",
+            &on,
+            amount(),
+            "GrainSize",
+            &GRAIN_SWEEP,
+            unsigned,
+        ),
+        held(
+            "grain-roughness",
+            "grain",
+            &on,
+            amount(),
+            "GrainFrequency",
+            &GRAIN_SWEEP,
+            unsigned,
+        ),
+    ]
+}
+
 /// RAW white balance: Custom temperatures at tint 0 within the 2000..12000 K Luxforge's RAW
 /// development holds, then tints at 5500 K. A pair whose white needs a Luxforge tint beyond ±100 is
 /// kept: the importer refuses it, and the manifest records that range shortfall.
@@ -614,6 +657,7 @@ pub fn round_one() -> Vec<Family> {
         &AROUND_FIFTY,
         unsigned,
     ));
+    families.extend(grain());
     families.extend(detail(&[Target("edges")], false));
     families.extend(geometry());
     families.extend(masks());

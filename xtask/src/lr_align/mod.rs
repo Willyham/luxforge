@@ -3,8 +3,9 @@
 //! `measure` is [`measure`]'s and `fold` [`fold`]'s; the rest of this module is the generator.
 //!
 //! `generate --round N --output NEW [--corpus CACHE] [--manifest RAW_MANIFEST] [--families ID,...]`
-//! writes a round folder, or with `--families` the part of one those families make, for the owner
-//! to import into a scratch Lightroom Classic catalog and export:
+//! writes a round folder, or with `--families` the part of one those families make (each entry a
+//! family id or an area, `grain` naming every grain family), for the owner to import into a
+//! scratch Lightroom Classic catalog and export:
 //!
 //! - `targets/`: the synthetic JPEG targets the round uses, without XMP, the sources Luxforge
 //!   renders its own side from.
@@ -77,21 +78,7 @@ pub fn run(root: &Path, mut a: Args) -> Result {
         .value("--families")?
         .map(|v| v.to_string_lossy().split(',').map(str::to_owned).collect());
     a.done()?;
-    let mut families =
-        rounds::round(round).ok_or(format!("lr-align defines rounds 1, 2 and 3, not {round}"))?;
-    // A part of a round: only the named families, each with every variant it has, for a session
-    // that re-exports what changed or adds what an earlier session could not.
-    if let Some(only) = &only {
-        let unknown: Vec<&String> = only
-            .iter()
-            .filter(|id| !families.iter().any(|family| &family.id == *id))
-            .collect();
-        ensure(
-            unknown.is_empty(),
-            format!("round {round} has no families {unknown:?}"),
-        )?;
-        families.retain(|family| only.contains(&family.id));
-    }
+    let families = select(round, only.as_deref())?;
     let mut photos = Vec::new();
     let mut excluded = Vec::new();
     if let Some(cache) = &cache {
@@ -118,6 +105,31 @@ pub fn run(root: &Path, mut a: Args) -> Result {
         },
         &out,
     )
+}
+
+/// Whether `--families`' entry `name` selects `family`: its id, or its area.
+fn selects(name: &str, family: &Family) -> bool {
+    family.id == name || family.area == name
+}
+
+/// Round `round`'s families, or with `only` the part of it they name: only the named families, or
+/// every family of a named area, each with every variant it has, for a session that re-exports
+/// what changed or adds what an earlier session could not. A name no family answers to is refused.
+fn select(round: u32, only: Option<&[String]>) -> Result<Vec<Family>> {
+    let mut families =
+        rounds::round(round).ok_or(format!("lr-align defines rounds 1, 2 and 3, not {round}"))?;
+    if let Some(only) = only {
+        let unknown: Vec<&String> = only
+            .iter()
+            .filter(|name| !families.iter().any(|family| selects(name, family)))
+            .collect();
+        ensure(
+            unknown.is_empty(),
+            format!("round {round} has no families or areas {unknown:?}"),
+        )?;
+        families.retain(|family| only.iter().any(|name| selects(name, family)));
+    }
+    Ok(families)
 }
 
 /// A round to write: its families and the photographs its photograph families copy.
