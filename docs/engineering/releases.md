@@ -4,13 +4,13 @@ The [Release builds workflow](../../.github/workflows/release.yml) builds Apple 
 
 ## Start a release
 
-Commit, merge and push the release tooling and application changes to `main` first. From a clean `main` checkout matching `origin/main`, run:
+Commit, merge and push the release tooling and application changes to `main` first, with the release's section in [`CHANGELOG.md`](../../CHANGELOG.md): a `## MAJOR.MINOR.PATCH` heading and its changes. A pre-release uses its version's section, so `v0.2.0-rc.1` and `v0.2.0` both publish `## 0.2.0`. From a clean `main` checkout matching `origin/main`, run:
 
 ```sh
 cargo xtask release v0.1
 ```
 
-The command validates the tag, requires an attached `main` branch and a clean index/working tree including untracked files, and checks that the release workflow is committed. It queries `origin`'s actual push destination and requires its live `main` to match HEAD; a stale tracking ref cannot pass. Existing local or remote normalized versions are refused, so `v0.1.0` cannot reuse a `v0.1` release.
+The command validates the tag, requires an attached `main` branch and a clean index/working tree including untracked files, and checks that the release workflow is committed and that `CHANGELOG.md` has a non-empty section for the version. It queries `origin`'s actual push destination and requires its live `main` to match HEAD; a stale tracking ref cannot pass. Existing local or remote normalized versions are refused, so `v0.1.0` cannot reuse a `v0.1` release.
 
 It runs quick and native watcher checks, rechecks the checkout and remote, creates an annotated tag at the verified commit and pushes only that tag. It returns after the push; GitHub Actions builds and publishes asynchronously. It does not commit changes, update/push `main`, modify Cargo versions, export credentials or overwrite tags. This command starts public pre-release publication after the hosted builds/uploads succeed.
 
@@ -30,6 +30,7 @@ Open GitHub **Actions → Release builds** for logs and the public pre-release u
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
 - `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
 - `luxforge-VERSION-source.tar.gz`, the complete corresponding [source archive](#the-source-archive) of the same commit.
+- `release-notes.md`, the pre-release's description: the build's identity and open gates, then the version's `CHANGELOG.md` section under **Changes**.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 

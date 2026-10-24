@@ -128,6 +128,7 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
         records[0]["lock_sha256"] == hash(&root.join("Cargo.lock"))?,
         "Artifacts use another dependency lockfile",
     )?;
+    let changes = crate::release_changelog::read(root, &tag)?;
     let mut release = release_candidate::release_record(&tag, &records);
     // The complete source archive, when the input holds one (`release-source`'s output in `source/`).
     let source = crate::release_source::bind(input, &tag, &records[0])?;
@@ -149,11 +150,12 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
     fs::write(
         out.join("release-notes.md"),
         format!(
-            "Luxforge {} — pre-release build candidate\n\nTag: `{}`. Source commit: `{}`.\n\nApple silicon macOS disk image (open it and drag Luxforge to Applications) and x86-64 Ubuntu 24.04-baseline Linux tarball, including both CLIs, resources and notices. The macOS ZIP holds the same app as the update archive. macOS signing status, for the app and its disk image: **{}**. See `release.json` and `SHA256SUMS` for identities and final hashes.\n\nThese are automated pre-release build candidates. Complete corresponding source/licence/advisory review and native GPU/corpus/installation qualification remain open. Published downloads do not establish release readiness; see the v0.1 distribution gates.\n",
+            "Luxforge {} — pre-release build candidate\n\nTag: `{}`. Source commit: `{}`.\n\nApple silicon macOS disk image (open it and drag Luxforge to Applications) and x86-64 Ubuntu 24.04-baseline Linux tarball, including both CLIs, resources and notices. The macOS ZIP holds the same app as the update archive. macOS signing status, for the app and its disk image: **{}**. See `release.json` and `SHA256SUMS` for identities and final hashes.\n\nThese are automated pre-release build candidates. Complete corresponding source/licence/advisory review and native GPU/corpus/installation qualification remain open. Published downloads do not establish release readiness; see the v0.1 distribution gates.\n\n## Changes\n\n{}\n",
             tag.version,
             tag.tag,
             records[0]["revision"].as_str().unwrap(),
-            records[0]["signing"]["status"].as_str().unwrap()
+            records[0]["signing"]["status"].as_str().unwrap(),
+            changes
         ),
     )?;
     let mut sums = String::new();
@@ -274,6 +276,9 @@ mod tests {
                     .any(|line| line.ends_with(&format!("  {name}")))
             );
         }
+        let notes = fs::read_to_string(out.join("release-notes.md")).unwrap();
+        let changes = crate::release_changelog::read(&root, &tag).unwrap();
+        assert!(notes.ends_with(&format!("## Changes\n\n{changes}\n")));
         // An assembled packet is never overwritten.
         assert!(assemble(&root, &input, &out, &tag.tag).is_err());
         let release = read_json(&out.join("release.json")).unwrap();

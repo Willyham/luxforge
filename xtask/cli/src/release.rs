@@ -1,5 +1,5 @@
 //! Start the hosted release workflow only from a verified, published main commit.
-use crate::{Args, Result, check, ensure, output, release_tag::ReleaseTag};
+use crate::{Args, Result, check, ensure, output, release_changelog, release_tag::ReleaseTag};
 use std::{path::Path, process::Command};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +48,8 @@ fn preflight(root: &Path, tag: &ReleaseTag) -> Result<State> {
             .success(),
         "Commit .github/workflows/release.yml before releasing",
     )?;
+    // The hosted assembly puts this section into the published notes; refuse before tagging.
+    release_changelog::read(root, tag)?;
     unused_version(
         tag,
         output(
@@ -227,6 +229,7 @@ mod tests {
                 "name: Release builds\n",
             )
             .unwrap();
+            fs::write(repo.root.join("CHANGELOG.md"), "## 0.1.0\n\n- First.\n").unwrap();
             repo.git(&["add", "."]);
             repo.git(&["commit", "-m", "release tooling"]);
             repo.git(&["init", "--bare", repo.remote.to_str().unwrap()]);
@@ -352,6 +355,20 @@ mod tests {
         repo.git(&["switch", "--detach", "main"]);
         assert!(
             repo.start(false, &mut || panic!("checks must not run"))
+                .is_err()
+        );
+        repo.no_tags();
+    }
+
+    #[test]
+    #[slow]
+    fn release_refuses_a_version_without_a_changelog_section() {
+        let repo = Repository::new();
+        fs::write(repo.root.join("CHANGELOG.md"), "## 0.0.9\n\n- Older.\n").unwrap();
+        repo.git(&["commit", "-am", "drop the 0.1.0 section"]);
+        repo.git(&["push", "origin", "main"]);
+        assert!(
+            repo.start(true, &mut || panic!("checks must not run"))
                 .is_err()
         );
         repo.no_tags();
