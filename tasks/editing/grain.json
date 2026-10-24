@@ -1,0 +1,572 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "grain",
+  "title": "Grain",
+  "objective": "Add Lightroom-familiar synthetic film grain (Amount, Size, Roughness) as a finish-stage module with an exact reference, a GPU program, generated controls and API, preset import, rendered evidence and measurements, then align its responses with Lightroom's.",
+  "context_summary": "Grain is a positional colour unit after the vignette: a pure function of the full-resolution output pixel, three strengths and a frozen seed, so it needs no host stage, halo or cache. Decided: Size in full-resolution output pixels (G1). Recorded defaults: its own section after Vignette, a fixed seed, luminance grain, order after the vignette, statistically matched reduced-stage frames reported not gated. The study's numerics are delegated within the design's contract. The study comes first; the module, GPU program, preset mapping, desktop and rig follow; the owner's Lightroom export is needed only by the final alignment task. Implementation is not authorized. Minimum model: the high tier; re-review against current main before each task.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Freeze grain's numerics in a study: the hash, the noise field, the Size and Roughness mappings, the tone weight, the application, the reduced-stage rule and the tolerances, with an independent f64 reference and fixtures.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver docs/design/grain-study.md, crates/luxforge-reference/src/grain.rs and fixtures/grain/ (with a README), in the vignette study's shape: frozen equations in the exact form and order a production unit transcribes, worked examples, property proofs, the frozen tolerance and limitations. No module, GPU program or UI here.",
+        "Requirements are the design's processing contract: grain at an output pixel is a function only of its integer full-resolution output position, the three strengths and one frozen seed constant; lattice values come from a u32 wrapping integer hash that WGSL computes identically; the field has zero mean, unit standard deviation and bounded tails for every Size and Roughness; Size is in full-resolution output pixels (decided G1), Size 0 about one pixel; Roughness changes irregularity at fixed strength; luminance only, in the tone study's encoded domain with luminance-ratio reconstruction and the near-black rule; a tone weight vanishing at black and white; mean-preserving on flat fields; values above white unchanged; Amount 0 the exact identity.",
+        "The reduced-stage rule: at a stage reduced by s per side (CompileStage::scale), evaluate the field at each stage pixel's centre in full-resolution coordinates, band-limited and attenuated so its standard deviation per tone and its radially averaged spectrum match the full-resolution grain reduced by the same linear-light area average, within a frozen statistical tolerance, measured at s of 2, 4 and 8.",
+        "Delegated to the implementer within that contract: the noise construction (lattice gradient or value noise, octave count, a clumping modulation), the Size and Roughness mappings to the field's scale and irregularity, the tone weight's shape, the amplitude Amount 100 reaches, and the statistical tolerances. Choose amplitudes so Amount 100 is clearly visible film grain at 100% without clipping a mid-grey's grain; Lightroom's responses are fitted later, so no Lightroom equivalence is claimed.",
+        "The reference uses luxforge-reference's own sRGB and tone helpers and never depends on luxforge-core. Fixtures are hand-built: flat fields at several tones, a grey wedge, saturated colours, black, white, RAW headroom above white, each slider at its ends, and reduced-stage pairs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette study",
+          "target": "docs/design/vignette-study.md",
+          "relevance": "The study shape to follow: coordinates, frozen equations, worked examples, tolerance, limitations, files"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette reference",
+          "target": "crates/luxforge-reference/src/vignette.rs",
+          "relevance": "An f64 positional reference the production unit is bit-checked against"
+        },
+        {
+          "kind": "file",
+          "label": "Reference RNG",
+          "target": "crates/luxforge-reference/src/rng.rs",
+          "relevance": "SplitMix64 for choosing test inputs; not part of any reference's arithmetic"
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone study",
+          "target": "docs/design/basic-tone.md",
+          "relevance": "The encoded luminance domain, luminance-ratio reconstruction and near-black rule grain applies in"
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Reduction by area-weighted linear light at Fit, motion reported and not gated, the pointwise limits the GPU is held to"
+        }
+      ],
+      "acceptance_criteria": [
+        "grain-study.md freezes every equation and constant, the reduced-stage rule and the tolerances, and lists its limitations; the fixtures README names each fixture and its expected values.",
+        "Reference tests prove on the fixtures: Amount 0 identity; zero mean and unit standard deviation of the field within the study's bound for Size and Roughness at 0, 25, 50, 75 and 100; mean preservation per tone; black, white and above-white invariance; chroma preserved by the luminance-ratio reconstruction; the field's dependence on position alone (the same value from any tile or window origin); the reduced-stage statistics within the frozen tolerance at s of 2, 4 and 8.",
+        "The hash is written in u32 wrapping operations only, with a test vector table a WGSL transcription can be checked against."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Write the reference and its property tests over the hand-built fixtures.",
+          "Record the measured spectra and statistics that justify each frozen constant in the study."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-reference grain",
+          "tools/cargo-cached xtask check-repository"
+        ],
+        "expected_results": [
+          "Every grain reference test passes; the repository check accepts the new study and fixtures."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Implement the luxforge.grain module: a finish-stage field-patch layer at order 10 with Amount, Size and Roughness, its positional colour unit transcribed from the study, edit.set-grain and edit.reset-grain, presets and copy groups, and the conformance suite.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Follow the vignette module: crates/luxforge-core/src/modules/grain/{mod.rs,unit.rs}, effect luxforge.grain.film at payload format 1 listed in BUILTIN_FORMATS, EffectStage::Finish with declared order 10 so a grain layer always follows the vignette, single_layer, a missing key meaning the field's default (Amount 0, Size 25, Roughness 50), neutral exactly when Amount is 0, collapsed, one group, presettable, not maskable. Registry position after Vignette.",
+        "The unit is one PointwiseColor that reads the row's y and starting x, maps stage pixels to full-resolution output pixels through CompileStage::scale and full, and transcribes the study's equations in the same form and order as grain.rs, so the full-resolution path is within the study's exact tolerance; a reduced stage uses the study's reduced-stage rule. It allocates no table proportional to the frame. Strengths go through a response.json read by modules/response.rs with identity knots for now, so the later fold changes data, not code.",
+        "Add grain to the field-patch conformance suite and to the editor-acceptance chapter that covers finish-layer placement (presence_mixer_vignette_acceptance.rs or a chapter of its own): grain after the vignette whichever is committed first, and a crop update leaving the grain field's scale unchanged.",
+        "Without a GPU program the desktop draws a grain stack through the reference renderer with the layer named by the no-program fallback; that is correct until the next task lands the program.",
+        "Answer the performance checklist in the handoff and record the reference's per-frame cost of the unit at 24 MP and 60 MP as an indication."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette module",
+          "target": "crates/luxforge-core/src/modules/vignette/mod.rs",
+          "relevance": "The field-patch finish module to mirror: spec, fields, neutrality, compile, responses"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette unit",
+          "target": "crates/luxforge-core/src/modules/vignette/unit.rs",
+          "relevance": "A positional PointwiseColor with the reference transcribed bit for bit"
+        },
+        {
+          "kind": "file",
+          "label": "Module registry",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
+          "relevance": "GPU_PROGRAMS, BUILTIN_FORMATS and the module list"
+        },
+        {
+          "kind": "file",
+          "label": "Compile stage",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
+          "relevance": "CompileStage's stage, full and scale for reduced-stage compilation"
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch conformance suite",
+          "target": "crates/luxforge-core/tests/modules/conformance/mod.rs",
+          "relevance": "The history journey every field-patch module passes"
+        },
+        {
+          "kind": "file",
+          "label": "Placement acceptance",
+          "target": "xtask/src/presence_mixer_vignette_acceptance.rs",
+          "relevance": "The editor-acceptance chapter for finish-layer placement"
+        },
+        {
+          "kind": "file",
+          "label": "Presence, mixer and vignette design",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "relevance": "Stage order, declared order within a stage, the finish stage's rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "module.list and schema.list describe luxforge.grain with three fields, ranges, defaults and the Grain group; edit.set-grain and edit.reset-grain validate, store patches as sent, deduplicate and refuse no-ops by the conformance suite.",
+        "The unit matches grain.rs within the study's tolerance on every fixture at full resolution and the reduced-stage statistics at s of 2, 4 and 8; Amount 0 keeps the identity byte path and shares the source buffer; tiled, windowed and whole-frame reference renders are byte-identical; render.sample equals the rendered byte.",
+        "A grain layer follows the vignette whichever is committed first; a finish layer before geometry, two grain layers and another payload format are refused without rewriting; the original's bytes are unchanged.",
+        "Presets and copy and paste offer a Grain group without changes to either feature's code."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exact-buffer tests against the reference and the study's fixtures.",
+          "The conformance suite and the placement chapter."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core grain",
+          "tools/cargo-cached test -p luxforge-core --test modules conformance",
+          "tools/cargo-cached xtask editor-acceptance --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Grain unit, module, conformance and placement tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Give grain its GPU program and qualification corpus recipes: the unit in WGSL with the study's hash, device tests against the reference, and grain-* recipes in the preview corpus.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "crates/luxforge-core/src/modules/grain/unit.wgsl as a Colour-kind GpuProgram listed in GPU_PROGRAMS, placed by the plan in output space after the geometry tail as the vignette's is, receiving the full-resolution origin and scale so a window, a tile and a reduced stage address the study's field. The hash's u32 test vectors from the study are checked on the device.",
+        "Add grain-* recipes to fixtures/preview/corpus.json: Amount 100 at Size 0, 25 and 100 and Roughness 0 and 100, a default-settings recipe, grain over a dark vignette, grain under a straightened crop, and grain on a RAW stack, each in the pointwise class and in a grain family, so --families grain runs them alone.",
+        "Device tests run where an adapter exists (the Linux host's RADV or the M4's Metal). The whole-corpus gate on the M4 belongs to the qualification task; run the grain-* cells here on whatever native adapter is available and report the host.",
+        "If a program cannot meet the pointwise limit, that is a defect of the program; do not widen the limit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette GPU program",
+          "target": "crates/luxforge-core/src/modules/vignette/unit.wgsl",
+          "relevance": "A positional finish-stage program and its word layout"
+        },
+        {
+          "kind": "file",
+          "label": "GPU program tests",
+          "target": "crates/luxforge-core/src/preview/gpu_tests.rs",
+          "relevance": "Device tests holding programs to the reference"
+        },
+        {
+          "kind": "file",
+          "label": "Preview corpus",
+          "target": "fixtures/preview/corpus.json",
+          "relevance": "The qualification corpus the vignette's cells live in"
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The tolerance table per output kind and the gate's rules"
+        },
+        {
+          "kind": "file",
+          "label": "Image correctness",
+          "target": "docs/engineering/development.md",
+          "relevance": "gpu-qualification usage and evidence",
+          "locator": "#image-correctness-exact-and-reference-buffers"
+        }
+      ],
+      "acceptance_criteria": [
+        "A grain stack draws on the GPU at Fit, 33%, 50% and 100% with no no-program fallback; a neutral drafted grain layer is an exact identity in its GPU shape.",
+        "Device tests hold the program within the pointwise class's limits of the reference at full resolution, in a window, in tiles and at a reduced stage against the study's statistics; the hash vectors match exactly.",
+        "gpu-qualification over the grain-* cells passes the picture at rest, samples, the histogram and export kinds on the native adapter used, with motion below 100% reported."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Device tests against the reference.",
+          "gpu-qualification over the new corpus cells on a native adapter."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core grain",
+          "tools/cargo-cached xtask gpu-qualification --families grain --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Grain programs are within limits on every grain-* cell; the adapter that drew them is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Map Lightroom's grain settings in preset import: GrainAmount, GrainSize and GrainFrequency to Amount, Size and Roughness at the same number, GrainSeed reported as not carried.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Replace the four unsupported rows in crates/luxforge-core/src/presets/mapping.rs: GrainAmount, GrainSize and GrainFrequency transfer as the same number onto the grain fields; GrainSeed is listed as not carried with a reason naming Luxforge's fixed pattern; a GrainAmount of 0 stays neutral, its size, frequency and seed qualifying a neutral amount.",
+        "Update the presets design's mapping table and the Lightroom import design's unsupported row for grain (both describe current or planned mappings of this area). The alignment rig's XMP readback in lr-align generate expects only unmapped settings to be unsupported; keep its tests passing with grain now mapped."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "The grain rows to replace"
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "The mapping table and the report's neutral rules",
+          "locator": "#mapping"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Its unsupported-settings row naming grain"
+        },
+        {
+          "kind": "file",
+          "label": "Rig readback tests",
+          "target": "xtask/src/lr_align/tests.rs",
+          "relevance": "The generator's readback of what the preset reader maps"
+        }
+      ],
+      "acceptance_criteria": [
+        "A Lightroom preset with grain imports a grain layer at the same three numbers and reports GrainSeed as not carried; a preset with GrainAmount 0 imports no grain and lists the qualifiers as neutral.",
+        "Preset tests and the rig's readback tests pass; the two designs' tables describe the new mapping."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Preset import tests with grain at zero and non-zero amounts."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core presets",
+          "tools/cargo-cached test -p xtask lr_align"
+        ],
+        "expected_results": [
+          "Grain maps as the same number; the report is complete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Deliver the desktop Grain section and a background smoke scenario, grain, with correlated state and captures at Fit and 100%.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "The section is generated from the descriptors after Vignette, collapsed, one group without a header (Amount, Size, Roughness unipolar) and the module reset, with the accent dot when Amount is non-zero; no grain-specific widget. Add its row to the workspace's tool array table in the Develop workspace design.",
+        "xtask smoke scenario grain, modelled on vignette_smoke.rs: open a fixture, drag Amount, commit, change Size and Roughness, crop, undo and redo, capturing at Fit and 100% with state.json, requests and logs correlated, in a background bundle. The Linux agent host has no display, so rendered checks run on a Mac; run the narrow tests elsewhere.",
+        "Inspect the 100% captures for grain that is even across tiles and window edges, untouched blacks and whites, and no colour cast."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Vignette smoke scenario",
+          "target": "xtask/src/vignette_smoke.rs",
+          "relevance": "The scenario to model grain's on"
+        },
+        {
+          "kind": "file",
+          "label": "Smoke scenarios",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario registration"
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Module panels, the tool array and section rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "The Grain section drafts, previews, commits once per gesture, cancels on Escape and copies the JSON request on right-click, by the same action path as edit.set-grain.",
+        "cargo xtask smoke --scenario grain passes in the background on a Mac with captures at Fit and 100% whose state, revisions and requests correlate, and the 100% capture shows grain on the GPU frame."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the scenario in a background bundle and inspect its captures."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app grain",
+          "tools/cargo-cached xtask smoke --scenario grain --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The scenario passes with correlated evidence."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Extend the Lightroom alignment rig with grain families measured as statistics: generate Amount, Size and Roughness variants, measure grain strength per tone, feature size and irregularity, and fit maps, with Luxforge's own round fitting as the identity.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Grain is random, so pixels cannot be compared between the two editors. Measure on flat fields at several greys and on the spatial chart at 2400 x 1600 and 6000 x 4000 (which tests whether Lightroom's grain size follows the picture's size, the decided G1 being output pixels): the standard deviation of L* per tone (strength and tone weight), the radially averaged power spectrum's peak and half-power frequency (size), and a clumping statistic such as the spread of local variance or kurtosis (roughness), with the mean shift reported.",
+        "Variants: Amount at 10, 25, 50, 75, 100 with Size 25 and Roughness 50; Size at 0 to 100 and Roughness at 0 to 100 with Amount 50 held. Measures and fits belong in luxforge-reference's lr_align study with synthetic cases of known answer; orchestration in xtask's lr_align. A held field's Amount converts through its own family's map, as the vignette's Midpoint does.",
+        "The owner's Lightroom export is not needed here: the rig is proved by a round of Luxforge's own renders, which must fit as the identity. Update the alignment design's measured-settings table and rig sections for grain."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "The rig, rounds, measures, fits and the fold"
+        },
+        {
+          "kind": "file",
+          "label": "Rig orchestration",
+          "target": "xtask/src/lr_align/mod.rs",
+          "relevance": "generate, measure and fold"
+        },
+        {
+          "kind": "file",
+          "label": "Rig targets",
+          "target": "xtask/src/lr_align/targets.rs",
+          "relevance": "Flat fields and charts"
+        },
+        {
+          "kind": "file",
+          "label": "Alignment measures",
+          "target": "crates/luxforge-reference/src/lr_align.rs",
+          "relevance": "Pure measures and fits with known-answer tests"
+        }
+      ],
+      "acceptance_criteria": [
+        "lr-align generate --families grain writes the grain variants with XMP read back through the preset reader as mapped.",
+        "lr-align measure on a round of Luxforge's own grain renders fits every grain field as the identity within the rig's resolution and reports per-tone strength, size and roughness statistics and their contact sheets.",
+        "Each new measure passes synthetic known-answer tests in luxforge-reference."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Known-answer tests for each statistic.",
+          "An identity round on Luxforge's renders."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-reference lr_align",
+          "tools/cargo-cached test -p xtask lr_align"
+        ],
+        "expected_results": [
+          "The grain families generate, measure and fit as the identity on Luxforge's own renders."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Qualify and measure grain on the M4 and bring the shared documents up to the delivered feature.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Native M4: verify --tier rendered, whose gpu-qualification over the whole corpus includes the grain-* cells; then the timing work: a grain slider drag at Fit, 33% and 100% at 24 MP and 60 MP (30 samples, p50 and p95 against the pointwise drag budget), the picture at rest and its counts, a heavy export with grain, and the reference's per-frame cost, recorded in the performance spec with their scope. A miss is reported with its figures.",
+        "Documents, made once by the integrator from the handoffs: feature status, the user guide (the Grain section, judging grain at 100%, downsized exports averaging it, and the Lightroom preset mapping), the roadmap, the task plans' README and this design's status."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where measurements are recorded with their scope"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The review checklist"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "The capability row to add"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Develop sections and preset import"
+        }
+      ],
+      "acceptance_criteria": [
+        "The rendered tier passes on the M4 with every grain-* cell within its limits for every output kind, motion below 100% reported.",
+        "Grain's drag, picture at rest, export and reference cost are recorded with their scope, met or missed.",
+        "Feature status, the user guide, the roadmap, the README and the design state the delivered behaviour and what remains."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "The rendered tier, then timing behind the host lock, on a quiet M4."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier timing --output NEW_DIR",
+          "tools/cargo-cached xtask check-repository"
+        ],
+        "expected_results": [
+          "Rendered passes; measurements recorded; documents current."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Align grain's responses with Lightroom: the owner's grain round, the fold of Amount, Size and Roughness into the module's responses at payload format 2, requalification, and the owner's review of the sheets.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "The one external input: the owner imports the grain round into a scratch Lightroom catalog and exports it as the rig's instructions say. Measure it, fold each field's map into response.json (level B), raise the effect's payload format to 2 so a format-1 layer is refused, and rerun the grain-* cells of gpu-qualification on a native adapter.",
+        "Report level C candidates by the alignment design's threshold: a tone weight of a different shape, a size that follows the picture's size (Lightroom being frame-relative would not change the decided G1 without the owner), or a roughness no map can match. Prepare the contact sheets for the owner's review of the look."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Grain design",
+          "target": "docs/design/grain.md",
+          "relevance": "Scope, controls, processing contract, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Levels, the threshold, the fold and format rules"
+        },
+        {
+          "kind": "file",
+          "label": "Shared responses",
+          "target": "crates/luxforge-core/src/modules/response.rs",
+          "relevance": "How a module reads its frozen responses"
+        }
+      ],
+      "acceptance_criteria": [
+        "The grain round is measured from the owner's exports and folded; each field's residual is recorded with its level C disposition.",
+        "The module is at payload format 2 and refuses format 1; the grain-* cells pass on a native adapter after the fold.",
+        "The owner has the contact sheets; their review is recorded in the design."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Measure, fold, requalify, review."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask lr-align measure --round N --folder ROUND --output NEW_DIR",
+          "tools/cargo-cached xtask lr-align fold --measured DIR --output NEW_DIR",
+          "tools/cargo-cached test -p luxforge-core grain",
+          "tools/cargo-cached xtask gpu-qualification --families grain --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Grain's sliders follow Lightroom's measured responses within the recorded residuals."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003",
+        "TASK-004",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-005",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-007"
+      ]
+    }
+  ]
+}
