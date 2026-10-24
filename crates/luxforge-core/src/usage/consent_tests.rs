@@ -513,7 +513,7 @@ fn usage_generic_preference_writes_and_resets_keep_the_record() {
             update_install_automatically: Some(None),
             update_ask_to_move: Some(None),
             select_introduction_seen: Some(None),
-            develop_folder: Some(None),
+            develop_last: Some(None),
         })
         .unwrap();
     store.set_flag("developer", Some(json!(true))).unwrap();

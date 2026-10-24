@@ -4,34 +4,25 @@
 //! mode, overlay or zoom change is not; and an export from the Export sheet sends what an API
 //! client sends, writes the same file and is stored as the last export, which Export again
 //! repeats, while an evidence step's export stores nothing. The sheet's preset changes are the
-//! API's. A catalog folder viewed is stored as the remembered Develop folder with its catalog's
-//! identity; a launch over it views it again through `browse.view` while the catalog lists it, and
-//! starts with nothing chosen when the folder is gone or another catalog's.
+//! API's.
 use super::{
     Boot, Editor,
     export::{ExportRequest, export_params, read_now, screen_pixels_per_inch, write_now},
     job_reads::Reader,
     message::{
         Message,
-        develop::DevelopMessage,
         export::{ExportMessage, SheetMessage},
         mask::BrushEdit,
         mask::MaskMessage,
-        select::SelectMessage,
         sync::SyncMessage,
         view::ViewMessage,
     },
-    remembered::remembered_folder_now,
-    select_owner_tests::evaluate,
     settings_tests::{answer_preference, finish},
     tasks::call,
     testing::{Followed, descriptors, import_and_adopt},
 };
 use crate::mask_draft::NEUTRAL_BRUSH;
-use luxforge_core::{
-    AssetId, ClientSession, MaskOverlayColour,
-    catalog_types::{CatalogFolderId, ViewSource},
-};
+use luxforge_core::{AssetId, ClientSession, MaskOverlayColour};
 use luxforge_test_macros::slow;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
@@ -648,172 +639,4 @@ fn published_export_preset_delete_reads_back_the_library_and_clears_the_missing_
     assert!(editor.status.text.contains(&reason));
     assert!(!editor.status.text.contains("Deleted the export preset"));
     finish(editor, root);
-}
-
-/// A catalog holding one catalog folder another client made, and the launch over it.
-struct FolderLaunch {
-    editor: Editor,
-    root: PathBuf,
-    catalog_id: String,
-    folder: CatalogFolderId,
-}
-
-/// A launch over a catalog holding one catalog folder, made by another client, with what
-/// `remembered` makes of the catalog's identity and that folder stored before it as that client
-/// sets it.
-fn launch_over_folder(remembered: impl FnOnce(&str, &CatalogFolderId) -> Value) -> FolderLaunch {
-    let root = luxforge_testbase::paths::temp_path("remembered-folder");
-    let host = luxforge_core::HostConfig {
-        preferences_dir: Some(root.join("config")),
-        ..luxforge_core::HostConfig::unconfigured()
-    };
-    let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
-        &root.join("catalog.sqlite"),
-        Arc::new(luxforge_core::ModuleRegistry::builtin()),
-        host,
-    )
-    .unwrap();
-    let agent = owner.register();
-    let mutation = json!({"request_id": "agent-folder", "actor": "agent"});
-    let (created, _) = call(
-        &owner,
-        agent,
-        "folder.create",
-        json!({"name": "Konstanz", "mutation": mutation}),
-    )
-    .unwrap();
-    let folder: CatalogFolderId = serde_json::from_value(created["folder"]["id"].clone()).unwrap();
-    let (info, _) = call(&owner, agent, "catalog.info", json!({})).unwrap();
-    let catalog_id = info["catalog_id"].as_str().unwrap().to_owned();
-    let stored = remembered(&catalog_id, &folder);
-    if stored != json!({}) {
-        call(&owner, agent, "preferences.set", stored).unwrap();
-    }
-    let (editor, _) = Editor::new(Boot {
-        owner,
-        join,
-        live_server: None,
-        config: crate::Config::default(),
-        client: None,
-        initial_import: None,
-        window: (1440.0, 900.0),
-    });
-    FolderLaunch {
-        editor,
-        root,
-        catalog_id,
-        folder,
-    }
-}
-
-/// Run the launch's read of the catalog's identity and the remembered folder as its task would.
-fn read_remembered(editor: &mut Editor) {
-    let found = remembered_folder_now(
-        &editor.owner,
-        editor.client,
-        editor.preferences.applied_develop_folder(),
-    );
-    let _ = editor.update(Message::Develop(DevelopMessage::Remembered(found)));
-}
-
-fn catalog_folder(folder: &CatalogFolderId) -> ViewSource {
-    ViewSource::CatalogFolder {
-        folder_id: folder.clone(),
-        subfolders: true,
-    }
-}
-
-/// Viewing a catalog folder in Select stores it, with the catalog's identity, as the remembered
-/// Develop folder.
-#[test]
-fn remembered_develop_folder_is_stored_when_a_catalog_folder_is_viewed() {
-    let FolderLaunch {
-        mut editor,
-        root,
-        catalog_id,
-        folder,
-    } = launch_over_folder(|_, _| json!({}));
-    read_remembered(&mut editor);
-    assert!(editor.preferences.idle(), "nothing chosen, nothing stored");
-    let _ = editor.update(Message::Select(SelectMessage::Source(catalog_folder(
-        &folder,
-    ))));
-    let remembered = json!({"catalog_id": catalog_id, "folder_id": folder});
-    assert_eq!(
-        editor.preferences.writing().map(|change| change.params()),
-        Some(json!({"develop_folder": remembered}))
-    );
-    answer_preference(&mut editor);
-    assert_eq!(stored(&editor)["develop_folder"], remembered);
-    finish(editor, root);
-}
-
-/// A launch over a remembered folder the catalog still lists views it in Select through
-/// `browse.view`, as pressing it does, which makes it the Develop folder; the launch's status line
-/// stays and nothing is written back.
-#[test]
-fn remembered_develop_folder_is_viewed_again_at_launch() {
-    let FolderLaunch {
-        mut editor,
-        root,
-        folder,
-        ..
-    } = launch_over_folder(
-        |catalog_id, folder| json!({"develop_folder": {"catalog_id": catalog_id, "folder_id": folder}}),
-    );
-    assert_eq!(editor.develop_folder(), None, "not before the read answers");
-    let status = editor.status.text.clone();
-    read_remembered(&mut editor);
-    assert_eq!(editor.develop_folder(), Some(&folder));
-    assert_eq!(
-        editor
-            .select
-            .state
-            .query
-            .as_ref()
-            .map(|query| &query.source),
-        Some(&catalog_folder(&folder))
-    );
-    evaluate(&mut editor);
-    let summary = editor.select.state.summary.as_ref().expect("the view");
-    assert_eq!(summary.query.source, catalog_folder(&folder));
-    assert_eq!(editor.status.text, status);
-    assert!(editor.preferences.idle(), "the restore writes nothing back");
-    finish(editor, root);
-}
-
-/// A remembered folder the catalog no longer lists, or another catalog's, leaves the launch with
-/// no view and no Develop folder, saying nothing, and stays stored until a folder is chosen.
-#[test]
-fn remembered_develop_folder_that_is_gone_or_another_catalogs_is_not_viewed() {
-    let gone = CatalogFolderId::new();
-    for this_catalog in [true, false] {
-        let FolderLaunch {
-            mut editor,
-            root,
-            catalog_id,
-            folder,
-        } = launch_over_folder(|catalog_id, folder| match this_catalog {
-            true => json!({"develop_folder": {"catalog_id": catalog_id, "folder_id": gone}}),
-            false => {
-                json!({"develop_folder": {"catalog_id": "another-catalog", "folder_id": folder}})
-            }
-        });
-        let before = stored(&editor)["develop_folder"].clone();
-        let status = editor.status.text.clone();
-        read_remembered(&mut editor);
-        assert_eq!(editor.develop_folder(), None);
-        assert!(editor.select.state.query.is_none());
-        assert_eq!(editor.status.text, status);
-        assert!(editor.preferences.idle());
-        assert_eq!(stored(&editor)["develop_folder"], before);
-        let _ = editor.update(Message::Select(SelectMessage::Source(catalog_folder(
-            &folder,
-        ))));
-        assert_eq!(
-            editor.preferences.writing().map(|change| change.params()),
-            Some(json!({"develop_folder": {"catalog_id": catalog_id, "folder_id": folder}}))
-        );
-        finish(editor, root);
-    }
 }

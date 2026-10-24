@@ -55,9 +55,9 @@ pub(crate) enum DevelopMessage {
         serial: u64,
         result: Result<Option<FolderRead>, String>,
     },
-    /// The launch read this catalog's identity and the remembered Develop folder, which is there
-    /// when it is this catalog's and still listed.
-    Remembered(Result<crate::app::remembered::RememberedFolder, String>),
+    /// The launch read this catalog's identity and where Develop was left, which is there when it
+    /// is this catalog's and the catalog still holds its folder or photograph.
+    Remembered(Result<crate::app::develop_last::RememberedPlace, String>),
     /// `←` or `→` in Develop, or the filmstrip's previous and next buttons.
     Step(isize),
     /// A press on the filmstrip's cell of the photograph at this index.

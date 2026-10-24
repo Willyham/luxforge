@@ -176,19 +176,23 @@ pub struct PanoramaMergePreference {
     pub boundary_warp: u8,
 }
 
-/// The longest catalog identity a remembered Develop folder names: a catalog's own is 32
+/// The longest catalog identity the remembered Develop place names: a catalog's own is 32
 /// hexadecimal digits (`catalog.info`'s `catalog_id`).
 pub const MAX_CATALOG_ID: usize = 64;
 
-/// The remembered Develop folder: the catalog folder last chosen in the desktop, with the identity
-/// of the catalog that holds it (`catalog.info`'s `catalog_id`), so a launch over another catalog
-/// leaves it alone. The desktop stores it when its Develop folder changes and, at a launch with no
-/// file to open, views it again when this catalog still lists it.
+/// Where the person left Develop: the Develop folder last chosen and the photograph last open in
+/// Develop, with the identity of the catalog that holds them (`catalog.info`'s `catalog_id`), so a
+/// launch over another catalog leaves them alone. The desktop stores it when either changes and, at
+/// a launch with no file to open, opens Develop there again while the catalog still holds them. It
+/// names a folder, a photograph or both.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DevelopFolderPreference {
+pub struct DevelopLastPreference {
     pub catalog_id: String,
-    pub folder_id: crate::catalog_types::CatalogFolderId,
+    #[serde(default)]
+    pub folder_id: Option<crate::catalog_types::CatalogFolderId>,
+    #[serde(default)]
+    pub asset_id: Option<crate::AssetId>,
 }
 
 /// The stored preferences: each field holds the person's explicit choice, or nothing.
@@ -270,10 +274,10 @@ pub(crate) struct Preferences {
     /// first time Select is shown. Off until they close it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) select_introduction_seen: Option<bool>,
-    /// The catalog folder the desktop last chose as its Develop folder, with its catalog's identity;
-    /// nothing until one is chosen.
+    /// The Develop folder and photograph the desktop last held, with their catalog's identity;
+    /// nothing until either is chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) develop_folder: Option<DevelopFolderPreference>,
+    pub(crate) develop_last: Option<DevelopLastPreference>,
     /// The version the person skipped. Only `update.skip` writes it, through
     /// [`PreferenceStore::set_skipped_version`]: no [`PreferenceChange`] names it, so
     /// `preferences.set`, its `null` and every reset keep it.
@@ -426,14 +430,18 @@ impl Preferences {
         if let Some(record) = &self.usage_statistics {
             record.check()?;
         }
-        if let Some(remembered) = &self.develop_folder
-            && (remembered.catalog_id.is_empty()
-                || remembered.catalog_id.len() > MAX_CATALOG_ID
-                || remembered.catalog_id.chars().any(char::is_control))
-        {
-            return Err(format!(
-                "develop_folder.catalog_id must be a catalog identity of 1..={MAX_CATALOG_ID} printable characters"
-            ));
+        if let Some(last) = &self.develop_last {
+            if last.catalog_id.is_empty()
+                || last.catalog_id.len() > MAX_CATALOG_ID
+                || last.catalog_id.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "develop_last.catalog_id must be a catalog identity of 1..={MAX_CATALOG_ID} printable characters"
+                ));
+            }
+            if last.folder_id.is_none() && last.asset_id.is_none() {
+                return Err("develop_last must name a folder_id, an asset_id or both".into());
+            }
         }
         if let Some(version) = &self.update_skipped_version {
             crate::update::check_version(version)
@@ -516,7 +524,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) update_install_automatically: Option<Option<bool>>,
     pub(crate) update_ask_to_move: Option<Option<bool>>,
     pub(crate) select_introduction_seen: Option<Option<bool>>,
-    pub(crate) develop_folder: Option<Option<DevelopFolderPreference>>,
+    pub(crate) develop_last: Option<Option<DevelopLastPreference>>,
 }
 
 impl PreferenceChange {
@@ -564,7 +572,7 @@ impl PreferenceChange {
             &mut preferences.select_introduction_seen,
             self.select_introduction_seen,
         );
-        put(&mut preferences.develop_folder, self.develop_folder);
+        put(&mut preferences.develop_last, self.develop_last);
     }
 }
 
@@ -853,9 +861,10 @@ mod tests {
             update_install_automatically: Some(Some(true)),
             update_ask_to_move: Some(Some(false)),
             select_introduction_seen: Some(Some(true)),
-            develop_folder: Some(Some(DevelopFolderPreference {
+            develop_last: Some(Some(DevelopLastPreference {
                 catalog_id: "0123456789abcdef0123456789abcdef".into(),
-                folder_id: crate::catalog_types::CatalogFolderId::new(),
+                folder_id: Some(crate::catalog_types::CatalogFolderId::new()),
+                asset_id: Some(crate::AssetId::new()),
             })),
         }
     }
@@ -911,7 +920,8 @@ mod tests {
             b"{\"format\":1,\"window\":{\"width\":100,\"height\":800,\"x\":0,\"y\":0}}",
             b"{\"format\":1,\"workspace\":{\"thirds\":true}}",
             b"{\"format\":1,\"theme\":\"\"}",
-            b"{\"format\":1,\"develop_folder\":{\"catalog_id\":\"c\",\"folder_id\":\"lake\"}}",
+            b"{\"format\":1,\"develop_last\":{\"catalog_id\":\"c\",\"folder_id\":\"lake\"}}",
+            b"{\"format\":1,\"develop_last\":{\"catalog_id\":\"c\"}}",
             b"not json",
         ] {
             std::fs::write(&path, bytes).unwrap();
@@ -998,7 +1008,7 @@ mod tests {
         assert!(reopened.select_introduction_seen());
         assert_eq!(
             reopened
-                .develop_folder
+                .develop_last
                 .as_ref()
                 .map(|remembered| remembered.catalog_id.as_str()),
             Some("0123456789abcdef0123456789abcdef")
@@ -1048,7 +1058,7 @@ mod tests {
             update_install_automatically: Some(None),
             update_ask_to_move: Some(None),
             select_introduction_seen: Some(None),
-            develop_folder: Some(None),
+            develop_last: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();
         assert!(after.update_checks() && !after.update_install_automatically());
@@ -1209,13 +1219,25 @@ mod tests {
             ),
             (
                 PreferenceChange {
-                    develop_folder: Some(Some(DevelopFolderPreference {
+                    develop_last: Some(Some(DevelopLastPreference {
                         catalog_id: String::new(),
-                        folder_id: crate::catalog_types::CatalogFolderId::new(),
+                        folder_id: Some(crate::catalog_types::CatalogFolderId::new()),
+                        asset_id: None,
                     })),
                     ..PreferenceChange::default()
                 },
-                "develop_folder.catalog_id must be a catalog identity of 1..=64",
+                "develop_last.catalog_id must be a catalog identity of 1..=64",
+            ),
+            (
+                PreferenceChange {
+                    develop_last: Some(Some(DevelopLastPreference {
+                        catalog_id: "c".into(),
+                        folder_id: None,
+                        asset_id: None,
+                    })),
+                    ..PreferenceChange::default()
+                },
+                "develop_last must name a folder_id, an asset_id or both",
             ),
         ] {
             let error = store.set(change).unwrap_err();

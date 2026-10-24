@@ -158,8 +158,8 @@ pub(crate) struct Develop {
     pub(crate) strip: SelectPreviews,
     /// Both caches were emptied when Select was shown, so they are not emptied again.
     released: bool,
-    /// The Develop folder remembered across launches ([`crate::app::remembered`]).
-    pub(crate) remembered: crate::app::remembered::FolderMemory,
+    /// Where Develop was left, remembered across launches ([`crate::app::develop_last`]).
+    pub(crate) remembered: crate::app::develop_last::DevelopMemory,
     /// The large previews' read batches, which a test runs against its owner in place of the tasks.
     #[cfg(test)]
     pub(crate) reads: Vec<loupe_frames::ReadBatch>,
@@ -507,7 +507,7 @@ impl Editor {
             DevelopMessage::FolderFound { serial, result } => {
                 self.folder_found(serial, result);
             }
-            DevelopMessage::Remembered(result) => return self.develop_folder_remembered(result),
+            DevelopMessage::Remembered(result) => return self.develop_place_remembered(result),
             DevelopMessage::Step(delta) => {
                 let Some(index) = self
                     .develop
@@ -807,7 +807,7 @@ impl Editor {
     }
 
     /// Make `folder` the Develop folder. Choosing another fences a read of the one before.
-    fn choose_develop_folder(&mut self, folder: Option<CatalogFolderId>) {
+    pub(crate) fn choose_develop_folder(&mut self, folder: Option<CatalogFolderId>) {
         if self.select.state.catalog.develop_folder != folder {
             self.select.state.catalog.develop_folder = folder;
             if std::mem::take(&mut self.develop.state.entering) {
@@ -902,11 +902,18 @@ impl Editor {
     /// Develop shown on the strip as it is: on the open photograph when it is in it, otherwise on
     /// its first. An empty folder stays in Select and says so.
     fn show_strip(&mut self) -> Task<Message> {
-        let open = self
-            .document
-            .state
-            .as_ref()
-            .map(|state| state.asset.id.clone());
+        self.show_strip_on(None)
+    }
+
+    /// [`Self::show_strip`], on `prefer` when the strip holds it: a launch landing where Develop
+    /// was left opens the photograph it remembers.
+    pub(crate) fn show_strip_on(&mut self, prefer: Option<&AssetId>) -> Task<Message> {
+        let open = prefer.cloned().or_else(|| {
+            self.document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone())
+        });
         let Some(strip) = &self.develop.state.strip else {
             return Task::none();
         };
@@ -961,7 +968,7 @@ impl Editor {
     }
 
     /// Take a read of the Develop folder into the strip, the photograph shown keeping its place.
-    fn adopt_folder(&mut self, read: FolderRead) {
+    pub(crate) fn adopt_folder(&mut self, read: FolderRead) {
         self.develop.strip_sequence = read.library_sequence;
         self.develop.strip_stale = false;
         let active = self.shown_asset();
@@ -1715,7 +1722,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         editor.present_cached();
     }
     editor.follow_switch();
-    tasks.push(editor.remember_develop_folder_preference());
+    tasks.push(editor.remember_develop_last());
     editor.follow_timing();
     if editor.evidence.is_some() {
         editor.develop_evidence_after();
