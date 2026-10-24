@@ -85,8 +85,8 @@ Without a session, `luxforge_methods` and `luxforge_describe` answer from the bu
 - **One tool per method.** A tool's name is the method's name with `.` replaced by `_`, because some model APIs refuse dots in tool names; `asset.state` becomes `asset_state`. A test holds the mapping collision-free and every name within 64 characters. The tool's `title` is the method's own name.
 - **Description.** The description is the method's full notes.
 - **Annotations.** These come from the registry's markers ([core additions](#core-additions)):
-  - `readOnlyHint` is `!mutates`.
-  - `destructiveHint` is true only for a method marked irreversible.
+  - `readOnlyHint` is the method's `read_only`.
+  - `destructiveHint` is true only for a method that changes something and cannot be taken back: `!read_only && !reversible`.
   - `idempotentHint` is false.
   - `openWorldHint` is true only for a method marked as reaching the network.
 - **Methods left out.** A method that only permission authority can call is not offered, because a live client's call would always be `forbidden`.
@@ -146,11 +146,12 @@ Session-scoped methods (`draft.*`, `preview.select`, `view.set` and the rest) ar
 
 The registry gains the markers the adapter needs, so the adapter holds no per-method knowledge.
 
-- **`authority: "permissions"`** on each method that only permission authority may call: `module.permission.grant`, `usage.prompt.claim`, `update.install`, `update.move-to-applications` and `catalog.empty-removed`. Today these are stated only in notes. A method that needs permission authority for one argument value, such as `usage.set {enabled: true}`, keeps that in its notes and stays offered.
-- **Effect markers** on every mutating method:
-  - `reversible: true | false`. A reversible change can be undone through history undo or library undo, or it is a session or preference change that the same operation sets back.
-  - `network: true` for a method that can reach the network.
-  - A test refuses a mutating method without an explicit `reversible` value, so a new operation cannot inherit a default.
+- **`authority: "permissions"`** on each method that only permission authority may call: `module.permission.grant`, `usage.prompt.claim`, `update.install`, `update.move-to-applications`, `catalog.empty-removed` and `session.disconnect`. A method that needs permission authority for one argument value, such as `usage.set {enabled: true}`, keeps that in its notes and stays offered.
+- **Effect markers** on every method. `mutates` says only that a method carries a mutation envelope. Many methods change something without one (`preferences.set`, `view.set`, `draft.*`, `job.cancel` and the rest), so whether a method changes anything is `read_only`:
+  - `read_only: true | false` on every method, true only when it changes nothing at all: no catalog, library, session, preference, flag, job or file state. Holding a wait is a read, and so is a call whose only effect is a derived, disposable record such as a preview, an analysis report or the folder index ([the rule](architecture.md#agent-contract)).
+  - `reversible: true | false` on every method whose `read_only` is false, and on no read. A reversible change can be undone through history undo or library undo, set back by the same method with the earlier value, removed with what the call created, or is the caller's own session state, set again.
+  - `network: true` for a method that can reach the network, never a read.
+  - Every host method declares its classification explicitly, and a test refuses one that declares none, so a new operation cannot inherit a default.
 - **`images: [field…]`** names result fields that hold the path of a JPEG the owner wrote for display. It is set on `preview.read` and `preview.region`, and declared per job kind for those fields in a job's result.
 - **Client identity and connected clients:**
   - `session.identify {label}` is session-scoped and names the calling client, 1–64 characters, for the desktop's list. `luxforge-ctl` identifies itself as "luxforge-ctl".

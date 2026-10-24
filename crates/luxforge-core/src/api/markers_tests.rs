@@ -1,6 +1,7 @@
 //! The markers `schema.list` carries for an agent's adapter: which methods only permission
-//! authority may call, whether each mutating method's change can be taken back and whether it can
-//! reach the network, and which answer fields name a picture written for display. They are held
+//! authority may call, whether each method changes anything, whether a change can be taken back
+//! and whether it can reach the network, and which answer fields name a picture written for
+//! display. They are held
 //! over the built-in and the developer registries, generated methods included, and the authority
 //! marker is held to the check the catalog owner makes.
 use super::*;
@@ -15,6 +16,40 @@ const PERMISSION_ONLY: &[&str] = &[
     "update.install",
     "update.move-to-applications",
     "catalog.empty-removed",
+    "session.disconnect",
+];
+
+/// The host methods that change something without a mutation envelope: session state, user
+/// preferences and flags, jobs, loaded models and the updater's record. Each was judged from
+/// what its handler does, so a method joins or leaves this list deliberately, never by default.
+const CHANGES_WITHOUT_ENVELOPE: &[&str] = &[
+    "preferences.set",
+    "flags.set",
+    "update.check",
+    "update.skip",
+    "job.adopt",
+    "job.cancel",
+    "source.prepare",
+    "module.runtime.load",
+    "module.runtime.unload",
+    "preview.select",
+    "preview.compare",
+    "preview.return-current",
+    "view.set",
+    "workspace.set",
+    "session.identify",
+    "session.disconnect",
+    "draft.begin",
+    "draft.set",
+    "draft.cancel",
+    "draft.reapply",
+    "source.check",
+    "merge.preview",
+    "merge.preview-update",
+    "merge.preview-close",
+    "stack.set-expanded",
+    "browse.view",
+    "browse.select",
 ];
 
 fn registries() -> [(&'static str, ModuleRegistry); 2] {
@@ -24,48 +59,82 @@ fn registries() -> [(&'static str, ModuleRegistry); 2] {
     ]
 }
 
-/// A mutating entry of the method table that declares no `reversible`, or a read that declares
-/// effects, is refused by name: a new operation cannot inherit a default.
+/// Every entry of the method table declares whether it changes anything: a read, or a change that
+/// can or cannot be taken back. One that declares none is refused by name, so a new operation
+/// cannot inherit a default; a mutating entry cannot be a read, and only a change reaches the
+/// network.
 #[test]
-fn every_mutating_host_method_declares_whether_it_is_reversible_and_no_read_does() {
+fn every_host_method_declares_whether_it_reads_or_changes_and_mutations_change() {
     let undeclared: Vec<&str> = METHODS
         .iter()
-        .filter(|spec| Method::Host(spec).mutates() && spec.effects.reversible.is_none())
+        .filter(|spec| spec.effects.read_only().is_none())
         .map(|spec| spec.name)
         .collect();
     assert!(
         undeclared.is_empty(),
-        "mutating methods without reversible: {undeclared:?}"
+        "methods declaring neither read nor a change: {undeclared:?}"
     );
-    let reads: Vec<&str> = METHODS
+    let mutating_reads: Vec<&str> = METHODS
         .iter()
-        .filter(|spec| !Method::Host(spec).mutates() && spec.effects.reversible.is_some())
+        .filter(|spec| Method::Host(spec).mutates() && spec.effects.read_only() == Some(true))
         .map(|spec| spec.name)
         .collect();
-    assert!(reads.is_empty(), "reads declaring reversible: {reads:?}");
+    assert!(
+        mutating_reads.is_empty(),
+        "mutating methods declared a read: {mutating_reads:?}"
+    );
+    let network_reads: Vec<&str> = METHODS
+        .iter()
+        .filter(|spec| spec.effects.network && spec.effects.read_only() != Some(false))
+        .map(|spec| spec.name)
+        .collect();
+    assert!(
+        network_reads.is_empty(),
+        "reads declaring network: {network_reads:?}"
+    );
+    let changes: BTreeSet<&str> = METHODS
+        .iter()
+        .filter(|spec| !Method::Host(spec).mutates() && spec.effects.read_only() == Some(false))
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(
+        changes,
+        CHANGES_WITHOUT_ENVELOPE.iter().copied().collect(),
+        "the host methods that change something without a mutation envelope"
+    );
 }
 
-/// Every mutating method `schema.list` lists, the generated `edit.*`, `mask.*` and `task.*`
-/// included, carries a boolean `reversible`; no read does, so a `query.*` carries none; `network`
-/// appears only as `true`.
+/// Every method `schema.list` lists, the generated `edit.*`, `query.*`, `mask.*` and `task.*`
+/// included, carries a boolean `read_only`; every one that changes something carries a boolean
+/// `reversible` and no read does; a mutating method is never a read; `network` appears only as
+/// `true` and only on a change.
 #[test]
-fn schema_list_marks_every_mutating_method_reversible_or_not_in_both_registries() {
+fn schema_list_marks_every_method_read_only_or_reversible_in_both_registries() {
     for (label, registry) in registries() {
         let schema = schemas(&registry);
         let methods = schema["methods"].as_object().unwrap();
         let mut families = BTreeSet::new();
         for (name, entry) in methods {
-            let mutates = entry["mutates"].as_bool().unwrap();
-            if mutates {
-                assert!(
-                    entry["reversible"].is_boolean(),
-                    "{label}: {name} mutates without reversible"
-                );
+            let read_only = entry["read_only"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("{label}: {name} has no read_only"));
+            if entry["mutates"] == true {
+                assert!(!read_only, "{label}: {name} mutates and is read_only");
                 families.insert(name.split('.').next().unwrap().to_owned());
-            } else {
+            }
+            if read_only {
                 assert!(
                     entry.get("reversible").is_none(),
                     "{label}: the read {name} declares reversible"
+                );
+                assert!(
+                    entry.get("network").is_none(),
+                    "{label}: the read {name} declares network"
+                );
+            } else {
+                assert!(
+                    entry["reversible"].is_boolean(),
+                    "{label}: {name} changes something without reversible"
                 );
             }
             if let Some(network) = entry.get("network") {
@@ -73,7 +142,7 @@ fn schema_list_marks_every_mutating_method_reversible_or_not_in_both_registries(
             }
         }
         // Generated methods are covered, not only the table: actions and mask commands are
-        // history entries, so history undo takes them back.
+        // history entries, so history undo takes them back, and a query writes nothing.
         for family in ["edit", "mask"] {
             assert!(families.contains(family), "{label}: no mutating {family}.*");
         }
@@ -85,6 +154,10 @@ fn schema_list_marks_every_mutating_method_reversible_or_not_in_both_registries(
             }
             if name.starts_with("query.") {
                 assert_eq!(entry["mutates"], json!(false), "{label}: {name}");
+                assert_eq!(entry["read_only"], json!(true), "{label}: {name}");
+            }
+            if name.starts_with("task.") {
+                assert_eq!(entry["read_only"], json!(false), "{label}: {name}");
             }
         }
     }

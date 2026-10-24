@@ -215,17 +215,13 @@ pub(in crate::api) fn list(
 }
 
 /// `session.disconnect`: close another client's connection, ending its session as its own
-/// disconnection would. Only permission authority may.
+/// disconnection would. Only permission authority may, which the owner checks from the method's
+/// declaration before this runs.
 pub(in crate::api) fn disconnect(
     owner: &mut Owner,
     call: &Call<'_>,
     params: SessionDisconnect,
 ) -> Result<Value, Error> {
-    if owner.authority(call.client) != ClientAuthority::Permissions {
-        return Err(Error::forbidden(
-            "disconnecting a client needs permission authority",
-        ));
-    }
     let target = ClientId(params.client_id);
     if target == call.client {
         return Err(Error::validation(format!(

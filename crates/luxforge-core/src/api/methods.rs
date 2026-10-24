@@ -155,10 +155,11 @@ pub(super) struct MethodSpec {
     /// Who answers a retry of this method. A mutating entry names it after its notes, as
     /// `retries: Catalog`, `retries: Durable` or `retries: Owner`; an entry that names none changes nothing.
     pub retries: Retries,
-    /// What its change is, as `schema.list` publishes it: a mutating entry declares after its
-    /// macro whether the change can be taken back, `.reversible()` or `.irreversible()`, and any
-    /// entry `.network()` when it can reach the network. A test refuses a mutating entry that
-    /// declares neither and a read that declares either.
+    /// What it changes, as `schema.list` publishes it: every entry declares after its macro that
+    /// it is a read, `.read()`, or that it changes something and whether that can be taken back,
+    /// `.reversible()` or `.irreversible()`, and `.network()` when it can reach the network. A test
+    /// refuses an entry that declares none, a mutating entry declared a read and a read declared
+    /// to reach the network.
     pub effects: Effects,
     /// For a method only permission authority may call at all, declared `.permissions(refusal)`:
     /// the refusal a client without it gets. The catalog owner refuses such a call with this,
@@ -170,36 +171,75 @@ pub(super) struct MethodSpec {
     pub images: &'static [&'static str],
 }
 
-/// What a method's change is ([`MethodSpec::effects`]).
+/// What a method changes ([`MethodSpec::effects`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Effects {
-    /// Whether the change can be put back through the API: history undo or library undo, another
-    /// call of the same method with the earlier value, or removing exactly what the call created.
-    /// False when the call discards something no call brings back or acts where Luxforge cannot
-    /// take it back. `None` until the entry declares it, which only a read may leave so.
-    pub reversible: Option<bool>,
-    /// Whether the method can reach the network.
+    pub change: Change,
+    /// Whether the method can reach the network, which only a method that changes something
+    /// declares.
     pub network: bool,
+}
+
+/// Whether a method changes anything, and whether the change can be taken back, as `schema.list`
+/// publishes it in `read_only` and `reversible`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Change {
+    /// Not declared: a test refuses a host entry left so, and `schema.list` lists it as a change
+    /// that cannot be taken back, the conservative reading.
+    Undeclared,
+    /// A read: it changes no catalog, library, session, preference, flag, job or file state.
+    /// Holding a wait is a read, and so is a call whose only effect is a derived, disposable
+    /// record the owner would make anyway: a preview, an analysis report or the folder index.
+    Nothing,
+    /// It changes something. `reversible` says whether the change can be put back through the
+    /// API: history undo or library undo, another call of the same method with the earlier
+    /// value, removing exactly what the call created, or setting the caller's own session state
+    /// again. False when the call discards something no call brings back or acts where Luxforge
+    /// cannot take it back.
+    Something { reversible: bool },
 }
 
 impl Effects {
     /// What an entry declares before it names anything.
     pub(super) const UNDECLARED: Self = Self {
-        reversible: None,
+        change: Change::Undeclared,
         network: false,
     };
+
+    /// Whether the method changes nothing at all; `None` while undeclared.
+    pub(super) fn read_only(self) -> Option<bool> {
+        match self.change {
+            Change::Undeclared => None,
+            Change::Nothing => Some(true),
+            Change::Something { .. } => Some(false),
+        }
+    }
+
+    /// Whether the method's change can be taken back; `None` for a read or an undeclared entry.
+    pub(super) fn reversible(self) -> Option<bool> {
+        match self.change {
+            Change::Something { reversible } => Some(reversible),
+            Change::Undeclared | Change::Nothing => None,
+        }
+    }
 }
 
 impl MethodSpec {
-    /// Its change can be taken back ([`Effects::reversible`]).
-    const fn reversible(mut self) -> Self {
-        self.effects.reversible = Some(true);
+    /// It changes nothing ([`Change::Nothing`]).
+    const fn read(mut self) -> Self {
+        self.effects.change = Change::Nothing;
         self
     }
 
-    /// Its change cannot be taken back ([`Effects::reversible`]).
+    /// It changes something that can be taken back ([`Change::Something`]).
+    const fn reversible(mut self) -> Self {
+        self.effects.change = Change::Something { reversible: true };
+        self
+    }
+
+    /// It changes something that cannot be taken back ([`Change::Something`]).
     const fn irreversible(mut self) -> Self {
-        self.effects.reversible = Some(false);
+        self.effects.change = Change::Something { reversible: false };
         self
     }
 
@@ -405,31 +445,36 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         |service, _, _| Ok(schemas(service.registry())),
         "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
-    ),
+    )
+    .read(),
     owner!(
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
         "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_last ({settings, preset_id} of the last export the person started that succeeded: ExportSettings as schema.list's export_settings describes and the preset they came from or null; or null before any; Export again exports with it), hdr_merge ({alignment, deghost} of the last HDR merge, which the desktop's option-click merges with, or null for the defaults), panorama_merge ({projection, boundary_warp} of the last panorama merge, which the desktop's option-click merges with, or null for the defaults), theme (the active theme's id, default luxforge.dark, which theme.list answers as active), theme_follows_omarchy (default true: where Omarchy runs, the desktop makes Omarchy's current theme the active one when the library holds it), update_checks (default true), update_install_automatically (default false), update_ask_to_move (default true), select_introduction_seen (default false: the desktop shows the Select introduction the first time Select is shown), develop_last ({catalog_id, folder_id, asset_id} of where the desktop left Develop: the catalog folder it held and the photograph open there, either null, with catalog_id as catalog.info answers it; or null before any; a desktop launched with no file to open over that catalog opens Develop again on the photograph with the folder in its filmstrip while the catalog holds them), update_skipped_version (the version update.skip stored, or null; preferences.set cannot change or reset it), usage_statistics (the protected usage statistics consent record, {prompt_shown, enabled, disclosure_version?, installation_id?}, {prompt_shown: false, enabled: false} when absent; never its image key; preferences.set cannot change or reset it, only usage.set and usage.prompt.claim write it)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
-    ),
+    )
+    .read(),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
         "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_last, the remembered {settings, preset_id} of the last export the person started that succeeded, settings checked as export.write checks them and preset_id 1..=64 printable characters or null; hdr_merge, the remembered {alignment, deghost} of the last HDR merge, each auto or off; panorama_merge, the remembered {projection, boundary_warp} of the last panorama merge, projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); theme_follows_omarchy, whether the desktop, where Omarchy runs, makes Omarchy's current theme the active one at launch, when its window gains focus and when this turns on, if the library holds a theme imported from or bundled as that Omarchy folder, so a client choosing a theme should turn it off as the desktop's own choice does; update_checks, whether a release build checks for updates at launch and then daily; update_install_automatically, whether an update downloads in the background and installs at the next ordinary quit, which applies only while update_checks is on and never to an update that changes the catalog format; a change to either reaches the update port at once; update_ask_to_move, whether a macOS release build launched outside Applications asks to move itself there, false being the question's Don't ask again; select_introduction_seen, whether the person closed the Select introduction, null or false showing it again at the desktop's next launch and true skipping it; develop_last, the remembered {catalog_id, folder_id, asset_id} of where the desktop left Develop, catalog_id 1..=64 printable characters and folder_id and asset_id identities or null, not both null, which need not exist; a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog, theme, theme_follows_omarchy, update_checks, update_install_automatically or update_ask_to_move is announced; no preference changes a rendered or exported byte; the protected usage_statistics record and update_skipped_version are not parameters: no value, null or reset here changes them, and only usage.set and usage.prompt.claim, and update.skip, write them; returns every preference as preferences.read does; needs a configured application preference directory"
-    ),
+    )
+    .reversible(),
     owner!(
         "flags.list",
         NoParams,
         owner::flags_list,
         "the feature flags this host lists and the person's choices: {flags: [{id, title, description, kind (toggle, choice or number), applies (live or launch), requires?, options? [{value, label}], min?, max?, step?, default, value, stored, active?, override?, error?}], unrecognized}; value is what a live flag reads now and a launch flag's next desktop launch reads; stored says the person chose it; requires names the toggle a flag refines, which it changes nothing without, and a client lists it only while that toggle is on; active and override are a launch flag's value for this launch and what forced it, on a host the desktop started; error says why a stored value that does not fit is not used, and the flag follows its default; unrecognized names stored values no listed flag claims, which are kept; a flag never changes pixels; reads no catalog and creates no file; the proof flags are listed only by a host that serves the test modules"
-    ),
+    )
+    .read(),
     owner!(
         "flags.set",
         owner::FlagsSet,
         owner::flags_set,
         "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
-    ),
+    )
+    .reversible(),
     // Optional usage statistics consent: the protected `usage_statistics` record in
     // `preferences.json` and the process-wide runtime ([`crate::usage::consent`]). None of these
     // reads a catalog or a photograph or makes a network request.
@@ -438,7 +483,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::usage::read,
         "{prompt_shown, enabled, effective, disclosure_version, destination, release, installation_id, session_id, reason, limits, diagnostics}: prompt_shown and enabled are the stored record (absent reads as false and false; null when the preferences cannot be read); effective says whether this process is collecting now; disclosure_version is the disclosure this build describes, which an enable must name; destination is where an eligible launch sends (the production endpoint without a query, the hosted test endpoint with exactly ?tenant=test for visible debug/unrevisioned/Developer launches, or an explicit test receiver); release is <version>+<first 12 hex characters of the embedded clean source revision>, the synthetic 0.0.0+000000e71de5 for unrevisioned developer/evidence reporting, or null when unavailable; installation_id is the stored random UUIDv4 while the stored choice is on, else null; session_id is null until the statistics worker starts a session; reason is null while effective, else one of choice (not opted in, opted out, or stopped in this process), launch-mode (a hidden, background, evidence, test or headless launch), build (no embedded clean source revision), inactive-destination (production reporting is switched off), unreadable-configuration (the preferences cannot be read or hold a record this build cannot use) or changed-disclosure (consent was given to another disclosure); limits is the delivery contract {window_events, batch_bytes, attempt_interval_s, flush_after_s, window_age_s}; diagnostics is the statistics worker's bounded local state {recorded, dropped (by producers, by the body limit or in windows discarded unsent), sent, attempts, accepted, delivery: {state: ready, cooldown or suspended, reason: null, failure or rate-limited for a cooldown, redirect, rejected, refused, unavailable, build or device for a suspension}}, all zero and ready until a worker reports; never the image key, buffered events, file contents or network error text; reads one small file, writes nothing, makes no network request and is not itself counted as usage"
-    ),
+    )
+    .read(),
     owner!(
         "usage.prompt.claim",
         owner::usage::UsageClaim,
@@ -464,14 +510,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::update::read,
         "{mechanism, reason, current, checks, install_automatically, checking, last_check, available, progress, ready, install_requested, error, skipped_version, can_move_to_applications}: mechanism is sparkle, linux-payload, linux-notify (the installation cannot replace itself; an update is offered as its release page) or unavailable, when reason names why: development-build, headless (no updater, as luxforge-json), no-update-key, outside-applications or read-only-install (more may be added); current is {version, build}, build null without an updater; checks and install_automatically are the update_checks and update_install_automatically preferences; checking says a check runs now; last_check is {at_ms, outcome (up-to-date, found or failed)} or null; available is the newest release, release candidates included, {version, build, notes_url, catalog_format, catalog_format_change (it reads and writes another catalog format than this build, so it needs a new catalog and is never installed automatically), prerelease, skipped (update.skip named its version, so it is not offered), installs_automatically (it downloads in the background and installs at the next ordinary quit: checks and install_automatically on, not skipped and no catalog format change)}, or null; progress is the download's {received, total} while it runs; ready says it is downloaded and verified; install_requested says update.install was accepted; error is the last failure in words; a change the updater reports other than download progress is announced as an update.status event; reads one small file and the updater's state, and makes no network request"
-    ),
+    )
+    .read(),
     owner!(
         "update.check",
         NoParams,
         owner::update::check,
         "check the update feed now and answer update.status's answer once the check has ended, its outcome in last_check; the check runs on the updater's own worker, so neither the owner nor the caller's thread waits on the network: the call is held until the check ends or 60 seconds pass, whichever is first, and joins a check already running rather than start another; a caller that may not wait, and one past 8 held calls, is answered at once with checking true, and reads update.status or waits for the update.status event; any client may; with the update_checks preference off a check still runs when asked; not-ready with data.reason naming the reason when the mechanism is unavailable, and nothing is checked"
     )
-    .network(),
+    .network()
+    .reversible(),
     owner!(
         "update.install",
         owner::update::UpdateRequest,
@@ -487,7 +535,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::update::UpdateSkip,
         owner::update::skip,
         "{outcome, status}: stop offering this version: stored as update_skipped_version in the user preferences through one locked write and handed to the updater, so update.status marks an available update of that version skipped and it is never installed automatically; a later version is offered as usual; any client may; outcome is applied, or no-op when that version was already skipped; a change is announced; needs a configured application preference directory"
-    ),
+    )
+    .irreversible(),
     owner!(
         "update.move-to-applications",
         owner::update::UpdateMove,
@@ -504,19 +553,22 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::themes::list,
         "{themes, active, unrecognized}: every theme the library holds, built-in themes first (luxforge.dark, then the bundled Omarchy themes omarchy.tokyo-night, omarchy.catppuccin, omarchy.catppuccin-latte, omarchy.gruvbox, omarchy.nord and omarchy.everforest, whose origin names the Omarchy commit their colors.toml came from), then stored themes by name ignoring case, each {id, name, mode (dark or light), origin ({kind: built-in}, {kind: luxforge} or {kind: omarchy, folder, form (omarchy4, omarchy3 or alacritty), commit?}), built_in, swatches {surround, background, surface, text, accent}, report {derived, explicit, moved, shortened, neutralised, accent_close, unused (an Omarchy theme's unused keys)}, adjusted (an own ink was moved to its floor)}; active is the theme preferences.read answers; unrecognized lists each stored record this build cannot read, {id, name, reason}, which is kept and never rewritten; reads no catalog and creates no file"
-    ),
+    )
+    .read(),
     owner!(
         "theme.read",
         owner::themes::ThemeParams,
         owner::themes::read,
         "{theme}: {id, name, mode, roles (as given), tokens (the explicit ones), origin, built_in, resolved (every token's colour), report (the full resolution report: given, derived, explicit, moved, shortened, surround, rail_backdrop, accent, and for an Omarchy theme omarchy {form, mode, mode_source (mode-key, theme-type-key, light-mode-file or background-brightness), roles [{role, key, value}] (each role and the Omarchy key it came from, before any move), derived [{role, key, value, reason}] (the control when lighter_background equals the background: equals-background), unused [{file, key, value, reason}] (unknown-key, gradient, replaced, empty or not-a-colour)}), adjusted, actor, created_ms, updated_ms, source ({file name: text}, the files read kept verbatim; a bundled theme's vendored colors.toml)}; actor and the times are null for a built-in theme; an unknown id is validation, and a stored record this build cannot read is incompatible with its reason"
-    ),
+    )
+    .read(),
     owner!(
         "theme.inspect",
         owner::themes::ThemeInspect,
         owner::themes::inspect,
         "dry run of theme.import that stores nothing: {theme, report}, theme having theme.read's shape with id, actor and the times null and no source; the name rules apply, but not the library's uniqueness or size"
-    ),
+    )
+    .read(),
     owner!(
         "theme.import",
         owner::themes::ThemeImport,
@@ -530,7 +582,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::themes::ThemeParams,
         owner::themes::export,
         "{file_name, content}: the theme, a built-in one included, as a Luxforge theme document named <name>.lftheme, which theme.import reads back to the same tokens; an imported theme whose inks were moved is written as it resolved"
-    ),
+    )
+    .read(),
     owner!(
         "theme.delete",
         owner::themes::ThemeDelete,
@@ -545,7 +598,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::JobParams,
         owner::job_read,
         "{job_id, kind, status, ownership, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?, candidates?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work), export, or the catalog's long-running work (listing, previews, developing picks, checking and finding originals, and batches); status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; ownership is clients for a job that belongs to the clients that requested it (source work, an analysis, a shared preview read or render): only they read it, and it stops when the last of them still interested cancels it or disconnects, so a client that closes its connection stops such a job unless another client still wants it; ownership is catalog for every other job: any client reads and cancels it, and no disconnect touches it; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports; a task job lists candidates: [{candidate, state (live, accepted or released), released? (budget, released, cancelled or closed), width, height, bytes, rect [x, y, width, height] in content pixels, preview {width, height}, asset_id, revision, label, provenance}], the candidate patches it published, read with job.read-candidate and released with job.release-candidates; a task job holds at most 4 candidates of at most 64 MiB each (patch and preview) and every job's live candidates at most 1 GiB together, past which the oldest finished job's live candidates are released (budget); a cancel releases a task job's candidates (cancelled), finished or not, a forgotten job takes its candidates with it, and no disconnect touches them"
-    ),
+    )
+    .read(),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
     owner!(
@@ -553,31 +607,36 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::activity_list,
         "{sequence, active, recent, untracked}: the host's running work oldest first, and up to 16 recent entries that ran at least 250 ms, newest first; each entry has id, kind, label and elapsed_ms, or outcome (completed, cancelled or failed), duration_ms and ended_ms_ago, plus detail, asset_id, phase, progress {fraction, message} and job_id when known; job_id names the job job.read also answers, with the same status; sequence changes exactly when the contents do; needs no asset, takes no parameters, mutates nothing and emits no event"
-    ),
+    )
+    .read(),
     owner!(
         "job.adopt",
         owner::JobParams,
         owner::job_adopt,
         "selects the ready result of this client's latest source.prepare as its current photograph, answering {asset, session}: the state it prepared and the session; a job that is not the client's latest preparation (one it asked for since supersedes it) is conflict, one still preparing is preparation-required naming it, a failed one is its error; opening a file is pick.develop of it (targets its path, into [], confirm_removable, as the person chose it), then source.prepare of the photograph the Develop answers, then job.adopt"
-    ),
+    )
+    .reversible(),
     owner!(
         JOB_WAIT,
         owner::JobWaitParams,
         owner::job_wait,
         "{change, job}: job.read record with a job-specific change token. Without after, after a changed token, or for a terminal job, answers immediately; otherwise holds until observable progress, partial result, lifecycle, removal or access changes. timeout_ms is optional (0..30000); omitted has no deadline or polling. Same ownership as job.read. At most 32 held waits globally and 16 per client; exhaustion returns resource-limit. Disconnect or asynchronous reader cancellation releases the held wait. Tokens belong to this retained job and owner process; progress does not enter the catalog mutation log"
-    ),
+    )
+    .read(),
     owner!(
         JOB_CANCEL,
         owner::JobParams,
         owner::job_cancel,
         "a source or analysis job: this client leaves it and still reads its outcome, and the work stops only when no other client wants it; a capability or export job: stops it for every client, a queued job never starts and a running one stops at its next checkpoint (an export removes its temporary file); a task job's live candidates are released (cancelled) whether it is running or finished, one an accept holds once that accept settles; a finished job is otherwise unchanged, so a repeated cancel changes nothing; returns the job as job.read does"
-    ),
+    )
+    .irreversible(),
     owner!(
         owner::candidates::READ_CANDIDATE,
         owner::candidates::ReadCandidate,
         owner::candidates::read_candidate,
         "{job_id, candidate, part, width, height, format, offset, length, total, data}: one chunk of a live candidate of a task job, data being base64 of length bytes from offset of the part's total; the preview part is width × height RGB 8-bit sRGB (format rgb8-srgb), the patch part width × height RGBA IEEE half floats little-endian, RGB linear sRGB (D65) and A the coverage 0..1, not premultiplied (format rgba16f-le); a chunk is at most 786432 bytes (768 KiB) and is read off the catalog owner; same ownership as job.read; a job that is not a task, or a number it never published, is validation; a candidate that is accepted or released, before or while the chunk is read, is conflict with data {state, released}; a file that is missing or the wrong length is source-unavailable; mutates nothing and emits no event"
-    ),
+    )
+    .read(),
     owner!(
         owner::candidates::RELEASE_CANDIDATES,
         owner::candidates::ReleaseCandidates,
@@ -591,19 +650,22 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::SourcePrepare,
         owner::source_prepare,
         "queues signature-verified preparation of a photograph's original — to open it after it is developed, after a reopen or after cache eviction — answering {job_id, status}; job.adopt takes its ready result as the client's current photograph; a photograph whose head has never moved has its first-open entries (a RAW's detected lens profile) committed after its Original when its preparation completes, and job.read lists them under first_open"
-    ),
+    )
+    .reversible(),
     service!(
         "asset.state",
         AssetParams,
         |service, _, p| value(service.state(&p.asset_id)?),
         "current entry, revision and redo path"
-    ),
+    )
+    .read(),
     service!(
         "source.inspect",
         SourceInspect,
         |service, _, p| service.inspect_source(&p.asset_id, p.entry_id.as_ref()),
         "persisted source identity, RAW interpretation, dimensions and preparation readiness without decoding; capture is null until the verified source is prepared, then {make, model, lens_make, lens_model, aperture, exposure_seconds, iso, focal_mm, focal_35mm, captured_at}, with null for missing or invalid EXIF fields; recipe.describe supplies the selected entry's output dimensions"
-    ),
+    )
+    .read(),
     service!(
         "history.list",
         HistoryList,
@@ -614,13 +676,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
             p.collapsed.unwrap_or(false)
         )?),
         "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; entries auto-collapse hid are left out unless collapsed is true, when each is listed with collapsed: true; history.inspect reads one whole entry"
-    ),
+    )
+    .read(),
     service!(
         "history.inspect",
         EntryParams,
         |service, _, p| value(service.entry(&p.asset_id, &p.entry_id)?),
         "one entry with its complete immutable stack"
-    ),
+    )
+    .read(),
     service!(
         "history.lineage",
         HistoryLineage,
@@ -630,19 +694,22 @@ pub(super) const METHODS: &[MethodSpec] = &[
             p.limit.unwrap_or(DEFAULT_HISTORY_PAGE)
         )?),
         "undo-parent chain newest first; next_entry_id continues a longer chain"
-    ),
+    )
+    .read(),
     service!(
         "recipe.describe",
         RecipeDescribe,
         |service, _, p| value(service.describe_entry(&p.asset_id, p.entry_id.as_ref())?),
         "an entry's stored layers in order with their module, title, summary, values, availability, whether each is neutral (changes nothing, by its module's own rule), input_stage, the {width, height} the layer receives from the layers before it (null after a layer whose output cannot be known), and input_orientation, the {mirror, turns} the orientation layers before it gave that stage (null with input_stage); then output_stage and output_orientation, what a layer appended to the stack would receive; reads and compiles payloads only and renders nothing"
-    ),
+    )
+    .read(),
     service!(
         "module.list",
         ModuleList,
         module_list,
         "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An action may declare a shortcut, the chord a client binds to running it with no parameters, written Command+U, Command+Shift+C or Command+Option+V (Command is ⌘ on macOS and Control elsewhere). An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
-    ),
+    )
+    .read(),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
     // never create history entries.
@@ -651,7 +718,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         ModuleParams,
         |owner, _, params| owner.host.read(owner.service.registry(), params),
         "{module_id, schema, revision, state, fields, profiles}: each field's value, default, source (user or default) and validity, a secret field as {secret_present} only, and each profile's status (ready, incomplete, missing-credentials or incompatible); state is ready, incomplete or incompatible"
-    ),
+    )
+    .read(),
     owner!(
         settings::SET,
         SetParams,
@@ -803,7 +871,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
             .host
             .list_permissions(owner.service.registry(), params),
         "{grants, denials}: every grant, revoked ones with {revoked: {ms, reason}}, and every recorded denial; none holds a secret"
-    ),
+    )
+    .read(),
     owner!(
         host::STATUS,
         ModuleParams,
@@ -811,7 +880,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
             .host
             .status(&owner.jobs, owner.service.registry(), params),
         "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
-    ),
+    )
+    .read(),
     owner!(
         resources::RESOURCE_LIST,
         ModuleParams,
@@ -819,7 +889,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
             .host
             .resource_list(&owner.jobs, owner.service.registry(), params),
         "{resources: [{id, title, version, bytes, sha256, license, provenance, url, state, path?, installed_ms?, job_id?, error?}], storage: {root, used_bytes, quota_bytes}}; state is not-installed, installing, installed or failed; stats only, no hashing"
-    ),
+    )
+    .read(),
     owner!(
         resources::INSTALL,
         InstallParams,
@@ -864,7 +935,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
             )
         },
         "loads the model a local-runtime capability of the module holds, ahead of its first task (a tool's warm-up): a resident model answers state: loaded and counts as used now; a load already queued or running answers state: loading with its job; otherwise the host's local inference runtime (not-ready when this host has none), the installed resource (not-ready with data.requirements) and the resident budget (resource-limit, after releasing least recently used models no task holds) are checked and a module-lane job opens the model, never the owner; returns {module_id, resource_id, state, job_id?, status?}; the job's result is {module_id, resource_id, resident_bytes}; nothing else ever loads a model but a task that uses it"
-    ),
+    )
+    .reversible(),
     owner!(
         runtime::UNLOAD,
         UnloadParams,
@@ -878,7 +950,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
             )
         },
         "releases the model of resource_id, or every model of the module (Unload now), at once, and cancels their queued or running loads with cancelled: unloaded; a task already using a model keeps it until the task ends; announced when something was released or cancelled; returns {module_id, unloaded: [resource_id], cancelled_jobs: [job_id]}"
-    ),
+    )
+    .reversible(),
     mutating!(
         "history.undo",
         Navigate,
@@ -924,7 +997,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         AssetParams,
         |service, _, p| Ok(json!({"versions": service.versions(&p.asset_id)?})),
         "saved versions in creation order with their entry sequence"
-    ),
+    )
+    .read(),
     // The preset library is catalog data beside history. None of these methods renders, opens a
     // source or hashes pixels; applying a preset is edit.apply-settings or batch.apply-settings.
     service!(
@@ -932,13 +1006,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         |service, _, _| Ok(json!({"presets": service.presets()?})),
         "{presets: [{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}]} sorted by group, then name, ignoring case; report is the import report's counts {mapped, neutral, unsupported, refused}, or null for a preset created in Luxforge; unavailable names the settings actions this registry cannot apply; no source_text"
-    ),
+    )
+    .read(),
     service!(
         "preset.read",
         PresetParams,
         preset_read,
         "{preset}: one record with its full import report and source_text, the imported file's text kept verbatim, or null for a preset created in Luxforge"
-    ),
+    )
+    .read(),
     mutating!(
         "preset.create",
         PresetCreate,
@@ -952,13 +1028,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         PresetGroups,
         preset_groups,
         "{groups, analysis, photo?}: the settings groups a preset or Copy settings carries, derived from the registered modules' controls in registry order, and the analysis steps a set may carry. A group is {id, module, module_title, label, title, fields, per_photo, default_checked, unavailable?, kinds, overwritten_by?}: id is <module id>/<group label as a slug> (luxforge.basic/tone), or the module id for its controls outside any group; fields is the preset.capture fields value naming its controls; per_photo is the module's declaration that its values usually belong to one photograph (white balance), so default_checked is false for it and true for every other group; unavailable is the registry's refusal; kinds is, per source kind, {kind, captures, refused?, skipped?}: what capture reads for the group on a photo of that kind (a field a control variant supersedes there is captured as the variant's action, whole: {set-raw: true} for White balance on RAW), why capture refuses it there, and, per other target kind, {kind, all, reasons} for what applying a set captured there skips, by the apply rule (a module that does not apply to the target, a field superseded on it). overwritten_by names the analysis steps writing one of its fields. An analysis step is {id, module, module_title, label, title, writes, overwrites, unavailable?}, overwrites naming the groups a set carrying it cannot carry. With asset_id, photo is {asset_id, entry_id, kind} and each group adds state custom (a captured field differs from its declared default), original or refused, with reason, captured as preset.capture would capture its fields from that entry, and each step adds reason when capture would refuse it; reads stored payloads only, so it opens no source and renders nothing"
-    ),
+    )
+    .read(),
     service!(
         "preset.capture",
         PresetCapture,
         preset_capture,
         "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them, or groups names preset.groups group and analysis-step ids, resolved to the same fields (exactly one of the two); a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
-    ),
+    )
+    .read(),
     mutating!(
         "preset.update",
         PresetUpdate,
@@ -980,13 +1058,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         PresetParams,
         |service, _, p| value(service.export_preset(&p.preset_id)?),
         "{file_name, content}: the preset as a Luxforge preset document named <name>.lfpreset, which preset.import reads back to the same name, group and settings"
-    ),
+    )
+    .read(),
     service!(
         "preset.inspect",
         PresetInspect,
         |service, _, p| service.inspect_import(&p.content, p.file_name.as_deref()),
         "dry run of preset.import that stores nothing: {preset, report}, where preset has the record's shape with id, actor, created_ms and updated_ms null, the file's name and the file's group or Imported, and report is the full per-setting import report; a file that maps nothing still returns its report with empty settings"
-    ),
+    )
+    .read(),
     mutating!(
         "preset.import",
         PresetImport,
@@ -1000,31 +1080,36 @@ pub(super) const METHODS: &[MethodSpec] = &[
         PreviewSelect,
         preview_select,
         "read-only session selection of one asset, kept per asset in session.preview.selections so a client may preview history on one photo while it edits another; an asset with a selection refuses edits from this client until it returns to current; the current entry selects current, not a historical preview, and returns only that asset; at most 16 assets have a selection at once (resource-limit past it); keep_geometry frames the selected entry with the geometry layers of the entry the session displays of that asset now, recorded as the selection's geometry_from, and the preview, render.sample, render.locate and render.transform of that asset's selection follow it; returns generation and session"
-    ),
+    )
+    .reversible(),
     service!(
         "preview.compare",
         PreviewCompare,
         preview_compare,
         "per-client before/after slider; enabled=true fixes the displayed After entry and selects the Original framed by its geometry; enabled=false restores the previous selection; position-only updates move the divider without rendering or advancing generation; position is the Before fraction from 0 to 1, initially 0.5; refuses an open draft; returns generation and session; changes no history"
-    ),
+    )
+    .reversible(),
     service!(
         "preview.return-current",
         NoParams,
         preview_return_current,
         "returns every asset to current; returns generation and session"
-    ),
+    )
+    .reversible(),
     service!(
         "view.set",
         ViewSet,
         view_set,
         "this client's view: zoom and pan, stored as given in its session and changing no recipe, history, preview content or other client's view; pan is the scroll offset of the zoomed stage's top-left corner from the viewport's top-left, in the desktop's logical layout pixels, where a stage pixel spans percent / 100 / display scale of them (display scale is physical pixels per logical pixel); the desktop draws it clamped to 0..max(0, stage extent × that scale − viewport extent) per axis and centres an axis the stage fits, and ignores it at Fit; returns the session, whose preview.view holds the pan as stored"
-    ),
+    )
+    .reversible(),
     service!(
         "workspace.set",
         WorkspaceSet,
         workspace_set,
         "per-client screen preference: panels, canvas mode, the thirds guide, overlays and the view each declared tab row shows (views, keyed by module and group label path, checked against module.list's descriptors); needs no asset and changes no recipe, history or frame; a refused field writes nothing; returns the session"
-    ),
+    )
+    .reversible(),
     // The connected clients (`docs/design/mcp.md`, "Core additions"), answered by the owner, which
     // registers every client: metadata only, never what a client asked.
     owner!(
@@ -1032,37 +1117,44 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::clients::SessionIdentify,
         owner::clients::identify,
         "names the calling client for as long as it is connected, so the desktop's list of connected clients shows it (luxforge-ctl names itself luxforge-ctl); label is 1 to 64 characters, not all whitespace and without control characters; a later call replaces the label; returns {client_id, label}, client_id being this client's number as session.clients lists it; records a session.identify event naming client_id"
-    ),
+    )
+    .reversible(),
     owner!(
         "session.clients",
         NoParams,
         owner::clients::list,
         "{clients: [{client_id, label?, authority, transport, connected_at, last_request_at?, requests}]}: every other client the owner serves, in the order they connected, without the caller and the desktop's own client; label is what the client named itself with session.identify, absent until it does; authority is edit or permissions; transport is loopback (a live-session connection such as luxforge-ctl's), stdio (a JSON-lines stream such as luxforge-json's) or desktop-internal (a client the host runs in its own process); connected_at and last_request_at are milliseconds since the Unix epoch, last_request_at absent before its first request; requests counts the requests the owner has taken from it; metadata only, never what a request asked or answered; changes nothing. The log records a transport client's connection as a session.connect event and its disconnection as a session.disconnect event, each with an empty request_id and naming client_id, so a reader follows the list with events.wait"
-    ),
+    )
+    .read(),
     owner!(
         "session.disconnect",
         owner::clients::SessionDisconnect,
         owner::clients::disconnect,
         "permission authority only (the desktop's own client): closes another client's connection, the client_id session.clients lists; its session ends exactly as its own disconnection ends it: its draft ends, the clients jobs it alone wanted stop, and its held events.wait or job.wait is dropped; a live-session connection is closed at once, and a JSON-lines stream answers its next request protocol with data.reason disconnected and ends; an edit client is refused forbidden; the caller's own client_id, or one that is not connected (or the desktop's own), is refused validation naming the client; returns {client_id}; records a session.disconnect event under this request naming the disconnected client_id"
-    ),
+    )
+    .permissions("disconnecting a client needs permission authority")
+    .irreversible(),
     service!(
         "session.state",
         NoParams,
         |service, session, _| session_value(service, session),
         "this client's selection, view, workspace state (with the views its tab rows show) and session revision, and renderer {record, reason}: which renderer draws the desktop's picture on this machine, the same in every client's session and set by no method (schema.list's renderer block lists its values, and the reasons an export's result names in the same shape)"
-    ),
+    )
+    .read(),
     service!(
         "resources.read",
         NoParams,
         |service, _, _| value(crate::resources::read(service.render_context())),
         "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
-    ),
+    )
+    .read(),
     service!(
         "draft.begin",
         DraftBegin,
         draft_begin,
         "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed, and, in its commit's words, for an action whose module does not apply to the asset's source kind"
-    ),
+    )
+    .reversible(),
     // Written out rather than through `service!`, whose parse would copy the posted fields: this
     // handler takes them out of its request instead ([`draft_set`]).
     MethodSpec {
@@ -1071,7 +1163,10 @@ pub(super) const METHODS: &[MethodSpec] = &[
         notes: "validates the named fields against the action's parameters and merges them into the draft; an invalid field, or one superseded on the draft's target (refused in its commit's words), changes nothing",
         handler: Handler::Service(draft_set),
         retries: Retries::None,
-        effects: Effects::UNDECLARED,
+        effects: Effects {
+            change: Change::Something { reversible: true },
+            network: false,
+        },
         permission_only: None,
         images: &[],
     },
@@ -1080,13 +1175,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         DraftParams,
         draft_read,
         "the draft with conflicted recomputed against the asset's current revision"
-    ),
+    )
+    .read(),
     service!(
         "draft.cancel",
         DraftParams,
         draft_cancel,
         "ends the draft and commits nothing"
-    ),
+    )
+    .reversible(),
     mutating!(
         "draft.commit",
         DraftCommit,
@@ -1100,38 +1197,44 @@ pub(super) const METHODS: &[MethodSpec] = &[
         DraftParams,
         draft_reapply,
         "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set"
-    ),
+    )
+    .reversible(),
     // Planned on the owner; every sample is read by the owner's tile service.
     planned!(
         "render.sample",
         RenderSample,
         render_sample,
         "one pixel of the session's selected entry, or of an open draft's effective recipe, read off the catalog owner by its tile service: on the desktop from a GPU tile render of the stack, the byte the picture shows there at 100%, and otherwise by the reference renderer, which through a spatial layer renders that layer's whole frame; names the entry and snapshot it was planned against and the renderer that drew it, {record: gpu or reference, reason}, the reason naming why the GPU did not; its response sequence is the event sequence when it was planned; resource-limit means too many pixel reads are already waiting"
-    ),
+    )
+    .read(),
     service!(
         "render.locate",
         RenderLocate,
         render_locate,
         "the content pixel, the source after EXIF orientation, that one output pixel shows"
-    ),
+    )
+    .read(),
     service!(
         "render.transform",
         RenderTransform,
         render_transform,
         "the identity-stamped geometry tail, {entry_id, snapshot_id, source_fingerprint, draft?, content, output, mapping, mapping_sha256}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move; a draft whose base revision changed returns conflict until reapplied"
-    ),
+    )
+    .read(),
     owner!(
         "events.since",
         owner::EventsSince,
         owner::events_since,
         "gap=true requires an asset.state refresh"
-    ),
+    )
+    .read(),
     owner!(
         "events.wait",
         owner::EventsWait,
         owner::events_wait,
         "a long poll that answers as events.since does, {events, current_sequence, gap}, as soon as the log holds an event after `after` (one naming asset_id when it is given) or gap is true, and otherwise, when timeout_ms (0 to 30000, default 10000) passes, with no events; 0 answers at once; the owner holds the wait without blocking, at most one per client, so a second events.wait from a client answers its earlier one at once with what it has, and a disconnect drops it; a JSON connection serves one request at a time, so a client that waits on it uses a second connection for anything else"
-    ),
+    )
+    .read(),
     // The analysis methods are answered by the catalog owner, because the job store, the worker
     // slots and every client's draft live there. They mutate nothing and emit no event.
     owner!(
@@ -1139,7 +1242,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::AnalysisRequest,
         owner::analysis_request,
         "queues the exact RGB histogram and output-clipping reduction of one evaluated stack and returns the job as job.read does, promptly, with the report as its result when one is already kept; target is {kind:current}, {kind:entry,entry_id} or {kind:draft,draft_id} for this client's own draft; identical identities share one job; only ready carries counts, so no status can be read as an empty histogram"
-    ),
+    )
+    .read(),
     // Export (`docs/design/export.md`, `docs/design/export-settings.md`): the owner plans in
     // O(layers) and checks the settings, the folder and the destination; the render, encode and
     // write run on its export lane. The presets live beside the preferences.
@@ -1148,7 +1252,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::export::ExportPlanParams,
         owner::export::plan,
         "{asset_id, entry_id, snapshot_id, stage: {width, height}, output: {width, height}, physical?: {inches: {width, height}, centimetres: {width, height}}, suggested, stem, name, estimate, notices: [{code, message, refuses, bytes?}], stale}: what an export of a saved entry, the current entry unless entry_id names another, with settings would be, rendering and preparing nothing; stage is the output stage of the entry's compiled recipe, after orientation, transforms and crop; output is the size settings.size gives it, scaled by one factor never above 1 and rounded to whole pixels; physical is the output's size at settings.pixels_per_inch, each to a hundredth, present only when a density is set; stem is what the file is named from, the original's stem or, for a merge's result, its first input's with -hdr or -pano, null when there is none; name is <stem><suffix>.<extension>, each run of whitespace in both made one -; suggested is the absolute path of name in settings.folder (each photograph's original's folder for original), counting up <stem><suffix>-2.<extension> and so on past taken names and reading at most 64, or null when every one is taken, the folder is missing or there is no stem; estimate is the bytes the encoder holds beyond the streamed bands, the encoders' own figures (an optimised JPEG's coefficient arrays, about 12 bytes an output pixel at 444 and 6 at 420; a size-limited JPEG's output frame at 4 bytes a pixel, those arrays when optimised and twice limit_bytes; a WebP's frame, libwebp's state, about 4 bytes a pixel or 11 optimised, and limit_bytes when set; 0 for a streamed JPEG or a TIFF); notices: large-image (not refusing, with bytes, the estimate) when an optimised JPEG, a size-limited output or a WebP is above 24,000,000 pixels, with no memory cap, webp-too-large (refusing) when a WebP side is above 16383 px, the format's limit, tiff-too-large (refusing) when a TIFF could pass the format's 4 GiB, folder-missing (refusing) when the folder is not an existing directory or a derived photograph names original; a refusing notice is what export.write and batch.export refuse with, validation with data.notice its code; stale lists the entry's stale frozen patches an export must acknowledge; a stack the host cannot evaluate is refused with its reason; settings are refused by name as schema.list's export_settings describes"
-    ),
+    )
+    .read(),
     owner!(
         "export.write",
         owner::export::ExportWrite,
@@ -1162,7 +1267,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         owner::export::presets_list,
         "{presets: [{preset_id, name, builtin, settings}]}: the built-in presets first, luxforge.web (Web: JPEG, long edge 2048 px, quality 80, optimised, 420, copyright, suffix -web), luxforge.print (Print: full-size JPEG, quality 95, 444, no_location, 300 ppi, suffix -print) and luxforge.master (Master: full-size 16-bit TIFF, lossless compression, all, 300 ppi, suffix -master), each saving to the original's folder, then the person's own by name ignoring case, from export-presets.json beside the preferences; settings are ExportSettings as schema.list's export_settings describes; a document this build cannot read is refused as incompatible, naming it, and kept unchanged; a host with no configured preference directory lists only the built-in presets; reads no catalog and creates no file"
-    ),
+    )
+    .read(),
     owner!(
         "export.presets.create",
         owner::export::PresetCreate,
@@ -1192,13 +1298,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         NoParams,
         |service, _, _| service.artifact_status(),
         "the catalog's derived-artifact root and its state (absent, ready, missing or foreign), the catalog_id its manifest must name, and how many artifacts entries reference, how many a collection would remove and their recorded bytes; reads the manifest and counts rows only"
-    ),
+    )
+    .read(),
     service!(
         "artifact.inspect",
         ArtifactInspect,
         |service, _, p| service.inspect_artifact(&p.artifact_id),
         "one artifact's record (hash, bytes, kind, dimensions, colour, publishing module, time), whether its file is present, missing or of the wrong length, how many entries reference it and whether a task of this process published it; stats only"
-    ),
+    )
+    .read(),
     // Collection runs on the source worker and is read with job.read, so the catalog owner
     // answers it. It emits its event when the request is accepted.
     owner!(
@@ -1219,31 +1327,36 @@ pub(super) const METHODS: &[MethodSpec] = &[
         params::NoParams,
         owner::files::volume_list,
         "{volumes: [{volume: {id, mount_point, label, removable, platform_id?, last_seen_ms}, offline, card, startup}]}: the mounted volumes, the startup disk first, each with whether it is a card (a DCIM folder at its root), then the volumes the catalog knows that are not mounted, offline; answered from what the index lane last surveyed of each volume still in the mount table, which is read without waiting on any file system, so a volume mounted since appears on a later call"
-    ),
+    )
+    .read(),
     owner!(
         "disk.folders",
         crate::catalog_types::api::DiskFoldersParams,
         owner::files::disk_folders,
         "{path, folders: [{name, path}], truncated}: the immediate subfolders of an absolute folder in name order, without hidden and system folders, packages, other applications' caches and Luxforge's own directories, following no link; at most 2,000 folders from 50,000 entries, truncated past them; validation for a file, a package or a cache; read on the index lane's query thread, resource-limit when 16 calls already wait for it"
-    ),
+    )
+    .read(),
     owner!(
         "card.list",
         params::NoParams,
         owner::files::card_list,
         "{cards: [{volume, dcim, files?, cameras}]}: the mounted volumes with a DCIM folder at their root; files is what the last listing of the card found and cameras the bodies its headers name (at most 16)"
-    ),
+    )
+    .read(),
     owner!(
         "index.folders",
         params::NoParams,
         owner::files::index_folders,
         "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?, watching, unwatched?, stale?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing; watching when the platform's change notifications keep its rows current, else unwatched says why (not yet listed, offline, on a network volume, a platform limit); stale (omitted while false) when a listing the index lane ran on its own, an index-refresh job no request started, was cancelled or failed: the folder is listed again before its next change is applied and as the catalog next opens, and is current once a listing of it completes"
-    ),
+    )
+    .read(),
     owner!(
         "index.refresh",
         crate::catalog_types::api::IndexRefresh,
         owner::files::index_refresh,
         "lists a source again — {kind: indexed-folder, path}, {kind: card, volume_id}, {kind: folder, path} or {kind: all-indexed} — as an index-refresh job, answering {job_id, status, deduplicated} at once (a source already waiting or running answers its job); the job reads the headers of new and changed files only, carries moved files' rows, drops vanished ones and reports {roots, files, added, changed, moved, removed, unreadable, headers_read, offline?, missing?}; follows no link, crosses no volume, skips packages, caches, hidden and system folders and Luxforge's own directories; resource-limit past 500,000 files or 16 waiting listings; source-unavailable for an offline or missing folder or card; progress on the activity board, cancelled with job.cancel keeping what was committed; each committed batch records one event naming the index_revision it left and the job_id, and the job one more as it ends, however it ends, naming its request, its job_id and the index_revision it left"
-    ),
+    )
+    .read(),
     owner!(
         "index.add-folder",
         crate::catalog_types::api::IndexAddFolder,
@@ -1267,13 +1380,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::previews::preview_read,
         "a cached preview's path, size, origin and whether it is approximate, or the job that makes it and the best preview cached meanwhile, with fallback_current saying whether that fallback shows what was asked for, edits included: a file's other stage, a photograph's same entry at another tier or renderer generation, or its camera preview while the entry is its Original, never an earlier entry's render or an edited entry's camera preview; a file's tiers are grid (at most 512 px, first its thumbnail stage, origin exif-thumbnail, then its embedded preview) and loupe (its largest embedded preview, at most 2560 px, never enlarged), every one upright; a RAW with no usable embedded preview is developed neutrally, one RAW at a time, for a visible or look-ahead request (origin developed) and is not-ready for a background one; the job (preview-extract) is shared by every request for the same file and tier and read by the clients that asked, its result is the preview, and a client's job.cancel or disconnect releases only its own interest: the task is removed or stopped once no request or view wants it, and another client's job.cancel is conflict while one waits; a file the index does not hold, or tier large, is validation; a file that cannot give the tier keeps its own error (a corrupt file invalid-input, a camera Luxforge cannot develop unsupported-input, naming why) and is answered at once until it changes; resource-limit past 20,000 queued tasks; a developed photograph's tiers ({kind: photo, asset_id, entry_id?}) are grid (512 px) and large (2048 px), rendered from its current or named entry at full resolution by the owner's tile service, the GPU on the desktop, or by the reference renderer, and area-averaged to the tier, renderer {record, reason} naming which as an export's result does (job preview-render, one per tier, shared and cancelled as a file's is, an edit's background re-render of a tier having its own job that any client may cancel, 2,000 renders waiting at most; its camera preview is the fallback until its first render); approximate is always false; renderer is present only on a photograph's rendered tier"
     )
-    .images(&["preview.path", "fallback.path"]),
+    .images(&["preview.path", "fallback.path"])
+    .read(),
     owner!(
         "preview.region",
         crate::catalog_types::api::PreviewRegion,
         owner::previews::preview_region,
         "starts a preview-region job and answers {job_id, status, deduplicated}; its result is {item, rect, frame, path, width, height, origin}: the 100% region of a file ({kind: file, file_id}) or of a developed photograph's original ({kind: photo, asset_id, entry_id?}), from the embedded full-size preview decoded for that rectangle alone (origin embedded; a JPEG original is its own) or from a neutral development of the frame, one RAW at a time, kept for the next region of the same frame (origin developed); rect is in the source's upright full-resolution pixels, or in frame when named, whose centre is mapped into the source's frame at 1:1; the answer's rect is clamped and in the answer's frame; path is a quality-95 JPEG valid until this client's next region; a client's next region cancels its previous one; regions run one at a time on their own worker, at most 9 waiting (resource-limit past it); a rectangle of no pixels, one starting outside its frame or past 32 MiB of pixels is refused; a changed or missing file is source-unavailable; job.cancel stops it"
-    ),
+    )
+    .read(),
     // Picks and the library journal.
     owner!(
         "pick.set",
@@ -1288,19 +1403,22 @@ pub(super) const METHODS: &[MethodSpec] = &[
         crate::catalog_types::api::PickList,
         owner::library::pick_list,
         "{picks: [{path, signature, volume_id, actor, request_id, picked_ms, file_id?}], next_after?}: the picks in path order after the path after, every pick or those of a folder (with its subfolders when asked) or a card; file_id is the file's index row when the index lists it"
-    ),
+    )
+    .read(),
     owner!(
         "library.journal",
         crate::catalog_types::api::LibraryJournalParams,
         owner::library::library_journal,
         "{changes: [{sequence, actor, request_id, method, label, time_ms, item_count, undoes?, redoes?, undone_by?}], next_after?}: library changes after the sequence after, oldest first, without their rows; next_after continues a full page"
-    ),
+    )
+    .read(),
     owner!(
         "library.inspect",
         crate::catalog_types::api::LibraryInspect,
         owner::library::library_inspect,
         "{change, rows: [{item: {kind, ...}, before, after}]}: one library change with each item's value before and after, null for absent, in the order the change applied them"
-    ),
+    )
+    .read(),
     owner!(
         "library.undo",
         crate::catalog_types::api::LibraryRequest,
@@ -1322,14 +1440,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         params::NoParams,
         owner::library::catalog_info,
         "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, removed_merges, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}, previews: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days; removed_merges is how many removed photographs are saved merges' results, which emptying Removed discards), the index database's size and the files it lists, and the preview cache's bytes and files as its rows record them"
-    ),
+    )
+    .read(),
     // Catalog folders and collections.
     owner!(
         "folder.list",
         params::NoParams,
         owner::library::organize::folder_list,
         "{folders: [{id, name, parent_id?, created_ms, event?: {start_ms, end_ms, event_id?}, count, year?}]}: every catalog folder, parents before children; siblings are ordered by name: years (exactly four digits) newest first, then day folders (a day of 1 to 31 without a leading zero and an English short month, \"12 Sep\") in calendar order, then every other name ignoring case; count is the photographs directly in it, removed ones excepted, and year the capture year of its earliest dated photograph"
-    ),
+    )
+    .read(),
     owner!(
         "folder.create",
         crate::catalog_types::api::FolderCreate,
@@ -1383,7 +1503,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         params::NoParams,
         owner::library::organize::collection_list,
         "{collections: [{id, name, parent_id?, kind: collection | smart | group, query?, created_ms, count?}]}: every collection, smart collection and group, parents before children and siblings by name ignoring case; count is a plain collection's members, removed photographs excepted, and query a smart collection's stored query"
-    ),
+    )
+    .read(),
     owner!(
         "collection.create",
         crate::catalog_types::api::CollectionCreate,
@@ -1454,7 +1575,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         crate::catalog_types::api::SourceCheck,
         owner::library::sources::source_check,
         "starts a source-check job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, availability, checked_ms}]}: each photograph's original as found now, available (its recorded file at its path), offline (its volume is not connected: one look at the mount point covers every photograph on it), missing (no file at its path) or changed (another file there), recorded with the time it was looked at, outside the journal; a photograph whose file moved within its volume is found again by its file identity in the index, confirmed by its fingerprint and relinked as one library change by the actor system, and nothing else is relinked; one event when anything changed, naming the change when there is one; targets are photographs by id, by the path of their original or its index row, or the photographs selected in the caller's view; read and cancel the job with job.read and job.cancel; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id"
-    ),
+    )
+    .reversible(),
     owner!(
         "source.locate",
         crate::catalog_types::api::SourceLocate,
@@ -1469,7 +1591,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         crate::catalog_types::api::PickPlan,
         owner::library::develop::pick_plan,
         "{events: [{event_id?, name, count, folder: {kind: place, name} | {kind: existing, folder_id, days?} | {kind: new, name, parent_id?}, folder_name?, days?: [YYYY-MM-DD], undated?, removable?: [{volume_id, label, count, with_copy}]}], count, offline}: what developing the files targets names, picked or not, would do (without targets, every pick in the caller's view, which is validation until views land): the files by event, the events organized over every file the index lists in their folders (a file it does not list is an undated frame of its folder), chronological and undated last; each event's days, the distinct camera-local capture days of its picks ascending, and undated, how many have no capture time; each event's proposed folder: for a dated event the newest catalog folder an earlier Develop of it made (its stored event key, else an overlapping stored span) as {kind: existing, folder_id, days: true} with its folder_name, else {kind: place, name} named after its place, else the user-named folder on disk that names it, else \"Unknown place\"; for an undated event the folder of the newest photograph developed from its folder on disk as {kind: existing, folder_id} with its folder_name, else {kind: place, name} named after that folder; the picks on each removable volume and how many have a file of the same name and length in an indexed folder on a fixed volume (with_copy); and offline, the files whose volume is not connected; reads nothing but the catalog, the index and one stat a file"
-    ),
+    )
+    .read(),
     owner!(
         "pick.develop",
         crate::catalog_types::api::PickDevelop,
@@ -1492,13 +1615,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         crate::catalog_types::api::SourceMissing,
         owner::library::missing::source_missing,
         "{groups: [{source_folder, volume_id, count, catalog_folders: [{id, name}], reason: {kind: volume-offline, label} | {kind: folder-gone} | {kind: files-gone} | {kind: changed}}], count}: every photograph not removed whose original was last recorded offline, missing or changed (by source.check or a refusal; one never checked is not listed), grouped by the folder on disk it was developed from, in folder order, with the catalog folders its photographs are in now; the reason is volume-offline when the group's volume is not mounted (one look at its mount point), folder-gone when the volume is and the folder is not, changed when every photograph in it was recorded changed, and files-gone otherwise, a group mixing missing and changed originals included; nothing is looked at per file"
-    ),
+    )
+    .read(),
     owner!(
         "source.find",
         crate::catalog_types::api::SourceFind,
         owner::library::missing::source_find,
         "starts a source-find job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, file_name, result: found {path} | several-identical {paths} | different-bytes {path} | claimed {path, by} | not-found}]} and which changes nothing: search_root (an absolute folder) is walked with its subfolders, following no symbolic link, entering no other volume and skipping hidden folders, packages and other applications' caches, for files of each photograph's original's name (ignoring case on macOS and Windows) and length, and each candidate's SHA-256 is streamed off the owner, cancellable, one file at a time; found is one file with the original's bytes, several-identical more than one (a choice to make), claimed a file with its bytes that another photograph already names (never taken), different-bytes a file of the same name whose bytes differ, left as it is; while the job runs, job.read's result is the report so far with result checking for photographs not yet looked at, and its progress counts files looked at, then photographs checked; the files found and several-identical name are remembered for source.relink; exactly one of targets (photographs, as source.check's) and source_folder (every missing photograph developed from that folder, as source.missing lists it) is validation otherwise; a relative path or a file as search_root is validation and one that cannot be read read-error; the job fails with read-error for a folder or file it cannot read, source-unavailable when the folder's drive is disconnected, and resource-limit past 500,000 files or 100,000 folders; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id"
-    ),
+    )
+    .read(),
     owner!(
         "source.relink",
         crate::catalog_types::api::SourceRelink,
@@ -1560,7 +1685,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::merge::merge_plan,
         before: owner::merge::kinded,
         "{kind, plan_id, inputs: [{ordinal, path, file_name, file_id?, asset_id?, available, frame}], suitable, refusal?: {reason, ..., message}, exposures?, needs_fit, reference?, parameters: {hdr: {exposure: {reference?, overrides}, alignment: {alignment, deghost}, fusion}}, folder?: {folder_id, name, from: existing | place}, suggested_folder?: {kind: place, name} | {kind: existing, folder_id, days?}, estimates: {width?, height?, temp_bytes?, source_bytes?, available_bytes?, temp_ceiling_bytes, scratch_limit_bytes}, provider: {module, version, available, reason?}, existing?: {merge_id, result_asset_id, state}, claimed: [{path, merge_id, kind, result_asset_id}]}: what merging the frames targets names into one photograph of kind would do (hdr, the only kind this build has a provider for: 2 to 9 frames into one HDR photograph; another kind is not-ready naming its provider, {kind, provider, reason} in data; a count outside the kind's bounds is validation naming the kind; a field of another kind's options is validation naming the field and the kind), reading only the catalog, the index and one stat a file: the inputs in the stack's order (capture order, the request's breaking ties), each a file or the photograph developed from it (a merged photograph is validation); whether their headers make a bracket (RAW only, one body and recording, size, aperture, ISO and focal length), with the typed refusal (its reason, the inputs it names and kind) and its message when not; the exposures their metadata resolves (each offset's origin, the reference) or needs_fit when the job measures them from the aligned frames; hdr's reference and exposure_overrides name inputs by path; the folder the result goes into, the folder choice a Develop of the inputs would file the reference frame by (its event's pick.plan proposal), resolved for the reference's camera-local capture day: folder when every folder it names is in the catalog (from existing when the choice names a folder, place when its year, place and day folders exist), else suggested_folder, the choice itself, whose folders merge.create makes; the temporary storage the job spools (14 bytes a pixel an input with the result's 12) against the 16 GiB ceiling and the free space, and the 256 MiB scratch limit; the provider; a recorded merge of exactly these inputs, signatures, options and provider (reused while active, offered as Put back while removed); and the active stacks claiming an input; pixel analysis is the job's"
-    ),
+    )
+    .read(),
     owner!(
         "merge.create",
         crate::catalog_types::api::MergeCreate,
@@ -1576,25 +1702,29 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::merge::merge_preview,
         before: owner::merge::kinded,
         "opens the caller's merge preview of the frames targets names (kind, targets, the kind's options and plan_id as merge.plan and merge.create take them, refused at once as merge.create refuses its inputs: a kind with no provider not-ready, a header-level refusal validation with the typed refusal in data, an input not there source-unavailable, a stale plan_id conflict), closing the caller's previous preview (one open preview a client), and starts a cancellable merge-preview job on the merge lane, answering {job_id, status, deduplicated}, whose result is {preview_id, revision: 1, kind, options: {hdr: {reference?, exposure_overrides?, alignment, deghost}}, path?, width, height, diagnostics?: {hdr: {proxy_side, alignment, max_residual_px?, deghost, highlights_extended, shadows_extended, exposures: [offset_ev, ...], reference}}, overlays?: {hdr: {motion: [{input, offset_ev, fallback, bounds: {x, y, width, height}, outline: [[x, y], ...]}]}}, output?: {width, height, scale, source_bytes}, refusal?: {reason, ..., kind, message}}: the job reads, develops and spools every frame exactly as merge.create's job does (the planned reference first, its as-shot white balance for all), building a colour proxy beside each analysis proxy, aligns them (exposures, registration, coverage, moving regions) and draws the merge from the colour proxies as a display-referred sRGB JPEG at path under the catalog's preview cache (one file a revision, its older ones removed; a display preview, never the saved pixels), width x height pixels, whose overlays are in its pixels (each moving region's 8-connected piece, the input and exposure shown there, whether that is a fallback, its bounds and its closed simplified outline), with the output merge.create would save; a typed refusal the frames earn (alignment, coverage, exposures, RAW only) is the answer's refusal, with no path, and the preview stays open for another setting; progress names the phases reading (Reading 2 of 3) and aligning, and while it runs job.read's result is {stage, accounting} as a merge's; the preview occupies the merge lane while it reads and aligns (one merge or preview running and one waiting of any kind; resource-limit beyond), and its spool counts against the kind's temporary ceiling (hdr: 16 GiB) beside any merge's and every other open preview's until it is merged, closed, idle for 30 minutes, or its client disconnects; a cancel or a failure closes it; publishes nothing and is not a library change; the job records one event as it ends, naming its job_id"
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.preview-update",
         crate::catalog_types::api::MergePreviewUpdate,
         owner::merge::merge_preview_update,
         "draws the caller's open preview again with hdr, its full new options, as a short merge-preview job on the merge preview lane, answering {job_id, status, deduplicated}, whose result is merge.preview's with the same preview_id and the next revision: reads no frame; a deghost change finds the moving regions again on the retained proxies, and an alignment, reference or exposure_overrides change aligns them again, keeping the frames' development (the white balance of the reference planned when the preview opened); a newer update of the same preview cancels a stale one; while the preview is still preparing the update waits behind it; a refusal is the answer's refusal; conflict for a preview that is not the caller's open one (closed, merged, idle or never opened) or that is being merged; validation for options naming no input; resource-limit when 16 updates already wait"
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.preview-close",
         crate::catalog_types::api::MergePreviewClose,
         owner::merge::merge_preview_close,
         "discards the caller's preview, its spool and its pictures, cancelling its job, answering {preview_id, closed}; closed is false for a preview that is not the caller's open one or that is being merged, which is left as it is: idempotent"
-    ),
+    )
+    .reversible(),
     owner!(
         "merge.inspect",
         crate::catalog_types::api::MergeInspect,
         owner::merge::merge_inspect,
         "{merge_id, kind, state: active | removed | undone, result_asset_id, source_id, created_ms, source: {status: available | missing | corrupt, message?}, inputs: [{ordinal, path, asset_id?, offset_ev? (an HDR input's), file: available | changed | missing}], merged: true, exposure_range_ev? (an HDR merge's), parameters: {hdr: {...}}, provider: {module, version, available, reason?}, rerunnable, rerun_reason?, provenance: {format: 2, kind, provider, inputs, parameters: {hdr: {...}}, resolved: {hdr: {...}}}}: a merge, named by merge_id or by its result's asset_id (exactly one), as the catalog records it, with its saved source's availability by stat alone (a missing or wrongly sized object is named; nothing is read or hashed and nothing is merged again) and each input's regeneration diagnostic by one stat, which never affects the saved result; an unknown merge is validation and provenance this build does not read incompatible"
-    ),
+    )
+    .read(),
     owner!(
         "merge.remove",
         crate::catalog_types::api::MergeTargets,
@@ -1626,44 +1756,51 @@ pub(super) const METHODS: &[MethodSpec] = &[
         crate::catalog_types::api::StackInspect,
         owner::views::stack_inspect,
         "{merge_id, kind, state, result_asset_id, file_name, removed?, expansion, size, from, originals: [{ordinal, path, file_name, offset_ev?, reference?, availability, reason?, file_id?, picked, asset_id?}]}: a stack's result and its originals from..from + limit of size in the stack's order, each with its EV offset in an HDR stack, whether it is the reference (from the merge's provenance; none for a kind this build reads no provenance of), its availability (a developed original's recorded one, otherwise offline under an offline root or missing when no indexed folder or card lists it, with the reason), its index row, its pick and the catalog photograph developed from it; expansion is how the caller shows the stack; reads no pixels and hashes nothing; validation for an unknown merge"
-    ),
+    )
+    .read(),
     owner!(
         "stack.set-expanded",
         crate::catalog_types::api::StackSetExpanded,
         owner::views::stack_set_expanded,
         "how the caller shows a stack of any kind, session view state: collapsed (default) shows the result alone, hiding the originals its view holds, which its summary counts as collapsed; expanded follows the result with those originals in the stack's order, and, in a view with no filter condition, the originals no item of its source is (provenance rows: item input {merge_id, ordinal}); all (Show all N originals) follows it with every original, those the filter or the source leaves out labelled stack.outside_filter; evaluates the caller's view again when it holds one, carrying its selection over by item, and answers its summary (null without a view); changes no library item, reads no pixels and selects nothing; conflict when revision names another view; resource-limit past 10,000 stacks expanded"
-    ),
+    )
+    .reversible(),
     // Views: events, browsing and the selection.
     owner!(
         "event.list",
         crate::catalog_types::api::EventListParams,
         owner::views::event_list,
         "{events: [{id, name, place?, first_day?, last_day?, months, cameras, count, picked, offline, roots, volumes, undated}], months: [{month, events, files, picked}]}: the events over the files of the indexed folders and mounted cards, computed from the index under the default thresholds and cached until the index changes, newest first with the Undated events last; month (YYYY-MM) keeps the events listed under it; query keeps those whose name, place, cameras or dates contain it ignoring case, or whose days span a YYYY-MM-DD it names; months counts the events the query matches, newest first, with the files taken that month and their picks"
-    ),
+    )
+    .read(),
     owner!(
         "browse.view",
         crate::catalog_types::api::BrowseView,
         owner::views::browse_view,
         "evaluates a query into the caller's one view, held by the owner as its ordered items, and answers {revision, query, count, picked, in_catalog, unavailable, paired, groups: {days, cameras, moments, stacks?}, library_sequence, index_revision} without a row; each merge stack shown is a group of its own (its result, then the originals an expanded one shows), which no heading or moment splits; a view of files shows a RAW+JPEG pair (a JPEG beside a RAW file of its name in one folder, dated at most 2 s apart or either undated) the filter keeps both files of as the RAW file's row, which names the JPEG, unless the JPEG is picked or in a stack; paired counts the JPEGs so shown; moments and without_pick treat a pair as its RAW file; files come from the index (an event, a folder on disk with its subfolders when asked, or a card), photographs from the catalog; without_pick is decided per frame over the whole source, Day › Camera › Moment under the query's thresholds, before the other conditions; grouping applies under the capture-time sort only; every sort ends in capture time (undated last), the file name ignoring case, then the path or the photograph's row; the selection carries over by item; resource-limit past 1,000,000 items in the source; a later library change or index revision marks the view stale"
-    ),
+    )
+    .reversible(),
     owner!(
         "browse.rows",
         crate::catalog_types::api::BrowseRows,
         owner::views::browse_rows,
         "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, pair?: {file_id, file_name} (the JPEG a RAW file's row stands for), picked, developed_as?, edited, folder_id?, collections?, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
-    ),
+    )
+    .read(),
     owner!(
         "browse.facets",
         crate::catalog_types::api::BrowseFacets,
         owner::views::browse_facets,
         "{counts: {facet: [{value?, label?, count}]}}: for each facet asked (date, place, camera, lens, kind, pick), every value most frequent first, each count exactly the size of the view the source and filter give with that facet's own condition replaced by that value, a RAW+JPEG pair's JPEG counted; the value absent counts the items that record none; the pick facet counts files only; the default thresholds decide moments"
-    ),
+    )
+    .read(),
     owner!(
         "browse.select",
         crate::catalog_types::api::BrowseSelect,
         owner::views::browse_select,
         "changes the caller's selection in its view and answers the session, whose browse.selection holds disjoint ascending position ranges, their count and the active position: the union of items, range and all is replaced, added, removed or toggled by mode (replace by default); without items, range or all only active moves, and {all: false} selects none; conflict when revision names another view; writes nothing"
-    ),
+    )
+    .reversible(),
 ];
 
 /// The host methods that edit an asset's recipe or open or commit an edit of it, besides the
@@ -1804,26 +1941,29 @@ impl Method {
         }
     }
 
-    /// What the method's change is: what a host method's entry declares. An action — a module's or
-    /// a mask command — is a history entry, which history undo takes back, and reaches no network.
+    /// What the method changes: what a host method's entry declares. An action — a module's or a
+    /// mask command — is a history entry, which history undo takes back, and reaches no network.
     /// A task queues a job whose outputs are new artifacts or candidates, which change nothing
     /// that exists and which `job.cancel` stops and releases; it reaches the network when a
     /// capability it uses sends a request ([`crate::CapabilityKind::RemoteImageRequest`]). A query
-    /// reads.
+    /// reads and writes nothing.
     pub(super) fn effects(&self, registry: &ModuleRegistry) -> Effects {
         match self {
             Self::Host(spec) => spec.effects,
             Self::Action(_) => Effects {
-                reversible: Some(true),
+                change: Change::Something { reversible: true },
                 network: false,
             },
             Self::Task(task_id) => Effects {
-                reversible: Some(true),
+                change: Change::Something { reversible: true },
                 network: registry.task(task_id).is_some_and(|(provider, task)| {
                     task_reaches_network(provider.descriptor(), task)
                 }),
             },
-            Self::Query(_) => Effects::UNDECLARED,
+            Self::Query(_) => Effects {
+                change: Change::Nothing,
+                network: false,
+            },
         }
     }
 
@@ -2014,8 +2154,11 @@ fn method_schema(
     if method.session_scoped() {
         schema["session_scoped"] = json!(true);
     }
+    // Every entry says whether it changes anything; one left undeclared, which a test refuses, is
+    // listed as a change that may not be taken back.
     let effects = method.effects(registry);
-    if let Some(reversible) = effects.reversible {
+    schema["read_only"] = json!(effects.read_only().unwrap_or(false));
+    if let Some(reversible) = effects.reversible() {
         schema["reversible"] = json!(reversible);
     }
     if effects.network {
@@ -2279,7 +2422,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         // What each method's markers mean, for a client that adapts the registry, such as an MCP
         // adapter, without knowing any one method.
         "markers": {
-            "notes": "authority: \"permissions\" marks a method only a client with permission authority may call at all; any other client is refused forbidden before its handler runs or a retry is answered (a method that needs it for one argument value, such as usage.set's opt-in, is not marked and says so in its notes). reversible marks every mutating method and no read: true when its change can be put back through this API (history.undo, library.undo, the same method with the earlier value, or removing exactly what it created; every edit.* and mask.* action is a history entry, and a task.* only adds a job and outputs nothing references, which job.cancel stops and releases), false when it discards something no call brings back or acts where Luxforge cannot take it back (a deletion, a secret, collected artifacts, a file written outside the catalog, a permission change, an installed update). network: true marks a method that can reach the network, omitted otherwise. images lists the dotted fields of a method's answer that hold the path of a JPEG the owner wrote for display; job_images, on job.read and job.wait, is {kind, fields}: kind is the answer's field naming the job's kind and fields maps a job kind to the dotted fields of the answer that hold such a path once its result is ready. A field absent from an answer holds none. An export's output is never marked.",
+            "notes": "authority: \"permissions\" marks a method only a client with permission authority may call at all; any other client is refused forbidden before its handler runs or a retry is answered (a method that needs it for one argument value, such as usage.set's opt-in, is not marked and says so in its notes). read_only is on every method: true only when it changes nothing at all, no catalog, library, session, preference, flag, job or file state (holding a wait is a read, and so is a call whose only effect is a derived, disposable record: a preview, an analysis report or the folder index listed again; mutates says only that a method carries a mutation envelope, and many methods change something without one, such as view.set, draft.* or job.cancel). reversible marks every method whose read_only is false and no read: true when its change can be put back through this API (history.undo, library.undo, the same method with the earlier value, removing exactly what it created, or setting the caller's own session state again; every edit.* and mask.* action is a history entry, and a task.* only adds a job and outputs nothing references, which job.cancel stops and releases), false when it discards something no call brings back or acts where Luxforge cannot take it back (a deletion, a secret, collected artifacts, released candidates, another client's session, a file written outside the catalog, a permission change, an installed update). network: true marks a method that can reach the network, never a read, omitted otherwise. images lists the dotted fields of a method's answer that hold the path of a JPEG the owner wrote for display; job_images, on job.read and job.wait, is {kind, fields}: kind is the answer's field naming the job's kind and fields maps a job kind to the dotted fields of the answer that hold such a path once its result is ready. A field absent from an answer holds none. An export's output is never marked.",
         },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {

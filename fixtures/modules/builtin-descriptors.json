@@ -6908,6 +6908,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7017,6 +7018,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7068,6 +7070,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7086,6 +7089,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7175,6 +7179,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7281,6 +7286,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7295,6 +7301,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7321,6 +7328,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7361,6 +7369,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7404,6 +7413,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7422,6 +7432,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7447,6 +7458,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7463,6 +7475,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7490,6 +7503,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7515,6 +7529,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7529,6 +7544,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7548,6 +7564,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7573,6 +7590,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7589,6 +7607,7 @@
         },
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7614,6 +7633,7 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7665,6 +7685,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -7825,6 +7846,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -7876,6 +7898,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8015,6 +8038,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8070,6 +8094,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8613,6 +8638,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8666,6 +8692,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8725,6 +8752,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8793,6 +8821,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8825,6 +8854,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8857,6 +8887,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8930,6 +8961,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -8961,6 +8993,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9097,6 +9130,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9155,6 +9189,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9239,6 +9274,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9345,6 +9381,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9451,6 +9488,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9590,6 +9628,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9727,6 +9766,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9876,6 +9916,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -9912,6 +9953,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -9987,6 +10029,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10065,6 +10108,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
@@ -10176,6 +10220,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10285,6 +10330,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10317,6 +10363,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10367,6 +10414,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10407,6 +10455,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10457,6 +10506,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10486,6 +10536,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10501,6 +10552,7 @@
           "entry_id": "entry to ask about; default the session's selection"
         },
         "parameters": [],
+        "read_only": true,
         "required": [
           "asset_id"
         ]
@@ -10609,6 +10661,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10713,6 +10766,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10754,6 +10808,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10804,6 +10859,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10845,6 +10901,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10896,6 +10953,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -10949,6 +11007,7 @@
             "unit": "px"
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id",
           "mask",
@@ -11035,6 +11094,7 @@
             "unit": "frame"
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id",
           "mask",
@@ -11075,6 +11135,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11130,6 +11191,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11179,6 +11241,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11234,6 +11297,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11273,6 +11337,7 @@
           }
         ],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11377,6 +11442,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11475,6 +11541,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11616,6 +11683,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11750,6 +11818,7 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation",
@@ -11767,6 +11836,7 @@
           "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
         },
         "parameters": [],
+        "read_only": true,
         "required": [
           "asset_id"
         ],
@@ -11841,6 +11911,7 @@
             "unit": null
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id"
         ]
@@ -11852,6 +11923,7 @@
           "entry_id": "entry to ask about; default the session's selection"
         },
         "parameters": [],
+        "read_only": true,
         "required": [
           "asset_id"
         ]
@@ -11913,6 +11985,7 @@
             "unit": null
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id"
         ]
@@ -11950,6 +12023,7 @@
             "unit": "px"
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id",
           "x",
@@ -12069,6 +12143,7 @@
             "unit": null
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id"
         ]
@@ -12096,6 +12171,7 @@
             "unit": null
           }
         ],
+        "read_only": true,
         "required": [
           "asset_id"
         ],
@@ -12118,6 +12194,7 @@
           "entry_id": "entry to ask about; default the session's selection"
         },
         "parameters": [],
+        "read_only": true,
         "required": [
           "asset_id"
         ],
@@ -12131,6 +12208,7 @@
         "notes": "Runs the segmenter's image encoder over this photograph, so query.pick-object can answer. Result: {cached, input, guide, models}. Reads the repair stage's output through the host-planned reference read, reduced to the analysis input (at most 1024 px on its long side) and the guide (the stage's luminance, at most 4096 px); everything it computes is kept in the analysis cache under the photograph's source, its repair prefix and the models' versions, and a request over what the cache already holds answers from it. Runs on the module lane; the photograph is not locked. Offered only while the ai.analysis flag is on. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
         "optional": {},
         "parameters": [],
+        "read_only": false,
         "required": [
           "mutation",
           "asset_id"
@@ -12246,6 +12324,7 @@
             "unit": null
           }
         ],
+        "read_only": false,
         "required": [
           "mutation",
           "asset_id",
@@ -12354,6 +12433,7 @@
             "unit": null
           }
         ],
+        "read_only": false,
         "required": [
           "mutation",
           "asset_id"
