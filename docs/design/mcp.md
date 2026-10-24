@@ -111,8 +111,11 @@ The generator turns each method's `parameters` (the [parameter vocabulary](archi
   - `color`, `artifact`, `settings` and `settings-origin` follow their wire forms.
   - `json` becomes `{}` (any value), with its notes as the description. The 75 `json` parameters give their shape only in prose today; publishing those shapes is [later work](#later).
   - `default` is copied.
+- **Host fields.** A field an entry lists beside its declared parameters is typed as the host takes it: `asset_id` an asset id, `entry_id` an entry id, `profile_id` a string of at most 256 characters, and a maskable module's mask by the entry's own `target`. A field nothing types refuses the entry.
+- **`null`.** An optional field of a host method also accepts `null`, which the host reads as absent or, for a field that can be cleared, as clearing it (`preferences.set {theme: null}`). An action's, query's or task's fields do not, because their check refuses it.
 - **Envelopes.** The envelope never appears as a property ([envelopes](#envelopes)).
-- **Unknown kinds.** A parameter kind the generator does not know fails a test, so a new kind cannot ship without its mapping.
+- **Unknown kinds.** A parameter kind the generator does not know fails a test, so a new kind cannot ship without its mapping. Live, it refuses the whole `schema.list` answer by name rather than offering a method with a guessed schema.
+- **The request check.** `luxforge_cli::mcp::schema` also checks a call's arguments before anything is sent, with the core's own value check, so it refuses in the owner's words and names the parameter. It covers what a schema cannot say: a `text` bound in bytes, a `string`'s control characters, an identity's syntax, a curve's order and a settings set's action names. A generated schema never refuses what the check accepts.
 
 ### Envelopes
 

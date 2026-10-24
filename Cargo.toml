@@ -40,6 +40,10 @@ libwebp-sys = { version = "=0.14.4", default-features = false }
 # with only its Deflate decompression, on the `flate2` already in the lockfile.
 image-webp = "=0.2.4"
 tiff = { version = "=0.11.3", default-features = false, features = ["deflate"] }
+# An independent JSON Schema validator for the MCP adapter's schema tests only: the 2020-12
+# metaschema and the generated input schemas. No default features, so no HTTP or file retrieval,
+# TLS stack or IDNA data; the adapter's own request check never links it.
+jsonschema = { version = "=0.60.1", default-features = false }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 # The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite
