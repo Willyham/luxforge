@@ -24,6 +24,9 @@ serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Cross-checks the MCP adapter's generated input schemas against the 2020-12 metaschema and its own
+# request check; never a dependency of a binary.
+jsonschema.workspace = true
 luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }

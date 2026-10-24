@@ -100,6 +100,17 @@ The TIFF writer is the core's own: its strips are compressed with `flate2` 1.1.1
 
 Three packages are for the export tests only, as independent decoders: `image-webp` 0.2.4 (MIT or Apache-2.0) for WebP, and `tiff` 0.11.3 (MIT), with only its `deflate` feature, for TIFF, which brings `quick-error` 2.0.1 (MIT or Apache-2.0). Their other dependencies (`byteorder-lite`, `half`, `flate2`) were already in the lockfile. As with every other dependency, passing the automated checks is not the deferred manual review.
 
+## MCP schema tests
+
+The [MCP adapter](../design/mcp.md#schema-generation)'s generated input schemas are checked, in `luxforge-cli`'s tests only, by an independent validator: `jsonschema` 0.60.1 (MIT), pinned exactly in the workspace manifest with no default features, so it brings no HTTP or file retrieval, TLS stack or IDNA data. It validates every generated schema against the bundled JSON Schema 2020-12 metaschema and cross-checks the adapter's own request check. It is a development dependency of `luxforge-cli` alone; no shipped binary links it, and the adapter's request check is its own code over the core's value check. It adds 27 packages to the lockfile:
+
+- MIT: `jsonschema`, `jsonschema-regex`, `jsonschema-value` and `referencing` 0.60.1, `fancy-regex` 0.19.2, `fluent-uri` 0.4.1, `email_address` 0.2.9, `uuid-simd` and `vsimd` 0.8.0, `outref` 0.5.2, `data-encoding` 2.11.1, `micromap` 0.3.0, and `strum` and `strum_macros` 0.28.0;
+- MIT or Apache-2.0: `fraction` 0.17.0, `num` 0.4.3, `num-bigint` 0.4.8, `num-iter` 0.1.46, `num-rational` 0.4.2, `num-cmp` 0.1.0, `bytecount` 0.6.9, `heck` 0.5.0, `ref-cast` and `ref-cast-impl` 1.0.27, and `allocator-api2` 0.2.21;
+- Apache-2.0: `unicode-general-category` 1.1.0;
+- MIT-0: `borrow-or-share` 0.2.4, which `deny.toml`'s allowlist does not name. The graph cargo-deny checks under `cargo xtask audit` leaves out packages that only a development dependency reaches, so none of these is checked there; no build that ships links any of them.
+
+As with every other dependency, passing the automated checks is not the deferred manual review.
+
 ## Usage statistics dependencies
 
 The [usage statistics](../design/usage-statistics.md) consent record's image key is 32 bytes of the operating system's cryptographic randomness from `getrandom` 0.4.3 (MIT or Apache-2.0), a direct dependency of `luxforge-core` with no features. It is the version `uuid` already draws its v4 IDs from, so it adds no package to the lockfile.
