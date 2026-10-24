@@ -579,7 +579,7 @@
     },
     {
       "id": "TASK-010",
-      "description": "Deliver Select: the class and person selection tasks, the dynamic New mask Select group, People pins, the model rows with Recompute and Keep, and the ai-select scenario.",
+      "description": "Deliver Select: the class and person selection tasks, the scene classes and People pins in the New mask Select group, and the ai-select scenario, reusing the Object entry, the model component row and Recompute and Keep that object masks deliver.",
       "status": "pending",
       "dependencies": [
         "TASK-008",
@@ -587,8 +587,8 @@
       ],
       "extra_context": [
         "task.select-class {asset_id, class} and task.select-person {asset_id, person} read the analysis cache, refine the class probabilities or the person's detector mask (refined by a box prompt to the segmenter inside its bounds) through the guided upsampler to the artifact size, and publish the 8-bit alpha artifact with class, model identity, version, input fingerprint and dimensions in its metadata; the desktop then sends mask.add-model as one entry labelled with the class. Background is Subject's artifact with the component inverted, no second task.",
-        "The New mask menu's Select group draws exactly the classes the analysis result lists above the recorded presence thresholds, People one entry per detected person, Objects always; while analysis runs the group says so; when the Select models are not installed one entry opens their resource card with the combined size. The user guide names the class vocabulary.",
-        "A model component's row shows class, model, version and computed-at time, and Needs recompute with its reason when the source, the repair prefix or the installed model's version differs; Recompute runs the task and mask.set-model as one entry, Keep leaves it; the stored selection renders meanwhile.",
+        "The New mask menu's Select group, which object masks open with Object… (docs/design/ai-tools-workspace.md), gains exactly the classes the analysis result lists above the recorded presence thresholds and People one entry per detected person; while analysis runs the group says so; when the Select models are not installed their entries open the setup sheet for a select setup declared as the AI tools design declares setups, with the combined size. The user guide names the class vocabulary.",
+        "The model component's row, its Needs recompute note and Recompute and Keep are delivered with object masks; Select's classes reuse them, Recompute running the class or person task and mask.set-model as one entry.",
         "The ai-select smoke scenario runs over the fake runtime with two fixtures, one with a sky and one without, and checks the Select group, a created Sky mask's coverage overlay and thumbnail, a brushed subtraction on it, a person entry, and the Needs recompute state after a staged source change."
       ],
       "context_links": [
@@ -644,7 +644,7 @@
     },
     {
       "id": "TASK-011",
-      "description": "Deliver Remove on the Fast tier: the canvas mode, the selection with its effect region, pins, the fill task with candidates, Accept into the repair layer, and the remove scenario.",
+      "description": "Deliver the Fast tier for Remove and Object: the fill task with candidates on the shared Fill control, the effect-region suggestion (Detect shadow), Accept into the repair layer, and the remove scenario.",
       "status": "pending",
       "dependencies": [
         "TASK-003",
@@ -652,9 +652,9 @@
       ],
       "extra_context": [
         "The Corrections foundation is delivered: the repair stage, the Corrections brush and drafts, the candidate seam and frozen patches accepted through edit.accept-correction-patch. This task adds no second repair stage, brush or accept path. The delivered generative workflow provides the Remove mode in the Corrections band, the brush selection, the Fill tier setting, the candidate strip and Accept; this task adds the Fast tier and the object picker's gestures to that mode rather than a second one.",
-        "Remove is a takeover canvas mode of the Corrections module (mode strip, proposed letter Q), with hover highlight, click, Alt-click, box and stroke through the picker; the selection is the object core, the stroke footprint and an effect region (the contact-band suggestion, off until the person turns Detect shadow on, refined with Add and Subtract); Several shows numbered pins with Confirm and Cancel; Nothing removes the painted footprint.",
+        "Remove (painting) and Object (picking) are separate kinds of the Corrections band (docs/design/ai-tools-workspace.md); their gestures, pins and object selections are delivered with the Object tool. This task adds the Fast tier to the Fill control both kinds share, accepting the same painted strokes and object artifacts as the generative fill, and the effect-region suggestion: the contact-band heuristic, off until the person turns Detect shadow on, refined with Add and Subtract, beside the Object tool's Paint shadow stroke.",
         "task.fill-fast {asset_id, selection, effect_region?} runs the frozen Fast pipeline on the module lane against a held revision and prefix (the generative and remote tiers are separate tasks of the same request and result shape, so an optional model is never a prerequisite of Fast); its result is candidates addressed by job and index, at most 4 of at most 64 MiB per job and 1 GiB across jobs, the oldest finished job's released first and reported on job.read, never dropped because another job completed or the tool was left; the Corrections accept action rechecks revision and prefix, publishes the chosen patch as an artifact and commits one operation labelled Remove, storing the selection, transforms, prefix hash and provenance. Escape cancels the job; a late, cancelled or stale candidate cannot touch the recipe.",
-        "The enlargement notice shows when the crop's enlargement exceeds the recorded threshold; the Fast tier's models install from the Remove mode's resource card. The decision-5 outcome (stale patches) is implemented as recorded.",
+        "The enlargement notice shows when the crop's enlargement exceeds the recorded threshold; the Fast tier's model joins the remove and object setups as a part, installed through their setup sheet. The decision-5 outcome (stale patches) is implemented as recorded.",
         "Admission: a region whose bounding box fits one candidate (64 MiB of patch and preview at eight bytes a pixel, about 8 MP) and at most half the frame, refused resource-limit by name, the cap raised only with a measurement under the quality-first rule; the crop is bounded only by the frame and reduced to the model's input size, with the enlargement notice past the recorded threshold. Accept checks that the stack's artifacts bind within the 256 MiB prepared-artifact budget and refuses by name past it. The repair composite's GPU program is the Corrections foundation's; this task proves the committed patch renders within the declared tolerance on the GPU on the corpus, display, samples and export alike.",
         "The held-candidate budget is likewise a named constant in the limits table and an owner-accepted budget; the committed patch is held to the reference by cargo xtask gpu-qualification for the picture, samples and export through the delivered GPU tile worker.",
         "Read the fill crop's held repair input stage in linear values through the host-planned reference read the inference foundation adds, from the reference renderer on every host, with input identity recorded in provenance. Add a repair recipe to fixtures/preview/corpus.json with a checked-in patch fixture reproduced by the fake backend, source IDs and evidence-script steps, so gpu-qualification judges the stored composite at every affected view and output. The repair foundation must support artifact reads through storage blocks or a new binding contract on both GPU devices; no arbitrary artifact texture binding exists today.",
@@ -697,7 +697,7 @@
         }
       ],
       "acceptance_criteria": [
-        "Hover, click, box and stroke build the selection and decide One, Several or Nothing exactly as query.pick-object does; pins, Confirm, Detect shadow, Add and Subtract, Cancel and Accept each send a request Copy as JSON request shows, and the same journey runs through luxforge-json.",
+        "The Fast tier fills a painted selection and a set of object artifacts with the same request shape as the generative fill; Detect shadow, Add, Subtract, Cancel and Accept each send a request Copy as JSON request shows, and the same journey runs through luxforge-json.",
         "A fill holds its revision and prefix; candidates follow the retention rule and any client can accept any live one; Accept publishes the patch (at most 64 MiB, within the bind budget) and commits one entry with full provenance; the committed patch renders on the GPU within the declared tolerance; every accepted fill is byte-identical to its input outside the committed coverage; undo, redo, restore, reopen and export carry it; removing the models still renders it; stale patches behave as decision 5 records.",
         "The remove scenario passes over the fake with frames for analysing, hover, pins, the tinted selection, the running fill and the result, correlated to state and logs; on the M4 with the pinned models the bridge, sunflowers, kayaks and road removals complete within the recorded fill budget at 24 to 60 MP with the host's load noted.",
         "The performance-rules checklist is answered: bounded candidates, no owner-thread pixel work, cancellation, the hover worker's single mailbox.",
