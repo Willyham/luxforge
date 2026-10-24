@@ -41,7 +41,8 @@ def archive(members):
 
 
 def good(build=1):
-    return archive([("linux-x86_64/appcast.xml", feed(build)), ("macos-arm64/appcast.xml", feed(build + 1))])
+    return archive([("linux-x86_64/appcast.xml", feed(build)), ("macos-arm64/appcast.xml", feed(build + 1)),
+                    ("linux-arm64/appcast.xml", feed(build + 2))])
 
 
 def run(store, data):
@@ -75,6 +76,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn("previous none", out)
         self.assertEqual(served(self.store, "linux-x86_64"), feed(1))
         self.assertEqual(served(self.store, "macos-arm64"), feed(2))
+        self.assertEqual(served(self.store, "linux-arm64"), feed(3))
         self.assertTrue(os.path.islink(os.path.join(self.store, "current")))
         first = os.readlink(os.path.join(self.store, "current"))
         mode = os.stat(os.path.join(self.store, "current", "linux-x86_64", "appcast.xml")).st_mode & 0o777
@@ -92,7 +94,7 @@ class InstallTests(unittest.TestCase):
 
     def test_a_windows_feed_is_accepted_beside_the_released_targets(self):
         data = archive([("linux-x86_64/appcast.xml", feed(1)), ("macos-arm64/appcast.xml", feed(1)),
-                        ("windows-x86_64/appcast.xml", feed(1))])
+                        ("linux-arm64/appcast.xml", feed(1)), ("windows-x86_64/appcast.xml", feed(1))])
         rc, out = run(self.store, data)
         self.assertEqual(rc, 0, out)
         self.assertEqual(served(self.store, "windows-x86_64"), feed(1))
@@ -102,25 +104,27 @@ class InstallTests(unittest.TestCase):
         before = sorted(os.listdir(self.store)), os.readlink(os.path.join(self.store, "current"))
         linux = ("linux-x86_64/appcast.xml", feed(1))
         mac = ("macos-arm64/appcast.xml", feed(1))
+        arm = ("linux-arm64/appcast.xml", feed(1))
         cases = {
             "empty input": b"",
             "not a tar": b"not a tar archive" * 64,
             "compressed": __import__("gzip").compress(good(1)),
-            "missing macOS": archive([linux]),
-            "an extra file": archive([linux, mac, ("README", b"x")]),
-            "another name": archive([linux, mac, ("linux-x86_64/appcast.xml.bak", feed(1))]),
-            "a traversal": archive([linux, mac, ("../current/linux-x86_64/appcast.xml", feed(1))]),
-            "an absolute path": archive([linux, mac, ("/linux-x86_64/appcast.xml", feed(1))]),
-            "an unknown target": archive([linux, mac, ("linux-arm64/appcast.xml", feed(1))]),
-            "a directory": archive([("linux-x86_64", tarfile.DIRTYPE), linux, mac]),
-            "a link": archive([linux, ("macos-arm64/appcast.xml", tarfile.SYMTYPE)]),
-            "twice": archive([linux, mac, linux]),
-            "a DTD": archive([linux, ("macos-arm64/appcast.xml", b'<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY a "b">]><rss><channel/></rss>')]),
-            "not XML": archive([linux, ("macos-arm64/appcast.xml", b"<rss><channel>")]),
-            "not RSS": archive([linux, ("macos-arm64/appcast.xml", b"<feed><channel/></feed>")]),
-            "no channel": archive([linux, ("macos-arm64/appcast.xml", b"<rss/>")]),
-            "not UTF-8": archive([linux, ("macos-arm64/appcast.xml", b'<?xml version="1.0" encoding="latin-1"?><rss><channel><title>\xe9</title></channel></rss>')]),
-            "a large feed": archive([linux, ("macos-arm64/appcast.xml", b"<rss><channel/></rss>" + b" " * install_feeds.MAX_FEED)]),
+            "missing macOS": archive([linux, arm]),
+            "missing ARM64 Linux": archive([linux, mac]),
+            "an extra file": archive([linux, mac, arm, ("README", b"x")]),
+            "another name": archive([linux, mac, arm, ("linux-x86_64/appcast.xml.bak", feed(1))]),
+            "a traversal": archive([linux, mac, arm, ("../current/linux-x86_64/appcast.xml", feed(1))]),
+            "an absolute path": archive([linux, mac, arm, ("/linux-x86_64/appcast.xml", feed(1))]),
+            "an unknown target": archive([linux, mac, arm, ("linux-riscv64/appcast.xml", feed(1))]),
+            "a directory": archive([("linux-x86_64", tarfile.DIRTYPE), linux, mac, arm]),
+            "a link": archive([linux, arm, ("macos-arm64/appcast.xml", tarfile.SYMTYPE)]),
+            "twice": archive([linux, mac, arm, linux]),
+            "a DTD": archive([linux, arm, ("macos-arm64/appcast.xml", b'<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY a "b">]><rss><channel/></rss>')]),
+            "not XML": archive([linux, arm, ("macos-arm64/appcast.xml", b"<rss><channel>")]),
+            "not RSS": archive([linux, arm, ("macos-arm64/appcast.xml", b"<feed><channel/></feed>")]),
+            "no channel": archive([linux, arm, ("macos-arm64/appcast.xml", b"<rss/>")]),
+            "not UTF-8": archive([linux, arm, ("macos-arm64/appcast.xml", b'<?xml version="1.0" encoding="latin-1"?><rss><channel><title>\xe9</title></channel></rss>')]),
+            "a large feed": archive([linux, arm, ("macos-arm64/appcast.xml", b"<rss><channel/></rss>" + b" " * install_feeds.MAX_FEED)]),
         }
         for why, data in cases.items():
             with self.subTest(why=why):

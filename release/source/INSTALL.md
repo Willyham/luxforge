@@ -17,7 +17,7 @@ cp -R notices/linux-x86_64 ~/.local/opt/Luxforge/notices
 ~/.local/opt/Luxforge/luxforge
 ```
 
-The command lines run from the same directory, for example `~/.local/opt/Luxforge/luxforge-json --version`. The editor needs a Vulkan driver, the X11 or Wayland libraries and an XDG desktop portal with a file-chooser backend.
+On ARM64 Linux, copy `notices/linux-arm64` instead of `notices/linux-x86_64`. The command lines run from the same directory, for example `~/.local/opt/Luxforge/luxforge-json --version`. The editor needs a Vulkan driver, the X11 or Wayland libraries and an XDG desktop portal with a file-chooser backend.
 
 ## macOS
 

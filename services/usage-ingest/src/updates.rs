@@ -18,7 +18,12 @@ pub const PREFIX: &str = "/v1/updates/";
 /// Each target's one file.
 pub const FILE: &str = "appcast.xml";
 /// The targets a feed may be served for.
-pub const TARGETS: [&str; 3] = ["macos-arm64", "linux-x86_64", "windows-x86_64"];
+pub const TARGETS: [&str; 4] = [
+    "macos-arm64",
+    "linux-x86_64",
+    "linux-arm64",
+    "windows-x86_64",
+];
 /// The largest feed served, as the clients read at most this much.
 pub const MAX_FEED_BYTES: u64 = 4 * 1024 * 1024;
 /// Lets a new release reach clients within an hour, through any cache on the way.
@@ -310,13 +315,17 @@ mod tests {
             target("/v1/updates/linux-x86_64/appcast.xml"),
             Some("linux-x86_64")
         );
+        assert_eq!(
+            target("/v1/updates/linux-arm64/appcast.xml"),
+            Some("linux-arm64")
+        );
         for path in [
             "/v1/updates/",
             "/v1/updates/linux-x86_64",
             "/v1/updates/linux-x86_64/",
             "/v1/updates/linux-x86_64/appcast.xml/",
             "/v1/updates/linux-x86_64/other.xml",
-            "/v1/updates/linux-arm64/appcast.xml",
+            "/v1/updates/linux-riscv64/appcast.xml",
             "/v1/updates/../linux-x86_64/appcast.xml",
             "/v1/updates/linux-x86_64/../appcast.xml",
             "/v1/updates//linux-x86_64/appcast.xml",

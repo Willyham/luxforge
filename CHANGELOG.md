@@ -27,6 +27,10 @@ Each release's notes include its section here. A pre-release such as `v0.2.0-rc.
 - Range masks are always available. Feature flags are reduced to developer mode and `ai.analysis`.
 - Updates follow the default and pre-release channels without a flag, and `update.status` no longer reports `prerelease_channel`.
 
+### Downloads
+
+- **ARM64 Linux.** Each release adds `luxforge-VERSION-linux-arm64.tar.gz`, built on Ubuntu 24.04 for ARM64 like the x86-64 tarball, for ARM64 machines and virtual machines such as Linux on an Apple silicon Mac, with its own update feed. Like the x86-64 build, it has no native GPU, Wayland, X11 or installation qualification yet.
+
 ### Brand
 
 - A new app icon, the Midtone mark on a graphite tile, with drawn cuts at 16 and 32 pixels.

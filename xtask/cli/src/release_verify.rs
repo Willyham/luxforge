@@ -1,6 +1,6 @@
 //! The release-ready packet verifier and gate recording
 //! (`docs/design/release-v0.1.md#readiness-and-gate-results`). A packet is the directory
-//! `release-assemble` writes: both targets' downloads and build records, `release.json`, the release
+//! `release-assemble` writes: every target's downloads and build records, `release.json`, the release
 //! notes, the complete source archive once it exists, and `SHA256SUMS` over all of them.
 //!
 //! `release-gate` records one distribution or qualification result in `release.json`, after checking
@@ -762,7 +762,7 @@ fn check_gates(release: &Value, verdict: &mut Verdict) {
             .is_none_or(|platforms| platforms.len() != TARGETS.len())
     {
         verdict.integrity.push(
-            "release.json lists other gates than the distribution and both platforms' qualification gates".into(),
+            "release.json lists other gates than the distribution and every platform's qualification gates".into(),
         );
     }
     for gate in expected {

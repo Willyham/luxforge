@@ -14,7 +14,11 @@ screenshots = [
   "docs/screenshots/corrections.png",
 ]
 
-[linux.x86_64]
 # The tag's version is normalized (v0.1 builds 0.1.0), so the version is matched, not expanded.
+[linux.x86_64]
 asset = "luxforge-*-linux-x86_64.tar.gz"
+exec = "Luxforge/luxforge"
+
+[linux.aarch64]
+asset = "luxforge-*-linux-arm64.tar.gz"
 exec = "Luxforge/luxforge"

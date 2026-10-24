@@ -46,6 +46,7 @@ One Sparkle-format RSS appcast exists per download target, under `https://api.lu
 | --- | --- |
 | Apple silicon macOS | `macos-arm64/appcast.xml` |
 | x86-64 Linux | `linux-x86_64/appcast.xml` |
+| ARM64 Linux | `linux-arm64/appcast.xml` |
 | Windows (later) | `windows-x86_64/appcast.xml` |
 
 Each published release contributes one item to each feed it has a download for. An item carries:
@@ -59,7 +60,7 @@ Each published release contributes one item to each feed it has a download for. 
 - `luxforge:catalogFormat`, in a Luxforge XML namespace;
 - one enclosure: the release asset URL, its byte length, its MIME type and `sparkle:edSignature`.
 
-The macOS enclosure is the notarized ZIP. The Linux enclosure is the tarball.
+The macOS enclosure is the notarized ZIP. A Linux enclosure is its architecture's tarball.
 
 **Versions.** The build number orders releases on every platform. It is `CFBundleVersion` on macOS and the build number in `build.json` on Linux, and it is the workflow run number. The feed generator refuses a set of releases whose build numbers do not rise with their versions, so renaming the workflow cannot silently reorder them.
 
@@ -103,7 +104,7 @@ The `luxforge-update` crate is the format's one home: the record, the appcast wr
 - leaves out a macOS archive that is not notarized, with a note: it checks that build's `target.json` and archive as it does the others, but neither signs nor records it, so the update key signs nothing a feed may not list;
 - writes only a new file named `luxforge-<version>-updates.json`.
 
-`cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE] [--repository OWNER/NAME] [--deploy NEW_FILE.tar]` writes `<target>/appcast.xml` for `macos-arm64`, `linux-x86_64` and any other target a record names.
+`cargo xtask update-feed --records DIR --published FILE --output NEW_DIR [--withdrawn FILE] [--repository OWNER/NAME] [--deploy NEW_FILE.tar]` writes `<target>/appcast.xml` for `macos-arm64`, `linux-x86_64`, `linux-arm64` and any other target a record names. A released target with no record yet, such as `linux-arm64` before a release with an ARM64 download, gets a feed with no items.
 
 - `--records` holds only `luxforge-<version>-updates.json` files, each with its own version's record.
 - `--published` is GitHub's release list as `gh api --paginate --slurp repos/Willyham/luxforge/releases` writes it; one page is also read. The command reads each release's `tag_name`, `draft` and `published_at` and each asset's `name`, `size` and `state`. Drafts, releases without a publication time and assets that are not `uploaded` are not published. An item's `pubDate` is its release's `published_at`.
@@ -139,7 +140,7 @@ and the payload updater's missing-catalog-format refusals, and are returned in d
 
 Publication is off until the operator sets the repository variable `LUXFORGE_PUBLISH_UPDATES` to `true` ([operator guide](../engineering/releases.md#automatic-updates)). Unset or `false` publishes no record and no feed; any other value fails the release's identity job.
 
-**Signing the record.** The [release workflow](tag-release-builds.md)'s publish job signs the record after `release-assemble` has verified both candidates and before the draft release is created:
+**Signing the record.** The [release workflow](tag-release-builds.md)'s publish job signs the record after `release-assemble` has verified every candidate and before the draft release is created:
 
 1. A step without the key builds the xtask binary.
 2. The step **Sign the update record** is the only one that receives `LUXFORGE_UPDATE_SIGNING_KEY`. It refuses a missing secret and a `release/update.json` with no public key. It writes the key to a private temporary file, removes it from the environment and runs `update-record` with the built binary, so no compiler or build script runs beside the key. The file is deleted when the step ends, whatever its outcome.
@@ -160,7 +161,7 @@ A failure in either step fails the job before anything is published.
 
 - **The store** is the R2 bucket `luxforge-update-feeds`. A publication is `publications/feeds-<UTC time>/<target>/appcast.xml`, and the object `current` names the latest.
 - **Publication** is `POST /v1/updates/publications` with `Authorization: Bearer <token>` and `Content-Type: application/x-tar`, and the deploy archive as the body. The Worker holds only the token's SHA-256, as a secret, and checks the token before reading the body. The token can do nothing but hand over a deploy archive.
-  - The Worker refuses, changing nothing, an archive over 16 MiB, a member other than a released target's `appcast.xml` regular file, a duplicate member, a feed over 4 MiB, a missing `macos-arm64` or `linux-x86_64` feed, and a feed that is not UTF-8 RSS with a channel. A DTD or entity declaration is refused before parsing. These are `install-feeds.py`'s checks.
+  - The Worker refuses, changing nothing, an archive over 16 MiB, a member other than a released target's `appcast.xml` regular file, a duplicate member, a feed over 4 MiB, a missing `macos-arm64`, `linux-x86_64` or `linux-arm64` feed, and a feed that is not UTF-8 RSS with a channel. A DTD or entity declaration is refused before parsing. These are `install-feeds.py`'s checks. Every deploy archive holds a `linux-arm64` feed, so a Worker that does not yet accept it refuses the whole archive: the Worker must be updated before the next publication ([deployment](../../services/usage-statistics/DEPLOYMENT.md#the-update-feed-route)).
   - Otherwise it writes the new publication, then replaces `current` on the condition that it is unchanged, so the route answers the old feeds or the new ones and never a mixture. It keeps the previous publication for a manual rollback and deletes older ones.
   - It answers `201` with `installed feeds-<UTC time> (<target> N bytes, …); previous <publication or none>`. It answers `401` with `WWW-Authenticate: Bearer` for a missing or wrong token, `405`, `413` or `415` for another method, a larger body or another type, `400` with `refused: <reason>`, `409` when another publication ran meanwhile (publish again), and `503`.
 - **The route**, for `GET` and `HEAD /v1/updates/<target>/appcast.xml`:
@@ -382,7 +383,7 @@ Otherwise it reports `linux-notify`. It still checks and offers the update, `upd
 
 **An update, step by step:**
 
-1. **Check.** Read `<feed base>linux-x86_64/appcast.xml`, at most 4 MiB, and choose the newest item on a followed channel with a higher build number. An item without `luxforge:catalogFormat` is never offered, because the updater could not tell whether it changes the catalog format.
+1. **Check.** Read its target's feed, `<feed base>linux-x86_64/appcast.xml` or `<feed base>linux-arm64/appcast.xml` as `build.json` names it, at most 4 MiB, and choose the newest item on a followed channel with a higher build number. An item without `luxforge:catalogFormat` is never offered, because the updater could not tell whether it changes the catalog format.
 2. **Download.** Stream the archive into `<parent>/.luxforge-update-<build>/` through a 64 KiB file buffer.
    - Bytes past the item's stated length are refused (`oversize`), as is an item stating more than 2 GiB.
    - A download that ends short is refused (`length-mismatch`).
@@ -489,6 +490,6 @@ Qualification comes last, on real signed release candidates through the pre-rele
 
 - an M4 update from one candidate to the next;
 - a clean-account or second-Mac update from the DMG, including the move into Applications, in a foreground session the owner authorizes;
-- a native Ubuntu 24.04 payload update;
+- a native Ubuntu 24.04 payload update on each Linux architecture, x86-64 and ARM64;
 - the feed route answering at `api.luxforge.app`, published by a hosted Update feeds run;
 - a catalog-format-change offer and launch.

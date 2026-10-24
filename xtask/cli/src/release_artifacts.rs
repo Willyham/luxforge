@@ -26,6 +26,7 @@ pub(crate) fn hash(path: &Path) -> Result<String> {
 pub const TARGETS: &[(&str, &str)] = &[
     ("aarch64-apple-darwin", "macos-arm64"),
     ("x86_64-unknown-linux-gnu", "linux-x86_64"),
+    ("aarch64-unknown-linux-gnu", "linux-arm64"),
 ];
 
 pub fn platform(target: &str) -> Result<&'static str> {
@@ -33,7 +34,9 @@ pub fn platform(target: &str) -> Result<&'static str> {
         .iter()
         .find(|(t, _)| *t == target)
         .map(|(_, p)| *p)
-        .ok_or_else(|| "Release builds support Apple silicon macOS and x86-64 Linux only".into())
+        .ok_or_else(|| {
+            "Release builds support Apple silicon macOS and x86-64 and ARM64 Linux only".into()
+        })
 }
 
 pub fn archive_name(tag: &ReleaseTag, target: &str) -> Result<String> {
@@ -109,7 +112,7 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
     }
     for field in ["revision", "lock_sha256", "build_number"] {
         ensure(
-            records[0][field].is_string() && records[0][field] == records[1][field],
+            records[0][field].is_string() && records.iter().all(|r| r[field] == records[0][field]),
             format!("Platform {field} mismatch"),
         )?;
     }
@@ -150,7 +153,7 @@ pub fn assemble(root: &Path, input: &Path, out: &Path, text: &str) -> Result {
     fs::write(
         out.join("release-notes.md"),
         format!(
-            "Luxforge {} — pre-release build candidate\n\nTag: `{}`. Source commit: `{}`.\n\nApple silicon macOS disk image (open it and drag Luxforge to Applications) and x86-64 Ubuntu 24.04-baseline Linux tarball, including both CLIs, resources and notices. The macOS ZIP holds the same app as the update archive. macOS signing status, for the app and its disk image: **{}**. See `release.json` and `SHA256SUMS` for identities and final hashes.\n\nThese are automated pre-release build candidates. Complete corresponding source/licence/advisory review and native GPU/corpus/installation qualification remain open. Published downloads do not establish release readiness; see the v0.1 distribution gates.\n\n## Changes\n\n{}\n",
+            "Luxforge {} — pre-release build candidate\n\nTag: `{}`. Source commit: `{}`.\n\nApple silicon macOS disk image (open it and drag Luxforge to Applications) and x86-64 and ARM64 Ubuntu 24.04-baseline Linux tarballs, including the command lines, resources and notices. The macOS ZIP holds the same app as the update archive. macOS signing status, for the app and its disk image: **{}**. See `release.json` and `SHA256SUMS` for identities and final hashes.\n\nThese are automated pre-release build candidates. Complete corresponding source/licence/advisory review and native GPU/corpus/installation qualification remain open. Published downloads do not establish release readiness; see the v0.1 distribution gates.\n\n## Changes\n\n{}\n",
             tag.version,
             tag.tag,
             records[0]["revision"].as_str().unwrap(),
@@ -244,7 +247,7 @@ mod tests {
 
     #[test]
     #[slow]
-    fn assembly_requires_both_matching_clean_targets_and_checksums_final_files() {
+    fn assembly_requires_every_matching_clean_target_and_checksums_final_files() {
         let root = crate::root().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let tag = ReleaseTag::parse("v0.1").unwrap();
@@ -269,6 +272,7 @@ mod tests {
             image.as_str(),
             "luxforge-0.1.0-macos-arm64.zip",
             "luxforge-0.1.0-linux-x86_64.tar.gz",
+            "luxforge-0.1.0-linux-arm64.tar.gz",
             "release.json",
         ] {
             assert!(
@@ -301,21 +305,26 @@ mod tests {
         assert!(assemble(&root, &input, &tmp.path().join("no-image"), &tag.tag).is_err());
         assert!(!tmp.path().join("no-image").exists());
         fs::write(&mac_image, b"final disk image").unwrap();
-        let linux = input.join(TARGETS[1].1).join("target.json");
-        let original = read_json(&linux).unwrap();
-        for (field, bad) in [
-            ("revision", json!("c".repeat(40))),
-            ("lock_sha256", json!("c".repeat(64))),
-            ("build_number", json!("2")),
-            ("working_tree_dirty", json!(true)),
-            ("rehearsal", json!(true)),
-        ] {
-            let mut record = original.clone();
-            record[field] = bad;
-            write_json(&linux, &record).unwrap();
-            assert!(assemble(&root, &input, &tmp.path().join("rejected"), &tag.tag).is_err());
-            assert!(!tmp.path().join("rejected").exists());
+        // Each Linux target must share the macOS build's identity, the last one included.
+        for &(_, platform) in &TARGETS[1..] {
+            let linux = input.join(platform).join("target.json");
+            let original = read_json(&linux).unwrap();
+            for (field, bad) in [
+                ("revision", json!("c".repeat(40))),
+                ("lock_sha256", json!("c".repeat(64))),
+                ("build_number", json!("2")),
+                ("working_tree_dirty", json!(true)),
+                ("rehearsal", json!(true)),
+            ] {
+                let mut record = original.clone();
+                record[field] = bad;
+                write_json(&linux, &record).unwrap();
+                assert!(assemble(&root, &input, &tmp.path().join("rejected"), &tag.tag).is_err());
+                assert!(!tmp.path().join("rejected").exists());
+            }
+            write_json(&linux, &original).unwrap();
         }
+        let linux = input.join(TARGETS[2].1).join("target.json");
         fs::remove_file(linux).unwrap();
         assert!(assemble(&root, &input, &tmp.path().join("missing"), &tag.tag).is_err());
     }

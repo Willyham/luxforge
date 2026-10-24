@@ -39,7 +39,7 @@ pub struct Archive {
 }
 
 /// The archive of every target the project builds (`deny.toml`'s graph targets), as `ort-sys`
-/// 2.0.0-rc.13 names them and as fetched and measured on 2026-10-11.
+/// 2.0.0-rc.13 names them and as fetched and measured on 2026-10-11 (aarch64 Linux on 2026-10-24).
 pub const ARCHIVES: &[Archive] = &[
     Archive {
         target: "aarch64-apple-darwin",
@@ -62,6 +62,13 @@ pub const ARCHIVES: &[Archive] = &[
         bytes: 10_060_013,
         sha256: "e454f710f8a49f53aa5b4ff51e3454ae1835777e431c6c35c5255ce6f205fd68",
     },
+    Archive {
+        target: "aarch64-unknown-linux-gnu",
+        features: &[],
+        url: "https://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/aarch64-unknown-linux-gnu.tar.lzma2",
+        bytes: 10_548_001,
+        sha256: "06a050ab9137ccb32421d0cb49e9ccf72d9e18ab0aeb8f8d038d1b5cc844b35a",
+    },
 ];
 
 /// The build attestation every pinned archive carries: who signed it, from which workflow and
@@ -78,7 +85,8 @@ pub struct Attestation {
     pub run: &'static str,
 }
 
-/// The attestation of the pinned archives, verified on 2026-10-11 for all three.
+/// The attestation of the pinned archives, verified on 2026-10-11 for the first three and on
+/// 2026-10-24 for aarch64 Linux.
 pub const ATTESTATION: Attestation = Attestation {
     owner: "pykeio",
     signer_workflow: "pykeio/ort-artifacts/.github/workflows/build-runner.yml",
@@ -715,7 +723,7 @@ mod tests {
         targets(&root_file("deny.toml")).unwrap();
         refused(
             targets(
-                "[graph]\ntargets = [\n\"aarch64-apple-darwin\",\n\"x86_64-pc-windows-msvc\",\n\"x86_64-unknown-linux-gnu\",\n\"aarch64-unknown-linux-gnu\",\n]\n",
+                "[graph]\ntargets = [\n\"aarch64-apple-darwin\",\n\"x86_64-pc-windows-msvc\",\n\"x86_64-unknown-linux-gnu\",\n\"aarch64-unknown-linux-gnu\",\n\"x86_64-apple-darwin\",\n]\n",
             ),
             "differ",
         );
@@ -727,7 +735,8 @@ mod tests {
         aarch64-apple-darwin\tcoreml\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/aarch64-apple-darwin+coreml.tar.lzma2\t6934874e2e953576d9c1db47ff1af39c62c4f4220dbe6f988e131f72879674c7\n\
         aarch64-apple-darwin\tcoreml,webgpu\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/aarch64-apple-darwin+coreml,webgpu.tar.lzma2\tc887d7ec10b06832d95e0fa035a28425794b26e1a5c34804bda7c6b50f7197a3\n\
         x86_64-pc-windows-msvc\tdirectml\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/x86_64-pc-windows-msvc+directml.tar.lzma2\tf7c654b3729cb9e5ad2a36a0c38e5b48e63bf4eed22968931aed33a0ad0b527d\n\
-        x86_64-unknown-linux-gnu\tnone\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/x86_64-unknown-linux-gnu.tar.lzma2\te454f710f8a49f53aa5b4ff51e3454ae1835777e431c6c35c5255ce6f205fd68\n";
+        x86_64-unknown-linux-gnu\tnone\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/x86_64-unknown-linux-gnu.tar.lzma2\te454f710f8a49f53aa5b4ff51e3454ae1835777e431c6c35c5255ce6f205fd68\n\
+        aarch64-unknown-linux-gnu\tnone\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/aarch64-unknown-linux-gnu.tar.lzma2\t06a050ab9137ccb32421d0cb49e9ccf72d9e18ab0aeb8f8d038d1b5cc844b35a\n";
 
     #[test]
     fn the_resolved_ort_sys_table_names_exactly_the_pinned_archives() {

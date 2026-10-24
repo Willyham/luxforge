@@ -1,6 +1,6 @@
 # Building downloads from a release tag
 
-The [Release builds workflow](../../.github/workflows/release.yml) builds Apple silicon macOS and x86-64 Linux downloads from a pushed tag. It retains Actions artifacts and **automatically publishes a GitHub pre-release** after both builds and every asset upload succeed. These downloads are build candidates; the [v0.1 distribution qualification](../design/release-v0.1.md) remains open and is reported in their notes and metadata.
+The [Release builds workflow](../../.github/workflows/release.yml) builds Apple silicon macOS, x86-64 Linux and ARM64 Linux downloads from a pushed tag. It retains Actions artifacts and **automatically publishes a GitHub pre-release** after all three builds and every asset upload succeed. These downloads are build candidates; the [v0.1 distribution qualification](../design/release-v0.1.md) remains open and is reported in their notes and metadata.
 
 ## Start a release
 
@@ -22,34 +22,34 @@ cargo xtask release v0.1 --dry-run
 
 Dry-run creates/pushes no tag and skips quick and native watcher checks. If a real push fails, the local tag is retained because the remote outcome may be uncertain. Inspect the tag at `origin`'s push destination before retrying; remove a local-only failed tag deliberately only after confirming it was never published. A successful push is monitored under **Actions → Release builds** rather than rerunning the release command for the same version.
 
-`v0.1` builds version `0.1.0`. Full tags such as `v0.1.2`, prereleases such as `v0.2.0-rc.1`, and SemVer build suffixes also work. Invalid tags fail before native compilation. The workflow binds both builds to the initially selected commit and refuses delivery if the tag moves. No separate Cargo version edit is needed: the tag supplies the compiled application version, while ordinary developer builds use the workspace version. The source checkout and lockfile stay unchanged.
+`v0.1` builds version `0.1.0`. Full tags such as `v0.1.2`, prereleases such as `v0.2.0-rc.1`, and SemVer build suffixes also work. Invalid tags fail before native compilation. The workflow binds every build to the initially selected commit and refuses delivery if the tag moves. No separate Cargo version edit is needed: the tag supplies the compiled application version, while ordinary developer builds use the workspace version. The source checkout and lockfile stay unchanged.
 
 Open GitHub **Actions → Release builds** for logs and the public pre-release under **Releases**. It contains:
 
 - `luxforge-VERSION-macos-arm64.dmg`, the macOS download: a disk image holding `Luxforge.app` and an `Applications` link. Open it and drag Luxforge to Applications. The app holds the editor, the three command lines (`luxforge-json`, `luxforge-ctl` and `luxforge-mcp`) under `Contents/Helpers`, Lensfun resources, notices and help.
 - `luxforge-VERSION-macos-arm64.zip`, the same `Luxforge.app`, kept as the update archive.
-- `luxforge-VERSION-linux-x86_64.tar.gz`, containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
+- `luxforge-VERSION-linux-x86_64.tar.gz` and `luxforge-VERSION-linux-arm64.tar.gz`, the x86-64 and ARM64 Linux downloads, each containing `Luxforge/` with all three executables, resources, notices, help (`README.txt` and the Linux `INSTALL.txt`), the icon and `desktop-integration.sh`, which adds or removes a user-level launcher entry ([Linux payload](../design/release-v0.1.md#deliverables)). Its `build.json` and `target.json` record each executable's ELF imports.
 - `luxforge-VERSION-source.tar.gz`, the complete corresponding [source archive](#the-source-archive) of the same commit.
 - `release-notes.md`, the pre-release's description: the build's identity and open gates, then the version's `CHANGELOG.md` section under **Changes**.
 - `release.json`, per-platform build records and `SHA256SUMS` for the final files.
 - `luxforge-VERSION-updates.json`, the signed update record, once [automatic updates](#automatic-updates) are switched on. It is not listed in `SHA256SUMS` or `release.json`.
 
-Before publishing, the publish job attests the build provenance of the disk image, the ZIP and both tarballs with `actions/attest-build-provenance`, signed through Sigstore as this repository's Release builds workflow. `gh attestation verify FILE --repo Willyham/luxforge` checks a download against it.
+Before publishing, the publish job attests the build provenance of the disk image, the ZIP and every tarball with `actions/attest-build-provenance`, signed through Sigstore as this repository's Release builds workflow. `gh attestation verify FILE --repo Willyham/luxforge` checks a download against it.
 
 The macOS app embeds Sparkle 2.10.0's `Sparkle.framework` for its updater. `release-build` downloads the official archive once into `target/sparkle/2.10.0/`, refuses it unless its length (16,319,840 bytes) and SHA-256 are the pinned ones (`xtask/src/sparkle.rs`), and copies the framework into `Luxforge.app/Contents/Frameworks/` without its XPC services; no Sparkle binary is committed. The app's `Info.plist` names the macOS feed, the public key committed in `release/update.json`, daily automatic checks and verification of an archive before it is extracted. Signing signs Sparkle's `Autoupdate`, `Updater.app` and the framework before the helpers and the app.
 
-The Linux build uses Ubuntu 24.04/glibc 2.39 and fails if an executable requires a newer glibc symbol version or links a library the packaged help does not name. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. The payload carries `packaging/icon/luxforge-256.png`, `luxforge-512.png` and `luxforge.svg` for the launcher icon; a build missing any of them, or the helper or its template under `packaging/linux/`, fails before compiling. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
+Both Linux builds use Ubuntu 24.04/glibc 2.39, on the `ubuntu-24.04` and `ubuntu-24.04-arm` runners, and each fails if an executable requires a newer glibc symbol version or links a library the packaged help does not name. Native Vulkan drivers, runtime libraries and an XDG chooser portal/backend are still required. The payload carries `packaging/icon/luxforge-256.png`, `luxforge-512.png` and `luxforge.svg` for the launcher icon; a build missing any of them, or the helper or its template under `packaging/linux/`, fails before compiling. macOS 14 is the configured build floor, not a verified installation-support claim. Read the artifact's signing status: macOS builds are **unsigned unless signing is enabled**. Pushing a release tag requests public pre-release downloads; no manual publish step follows a successful run.
 
 ## The source archive
 
-`cargo xtask release-source --tag TAG --output NEW` writes `luxforge-VERSION-source.tar.gz` and `source.json` into a new directory. It makes the same source checks as `release-build`: without `--allow-dirty` the checkout must be clean, untracked files included, the tag must name HEAD and the Rust toolchain must be the pin. `--allow-dirty` labels a local rehearsal, which assembly refuses; it still archives the committed tree, never uncommitted changes. The release workflow builds it in its own `source` job, which receives no secrets, from the same commit as both downloads.
+`cargo xtask release-source --tag TAG --output NEW` writes `luxforge-VERSION-source.tar.gz` and `source.json` into a new directory. It makes the same source checks as `release-build`: without `--allow-dirty` the checkout must be clean, untracked files included, the tag must name HEAD and the Rust toolchain must be the pin. `--allow-dirty` labels a local rehearsal, which assembly refuses; it still archives the committed tree, never uncommitted changes. The release workflow builds it in its own `source` job, which receives no secrets, from the same commit as the downloads.
 
 The archive holds one directory, `luxforge-VERSION-source/`:
 
 - the tracked tree of the commit, exactly as `git archive` writes it, except that `.cargo/config.toml` keeps every original setting and gains the offline source replacement (`vendor/`) and `ORT_CACHE_DIR`;
 - `vendor/`, every crate `Cargo.lock` names, from `cargo vendor --locked --versioned-dirs`;
-- `third_party/onnxruntime-1.28.0/`, the prebuilt ONNX Runtime static libraries of both shipping targets, extracted from the archives `xtask/src/onnxruntime.rs` pins after their length and SHA-256 are checked, in the layout `ort-sys` reads, so its build script downloads nothing. The pinned archives are cached under `target/onnxruntime/`;
-- `notices/macos-arm64/` and `notices/linux-x86_64/`, each target's `cargo xtask inventory` output for its dependency graph;
+- `third_party/onnxruntime-1.28.0/`, the prebuilt ONNX Runtime static libraries of every shipping target, extracted from the archives `xtask/src/onnxruntime.rs` pins after their length and SHA-256 are checked, in the layout `ort-sys` reads, so its build script downloads nothing. The pinned archives are cached under `target/onnxruntime/`;
+- `notices/macos-arm64/`, `notices/linux-x86_64/` and `notices/linux-arm64/`, each target's `cargo xtask inventory` output for its dependency graph;
 - `BUILD.md`, `INSTALL.md` and `RELINK.md`, rendered from `release/source/` with the commit, tag, lockfile hash and pinned toolchain, and `SOURCE.json`, the same identity with the archive's contents, exclusions and test-only omissions.
 
 Bundled native sources and patches (`crates/luxforge-raw`, `crates/luxforge-diffusion`), compiled-in data and their notices are already tracked. The archive leaves out ignored and untracked files: build, evidence and verification output, private inputs, owner originals and the licensed corpus, generated fixtures, catalogs, caches and environment files. A tracked path that looks like one of them (a top-level `artifacts/`, `dist/`, `private/` or `target/`, any `target/` directory, a camera original, a catalog, an environment file or a key, except the throwaway TLS test certificates of `luxforge-net`) refuses the archive rather than being dropped. After packing, the archive's paths, link targets and contents are scanned for the home directory, checkout, output and Cargo and rustup homes of the machine that made it; a match refuses it. The prebuilt ONNX Runtime libraries are not scanned: they were built upstream and are identified by their hashes. Entries carry no owner, group or modification time.
@@ -154,7 +154,7 @@ To change keys, generate a new one under a new account name, commit its public k
 
 ## OmaStore
 
-[OmaStore](https://github.com/KitsuneSemCalda/OmaStore), the Omarchy app store, lists repositories with an `omastore.toml` at the root of the default branch. Luxforge's [`omastore.toml`](../../omastore.toml) names the store's display name, summary, categories, icon and screenshots, and for x86-64 Linux the asset `luxforge-*-linux-x86_64.tar.gz` and the executable `Luxforge/luxforge` inside it. The asset is matched by a wildcard because OmaStore's `{version}` is the tag without its `v`, which is not the normalized version for a short tag such as `v0.1`. OmaStore checks a download against GitHub's digest and verifies the release workflow's [build provenance](#start-a-release) attestation.
+[OmaStore](https://github.com/KitsuneSemCalda/OmaStore), the Omarchy app store, lists repositories with an `omastore.toml` at the root of the default branch. Luxforge's [`omastore.toml`](../../omastore.toml) names the store's display name, summary, categories, icon and screenshots, and for each Linux architecture its asset, `luxforge-*-linux-x86_64.tar.gz` for x86-64 and `luxforge-*-linux-arm64.tar.gz` for ARM64, and the executable `Luxforge/luxforge` inside it. The asset is matched by a wildcard because OmaStore's `{version}` is the tag without its `v`, which is not the normalized version for a short tag such as `v0.1`. OmaStore checks a download against GitHub's digest and verifies the release workflow's [build provenance](#start-a-release) attestation.
 
 OmaStore installs only a repository's latest **stable** release. Every Luxforge release is published as a pre-release, so OmaStore lists Luxforge but cannot install it until a stable release exists; the release workflow does not change that. OmaStore installs a release into `$XDG_DATA_HOME/omastore/apps/<owner>__<repo>/<tag>/` and updates it itself, so the Linux updater stands down for a payload there and offers new versions as their release page ([auto-update](../design/auto-update.md#linux-the-payload-updater)).
 
@@ -174,11 +174,11 @@ The output must be new. On macOS it holds the ZIP and the disk image, both label
 
 ## Qualification status
 
-A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run. Those gates and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the automatic publication of build candidates.
+A successful build is not native GPU/corpus/install evidence, a completed distribution advisory review, or a completed source/licence review; the source archive is its input, not its result. The Linux offline build from the archive has not been run, and no ARM64 Linux build has run yet. Those gates and final support requirements remain in the [distribution plan](../design/release-v0.1.md). Published pre-release notes and metadata record them as pending or not run and never claim release readiness. They do not prevent the automatic publication of build candidates.
 
 ## Recording gate results and verifying readiness
 
-Download every asset of the candidate's pre-release into a new directory: the downloads, `release.json`, both platform records, `release-notes.md`, the source archive and `SHA256SUMS`. This local copy is the packet. Published assets are never changed.
+Download every asset of the candidate's pre-release into a new directory: the downloads, `release.json`, every platform record, `release-notes.md`, the source archive and `SHA256SUMS`. This local copy is the packet. Published assets are never changed.
 
 Record each gate's result as its qualification finishes ([shape](../design/release-v0.1.md#gate-results-and-readiness)):
 
@@ -192,7 +192,7 @@ cargo xtask release-gate --packet PACKET --gate qualification.macos-arm64.native
 
 cargo xtask release-gate --packet PACKET --gate distribution.advisory_disposition \
   --status passed --evidence distribution-review/advisories.md \
-  --scope "Fresh audit of the locked graph for both targets" --disposition distribution
+  --scope "Fresh audit of the locked graph for every target" --disposition distribution
 ```
 
 Gates are `distribution.NAME` or `qualification.PLATFORM.NAME`, as `release.json` lists them. `--executable` gives the SHA-256 (`shasum -a 256`) of each executable the evidence ran; it must be the candidate's `final` hash, or on macOS its `before_signing` hash for evidence from before signing. Linux results take no `--bundle`. `--status not-run` with no other option withdraws a result. The command refuses an inconsistent packet, a malformed result, evidence from another build and evidence or scope text that looks like a private path, coordinates, a photo name, a secret or an email address. It rewrites only `release.json` and its `SHA256SUMS` line. Keep the evidence itself in the private evidence store.
@@ -203,4 +203,4 @@ Check the packet and write its public summary, outside the packet:
 cargo xtask release-verify --packet PACKET --summary artifacts/release-summary.json
 ```
 
-It lists every reason the packet is not ready and fails unless it is ready. The summary is written either way, with `release_ready` and `status` (`release-ready` or `not-ready`), and states the identity, assets, signing and each gate's status and scope; evidence references other than `https` links become `private`. It is not written if anything in it still looks private. An unsigned candidate, a rehearsal, a one-platform packet or any gate other than `passed` is never ready.
+It lists every reason the packet is not ready and fails unless it is ready. The summary is written either way, with `release_ready` and `status` (`release-ready` or `not-ready`), and states the identity, assets, signing and each gate's status and scope; evidence references other than `https` links become `private`. It is not written if anything in it still looks private. An unsigned candidate, a rehearsal, a packet missing a platform or any gate other than `passed` is never ready.

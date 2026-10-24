@@ -4,8 +4,8 @@
     install-feeds.py STORE      (the deploy archive on standard input)
 
 The release workflow's feed job sends the deploy archive that `cargo xtask update-feed --deploy`
-writes: an uncompressed tar holding exactly `<target>/appcast.xml` for macos-arm64 and
-linux-x86_64 (and windows-x86_64 when one exists), nothing else. On the host this script is the
+writes: an uncompressed tar holding exactly `<target>/appcast.xml` for macos-arm64,
+linux-x86_64 and linux-arm64 (and windows-x86_64 when one exists), nothing else. On the host this script is the
 forced command of the publication account's one SSH key, so that key can do nothing but this.
 
 It refuses, changing nothing: an archive over 16 MiB, a member that is not one of those regular
@@ -32,9 +32,9 @@ import xml.etree.ElementTree as ElementTree
 
 MAX_ARCHIVE = 16 * 1024 * 1024
 MAX_FEED = 4 * 1024 * 1024
-TARGETS = ("macos-arm64", "linux-x86_64", "windows-x86_64")
-REQUIRED = ("macos-arm64", "linux-x86_64")
-MEMBER = re.compile(r"^(macos-arm64|linux-x86_64|windows-x86_64)/appcast\.xml$")
+TARGETS = ("macos-arm64", "linux-x86_64", "linux-arm64", "windows-x86_64")
+REQUIRED = ("macos-arm64", "linux-x86_64", "linux-arm64")
+MEMBER = re.compile(r"^(macos-arm64|linux-x86_64|linux-arm64|windows-x86_64)/appcast\.xml$")
 DECLARATION = re.compile(rb"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 CURRENT = "current"
 PUBLICATION = re.compile(r"^feeds-\d{8}T\d{12}Z$")

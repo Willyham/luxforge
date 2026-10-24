@@ -1,6 +1,6 @@
 # Dependency policy
 
-Project code is GPL-3.0-or-later. Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64 and Linux x64 graphs. Those graphs include packages that only a development dependency reaches, so their advisories and sources are checked; the licence check skips them, as cargo-deny does by default and `deny.toml` leaves unchanged. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
+Project code is GPL-3.0-or-later. Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64, Linux x64 and Linux arm64 graphs. Those graphs include packages that only a development dependency reaches, so their advisories and sources are checked; the licence check skips them, as cargo-deny does by default and `deny.toml` leaves unchanged. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
 
 ```sh
 cargo install --locked --version 0.20.2 --root .tools/cargo-deny cargo-deny

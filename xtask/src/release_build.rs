@@ -351,13 +351,21 @@ pub fn build(root: &Path, out: &Path, tag: &str, number: &str, allow_dirty: bool
         metadata["minimum_system_version"] = json!(MACOS_MINIMUM_SYSTEM_VERSION);
         metadata["deployment_targets"] = json!(deployment_targets);
     }
-    if target == TARGETS[1].0 {
+    if target != TARGETS[0].0 {
         let named: Vec<_> = EXECUTABLES
             .iter()
             .copied()
             .zip(binaries.iter().map(PathBuf::as_path))
             .collect();
-        release_linux::complete(root, &resource_root, &tag, number, &named, &mut metadata)?;
+        release_linux::complete(
+            root,
+            &resource_root,
+            &tag,
+            &target,
+            number,
+            &named,
+            &mut metadata,
+        )?;
     }
     write_json(&resource_root.join("build.json"), &metadata)?;
     let archive = archive_payload(out, &tag, &target)?;

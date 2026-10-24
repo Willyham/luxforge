@@ -170,7 +170,7 @@ fn release(
         ),
     )?;
     println!(
-        "Pushed {}. GitHub Actions → Release builds will build both platforms and automatically publish the pre-release after successful checks/uploads. This command does not wait for those jobs.",
+        "Pushed {}. GitHub Actions → Release builds will build every platform and automatically publish the pre-release after successful checks/uploads. This command does not wait for those jobs.",
         tag.tag
     );
     Ok(())

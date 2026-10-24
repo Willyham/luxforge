@@ -131,6 +131,13 @@ token hash and diagnostics belong to the backend repository's
 route from outside. It is independent of the statistics switch: it can go live before or after
 [activation](#activation-checklist).
 
+A deploy archive always holds three feeds, `macos-arm64`, `linux-x86_64` and `linux-arm64`, and
+`install-feeds.py` refuses one without all three. Before the next publication, the Worker must
+accept and require the `linux-arm64` feed as `install-feeds.py` does, and a reference deployment
+must reinstall `install-feeds.py` (step 1) and recreate the ingress (step 4) from a commit that
+serves `linux-arm64`. An installer or Worker that predates it refuses the whole archive, and an
+ingress that predates it answers `404` for that feed.
+
 The update feed URL is compiled into every release, so once a release that uses it is published the
 route must stay for as long as that release is in use. What serves it behind the API can change.
 
@@ -193,7 +200,7 @@ no host ran against a local ingress serving a store filled by `install-feeds.py`
    in place of `api.luxforge.app`:
 
    ```sh
-   for target in linux-x86_64 macos-arm64; do
+   for target in linux-x86_64 linux-arm64 macos-arm64; do
      curl -sS -D - -o "$target.xml" "https://api.luxforge.app/v1/updates/$target/appcast.xml"
      tar -xOf luxforge-update-feeds.tar "$target/appcast.xml" | cmp - "$target.xml" && echo "$target matches"
    done
@@ -206,7 +213,8 @@ no host ran against a local ingress serving a store filled by `install-feeds.py`
    HTTPS. Each feed answers `200` with `content-type: application/rss+xml; charset=utf-8` and
    `cache-control: public, max-age=900`, no `set-cookie`, no header the proxy added, and the bytes of
    the run's `update-feeds` artifact (`luxforge-update-feeds.tar`). The macOS feed has no item until a
-   notarized release is published. Then repeat [privacy checks](#activation-checklist)
+   notarized release is published, and the ARM64 Linux feed none until a release with an ARM64 Linux
+   download is. Then repeat [privacy checks](#activation-checklist)
    with its sentinel request also sent as a `GET` of a feed: no hop may hold it.
 7. **Rollback.** Run **Update feeds** again to replace a wrong publication. In an emergency, point
    `current` back at the previous publication the store kept. In production, from the backend

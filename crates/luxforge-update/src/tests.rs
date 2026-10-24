@@ -568,7 +568,7 @@ fn a_record_naming_windows_gets_a_windows_feed() {
     record.archives.insert(Target::WindowsX86_64, windows);
     let records = [record];
     let feeds = generate(&records, &published(&records), &[]).unwrap();
-    assert_eq!(feeds.appcasts.len(), 3);
+    assert_eq!(feeds.appcasts.len(), Target::RELEASED.len() + 1);
     assert!(
         feeds.appcasts[&Target::WindowsX86_64].items[0]
             .enclosure

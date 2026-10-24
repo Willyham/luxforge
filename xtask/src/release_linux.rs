@@ -40,13 +40,14 @@ pub fn complete(
     root: &Path,
     payload: &Path,
     tag: &ReleaseTag,
+    target: &str,
     number: &str,
     executables: &[(&str, &Path)],
     metadata: &mut Value,
 ) -> Result {
     desktop_integration(root, payload, &tag.version, number)?;
     let imports = xtask_cli::release_elf::inspect(executables)?;
-    fs::write(payload.join(HELP), help(&tag.version, &imports)?)?;
+    fs::write(payload.join(HELP), help(&tag.version, target, &imports)?)?;
     metadata["elf_imports"] = imports;
     Ok(())
 }
@@ -127,9 +128,22 @@ fn package_of(library: &str) -> &'static str {
     }
 }
 
-/// The packaged Linux help: running, desktop integration, runtime requirements (the linked
-/// libraries from `imports`, this build's `elf_imports`) and where Luxforge keeps its data.
-pub fn help(version: &str, imports: &Value) -> Result<String> {
+/// The processor a Linux target is built for, as the help names it.
+fn architecture(target: &str) -> Result<&'static str> {
+    match target {
+        "x86_64-unknown-linux-gnu" => Ok("x86-64"),
+        "aarch64-unknown-linux-gnu" => Ok("ARM64"),
+        _ => Err(format!("{target} is not a Linux release target").into()),
+    }
+}
+
+/// The packaged Linux help for `target`: running, desktop integration, runtime requirements (the
+/// linked libraries from `imports`, this build's `elf_imports`) and where Luxforge keeps its data.
+pub fn help(version: &str, target: &str, imports: &Value) -> Result<String> {
+    let architecture = architecture(target)?;
+    let platform = xtask_cli::release_artifacts::platform(target)?;
+    let title = format!("Luxforge {version} for {architecture} Linux");
+    let underline = "=".repeat(title.chars().count());
     let mut linked = std::collections::BTreeSet::new();
     for entry in imports["executables"]
         .as_object()
@@ -147,8 +161,8 @@ pub fn help(version: &str, imports: &Value) -> Result<String> {
     let max = imports["max_glibc"].as_str().ok_or("ELF imports")?;
     let baseline = imports["glibc_baseline"].as_str().ok_or("ELF imports")?;
     Ok(format!(
-        "Luxforge {version} for x86-64 Linux
-=================================
+        "{title}
+{underline}
 
 This is a build candidate, not a qualified public release: native Linux GPU, Wayland, X11 and
 installation qualification remain open.
@@ -157,7 +171,7 @@ Running Luxforge
 ----------------
 Extract the archive anywhere you can write, such as your home folder:
 
-    tar -xzf luxforge-{version}-linux-x86_64.tar.gz
+    tar -xzf luxforge-{version}-{platform}.tar.gz
 
 then start the editor with ./Luxforge/luxforge. Nothing needs installing, no root is needed and the
 folder finds its own resources wherever it is. The command lines ./Luxforge/luxforge-json,
@@ -190,7 +204,7 @@ Luxforge folder.
 
 Requirements
 ------------
-Luxforge is built on Ubuntu 24.04 LTS for x86-64, its baseline. Other distributions may work but
+Luxforge is built on Ubuntu 24.04 LTS for {architecture}, its baseline. Other distributions may work but
 are not tested.
 
 * A Vulkan graphics driver. Luxforge loads the Vulkan loader, libvulkan.so.1 (libvulkan1), and
@@ -440,7 +454,10 @@ mod tests {
                 "luxforge-ctl": {"needed": ["libc.so.6"]},
             },
         });
-        let help = help("0.1.0", &imports).unwrap();
+        let help = help("0.1.0", "x86_64-unknown-linux-gnu", &imports).unwrap();
+        assert!(
+            help.starts_with("Luxforge 0.1.0 for x86-64 Linux\n===============================\n")
+        );
         for text in [
             "luxforge-0.1.0-linux-x86_64.tar.gz",
             "./Luxforge/desktop-integration.sh install",
@@ -458,6 +475,13 @@ mod tests {
         ] {
             assert!(help.contains(text), "{text}");
         }
+        let arm = super::help("0.1.0", "aarch64-unknown-linux-gnu", &imports).unwrap();
+        assert!(
+            arm.starts_with("Luxforge 0.1.0 for ARM64 Linux\n==============================\n")
+        );
+        assert!(arm.contains("tar -xzf luxforge-0.1.0-linux-arm64.tar.gz"));
+        assert!(arm.contains("Ubuntu 24.04 LTS for ARM64"));
+        assert!(super::help("0.1.0", "aarch64-apple-darwin", &imports).is_err());
     }
 
     /// Install and uninstall in a payload and data home whose paths need quoting: spaces,

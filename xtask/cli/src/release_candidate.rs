@@ -1,6 +1,6 @@
 //! The build-candidate contract (`docs/design/release-v0.1.md#candidate-records`): the source checks
 //! a release build makes before it compiles anything, what it records about one target in
-//! `target.json` and the bundled `build.json`, and the `release.json` that binds both targets to one
+//! `target.json` and the bundled `build.json`, and the `release.json` that binds every target to one
 //! source identity beside per-platform qualification. Whether a packet is release-ready is the
 //! readiness verifier's decision, not this contract's.
 use crate::release_artifacts::{TARGETS, hash, platform};
@@ -21,7 +21,7 @@ pub const NOT_APPLICABLE: &str = "not-applicable";
 /// What a qualification or distribution gate can report. `not-applicable` is not among them: every
 /// listed gate applies to its platform.
 pub const GATE_STATUSES: &[&str] = &["not-run", "passed", "failed", "incomplete"];
-/// The gates the source and dependency graph pass for both targets.
+/// The gates the source and dependency graph pass for every target.
 pub const DISTRIBUTION_GATES: &[&str] = &["source_and_notices_review", "advisory_disposition"];
 const MACOS_GATES: &[&str] = &[
     "native_full_verification",
@@ -41,7 +41,7 @@ const LINUX_GATES: &[&str] = &[
 pub fn platform_gates(platform: &str) -> Result<&'static [&'static str]> {
     match platform {
         "macos-arm64" => Ok(MACOS_GATES),
-        "linux-x86_64" => Ok(LINUX_GATES),
+        "linux-x86_64" | "linux-arm64" => Ok(LINUX_GATES),
         _ => Err(format!("No qualification gates for {platform}").into()),
     }
 }
@@ -448,7 +448,7 @@ fn check_gates(value: &Value, names: &[&str], what: &str) -> Result {
     )
 }
 
-/// `release.json` for both targets' checked records, in [`TARGETS`] order: their common source
+/// `release.json` for every target's checked records, in [`TARGETS`] order: their common source
 /// identity, no source archive yet, and every distribution and platform gate not run. It never
 /// contains its own hash, and lives outside every archive it describes.
 pub fn release_record(tag: &ReleaseTag, records: &[Value]) -> Value {
@@ -477,7 +477,7 @@ pub fn release_record(tag: &ReleaseTag, records: &[Value]) -> Value {
     })
 }
 
-/// Checks `release.json`'s shape: both shipping targets, each a valid build record sharing the
+/// Checks `release.json`'s shape: every shipping target, each a valid build record sharing the
 /// packet's commit, version, lockfile and build number; a source archive named for the version or
 /// none yet; and exactly the listed distribution and platform gates. It is not a readiness verdict:
 /// a build candidate never claims release readiness.
@@ -493,7 +493,7 @@ pub fn check_release(release: &Value, tag: &ReleaseTag) -> Result {
     let targets = release["targets"]
         .as_array()
         .filter(|targets| targets.len() == TARGETS.len())
-        .ok_or("release.json names exactly the two shipping targets")?;
+        .ok_or("release.json names exactly the shipping targets")?;
     for ((target, _), record) in TARGETS.iter().zip(targets) {
         check_record(record, tag, target)?;
         for field in ["revision", "lock_sha256", "build_number"] {
@@ -516,7 +516,7 @@ pub fn check_release(release: &Value, tag: &ReleaseTag) -> Result {
     let qualification = release["qualification"]
         .as_object()
         .filter(|platforms| platforms.len() == TARGETS.len())
-        .ok_or("release.json qualifies exactly the two shipping platforms")?;
+        .ok_or("release.json qualifies exactly the shipping platforms")?;
     for (_, platform) in TARGETS {
         check_gates(
             qualification
@@ -718,7 +718,7 @@ mod tests {
             true,
         );
         assert!(reused.unwrap_err().to_string().contains("must be new"));
-        for target in ["x86_64-apple-darwin", "aarch64-unknown-linux-gnu"] {
+        for target in ["x86_64-apple-darwin", "riscv64gc-unknown-linux-gnu"] {
             let error = check_source(&checkout.root, &checkout.root.join("n"), &tag, target, true)
                 .unwrap_err()
                 .to_string();
@@ -740,7 +740,7 @@ mod tests {
             for (field, value) in [
                 ("version", json!("0.1.1")),
                 ("tag", json!("v0.1.0")),
-                ("platform", json!("linux-arm64")),
+                ("platform", json!("windows-x86_64")),
                 ("schema_version", json!(1)),
                 ("profile", json!("dev")),
                 ("revision", json!("a1b2c3")),

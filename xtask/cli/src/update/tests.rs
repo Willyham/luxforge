@@ -159,7 +159,7 @@ fn update_record_leaves_out_an_unnotarized_macos_archive() {
         // No macOS entry: the update key signs nothing a feed may not list.
         assert_eq!(
             record.archives.keys().copied().collect::<Vec<_>>(),
-            [Target::LinuxX86_64]
+            [Target::LinuxX86_64, Target::LinuxArm64]
         );
         assert_eq!(
             notes,
@@ -406,7 +406,13 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
     let linux = fs::read_to_string(output.join("linux-x86_64/appcast.xml")).unwrap();
     let mac_items = Appcast::parse(&mac).unwrap().appcast.items;
     let linux_items = Appcast::parse(&linux).unwrap().appcast.items;
+    let arm = fs::read_to_string(output.join("linux-arm64/appcast.xml")).unwrap();
+    let arm_items = Appcast::parse(&arm).unwrap().appcast.items;
     assert_eq!(mac_items.iter().map(|i| i.build).collect::<Vec<_>>(), [5]);
+    assert_eq!(
+        arm_items.iter().map(|i| i.build).collect::<Vec<_>>(),
+        [5, 3]
+    );
     assert_eq!(
         linux_items.iter().map(|i| i.build).collect::<Vec<_>>(),
         [5, 3]
@@ -444,7 +450,8 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
     asset(".dmg");
     for (item, path) in [
         (&mac_items[0], asset(".zip")),
-        (&linux_items[0], asset(".tar.gz")),
+        (&linux_items[0], asset("-linux-x86_64.tar.gz")),
+        (&arm_items[0], asset("-linux-arm64.tar.gz")),
     ] {
         assert!(
             item.enclosure
@@ -466,7 +473,7 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
         &again,
     )
     .unwrap();
-    for target in ["macos-arm64", "linux-x86_64"] {
+    for target in ["macos-arm64", "linux-x86_64", "linux-arm64"] {
         assert_eq!(
             fs::read(output.join(target).join("appcast.xml")).unwrap(),
             fs::read(again.join(target).join("appcast.xml")).unwrap()
@@ -492,7 +499,11 @@ fn update_feed_writes_each_targets_appcast_from_published_records() {
     let entries = deploy_entries(&archive);
     assert_eq!(
         entries.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
-        ["macos-arm64/appcast.xml", "linux-x86_64/appcast.xml"]
+        [
+            "macos-arm64/appcast.xml",
+            "linux-x86_64/appcast.xml",
+            "linux-arm64/appcast.xml"
+        ]
     );
     for (name, mode, bytes) in &entries {
         assert_eq!(*mode, 0o644);

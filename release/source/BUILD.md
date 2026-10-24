@@ -12,9 +12,9 @@ Luxforge is free software under the GNU General Public License, version 3 or lat
 | `vendor/` | The {{packages}} crates `Cargo.lock` names, as `cargo vendor --locked --versioned-dirs` writes them, each with its own licence files and Cargo's checksums. This includes the C sources the crates bundle: libjpeg-turbo in `mozjpeg-sys`, libwebp in `libwebp-sys`, SQLite in `libsqlite3-sys` and the C and assembly of `ring`. |
 | `crates/luxforge-raw/vendor/`, `crates/luxforge-raw/patches/` | LibRaw 0.22.2, librtprocess, RawSpeed and pugixml, and the patches the build applies to staged copies of them (`crates/luxforge-raw/THIRD_PARTY.md`). |
 | `crates/luxforge-diffusion/vendor/`, `crates/luxforge-diffusion/native/` | stable-diffusion.cpp, ggml and the sources they bundle, with Luxforge's replacement and staged changes (`crates/luxforge-diffusion/THIRD_PARTY.md`). |
-| `third_party/onnxruntime-1.28.0/` | ONNX Runtime 1.28.0 as prebuilt static libraries, for the two shipping targets (below). |
+| `third_party/onnxruntime-1.28.0/` | ONNX Runtime 1.28.0 as prebuilt static libraries, for the three shipping targets (below). |
 | Compiled-in data | The Inter font (`crates/luxforge-ui/assets/fonts`), the Omarchy themes (`crates/luxforge-core/src/theme/omarchy/bundled`), the GeoNames place names (`crates/luxforge-core/assets/gazetteer`), the Lensfun profile index (`crates/luxforge-core/data/lensfun`) and RawSpeed's `cameras.xml`, each with its notice. |
-| `notices/macos-arm64/`, `notices/linux-x86_64/` | Each shipping target's licence texts, native and asset notices and `dependencies.json`, the component inventory `cargo xtask inventory` writes for that target's dependency graph. An inventory is not a licence review. |
+| `notices/macos-arm64/`, `notices/linux-x86_64/`, `notices/linux-arm64/` | Each shipping target's licence texts, native and asset notices and `dependencies.json`, the component inventory `cargo xtask inventory` writes for that target's dependency graph. An inventory is not a licence review. |
 | `rust-toolchain.toml`, `Cargo.lock` | The pinned Rust toolchain ({{rust}}) and the lockfile (SHA-256 `{{lock_sha256}}`). |
 | `SOURCE.json` | This archive's identity and contents, in machine-readable form. |
 | `BUILD.md`, `INSTALL.md`, `RELINK.md` | These instructions. |
@@ -31,7 +31,7 @@ ONNX Runtime is MIT-licensed (`notices/*/native/onnxruntime-1.28.0/`); its sourc
 
 - **Rust {{rust}}**, through rustup: `rust-toolchain.toml` selects it. Install it before going offline (`rustup toolchain install {{rust}} --profile minimal`).
 - **macOS (Apple silicon):** macOS 14 or later and the Xcode Command Line Tools (`xcode-select --install`), for clang, the C++ standard library and the macOS SDK.
-- **Linux (x86-64):** built and tested on Ubuntu 24.04 (glibc 2.39) with `build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev`. Running the editor needs a Vulkan driver and an XDG desktop portal with a file-chooser backend.
+- **Linux (x86-64 or ARM64):** built and tested on Ubuntu 24.04 (glibc 2.39) with `build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev`. Running the editor needs a Vulkan driver and an XDG desktop portal with a file-chooser backend.
 
 No CMake, NASM, Python or network access is needed to build.
 

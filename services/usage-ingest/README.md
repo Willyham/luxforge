@@ -62,7 +62,7 @@ this service allows five containers deep and refuses a sixth before parsing.
 ## Update feeds
 
 With `LUXFORGE_INGEST_UPDATES_DIR` set, `GET` and `HEAD /v1/updates/<target>/appcast.xml`, for
-`macos-arm64`, `linux-x86_64` and `windows-x86_64`, are answered from `<dir>/<target>/appcast.xml`
+`macos-arm64`, `linux-x86_64`, `linux-arm64` and `windows-x86_64`, are answered from `<dir>/<target>/appcast.xml`
 ([design](../../docs/design/auto-update.md#publishing-and-serving-the-feeds)). The directory is
 normally the update store's `current` link, which `services/usage-statistics/install-feeds.py`
 replaces at each publication; the service only reads it.

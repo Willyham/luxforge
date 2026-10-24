@@ -9,25 +9,29 @@ pub enum Target {
     MacosArm64,
     #[serde(rename = "linux-x86_64")]
     LinuxX86_64,
+    #[serde(rename = "linux-arm64")]
+    LinuxArm64,
     /// Expressible for when Windows is distributed; no release has it yet.
     #[serde(rename = "windows-x86_64")]
     WindowsX86_64,
 }
 
 impl Target {
-    pub const ALL: [Target; 3] = [
+    pub const ALL: [Target; 4] = [
         Target::MacosArm64,
         Target::LinuxX86_64,
+        Target::LinuxArm64,
         Target::WindowsX86_64,
     ];
     /// The targets every feed generation writes, whether or not a record names them.
-    pub const RELEASED: [Target; 2] = [Target::MacosArm64, Target::LinuxX86_64];
+    pub const RELEASED: [Target; 3] = [Target::MacosArm64, Target::LinuxX86_64, Target::LinuxArm64];
 
     /// The name in file names, records and feed paths: `macos-arm64`.
     pub fn as_str(self) -> &'static str {
         match self {
             Target::MacosArm64 => "macos-arm64",
             Target::LinuxX86_64 => "linux-x86_64",
+            Target::LinuxArm64 => "linux-arm64",
             Target::WindowsX86_64 => "windows-x86_64",
         }
     }
@@ -41,6 +45,7 @@ impl Target {
         match self {
             Target::MacosArm64 => "aarch64-apple-darwin",
             Target::LinuxX86_64 => "x86_64-unknown-linux-gnu",
+            Target::LinuxArm64 => "aarch64-unknown-linux-gnu",
             Target::WindowsX86_64 => "x86_64-pc-windows-msvc",
         }
     }
@@ -59,6 +64,7 @@ impl Target {
         match self {
             Target::MacosArm64 => "Apple silicon macOS",
             Target::LinuxX86_64 => "x86-64 Linux",
+            Target::LinuxArm64 => "ARM64 Linux",
             Target::WindowsX86_64 => "x86-64 Windows",
         }
     }

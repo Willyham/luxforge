@@ -134,7 +134,7 @@ async fn feeds_are_served_as_static_content_with_cache_headers() {
         "/v1/updates/windows-x86_64/appcast.xml",
         "/v1/updates/linux-x86_64/appcast.xml?build=3",
         "/v1/updates/linux-x86_64/appcast.xml?",
-        "/v1/updates/linux-arm64/appcast.xml",
+        "/v1/updates/linux-riscv64/appcast.xml",
         "/v1/updates/linux-x86_64/",
         "/v1/updates/",
         "/v1/updates/linux-x86_64/../macos-arm64/appcast.xml",

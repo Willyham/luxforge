@@ -15,6 +15,7 @@ pub const GLIBC_BASELINE: &str = "2.39";
 /// packaged help and `docs/engineering/platforms.md` must name before a build may link it.
 pub const SYSTEM_LIBRARIES: &[&str] = &[
     "ld-linux-x86-64.so.2",
+    "ld-linux-aarch64.so.1",
     "libc.so.6",
     "libm.so.6",
     "libdl.so.2",

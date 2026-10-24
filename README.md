@@ -258,7 +258,7 @@ More detail is in the [architecture](docs/design/architecture.md) and [tool modu
 
 ## Platforms
 
-macOS on Apple silicon is the primary target and the only platform with native GPU verification so far. On Linux, CI builds and packages for x86-64 and runs the headless checks with no graphics adapter; its rendered journeys through the software Vulkan adapter await a passing hosted run. Windows CI is disabled, and Windows support will come later. Native Windows and Linux desktop checks remain open. See [platforms](docs/engineering/platforms.md).
+macOS on Apple silicon is the primary target and the only platform with native GPU verification so far. On Linux, CI builds and packages for x86-64 and runs the headless checks with no graphics adapter; its rendered journeys through the software Vulkan adapter await a passing hosted run. The same Linux checks and a release download are configured for ARM64 Linux and have not run yet, so 0.1.0 has no ARM64 download. Windows CI is disabled, and Windows support will come later. Native Windows and Linux desktop checks remain open. See [platforms](docs/engineering/platforms.md).
 
 ## Contributing
 
