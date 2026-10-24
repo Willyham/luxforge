@@ -3,18 +3,17 @@
   "plan_id": "ai-tools-workspace",
   "title": "AI tools in the Develop workspace: Remove, Object and mask Object",
   "objective": "Make AI object removal and object masks a feature a person finds, sets up and uses without Settings: Remove paints, Object points, Masks › Object makes a stored selection, and each tool sets up its own models through one sheet; object picking stays behind the ai.analysis experiment.",
-  "context_summary": "Decided by the owner on 2026-10-24 (docs/decisions.md, AI tools in the Develop workspace): object detection is a separate tool for removal and for masks; object removal ships on the Generative tier with the Fast tier joining later; object picking (Corrections › Object and Masks › Object) stays behind ai.analysis while Remove is listed by default (ai.generative was removed on main); each tool sets up what it is missing through one sheet. Builds on what is delivered: the generative workflow in the Corrections band's Remove, the setup sheet, the analysis tasks and cache, query.pick-object with Remove's hover overlay, task.select-object, the model mask kind and its commands, the Models tab and the developer fakes for the segmenter and generator. The removal conditioning is not yet published, so setups needing it are unavailable until the owner publishes it; nothing else waits on that. The design is docs/design/ai-tools-workspace.md with its board.",
+  "context_summary": "Decided by the owner on 2026-10-24 (docs/decisions.md, AI tools in the Develop workspace): object detection is a separate tool for removal and for masks; object removal ships on the Generative tier with the Fast tier joining later; object picking (Corrections › Object and Masks › Object) stays behind ai.analysis while Remove is listed by default (ai.generative was removed on main); each tool sets up what it is missing through one sheet. Builds on what is delivered: the generative workflow in the Corrections band's Remove, the setup sheet, the analysis tasks and cache, query.pick-object with Remove's hover overlay, task.select-object, the model mask kind and its commands, the Models tab and the developer fakes for the segmenter and generator. The design is docs/design/ai-tools-workspace.md with its board.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Add setups to the module capability contract (descriptor, module.status, module.setup.install with one combined consent, the unpublished resource state) and declare the remove, object, mask-object and replace setups on luxforge.ai and its developer fakes.",
+      "description": "Add setups to the module capability contract (descriptor, module.status, module.setup.install with one combined consent) and declare the remove, object, mask-object and replace setups on luxforge.ai and its developer fakes.",
       "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "A setup is the resources one tool needs, grouped into parts named in the feature's words: descriptor setups: [{id, title, introduction, parts: [{name, purpose, resources}]}], at most 8 setups a module, 4 parts and 5 resources a setup, each resource one the module declares, refused by name at descriptor validation. The introduction moves from each download-artifact capability onto the setup; the delivered sheet's introduction validation (eyebrow, title, lead, at most three steps or one hero, promise) is unchanged. Add the picture kinds Hover and Selected to IntroductionPicture.",
-        "module.status gains setups: [{id, state: installed|missing|installing|failed|unavailable|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}], derived from resource states, the install memo and the transfer lane, opening nothing. A setup's minimum is the largest of its parts'.",
-        "module.setup.install {module_id, setup, mutation} checks every missing resource's grant first: any missing fails consent-required with data.consent {module_id, setup, grants: [{capability, scope}], disclosure, denied}, the disclosure summed over the missing parts (bytes, every origin, licences, use restrictions, minimum against this machine) with the setup's introduction and parts. Then it checks the transfer lane has room for every missing resource (resource-limit, nothing queued, otherwise), and queues one install job per missing resource in declared order, answering {setup, jobs: [{resource_id, job_id}]}, empty when nothing is missing. Retries follow the mutation envelope's deduplication. An unavailable part or a machine below the minimum fails not-ready naming it.",
-        "A file may be declared pending publication (no URL yet): its resource lists as unavailable with reason unpublished unless a copy is staged at its pinned length, in which case it installs as today. Declare the removal conditioning file of generative-klein-4b pending until the owner publishes the models-generative-1 release asset.",
+        "module.status gains setups: [{id, state: installed|missing|installing|failed|cannot-run, missing_bytes, staged_bytes, minimum_memory, fits, parts: [{name, state, bytes, staged_bytes, resources}], jobs, error?, reason?}], derived from resource states, the install memo and the transfer lane, opening nothing. A setup's minimum is the largest of its parts'.",
+        "module.setup.install {module_id, setup, mutation} checks every missing resource's grant first: any missing fails consent-required with data.consent {module_id, setup, grants: [{capability, scope}], disclosure, denied}, the disclosure summed over the missing parts (bytes, every origin, licences, use restrictions, minimum against this machine) with the setup's introduction and parts. Then it checks the transfer lane has room for every missing resource (resource-limit, nothing queued, otherwise), and queues one install job per missing resource in declared order, answering {setup, jobs: [{resource_id, job_id}]}, empty when nothing is missing. Retries follow the mutation envelope's deduplication. A machine below a part's minimum fails not-ready naming it.",
         "Setups of luxforge.ai: remove (Generative fill: generative-klein-4b), object (Object finder: segmenter-l0-encoder and segmenter-l0-decoder; Generative fill), mask-object (Object finder), replace (Replace: generative-klein-text-encoder). A developer run declares the same setups over its fake resources. Words for the object and mask-object introductions are in the design's sheet section; remove and replace keep their delivered words.",
         "Recorded delegation: field names inside status rows, the order of checks after consent, and how the disclosure is assembled are the implementer's within this contract."
       ],
@@ -23,7 +22,7 @@
           "kind": "file",
           "label": "AI tools workspace design",
           "target": "docs/design/ai-tools-workspace.md",
-          "relevance": "The setups, their states, the sheet's facts and the unpublished state.",
+          "relevance": "The setups, their states, their states and the sheet's facts.",
           "locator": "Setting up"
         },
         {
@@ -43,7 +42,7 @@
           "kind": "file",
           "label": "AI models",
           "target": "crates/luxforge-core/src/modules/ai/models.rs",
-          "relevance": "ModelFile, Published and the generative resources whose conditioning file becomes pending."
+          "relevance": "ModelFile, Published and the generative resources."
         },
         {
           "kind": "file",
@@ -54,9 +53,8 @@
       ],
       "acceptance_criteria": [
         "Descriptor validation accepts the four setups and refuses each limit and an undeclared resource by name.",
-        "module.status reports every setup state (installed, missing, installing, failed with the first error, unavailable as unpublished, cannot-run below the minimum) with missing and staged bytes, from host state alone.",
+        "module.status reports every setup state (installed, missing, installing, failed with the first error, cannot-run below the minimum) with missing and staged bytes, from host state alone.",
         "module.setup.install refuses consent-required listing every missing scope and the summed disclosure; after each scope is granted it queues exactly the missing installs in declared order, skips installed resources, refuses when the lane lacks room with nothing queued, and deduplicates a retry.",
-        "The pending conditioning file makes remove and object unavailable and leaves mask-object installable; a staged copy at its pinned length makes them installable without a fetch.",
         "The same journeys pass through luxforge-json over the developer fakes."
       ],
       "test_strategy": {
@@ -142,7 +140,7 @@
     },
     {
       "id": "TASK-004",
-      "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the unavailable and too-small lines, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
+      "description": "Deliver the desktop's setup flow: each tool's setup lines in its own group, the setup sheet asked for a whole setup with summed facts and the includes list, one answer granting every scope, one progress bar with Cancel, Resume and Try again, the too-small line, the download glyph on an unset kind, and Settings › Models grouped by setup part.",
       "status": "pending",
       "dependencies": [
         "TASK-001"
@@ -152,7 +150,7 @@
         "The sheet is the delivered setup sheet (state/setup_sheet.rs and its view) with the facts summed over missing parts and an includes list (part name, purpose, size; an installed part shown as installed and not counted). Draw the Hover and Selected picture kinds from the theme as the other four are drawn.",
         "Settings › Models lists rows per setup part with a caption naming the tools that use it; a part's Remove removes each of its resources; Download… on an uninstalled part opens the sheet for the smallest setup holding it.",
         "The kind control gains a small download glyph on a kind whose setup is not installed. Record the setup and the open sheet in state.json as today.",
-        "Write the ai-setup smoke scenario over the developer fakes: missing, consent, aggregated progress, a failed part resumed, unavailable (a pending fake file), too small (a forced minimum)."
+        "Write the ai-setup smoke scenario over the developer fakes: missing, consent, aggregated progress, a failed part resumed, too small (a forced minimum)."
       ],
       "context_links": [
         {
@@ -190,7 +188,7 @@
       "acceptance_criteria": [
         "Each setup state draws the design's line and action; every button sends exactly the request Copy as JSON request shows.",
         "One Download grants every missing scope and installs exactly the missing parts; the band shows one bar over them; Cancel stops all; Try again resumes only what is missing.",
-        "An unavailable or too-small setup offers no button; Settings › Models groups rows by part with their captions.",
+        "A too-small setup offers no button; Settings › Models groups rows by part with their captions.",
         "The ai-setup scenario passes in the background with captures correlated to state and logs."
       ],
       "test_strategy": {
@@ -342,12 +340,11 @@
     },
     {
       "id": "TASK-007",
-      "description": "Prepare the removal conditioning's publication and, once the owner has published the models-generative-1 release asset, declare its pinned URL and prove a real setup over the network.",
-      "status": "in_progress",
+      "description": "Record a real network setup of the published removal conditioning: install the remove setup through the real transport from an empty data root on the M4 and generate once.",
+      "status": "pending",
       "dependencies": [],
       "extra_context": [
-        "External input: the owner publishes klein-4b-removal-conditioning-ba26d15a.lfsdcond (SHA-256 ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141, 15,728,691 bytes) on the project's GitHub release models-generative-1. Prepare first: the release notes text, the exact gh command for the owner to run, and a check that the main checkout's private/models/generative copy matches its pin. Do not publish it yourself.",
-        "After publication: replace the pending declaration with the pinned URL and its length, and run the remove setup through the real transport from an empty data root on the M4; record the result. Until then the setups that need it are unavailable, which is the delivered honest state, so nothing else waits on this task."
+        "The conditioning klein-4b-removal-conditioning-ba26d15a.lfsdcond (SHA-256 ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141, 15,728,691 bytes) is published on the release models-generative-1 and the module's pinned URL answers it (checked on 2026-10-24 by length, hash and header). What remains is the native run: the remove setup through the real transport from an empty data root on the M4, then one generation, recorded as evidence with the host's load. Nothing else waits on this task."
       ],
       "context_links": [
         {
@@ -356,22 +353,15 @@
           "target": "docs/design/ai-editing.md",
           "relevance": "Decision 17 and the generative resource table.",
           "locator": "The delivered workflow"
-        },
-        {
-          "kind": "file",
-          "label": "AI tools workspace design",
-          "target": "docs/design/ai-tools-workspace.md",
-          "relevance": "The pending state this task ends.",
-          "locator": "Not yet published"
         }
       ],
       "acceptance_criteria": [
-        "The owner has a reviewed publication command and notes; after publication the remove and object setups list as missing, not unavailable, and a network setup from an empty data root installs and generates on the M4."
+        "A network setup from an empty data root installs every part of the remove setup and generates on the M4, recorded with its evidence."
       ],
       "test_strategy": {
         "approach": "manual",
         "steps": [
-          "Verify the local file against its pin; after publication, one network setup and one generation on the M4."
+          "One network setup and one generation on the M4."
         ],
         "commands": [
           "tools/cargo-cached test -p luxforge-core ai::models"
