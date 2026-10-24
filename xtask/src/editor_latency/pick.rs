@@ -1,8 +1,8 @@
 //! `editor-latency --mode pick`: a range pick's time from the press on the photograph to the
 //! overlay adopted for the entry it committed ([range masks](../../../docs/design/range-masks.md)).
 //!
-//! One launch over a generated JPEG (`generate-fixtures`: the 24 MP and 60 MP workloads). The range
-//! experiment is turned on, Mask mode entered and a colour range created from New mask, which arms
+//! One launch over a generated JPEG (`generate-fixtures`: the 24 MP and 60 MP workloads). Mask mode
+//! is entered and a colour range created from New mask, which arms
 //! the eyedropper and shows the overlay as Tint with no adjustment bound, so every pick reads the
 //! mask's unbound input site. Then `--samples` pairs, each:
 //!
@@ -20,7 +20,7 @@
 //! names the renderer the picks read from.
 use super::*;
 
-/// The most pairs one launch takes: two steps each, beside the four setup and attribution steps,
+/// The most pairs one launch takes: two steps each, beside the three setup and attribution steps,
 /// inside the evidence script's 64.
 pub(super) const PICK_PAIRS_MAX: usize = 30;
 
@@ -36,10 +36,6 @@ pub(super) fn script(
     height: u32,
 ) -> (Vec<script::Step>, Vec<usize>, Vec<usize>) {
     let mut steps = vec![
-        script::Step::agent(
-            "flags.set",
-            json!({"flag": luxforge_core::flags::RANGE_MASKS, "value": true}),
-        ),
         script::Step::Workspace(WorkspaceStep::default().mode("mask")),
         script::Step::Mask(MaskStep::New("colour-range".into())),
     ];
@@ -202,7 +198,7 @@ fn measure(run: &mut Run, options: &Options) -> Result {
         "reference_renderer": options.no_gpu_render,
         "mode": "pick",
         "samples": options.samples,
-        "method": "Background evidence launch of the release binary, warm filesystem cache, at Fit, with the range experiment on, Mask mode entered and one colour range created from New mask (the eyedropper armed, the overlay Tint, nothing bound). Each sample is a pick step dragged from the output stage's top-left pixel to its bottom-right one, then a pick step clicked on the red quadrant, which changes the sample back so the next drag commits again. Times are from the script_step that pressed each pick: to the range_pick that sent its command, and to the first mask_coverage_ready for the entry the pick committed.",
+        "method": "Background evidence launch of the release binary, warm filesystem cache, at Fit, with Mask mode entered and one colour range created from New mask (the eyedropper armed, the overlay Tint, nothing bound). Each sample is a pick step dragged from the output stage's top-left pixel to its bottom-right one, then a pick step clicked on the red quadrant, which changes the sample back so the next drag commits again. Times are from the script_step that pressed each pick: to the range_pick that sent its command, and to the first mask_coverage_ready for the entry the pick committed.",
         "rows": rows,
         "picks": per_pick,
         "load": launch::load(load_start),
@@ -232,7 +228,7 @@ mod tests {
             (drags.len(), clicks.len()),
             (PICK_PAIRS_MAX, PICK_PAIRS_MAX)
         );
-        assert_eq!((drags[0], clicks[0]), (4, 5));
+        assert_eq!((drags[0], clicks[0]), (3, 4));
         assert_eq!(
             steps[drags[0] - 1],
             script::Step::pick_drag([0, 0], [5999, 3999], false)

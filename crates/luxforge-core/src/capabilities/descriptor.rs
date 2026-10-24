@@ -1251,8 +1251,8 @@ mod tests {
         resource.tradeoff = Some("Finds smaller objects; slower to start".into());
         resource.use_restriction = Some("Non-commercial use only".into());
         resource.min_memory_bytes = Some(8 << 30);
-        resource.flag = Some(crate::flags::AI_GENERATIVE.into());
-        descriptor.tasks[0].flags = vec![crate::flags::AI_GENERATIVE.into()];
+        resource.flag = Some(crate::flags::AI_ANALYSIS.into());
+        descriptor.tasks[0].flags = vec![crate::flags::AI_ANALYSIS.into()];
         descriptor.validate().unwrap();
         let resource = &descriptor.resources[0];
         assert_eq!(resource.total_bytes(), 36);
@@ -1278,8 +1278,8 @@ mod tests {
             "Non-commercial use only"
         );
         assert_eq!(value["resources"][0]["min_memory_bytes"], json!(8u64 << 30));
-        assert_eq!(value["resources"][0]["flag"], "ai.generative");
-        assert_eq!(value["tasks"][0]["flags"], json!(["ai.generative"]));
+        assert_eq!(value["resources"][0]["flag"], "ai.analysis");
+        assert_eq!(value["tasks"][0]["flags"], json!(["ai.analysis"]));
         assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
         // A resource without them serializes none of them, nor a task without flags its flags.
         let plain = serde_json::to_value(capability_descriptor()).unwrap();
@@ -1892,8 +1892,8 @@ mod tests {
                 "task generate-test-tint declares unknown flag ai.unknown",
             ),
             (
-                |d| d.tasks[0].flags = vec!["ai.generative".into(), "ai.generative".into()],
-                "task generate-test-tint declares flag ai.generative twice",
+                |d| d.tasks[0].flags = vec!["ai.analysis".into(), "ai.analysis".into()],
+                "task generate-test-tint declares flag ai.analysis twice",
             ),
             (
                 |d| d.tasks[0].uses.push("missing".into()),

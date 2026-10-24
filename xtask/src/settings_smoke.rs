@@ -511,10 +511,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && ids
                 == [
                     json!("developer"),
-                    json!("masks.range-selections"),
-                    json!("ai.generative"),
                     json!("ai.analysis"),
-                    json!("updates.prerelease-channel"),
                     json!("proof.choice"),
                     json!("proof.number"),
                 ],
@@ -622,8 +619,8 @@ fn models_tab(frame: &Frame) -> &Value {
 }
 
 /// The proof model's one row and the `module.status` resource row it was drawn from. A developer
-/// run lists `luxforge.ai`'s models only with `ai.generative` or `ai.analysis` on, which the scenario
-/// leaves off.
+/// run lists `luxforge.ai`'s generative models beside it, and its analysis models only with
+/// `ai.analysis` on, which the scenario leaves off.
 fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
     let tab = models_tab(frame);
     let row = tab["rows"]
@@ -692,8 +689,6 @@ fn correlated(step: &str, frame: &Frame) -> Result<Value> {
             // The machine's own memory, which the desktop read from the operating system.
             && memory.is_some_and(|memory| memory >= 1 << 30)
             && machine.starts_with("This machine has ")
-            // luxforge.ai's models are not listed while its experiment is off.
-            && !machine.contains("klein")
             && machine.ends_with(" Proof segmenter needs 2 GB.")
             && tab["tiers"] == json!([])
             && tab["errors"] == json!([]),

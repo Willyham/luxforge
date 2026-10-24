@@ -1,7 +1,7 @@
 //! The `range-corpus` smoke scenario: range selections picked on a real photograph, which they had
 //! never been before ([range masks](../../docs/design/range-masks.md#verification-and-acceptance)).
 //!
-//! One launch over the `--source` photograph. With the experiment on and Mask mode entered, each
+//! One launch over the `--source` photograph. With Mask mode entered, each
 //! pick is a new mask of its kind, created from New mask with the eyedropper armed and nothing
 //! bound; the pick itself sent through the API (`mask.pick-<kind>`, as a script or an agent sends
 //! it, a click without `width` and `height` and a drag with them); the same rectangle asked of
@@ -140,7 +140,6 @@ fn area(index: usize, pick: &Pick) -> Value {
 pub fn plan(sources: &[PathBuf]) -> Plan {
     let mut steps = vec![
         Step::opened("opened"),
-        crate::mask_range_smoke::range_experiment("range-experiment"),
         Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
             .commits(0)
             .mode("mask"),

@@ -245,20 +245,6 @@ fn masked_exposure(name: &str, label: &str) -> Step {
     .label(label)
 }
 
-/// The luminance and colour range kinds are an experiment that is off by default, so another
-/// client of the session turns it on, as a script's `flags.set` does, before a range is offered.
-/// The desktop reads the flag from the event that follows and offers both kinds from then on.
-pub fn range_experiment(name: &str) -> Step {
-    Step::new(
-        name,
-        script::Step::agent(
-            "flags.set",
-            json!({"flag": luxforge_core::flags::RANGE_MASKS, "value": true}),
-        ),
-    )
-    .commits(0)
-}
-
 /// One click on the named patch, in output-stage pixels, with the eyedropper armed. What it commits
 /// is the caller's: a luminance click or a colour click that changes the component is one entry.
 /// A colour click **replaces** the swatches the component holds.
@@ -328,7 +314,6 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The fixture as launched, with nothing in the recipe: every reading is against this frame.
         Step::opened("opened").no_layer(BASIC_EFFECT).masks(0),
-        range_experiment("range-experiment"),
         mask_mode("mask-mode"),
         // A new mask whose first component is a luminance range. A **typed** kind: every field of
         // its geometry carries a default, so the button creates it in one history entry rather than
@@ -488,7 +473,6 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         // The catalog reopened in a new process, on the entry launch 1 ended on.
         Step::opened("reopened").label("Pick Colour range 1"),
-        range_experiment("range-experiment"),
         mask_mode("mask-mode"),
         // A second mask, one colour range. Created, it is selected and the eyedropper is armed on
         // it with nothing bound to the mask and nothing sampled, which selects nothing; and the

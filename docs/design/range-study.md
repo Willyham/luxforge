@@ -8,10 +8,7 @@ answering its [phase-D component section](masking.md#luminance-range-and-colour-
 is the value-based companion to the [mask study](mask-study.md), which froze the position-based
 components; that study named the range metrics as **not** frozen by it, and this one freezes them.
 The production transcription is `crates/luxforge-core/src/mask/range.rs`, checked against the
-reference **bit for bit** by `crates/luxforge-core/tests/mask/range.rs`. Availability: creating a
-luminance or colour range is an experiment behind the flag `masks.range-selections`, off by default
-([gated mask kinds](settings-and-flags.md#gated-mask-kinds)); an existing range component renders
-and edits whatever the flag says, so these equations apply to it either way.
+reference **bit for bit** by `crates/luxforge-core/tests/mask/range.rs`.
 
 What is frozen here: the luminance axis, the band and its shoulders, the Oklab colour metric, the
 multi-sample combination, the refine mapping and the tolerance. **Not frozen here**, and named so

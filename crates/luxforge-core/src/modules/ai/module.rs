@@ -17,7 +17,7 @@ use crate::{
     artifacts::{PREPARED_ARTIFACT_BYTES, candidates::MAX_CANDIDATE_BYTES},
     capabilities::{
         context::ModuleContext,
-        descriptor::{ReadBoundary, ResourceDescriptor, TaskDescriptor},
+        descriptor::{ReadBoundary, TaskDescriptor},
         resources::ResourceState,
     },
     inference::MAX_PROMPT_CHARS,
@@ -35,8 +35,6 @@ use std::path::Path;
 pub(crate) const AI_MODULE: &str = "luxforge.ai";
 /// The Generative tier's task: `task.fill-generative`.
 pub(crate) const FILL_GENERATIVE: &str = "fill-generative";
-/// The experiment flag that admits the Generative tier.
-pub(crate) const GENERATIVE_FLAG: &str = crate::flags::AI_GENERATIVE;
 /// The tier's name, as `module.status` and a candidate's provenance give it.
 pub(crate) const GENERATIVE_TIER: &str = "generative";
 /// Candidates one Generate makes by default, and at most. One at a time: a
@@ -130,7 +128,7 @@ impl FillRequest {
 }
 
 /// The AI editing module: the qualified model in every run, and the developer fake before it in a
-/// developer run (see [`super::models`]). The `ai.generative` flag gates the tier.
+/// developer run (see [`super::models`]).
 pub(crate) struct AiModule {
     descriptor: ModuleDescriptor,
     models: &'static [GenerativeModel],
@@ -170,12 +168,7 @@ impl AiModule {
         let mut resources = Vec::new();
         for model in models {
             capabilities.extend(model.capabilities());
-            // Every file is the Generative tier's alone: a client offers it only while the tier's
-            // experiment is on.
-            resources.extend(model.files().map(|file| ResourceDescriptor {
-                flag: Some(GENERATIVE_FLAG.into()),
-                ..file.descriptor()
-            }));
+            resources.extend(model.files().map(|file| file.descriptor()));
         }
         let mut uses: Vec<String> = Vec::new();
         for model in models {
@@ -205,7 +198,7 @@ impl AiModule {
             id: FILL_GENERATIVE.into(),
             title: "Generative fill".into(),
             notes: format!(
-                "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. With ai.generative-gpu-sharing on as it is requested, its generations run their GPU work in short slices so the interface keeps drawing, and result.share_gpu says so. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt, share_gpu}}."
+                "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate ({MAX_CANDIDATE_BYTES} bytes of patch at {PATCH_PIXEL_BYTES} bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within {PREPARED_ARTIFACT_BYTES} bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {{tier, model, candidates, seeds, next_seed, rect, prompt}}."
             ),
             asset: true,
             profile: false,
@@ -228,7 +221,7 @@ impl AiModule {
             ],
             apply: None,
             reads: Some(ReadBoundary::RepairInput),
-            flags: vec![GENERATIVE_FLAG.into()],
+            flags: Vec::new(),
         };
         for model in analysis.models {
             capabilities.extend(model.capabilities());
@@ -406,15 +399,13 @@ impl CapabilityModule for AiModule {
             return Ok(TaskNeeds {
                 uses: Some(models?.iter().map(|m| m.runtime.to_owned()).collect()),
                 flags: vec![ANALYSIS_FLAG],
-                reads_flags: Vec::new(),
                 locks_asset: false,
             });
         }
         let request = self.request(task_id, parameters)?;
         Ok(TaskNeeds {
             uses: Some(request.uses()?),
-            flags: vec![GENERATIVE_FLAG],
-            reads_flags: vec![crate::flags::AI_GENERATIVE_GPU_SHARING],
+            flags: Vec::new(),
             locks_asset: true,
         })
     }
@@ -501,7 +492,6 @@ impl CapabilityModule for AiModule {
         Ok(TaskNeeds {
             uses: Some(vec![decoder.runtime.to_owned()]),
             flags: vec![ANALYSIS_FLAG],
-            reads_flags: Vec::new(),
             locks_asset: false,
         })
     }
@@ -522,7 +512,6 @@ impl CapabilityModule for AiModule {
     /// models with their files' states, so a client lists the tiers it can fill with and offers
     /// a missing text encoder's download.
     fn status(&self, view: &HostView<'_>) -> Map<String, Value> {
-        let flag = view.flag(GENERATIVE_FLAG);
         let installed = |resource: &str| view.resource(resource) == ResourceState::Installed;
         let models: Vec<Value> = self
             .models
@@ -546,9 +535,6 @@ impl CapabilityModule for AiModule {
             .iter()
             .any(|model| installed(model.generator.resource));
         let mut missing = Vec::new();
-        if !flag {
-            missing.push(json!({"kind": "flag", "id": GENERATIVE_FLAG, "state": "off"}));
-        }
         if !view.runtime() {
             missing.push(json!({"kind": "runtime", "id": "inference", "state": "unavailable"}));
         }
@@ -564,7 +550,6 @@ impl CapabilityModule for AiModule {
                 "task": format!("task.{FILL_GENERATIVE}"),
                 "offered": missing.is_empty(),
                 "missing": missing,
-                "flag": {"id": GENERATIVE_FLAG, "on": flag},
                 "models": models,
             }]),
         );

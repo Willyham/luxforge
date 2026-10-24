@@ -2,21 +2,19 @@
 //! (`docs/design/ai-editing.md#desktop-surface`), on the real editor, background-only, with
 //! correlated state, log and capture.
 //!
-//! One developer launch on the four-quadrant fixture. With the experiment on, the tools panel has
-//! no AI editing section (its setup is the Corrections band's), and the experiment is turned off
-//! again. With the `ai.generative` experiment off the Corrections band has no Remove; a second
-//! client turns it on, Remove is offered and chosen, and shows AI editing's setup with Set up,
-//! which asks through the setup sheet before the fake generator installs. The photograph is given a
+//! One developer launch on the four-quadrant fixture. The tools panel has no AI editing section
+//! (its setup is the Corrections band's). In the Corrections band Remove is offered and chosen, and
+//! shows AI editing's setup with Set up, which asks through the setup sheet before the fake generator installs. The photograph is given a
 //! global Basic edit, and a stroke across the boundary of two quadrants is the selection; Generate
-//! is captured while it runs (the ring and the status bar's progress), Escape cancels it, Generate
+//! is captured while it runs (the ring, the status bar's progress and the tools panel's notice that
+//! the editor may be slow), Escape cancels it, Generate
 //! runs to its one candidate, Regenerate adds one more, and the first is chosen again: each chosen
 //! candidate is shown in the photograph as a candidate draft, through the Basic edit above it. A
 //! second client accepts the desktop's newest job's candidate, after which the shown one, generated
 //! against the photograph without it, is refused and the photograph is left unfilled. A prompt
 //! makes the action Replace and offers the Replace add-on, whose Add asks through the setup sheet
 //! in the feature's words; Replace then runs, its candidate is shown, and Accept commits it: the
-//! accepted frame is the shown one. Last, the second client turns the experiment off while Remove
-//! is chosen, and the band is back on Heal with no Remove. The fill of a flat-coloured context is
+//! accepted frame is the shown one. The fill of a flat-coloured context is
 //! that context's mean, so a fill across two quadrants is legible in the capture: the left
 //! quadrant's colour inside the selection becomes a mix of both.
 use crate::{
@@ -30,13 +28,12 @@ use luxforge_evidence::{
 };
 
 pub const SCENARIO: &str = "generative";
-pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in the Corrections band on the developer fake models: hidden with its experiment off and shown once on, AI editing's setup sheet and its consented download, a Basic edit and a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate shown in the photograph as a candidate draft, a second client's accept refusing it, a prompt's Replace with the Replace add-on's setup sheet and download, its candidate shown and accepted as shown, and Remove gone again with the experiment off";
+pub const ABOUT: &str = "No AI editing section in the tools panel, and Remove in the Corrections band on the developer fake models: offered, AI editing's setup sheet and its consented download, a Basic edit and a painted selection, Generate's progress and Cancel, one candidate, Regenerate's second, a chosen candidate shown in the photograph as a candidate draft, a second client's accept refusing it, a prompt's Replace with the Replace add-on's setup sheet and download, its candidate shown and accepted as shown";
 
 /// The developer AI module, which serves the fill tiers and their fake models.
 const AI: &str = "luxforge.ai";
 const GENERATOR: &str = "fake-generator";
 const PROMPT: &str = "a red bicycle";
-const FLAG: &str = "ai.generative";
 
 /// The selection: a stroke across the boundary between the top two quadrants.
 const STROKE: [[f64; 2]; 4] = [[0.42, 0.30], [0.47, 0.30], [0.53, 0.30], [0.58, 0.30]];
@@ -64,24 +61,12 @@ fn ai(action: CapabilityAction) -> CapabilityStep {
 
 /// Every frame, in order.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    // A second client's flag change, which the step waits for the desktop to read.
-    let flag = |name: &str, on: bool| {
-        Step::new(
-            name,
-            script::Step::agent("flags.set", json!({"flag": FLAG, "value": on})),
-        )
-        .commits(0)
-    };
     Plan::new(vec![
+        // The tools panel with nothing installed: no AI editing section, since its setup is the
+        // Corrections band's.
         Step::opened("opened").no_draft(),
-        // The tools panel with the experiment on and nothing installed: no AI editing section,
-        // since its setup is the Corrections band's.
-        flag("panel-flag", true),
-        flag("panel-flag-off", false),
-        // The experiment off, as by default: the band has no Remove.
         Step::new("mode", key("q")).commits(0).mode(MODULE),
-        flag("flag", true),
-        // The flag on: Remove is offered; AI editing is not set up, so the band shows its setup.
+        // Remove is offered; AI editing is not set up, so the band shows its setup.
         Step::new(
             "remove-model",
             correction(CorrectionStep::Kind("remove".into())),
@@ -167,8 +152,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .label(format!("Add Replace \"{PROMPT}\" 2"))
             .status_starts("Accepted"),
-        // The experiment off while Remove is chosen: the band is back on its kind.
-        flag("flag-off", false),
     ])
 }
 
@@ -214,28 +197,20 @@ fn apart(one: [f64; 3], two: [f64; 3]) -> f64 {
 pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
-    // With the experiment on, the tools panel lists Basic but no AI editing section; the setup
-    // is still recorded, for the Corrections band.
-    let panel = launch.at("panel-flag")?;
+    // The tools panel lists Basic but no AI editing section; the setup is still recorded, for the
+    // Corrections band.
+    let panel = launch.at("opened")?;
     let expanded = &panel.state()["expanded"];
     let setup = &panel.state()["capabilities"][AI]["setup"];
     ensure(
         !expanded["luxforge.basic"].is_null() && expanded[AI].is_null() && setup.is_object(),
         format!("The tools panel's sections {expanded} and AI editing's setup {setup}"),
     )?;
-    // With the experiment off there is no Remove, and with it on Remove is offered, not chosen.
-    let off = launch.at("mode")?;
-    ensure(
-        band(off).is_null() && record(off)["active"] == json!(false),
-        format!(
-            "The band with the experiment off: {}",
-            off.state()["corrections"]["band"]
-        ),
-    )?;
-    let on = launch.at("flag")?;
+    // Remove is offered, not chosen.
+    let on = launch.at("mode")?;
     ensure(
         band(on)["chosen"] == json!(false),
-        format!("Remove with the experiment on: {}", band(on)),
+        format!("Remove offered: {}", band(on)),
     )?;
     let missing = launch.at("remove-model")?;
     ensure(
@@ -306,6 +281,14 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
             && record(generating)["lock"].is_string(),
         format!("The running generation: {}", band(generating)),
     )?;
+    // The tools panel says the editor may be slow while it runs, and says nothing once it ends.
+    let notice = &generating.state()["tools_notice"];
+    ensure(
+        notice.as_str().is_some_and(|notice| {
+            notice == "Generative fill in progress. The editor may be slow while it runs."
+        }),
+        format!("The tools panel's notice while generating: {notice}"),
+    )?;
     let cancelled = launch.at("cancelled")?;
     ensure(
         record(cancelled)["jobs"][0]["status"] == json!("cancelled")
@@ -321,6 +304,13 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
     ensure(
         strip.len() == 1 && strip[0]["chosen"] == json!(true),
         format!("Generate's strip: {}", band(generated)),
+    )?;
+    ensure(
+        generated.state()["tools_notice"].is_null(),
+        format!(
+            "The tools panel's notice once generated: {}",
+            generated.state()["tools_notice"]
+        ),
     )?;
     ensure(
         record(generated)["previews"].as_array().map(Vec::len) == Some(1),
@@ -446,17 +436,6 @@ pub fn verify(run: &mut crate::scenario::Run, launches: &[Checked]) -> Result {
         apart(rgb(replaced, OUTSIDE)?, rgb(accepted, OUTSIDE)?),
         0.0,
         Tolerance::Within(MATCHED),
-    )?;
-    // Turned off while Remove is chosen: no Remove, and the band on Heal.
-    let gone = launch.at("flag-off")?;
-    ensure(
-        band(gone).is_null()
-            && record(gone)["active"] == json!(false)
-            && gone.state()["corrections"]["band"]["new_kind"] == json!("heal"),
-        format!(
-            "The band with the experiment turned off: {}",
-            gone.state()["corrections"]["band"]
-        ),
     )?;
     checks.write(
         run.out(),

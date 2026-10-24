@@ -16,8 +16,8 @@
 //!   [`AvailableUpdate`] says whether it changes the format, and
 //!   [`UpdatePolicy::installs_automatically`] is false for such an update whatever the person's
 //!   preference.
-//! - **Only followed channels are offered.** A pre-release item is reported only while the
-//!   Experiments flag [`crate::flags::PRERELEASE_CHANNEL`] is on.
+//! - **Every channel is followed.** A client follows the default and `prerelease` channels, so a
+//!   release candidate is offered as a release is.
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -239,8 +239,6 @@ pub struct UpdateStatus {
     /// The `update_install_automatically` preference as stored. It applies only while `checks` is
     /// on, and never to an update that changes the catalog format.
     pub install_automatically: bool,
-    /// The Experiments flag `updates.prerelease-channel`.
-    pub prerelease_channel: bool,
     pub checking: bool,
     pub last_check: Option<LastCheck>,
     pub available: Option<AvailableUpdate>,
@@ -269,7 +267,7 @@ impl UpdateStatus {
         let available = port
             .available
             .as_ref()
-            .filter(|update| !unavailable && policy.follows(update))
+            .filter(|_| !unavailable)
             .map(|update| AvailableUpdate {
                 version: update.version.clone(),
                 build: update.build,
@@ -289,7 +287,6 @@ impl UpdateStatus {
             },
             checks: policy.checks,
             install_automatically: policy.install_automatically,
-            prerelease_channel: policy.prerelease_channel,
             checking: port.checking && !unavailable,
             last_check: port.last_check,
             progress: port.progress.filter(|_| available.is_some()),
@@ -321,24 +318,16 @@ pub struct UpdatePolicy {
     pub checks: bool,
     /// `update_install_automatically`, as stored.
     pub install_automatically: bool,
-    /// The Experiments flag `updates.prerelease-channel`: follow the `prerelease` channel too.
-    pub prerelease_channel: bool,
     /// The version `update.skip` stored.
     pub skipped_version: Option<String>,
     catalog_format: i64,
 }
 
 impl UpdatePolicy {
-    pub fn new(
-        checks: bool,
-        install_automatically: bool,
-        prerelease_channel: bool,
-        skipped_version: Option<String>,
-    ) -> Self {
+    pub fn new(checks: bool, install_automatically: bool, skipped_version: Option<String>) -> Self {
         Self {
             checks,
             install_automatically,
-            prerelease_channel,
             skipped_version,
             catalog_format: CATALOG_FORMAT,
         }
@@ -347,11 +336,6 @@ impl UpdatePolicy {
     /// The catalog format this build reads and writes ([`CATALOG_FORMAT`]).
     pub fn catalog_format(&self) -> i64 {
         self.catalog_format
-    }
-
-    /// Whether `update` is on a channel this installation follows.
-    pub fn follows(&self, update: &FeedUpdate) -> bool {
-        !update.prerelease || self.prerelease_channel
     }
 
     /// Whether `update` reads and writes another catalog format than this build.
@@ -365,13 +349,12 @@ impl UpdatePolicy {
     }
 
     /// Whether `update` may download in the background and install at the next ordinary quit
-    /// without asking: only while checks and automatic installation are both on, on a followed
-    /// channel, for a version not skipped, and never when it changes the catalog format. A port
+    /// without asking: only while checks and automatic installation are both on, for a version not
+    /// skipped, and never when it changes the catalog format. A port
     /// installs nothing automatically unless this says so.
     pub fn installs_automatically(&self, update: &FeedUpdate) -> bool {
         self.checks
             && self.install_automatically
-            && self.follows(update)
             && !self.skipped(update)
             && !self.changes_catalog_format(update)
     }
@@ -506,10 +489,9 @@ pub trait UpdatePort: Send + Sync {
     fn status(&self) -> PortStatus;
 
     /// The person's choices and the rules derived from them, at the owner's start and after every
-    /// change to `update_checks`, `update_install_automatically`, the skipped version or the
-    /// pre-release flag. The port schedules checks only while [`UpdatePolicy::checks`] is on,
-    /// follows the `prerelease` channel only while [`UpdatePolicy::prerelease_channel`] is on, and
-    /// downloads and installs at the next ordinary quit only an update
+    /// change to `update_checks`, `update_install_automatically` or the skipped version. The port
+    /// schedules checks only while [`UpdatePolicy::checks`] is on, follows the default and
+    /// `prerelease` channels, and downloads and installs at the next ordinary quit only an update
     /// [`UpdatePolicy::installs_automatically`] allows.
     fn apply(&self, policy: &UpdatePolicy);
 
@@ -606,15 +588,11 @@ pub(crate) fn check_version(version: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The policy the stored preferences and the pre-release flag give.
-pub(crate) fn policy(
-    preferences: &crate::preferences::Preferences,
-    prerelease_channel: bool,
-) -> UpdatePolicy {
+/// The policy the stored preferences give.
+pub(crate) fn policy(preferences: &crate::preferences::Preferences) -> UpdatePolicy {
     UpdatePolicy::new(
         preferences.update_checks(),
         preferences.update_install_automatically(),
-        prerelease_channel,
         preferences.update_skipped_version.clone(),
     )
 }
@@ -636,27 +614,27 @@ mod tests {
 
     #[test]
     fn update_a_catalog_format_change_is_never_installed_automatically() {
-        let policy = UpdatePolicy::new(true, true, false, None);
+        let policy = UpdatePolicy::new(true, true, None);
         assert!(policy.installs_automatically(&item("0.2.0", CATALOG_FORMAT, false)));
         let changed = item("0.2.0", CATALOG_FORMAT + 1, false);
         assert!(policy.changes_catalog_format(&changed));
         assert!(!policy.installs_automatically(&changed));
         // Off, or with checks off, nothing installs automatically.
         for policy in [
-            UpdatePolicy::new(true, false, false, None),
-            UpdatePolicy::new(false, true, false, None),
-            UpdatePolicy::new(true, true, false, Some("0.2.0".into())),
+            UpdatePolicy::new(true, false, None),
+            UpdatePolicy::new(false, true, None),
+            UpdatePolicy::new(true, true, Some("0.2.0".into())),
         ] {
             assert!(!policy.installs_automatically(&item("0.2.0", CATALOG_FORMAT, false)));
         }
         // A skip names one version: a later one installs as usual.
-        let skipped = UpdatePolicy::new(true, true, false, Some("0.2.0".into()));
+        let skipped = UpdatePolicy::new(true, true, Some("0.2.0".into()));
         assert!(skipped.installs_automatically(&item("0.2.1", CATALOG_FORMAT, false)));
     }
 
     #[test]
     fn update_status_composes_the_port_the_policy_and_the_catalog_format() {
-        let policy = UpdatePolicy::new(true, true, false, None);
+        let policy = UpdatePolicy::new(true, true, None);
         let mut port = PortStatus::idle(Updater::Sparkle);
         port.build = Some(7);
         port.available = Some(item("0.2.0", CATALOG_FORMAT + 1, false));
@@ -673,7 +651,6 @@ mod tests {
                 "current": {"version": CURRENT_VERSION, "build": 7},
                 "checks": true,
                 "install_automatically": true,
-                "prerelease_channel": false,
                 "checking": false,
                 "last_check": null,
                 "available": {
@@ -702,8 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn update_no_port_is_headless_and_a_prerelease_needs_its_channel() {
-        let policy = UpdatePolicy::new(true, false, false, None);
+    fn update_no_port_is_headless_and_a_prerelease_is_offered() {
+        let policy = UpdatePolicy::new(true, false, None);
         let status = UpdateStatus::compose(None, &policy, false);
         assert_eq!(
             (status.mechanism, status.reason, status.current.build),
@@ -716,14 +693,11 @@ mod tests {
         let mut port = PortStatus::idle(Updater::LinuxPayload);
         port.available = Some(item("0.3.0-rc.1", CATALOG_FORMAT, true));
         port.ready = true;
-        let hidden = UpdateStatus::compose(Some(&port), &policy, false);
-        assert_eq!((hidden.available, hidden.ready), (None, false));
-        let followed = UpdatePolicy::new(true, false, true, None);
-        let shown = UpdateStatus::compose(Some(&port), &followed, false);
+        let shown = UpdateStatus::compose(Some(&port), &policy, false);
         assert!(shown.available.unwrap().prerelease && shown.ready);
         // A development build's port names its reason and offers nothing.
         let development = UnavailablePort::new(UnavailableReason::DevelopmentBuild).status();
-        let status = UpdateStatus::compose(Some(&development), &followed, false);
+        let status = UpdateStatus::compose(Some(&development), &policy, false);
         assert_eq!(
             serde_json::to_value((status.mechanism, status.reason)).unwrap(),
             json!(["unavailable", "development-build"])

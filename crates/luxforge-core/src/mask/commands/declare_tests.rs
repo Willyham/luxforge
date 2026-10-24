@@ -205,9 +205,8 @@ fn registering_a_sampling_kind_is_enough_to_make_its_swatches_editable() {
 /// and not creatable. It is asserted over the table rather than over a list of names, so a kind
 /// added later is covered by this test on the day it is registered.
 /// Registering a kind with a pick rule is enough to make it pickable: `mask.pick-<kind>` is
-/// generated, listed by `schema.list` with its click-or-drag parameters, never gated by the
-/// experiment that gates creating the kind, and named by exactly one host `area-pick` canvas
-/// declaration. The host declares no `sample-apply` of its own, and a request carries no
+/// generated, listed by `schema.list` with its click-or-drag parameters, and named by exactly one
+/// host `area-pick` canvas declaration. The host declares no `sample-apply` of its own, and a request carries no
 /// colour: `add` is declared only by a kind that holds samples.
 #[test]
 fn registering_a_picking_kind_is_enough_to_make_it_pickable() {
@@ -222,12 +221,6 @@ fn registering_a_picking_kind_is_enough_to_make_it_pickable() {
             find(command.method).map(|found| found.method),
             Some(command.method)
         );
-        assert_eq!(
-            experiment(command.method),
-            None,
-            "a pick edits what exists, so no experiment gates it"
-        );
-        assert!(crate::mask::component_kind_experiment(kind).is_some());
         let crate::CanvasInteraction::AreaPick { action, title } = interaction else {
             panic!("a mask's canvas pick is an area pick: {interaction:?}");
         };

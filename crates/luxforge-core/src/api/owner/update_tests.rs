@@ -205,7 +205,7 @@ fn update_a_check_is_answered_with_its_outcome_and_announced() {
     let port = FakeUpdatePort::new(Updater::Sparkle);
     let harness = Harness::with("check", &port);
     let policy = port.policy().expect("the policy is applied at launch");
-    assert!(policy.checks && !policy.install_automatically && !policy.prerelease_channel);
+    assert!(policy.checks && !policy.install_automatically);
     assert_eq!(policy.catalog_format(), CATALOG_FORMAT);
 
     let up_to_date = harness.ok(harness.client, "update.check", json!({}));
@@ -533,22 +533,13 @@ fn update_preferences_and_the_prerelease_flag_reach_the_port_and_are_announced()
         (&json!(false), &json!(true))
     );
 
-    // A pre-release is offered only once the flag is on.
+    // A pre-release is offered as a release is.
     port.finds(Some(crate::update::FeedUpdate {
         prerelease: true,
         ..FakeUpdatePort::release("0.3.0-rc.1", 4)
     }));
-    let hidden = harness.ok(harness.client, "update.check", json!({}));
-    assert_eq!(hidden["available"], Value::Null);
-    assert_eq!(hidden["last_check"]["outcome"], "found");
-    harness.ok(
-        harness.client,
-        "flags.set",
-        json!({"flag": crate::flags::PRERELEASE_CHANNEL, "value": true}),
-    );
-    assert!(port.policy().unwrap().prerelease_channel);
-    let shown = harness.status();
-    assert_eq!(shown["prerelease_channel"], true);
+    let shown = harness.ok(harness.client, "update.check", json!({}));
+    assert_eq!(shown["last_check"]["outcome"], "found");
     assert_eq!(shown["available"]["prerelease"], true);
     assert_eq!(
         port.status().last_check.map(|check| check.outcome),

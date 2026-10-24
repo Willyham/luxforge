@@ -247,11 +247,6 @@ struct ComponentKind {
     /// where its geometry is a typed field: a colour range's `refine` is a tightness a person tunes
     /// by eye, where a gradient's endpoint is a position they type. Empty for every other kind.
     sliders: &'static [&'static str],
-    /// The experiment flag ([`crate::flags`]) that must be on for a new component of this kind to
-    /// be created, or `None` for a kind that is always offered. Off, the kind is evaluated, listed
-    /// and edited as ever; only `mask.create-<kind>` and `mask.add-<kind>` are refused, naming the
-    /// flag, and a client leaves the kind out of what it offers to create.
-    experiment: Option<&'static str>,
     /// The derived artifact a component of this kind is bound to at compile time, for a kind whose
     /// coverage is a stored raster rather than a rule: how to find it in a payload and what its
     /// recorded metadata must be. `None` for every kind that references none. The artifact store
@@ -344,7 +339,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Linear gradient",
         band: None,
         sliders: &[],
-        experiment: None,
         artifact: None,
         pick: None,
     },
@@ -361,7 +355,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Radial gradient",
         band: None,
         sliders: &[],
-        experiment: None,
         artifact: None,
         pick: None,
     },
@@ -378,7 +371,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Brush",
         band: None,
         sliders: &[],
-        experiment: None,
         artifact: None,
         pick: None,
     },
@@ -395,7 +387,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Luminance range",
         band: Some(range::luminance_band),
         sliders: &[],
-        experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
         pick: Some(range::pick_luminance),
     },
@@ -416,7 +407,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         // A colour range is a set of swatches and a radius, not a band on one axis.
         band: None,
         sliders: &["refine"],
-        experiment: Some(crate::flags::RANGE_MASKS),
         artifact: None,
         pick: Some(range::pick_colour),
     },
@@ -433,7 +423,6 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         menu_title: "Model selection",
         band: None,
         sliders: &[],
-        experiment: None,
         artifact: Some(ArtifactUse {
             of: model::artifact_of,
             check: model::check_alpha,
@@ -499,17 +488,6 @@ pub fn kind_menu_title(kind: &str) -> String {
 /// and retain.
 pub fn component_kinds() -> impl Iterator<Item = &'static str> {
     COMPONENT_KINDS.iter().map(|entry| entry.kind)
-}
-
-/// The experiment flag that must be on for a new component of `kind` to be created, or `None` for
-/// a kind that is always offered or one this build does not know. A client reads this rather than
-/// matching on kind tokens, so a kind put behind a flag later is left out of its menus with no edit
-/// to the client.
-pub fn component_kind_experiment(kind: &str) -> Option<&'static str> {
-    COMPONENT_KINDS
-        .iter()
-        .find(|entry| entry.kind == kind)
-        .and_then(|entry| entry.experiment)
 }
 
 /// The kinds whose geometry is a set of declared numbers, in table order. The command family

@@ -1137,7 +1137,7 @@
           },
           {
             "id": "mask.create-luminance-range",
-            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+            "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
             "parameters": [
               {
                 "default": 0.0,
@@ -1200,7 +1200,7 @@
           },
           {
             "id": "mask.add-luminance-range",
-            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+            "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
             "parameters": [
               {
                 "default": null,
@@ -1374,7 +1374,7 @@
           },
           {
             "id": "mask.create-colour-range",
-            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+            "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
             "parameters": [
               {
                 "default": 50.0,
@@ -1397,7 +1397,7 @@
           },
           {
             "id": "mask.add-colour-range",
-            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+            "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
             "parameters": [
               {
                 "default": null,
@@ -1964,7 +1964,7 @@
           },
           {
             "id": "mask.pick-luminance-range",
-            "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+            "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go",
             "parameters": [
               {
                 "default": null,
@@ -2055,7 +2055,7 @@
           },
           {
             "id": "mask.pick-colour-range",
-            "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+            "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go",
             "parameters": [
               {
                 "default": null,
@@ -6543,7 +6543,6 @@
                 "url": "https://github.com/Willyham/luxforge/releases/download/models-generative-1/klein-4b-removal-conditioning-ba26d15a.lfsdcond"
               }
             ],
-            "flag": "ai.generative",
             "format": "gguf",
             "id": "generative-klein-4b",
             "license": "Apache-2.0",
@@ -6573,7 +6572,6 @@
                 "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/tokenizer.json"
               }
             ],
-            "flag": "ai.generative",
             "format": "gguf",
             "id": "generative-klein-text-encoder",
             "license": "Apache-2.0",
@@ -6633,11 +6631,8 @@
         "tasks": [
           {
             "asset": true,
-            "flags": [
-              "ai.generative"
-            ],
             "id": "fill-generative",
-            "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. With ai.generative-gpu-sharing on as it is requested, its generations run their GPU work in short slices so the interface keeps drawing, and result.share_gpu says so. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt, share_gpu}.",
+            "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}.",
             "parameters": [
               {
                 "default": null,
@@ -9079,7 +9074,7 @@
       "mask.add-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+        "notes": "a second, third, … colour range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -9329,7 +9324,7 @@
       "mask.add-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+        "notes": "a second, third, … luminance range component of a mask, with its mode given explicitly rather than guessed from a modifier key",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",
@@ -9855,7 +9850,7 @@
       "mask.create-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+        "notes": "a new mask whose first component is an add colour range component; a mask never exists empty, so the initial component is required and its mode is always add",
         "optional": {
           "refine": "how tight the selection around each sampled colour is; a higher refine is always a narrower selection, geometrically between a whole colour family at 0 and one flat patch at 100"
         },
@@ -9963,7 +9958,7 @@
       "mask.create-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add; refused as not-ready, with data.flag naming it, while the experiment flag masks.range-selections is off",
+        "notes": "a new mask whose first component is an add luminance range component; a mask never exists empty, so the initial component is required and its mode is always add",
         "optional": {
           "high": "the bright edge of the band, on the histogram's own axis; it may not be below the dark edge",
           "high_feather": "how far above the bright edge the selection ramps away, in the same units; 0 is a hard edge and anything else is at least 1",
@@ -10462,7 +10457,7 @@
       "mask.pick-colour-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+        "notes": "set one colour range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go",
         "optional": {
           "add": "keep the colours the component already holds and add the picked one, up to 5, rather than replacing them; a colour already held changes nothing",
           "height": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
@@ -10576,7 +10571,7 @@
       "mask.pick-luminance-range": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go. Never gated by an experiment flag: it edits a component that already exists",
+        "notes": "set one luminance range component from the photograph: the host reads the input the operation this mask modulates receives — at the content pixel holding (x, y) for a click, or over the rectangle for a drag, through mask.sample-input-area — and derives the values itself, so no client sends a colour. One history entry, Pick and the component's name. A mask no layer is bound to reads where a first adjustment through it would go",
         "optional": {
           "height": "the dragged rectangle's height, in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in",
           "width": "the dragged rectangle's width; with height, it makes the pick a drag over that rectangle, and without both the pick is a click at the content pixel holding (x, y), in the content stage's normalized coordinates; 0 reads the one pixel the edge falls in"
@@ -12078,7 +12073,7 @@
       "task.fill-generative": {
         "mutates": true,
         "mutation": "request",
-        "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. With ai.generative-gpu-sharing on as it is requested, its generations run their GPU work in short slices so the interface keeps drawing, and result.share_gpu says so. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt, share_gpu}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted at full coverage, feathered over 15% of its radius past its edge; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Its generations run their GPU work in short slices so the interface keeps drawing. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
         "optional": {
           "candidates": "how many candidates to generate, one after another",
           "effect-points": "the effect region: a second stroke over what the object casts, such as its shadow",

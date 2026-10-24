@@ -35,7 +35,7 @@ use crate::{
         capabilities::Operation,
         remove::{
             FillJob, FillTier, RemoveNotice, RemoveSelection, Start, chosen_tier, fill_module,
-            shown_tiers, stale,
+            shown_tiers,
         },
     },
 };
@@ -336,30 +336,15 @@ impl Editor {
 
     /// The flags as the host last answered them changed: Remove follows them. With no fill task
     /// offered, a chosen Remove gives way to the kind the band chose before it, Heal or Clone; a
-    /// running generation keeps running, since only a new one is refused. A status read before
-    /// the change is read again, so the tiers it lists say what holds now.
-    pub(crate) fn remove_follow_flags(&mut self) -> Task<Message> {
-        let flags = self.settings.flags.as_ref();
-        let Some(module) = fill_module(&self.modules, flags) else {
-            if self.remove.chosen {
-                self.remove.chosen = false;
-                self.remove_reads.painting = None;
-                if self.view_state.menu == Some(MenuTarget::Remove) {
-                    self.view_state.menu = None;
-                }
+    /// running generation keeps running, since only a new one is refused.
+    pub(crate) fn remove_follow_flags(&mut self) {
+        if self.remove.chosen && fill_module(&self.modules, self.settings.flags.as_ref()).is_none()
+        {
+            self.remove.chosen = false;
+            self.remove_reads.painting = None;
+            if self.view_state.menu == Some(MenuTarget::Remove) {
+                self.view_state.menu = None;
             }
-            return Task::none();
-        };
-        let stale = self
-            .capabilities
-            .module(&module.id)
-            .status
-            .as_ref()
-            .is_some_and(|status| stale(&status.fill_tiers, flags));
-        if stale {
-            self.remove_refresh_tiers()
-        } else {
-            Task::none()
         }
     }
 

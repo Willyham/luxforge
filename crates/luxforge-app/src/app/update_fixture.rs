@@ -363,13 +363,13 @@ mod tests {
         port.attach(UpdateNotifier::new(move || {
             let _ = sender.send(());
         }));
-        port.apply(&UpdatePolicy::new(true, false, false, None));
+        port.apply(&UpdatePolicy::new(true, false, None));
         assert!(receiver.try_recv().is_ok(), "the launch check signalled");
         let status = port.status();
         assert_eq!(status.available.unwrap().version, "0.2.0");
         assert!(status.ready && !status.checking);
         // The policy applied again checks nothing more at launch.
-        port.apply(&UpdatePolicy::new(true, true, false, None));
+        port.apply(&UpdatePolicy::new(true, true, None));
         assert!(!port.status().checking);
         let refused = port.request_install().unwrap_err();
         assert_eq!(refused.kind, ErrorKind::NotReady);

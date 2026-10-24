@@ -27,7 +27,6 @@ use crate::{
         params::{NoParams, host_params},
         response::ResponseSender,
     },
-    flags,
     jobs::JobKind,
     update::{
         CheckDone, MAX_VERSION_LEN, Mechanism, UpdateNotifier, UpdatePolicy, UpdatePort,
@@ -110,7 +109,7 @@ impl Updates {
             held: Vec::new(),
             announced: None,
             install_requested: false,
-            policy: UpdatePolicy::new(true, false, false, None),
+            policy: UpdatePolicy::new(true, false, None),
             events: 0,
         }
     }
@@ -125,16 +124,11 @@ fn port(owner: &Owner) -> Option<Arc<dyn UpdatePort>> {
     owner.host.updates().cloned()
 }
 
-/// The policy the stored preferences and the pre-release flag give now. A store that cannot be read
-/// gives the defaults, as the launch does: the desktop reports that failure when it reads them.
+/// The policy the stored preferences give now. A store that cannot be read gives the defaults, as
+/// the launch does: the desktop reports that failure when it reads them.
 fn read_policy(owner: &Owner) -> UpdatePolicy {
     let preferences = owner.host.preferences.read().unwrap_or_default();
-    let prerelease = flags::live_toggle_in(
-        Some(&preferences.flags),
-        owner.host.launch_flags(),
-        flags::PRERELEASE_CHANNEL,
-    );
-    crate::update::policy(&preferences, prerelease)
+    crate::update::policy(&preferences)
 }
 
 /// The status as the port reports it now, with the policy last applied.

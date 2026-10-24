@@ -458,7 +458,7 @@ fn visible_preference_and_flag_sync_errors_reconcile_values_and_events() {
             "visible-flag",
             "flags.set",
             json!({
-                "flag": crate::flags::PRERELEASE_CHANNEL, "value": true,
+                "flag": crate::flags::AI_ANALYSIS, "value": true,
             }),
         )
         .error
@@ -469,7 +469,7 @@ fn visible_preference_and_flag_sync_errors_reconcile_values_and_events() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|flag| flag["id"] == crate::flags::PRERELEASE_CHANNEL)
+        .find(|flag| flag["id"] == crate::flags::AI_ANALYSIS)
         .unwrap();
     assert_eq!(flag["value"], true);
     let events = harness.ok("events-flags", "events.since", json!({"after": 0}));

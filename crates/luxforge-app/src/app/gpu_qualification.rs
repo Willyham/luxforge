@@ -482,13 +482,10 @@ impl Opened {
         } else {
             luxforge_core::ModuleRegistry::builtin()
         };
-        // A cell's steps may build a range mask, an experiment the harness forces on so every
-        // kind the renderer evaluates is measured.
         let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
             catalog,
             std::sync::Arc::new(registry),
             luxforge_core::HostConfig {
-                launch_flags: crate::app::testing::range_masks_config().launch_flags,
                 tiles,
                 ..luxforge_core::HostConfig::unconfigured()
             },

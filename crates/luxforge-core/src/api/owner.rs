@@ -58,8 +58,6 @@ mod catalog_tests;
 mod corrections_tests;
 #[cfg(test)]
 mod derived_source_tests;
-#[cfg(test)]
-mod experiment_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
@@ -2334,24 +2332,6 @@ impl Owner {
         ));
     }
 
-    /// Why `action` may not run now: it creates a component of a kind behind an experiment flag
-    /// ([`crate::mask::commands::experiment`]) and that flag, read live from the person's
-    /// preferences or as this host forced it, is off. A `not-ready` refusal whose `data.flag` names
-    /// the flag, so a client can say which switch turns it on.
-    fn experiment_refusal(&self, action: &str) -> Option<Error> {
-        let (flag, kind) = crate::mask::commands::experiment(action)?;
-        if crate::flags::live_toggle(&self.host.preferences, self.host.launch_flags(), flag) {
-            return None;
-        }
-        Some(
-            Error::not_ready(format!(
-                "{} masks are an experiment that is off: turn on the flag {flag} to create one",
-                crate::mask::kind_menu_title(kind)
-            ))
-            .with_data(json!({ "flag": flag })),
-        )
-    }
-
     /// `request` is the call's own, which a service handler may take values out of rather than copy
     /// ([`methods::ServiceHandler`]); it is whole again whenever the call parks a read.
     fn answer(&mut self, client: ClientId, request: &mut ApiRequest) -> Result<Planned, Error> {
@@ -2420,16 +2400,6 @@ impl Owner {
         // A selection the index's revision alone left stale is the selection still.
         if request.params["targets"]["kind"] == "selection" {
             views::freshen_selection(self, client)?;
-        }
-        // A new component of a kind behind an experiment flag that is off, asked for directly or
-        // as a draft's action, is refused naming the flag; editing what exists is not.
-        let action = match &method {
-            methods::Method::Action(action_id) => Some(action_id.as_str()),
-            _ if request.method == "draft.begin" => request.params["action"].as_str(),
-            _ => None,
-        };
-        if let Some(refusal) = action.and_then(|action| self.experiment_refusal(action)) {
-            return Err(refusal);
         }
         // A later change of a client's draft supersedes its set still waiting for a candidate's
         // patch; a candidate draft's set prepares the candidate it names, and its commit is the
@@ -3388,10 +3358,6 @@ pub(super) fn flags_set(
     )?;
     if published.value {
         announce_once(&mut owner.announced, &call.origin);
-        // The pre-release channel reaches the update port at once.
-        if params.flag == crate::flags::PRERELEASE_CHANNEL {
-            update::applied(owner);
-        }
     }
     published.finish()?;
     flags_list(owner, call, NoParams {})
@@ -3669,21 +3635,6 @@ mod tests {
         let response = send(owner, client, id, method, params);
         assert!(response.error.is_none(), "{id}: {:?}", response.error);
         response.result.expect("a result")
-    }
-
-    /// An owner that forces the range mask experiment on, for a test that creates a range mask.
-    fn start_with_range_masks(catalog: &Path) -> Result<(OwnerHandle, JoinHandle<()>), Error> {
-        OwnerHandle::start_with_host(
-            catalog,
-            Arc::new(ModuleRegistry::builtin()),
-            HostConfig {
-                launch_flags: crate::flags::LaunchFlags::resolve(
-                    None,
-                    &[(crate::flags::RANGE_MASKS, json!(true), "test")],
-                ),
-                ..HostConfig::unconfigured()
-            },
-        )
     }
 
     /// A fresh request envelope, so every call is a new request.
@@ -7427,20 +7378,9 @@ mod tests {
                 "http://127.0.0.1:9",
             )))
             .unwrap();
-        // The range mask experiment on, so a range kind's create is answered on its fields rather
-        // than refused for the flag first.
-        let (owner, join) = OwnerHandle::start_with_host(
-            &catalog,
-            Arc::new(registry),
-            HostConfig {
-                launch_flags: crate::flags::LaunchFlags::resolve(
-                    None,
-                    &[(crate::flags::RANGE_MASKS, json!(true), "test")],
-                ),
-                ..HostConfig::unconfigured()
-            },
-        )
-        .unwrap();
+        let (owner, join) =
+            OwnerHandle::start_with_host(&catalog, Arc::new(registry), HostConfig::unconfigured())
+                .unwrap();
         // Exercise the parsers of permission-only methods too; authorization has separate tests.
         let client = owner.register_with(ClientAuthority::Permissions);
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
@@ -8743,7 +8683,7 @@ mod tests {
     #[test]
     fn restoration_mask_sample_input_equals_the_direct_range_input() {
         let catalog = temp("detail-range-input.sqlite");
-        let (owner, join) = start_with_range_masks(&catalog).unwrap();
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
         let state = import_asset(&owner, client, &fixture());
         let asset = state["asset"]["id"].clone();
@@ -9000,7 +8940,7 @@ mod tests {
                 )
                 .encode_image(&image::RgbImage::from_pixel(64, 48, image::Rgb([code; 3])))
                 .unwrap();
-                let (owner, join) = start_with_range_masks(&catalog).unwrap();
+                let (owner, join) = OwnerHandle::start(&catalog).unwrap();
                 let client = owner.register();
                 let state = import_asset(&owner, client, &image);
                 let asset = state["asset"]["id"].clone();

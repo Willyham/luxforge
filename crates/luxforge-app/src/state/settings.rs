@@ -232,17 +232,10 @@ pub(crate) fn derive(
     let Some(open) = settings.open else {
         return SettingsModel::default();
     };
-    // A flag that refines another toggle is listed only while that toggle is on, as the host
-    // last answered, since it changes nothing without it.
     let rows = settings
         .flags
         .iter()
         .flat_map(|list| &list.flags)
-        .filter(|flag| {
-            flag.requires
-                .as_deref()
-                .is_none_or(|parent| toggle_on(settings.flags.as_ref(), parent))
-        })
         .map(|flag| row(settings, flag))
         .collect();
     SettingsModel {
@@ -589,44 +582,6 @@ mod tests {
         ));
         assert!(!model.rows[1].can_reset);
         assert!(!settings.idle());
-    }
-
-    #[test]
-    fn a_refining_flag_is_listed_only_while_the_toggle_it_requires_is_on() {
-        let flags = |on: bool| -> FlagList {
-            serde_json::from_value(json!({
-                "flags": [
-                    {"id": "ai.generative", "title": "Generative fill", "description": "Offers it.",
-                     "kind": "toggle", "applies": "live", "default": false, "value": on, "stored": on},
-                    {"id": "ai.generative-gpu-sharing", "title": "Share the GPU", "description": "Slices.",
-                     "kind": "toggle", "applies": "live", "requires": "ai.generative",
-                     "default": false, "value": false, "stored": false}
-                ],
-                "unrecognized": []
-            }))
-            .unwrap()
-        };
-        let ids = |on: bool| {
-            derive(
-                &Settings {
-                    open: Some(SettingsTab::Experiments),
-                    flags: Some(flags(on)),
-                    ..Settings::default()
-                },
-                &PreferenceWriter::default(),
-                &Themes::default(),
-                &view(),
-                &Usage::default(),
-                no_models(),
-                &Updates::default(),
-            )
-            .rows
-            .into_iter()
-            .map(|row| row.id)
-            .collect::<Vec<_>>()
-        };
-        assert_eq!(ids(false), ["ai.generative"]);
-        assert_eq!(ids(true), ["ai.generative", "ai.generative-gpu-sharing"]);
     }
 
     #[test]

@@ -63,16 +63,6 @@ pub(crate) fn shown_tiers(
         .collect()
 }
 
-/// The status was read before a flag a tier names last changed: what it says of the flag no
-/// longer holds, and a read is due.
-pub(crate) fn stale(tiers: &[FillTier], flags: Option<&FlagList>) -> bool {
-    tiers.iter().any(|tier| {
-        tier.flag
-            .as_ref()
-            .is_some_and(|flag| flag.on != settings::toggle_on(flags, &flag.id))
-    })
-}
-
 /// A tier's task as its module declares it: `fill-generative` for `task.fill-generative`.
 fn task_id(method: &str) -> &str {
     method
@@ -99,13 +89,6 @@ pub(crate) struct Missing {
     pub(crate) id: String,
     #[serde(default)]
     pub(crate) state: String,
-}
-
-/// The experiment flag a tier is offered under.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub(crate) struct TierFlag {
-    pub(crate) id: String,
-    pub(crate) on: bool,
 }
 
 /// One file of a tier's model: its resource and install state.
@@ -136,8 +119,6 @@ pub(crate) struct FillTier {
     pub(crate) offered: bool,
     #[serde(default)]
     pub(crate) missing: Vec<Missing>,
-    #[serde(default)]
-    pub(crate) flag: Option<TierFlag>,
     #[serde(default)]
     pub(crate) models: Vec<TierModel>,
 }
@@ -468,12 +449,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
     let module = fill_module(inputs.modules, flags)?;
     let panel = inputs.remove;
     let read = tiers_of(inputs, &module.id);
-    // A status read before a flag changed is being read again: until it answers, it is not read.
-    let reading = read.is_none_or(|tiers| stale(tiers, flags));
-    let tiers = match read {
-        Some(tiers) if !reading => shown_tiers(module, tiers, flags),
-        _ => Vec::new(),
-    };
+    let reading = read.is_none();
+    let tiers = read.map_or_else(Vec::new, |tiers| shown_tiers(module, tiers, flags));
     let tiers = tiers.as_slice();
     let chosen = chosen_tier(tiers, panel.tier.as_deref());
     let options: Vec<TierOption> = tiers
@@ -681,7 +658,6 @@ mod tests {
             "task": "task.fill-generative",
             "offered": missing.as_array().is_some_and(Vec::is_empty),
             "missing": missing,
-            "flag": {"id": "ai.generative", "on": true},
             "models": models,
         }))
         .unwrap()
