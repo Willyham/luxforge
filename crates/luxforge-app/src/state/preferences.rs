@@ -12,7 +12,7 @@ use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, CatalogSelection, DevelopFolderPreference, ExportLast,
+        BrushPreference, CanvasBackground, CatalogSelection, DevelopLastPreference, ExportLast,
         HdrMergePreference, INTERFACE_SIZES, PanoramaMergePreference, RawLook, WindowFrame,
         WorkspacePreference,
     },
@@ -125,9 +125,9 @@ preferences! {
     update_ask_to_move: bool,
     /// The person closed the Select introduction, so it is not shown the first time Select is.
     select_introduction_seen: bool,
-    /// The catalog folder last chosen as the Develop folder, with its catalog's identity, which a
-    /// launch over that catalog views again; `None` before any.
-    develop_folder: Option<DevelopFolderPreference>,
+    /// Where Develop was left: the Develop folder and the photograph open there, with their
+    /// catalog's identity, which a launch over that catalog opens again; `None` before any.
+    develop_last: Option<DevelopLastPreference>,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
@@ -287,14 +287,14 @@ impl PreferenceWriter {
             .as_deref()
     }
 
-    /// The remembered Develop folder [`Self::applied`] holds, without cloning the rest, as
+    /// Where Develop was left, as [`Self::applied`] holds it, without cloning the rest, as
     /// [`Self::applied_theme`] reads the theme. Read after every message, so it allocates nothing.
-    pub(crate) fn applied_develop_folder(&self) -> Option<&DevelopFolderPreference> {
+    pub(crate) fn applied_develop_last(&self) -> Option<&DevelopLastPreference> {
         self.waiting
             .iter()
             .chain(&self.writing)
-            .find_map(|change| change.develop_folder.as_ref())
-            .or_else(|| self.stored.as_ref().map(|stored| &stored.develop_folder))?
+            .find_map(|change| change.develop_last.as_ref())
+            .or_else(|| self.stored.as_ref().map(|stored| &stored.develop_last))?
             .as_ref()
     }
 
@@ -776,7 +776,7 @@ mod tests {
             "update_install_automatically": false,
             "update_ask_to_move": true,
             "select_introduction_seen": false,
-            "develop_folder": null
+            "develop_last": null
         }))
         .unwrap()
     }
