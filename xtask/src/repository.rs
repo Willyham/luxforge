@@ -1159,6 +1159,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/update_port.rs",
             // The MCP adapter's one worker, taking queued requests off its standard-input reader.
             "crates/luxforge-cli/src/mcp/serve.rs",
+            // A headless MCP adapter's two readers of its `luxforge-json` child, its answers and
+            // its standard error, each blocking on its pipe and ending with the child.
+            "crates/luxforge-cli/src/mcp/headless.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",

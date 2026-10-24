@@ -11,6 +11,7 @@ pub mod command;
 mod session;
 
 pub use client::{CONNECT_TIMEOUT, HANDSHAKE_TIMEOUT, LABEL, LiveClient, RESPONSE_LIMIT};
+pub(crate) use client::{read_answer, request_line, too_long};
 pub use session::{LiveSession, SESSION_FILE_LIMIT, find_session};
 
 use luxforge_core::ApiFailure;
