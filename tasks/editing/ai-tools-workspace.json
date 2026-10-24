@@ -208,13 +208,13 @@
     {
       "id": "TASK-004",
       "description": "Deliver the Object kind of the Corrections band: the fourth segment, the crosshair and hover moved from Remove, analysis on entry, click, ⇧-click and ⌥-click selection, the loose drag with One, Several pins and the Nothing hand-off to Remove, the numbered selection, Paint shadow, Generate from object artifacts through the shared Remove group, the Escape order, and the object-remove scenario.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003"
       ],
       "extra_context": [
-        "Remove keeps the delivered painting workflow and loses its hover; app/remove_hover.rs serves Object instead. Entering Object with its setup installed sends module.runtime.load for the encoder and decoder and task.analyse for the photograph on screen, showing Finding objects… until it answers; a new photograph analyses the same way.",
+        "Remove keeps the delivered painting workflow and loses its hover; Object uses the shared picker (object_pick.rs) built for Masks › Object. Entering Object with its setup installed sends module.runtime.load for the encoder and decoder and task.analyse for the photograph on screen, showing Finding objects… until it answers; a new photograph analyses the same way.",
         "Object is listed only while ai.analysis is on (as the hover is today); turning it off while Object is chosen returns the band to Remove. Rewrite the flag's description to name the two tools (the design's Flags section) and update settings-and-flags.md's ai.analysis row and Gated object picking; other shared documents are the integrator's.",
         "Click (under 3 pt) sends task.select-object {asset_id, point} and replaces the selection; ⇧ adds; ⌥-click on a selected object removes it locally with no request. A loose drag paints a dashed stroke at the band's Size and sends query.pick-object {stroke, radius, previews: all}: One selects, Several shows numbered pins (click toggles, Return or Use N sends task.select-object with the stroke and each candidate, Escape cancels), Nothing keeps the footprint under the notice whose Return switches to Remove with that stroke as its selection.",
         "At most 8 objects; selects run one at a time from the desktop with further clicks waiting in a bounded local queue of 8; leaving Object or the photograph drops queued selects and pins. The tint is drawn from each pick's held preview. Paint shadow arms the brush for one stroke sent as effect-points and effect-radius.",
@@ -244,9 +244,9 @@
         },
         {
           "kind": "file",
-          "label": "Hover",
-          "target": "crates/luxforge-app/src/app/remove_hover.rs",
-          "relevance": "The delivered hover loop."
+          "label": "Object removal",
+          "target": "crates/luxforge-app/src/app/object_remove.rs",
+          "relevance": "The Object kind of the Corrections band."
         },
         {
           "kind": "file",
