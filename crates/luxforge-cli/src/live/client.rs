@@ -40,13 +40,20 @@ impl LiveClient {
     /// session, never a reason to start another owner; a session that answers another protocol is
     /// [`UNSUPPORTED_PROTOCOL`]. A session that refuses another client answers why, which is kept.
     pub fn connect(session: &LiveSession) -> Result<(Self, Value), ApiFailure> {
-        Self::connect_within(session, HANDSHAKE_TIMEOUT)
+        Self::connect_as(session, LABEL)
     }
 
-    /// [`Self::connect`] with the handshake answered within `handshake`.
+    /// [`Self::connect`], naming this client `label` with `session.identify` instead of [`LABEL`]:
+    /// 1 to 64 characters, as the MCP adapter names itself after the agent it serves.
+    pub fn connect_as(session: &LiveSession, label: &str) -> Result<(Self, Value), ApiFailure> {
+        Self::connect_within(session, HANDSHAKE_TIMEOUT, label)
+    }
+
+    /// [`Self::connect_as`] with the handshake answered within `handshake`.
     pub(super) fn connect_within(
         session: &LiveSession,
         handshake: Duration,
+        label: &str,
     ) -> Result<(Self, Value), ApiFailure> {
         let stale = |detail: String| {
             failure(
@@ -97,13 +104,33 @@ impl LiveClient {
         }
         // Named in the desktop's list of connected clients for as long as the connection is open.
         client
-            .call("session.identify", json!({"label": LABEL}))
+            .call("session.identify", json!({"label": label}))
             .map_err(answered)?;
         client
             .writer
             .set_read_timeout(None)
             .map_err(|error| stale(error.to_string()))?;
         Ok((client, schema))
+    }
+
+    /// Whether the session has closed this connection while it was idle, as when the editor quit
+    /// or restarted since the last answer: read without waiting, so nothing is sent to learn it. A
+    /// connection that cannot be inspected counts as closed.
+    pub fn closed(&self) -> bool {
+        if !self.reader.buffer().is_empty() {
+            return false;
+        }
+        if self.writer.set_nonblocking(true).is_err() {
+            return true;
+        }
+        let peeked = self.writer.peek(&mut [0; 1]);
+        let restored = self.writer.set_nonblocking(false).is_ok();
+        match peeked {
+            Ok(0) => true,
+            Ok(_) => !restored,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => !restored,
+            Err(_) => true,
+        }
     }
 
     /// Send one request with a new request identity and the session's token, and read its answer.

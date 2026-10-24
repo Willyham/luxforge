@@ -135,7 +135,7 @@ Session-scoped methods (`draft.*`, `preview.select`, `view.set` and the rest) ar
 - **Protocol errors.** An unknown tool is JSON-RPC `-32602`. Arguments that fail the generated schema are a tool execution error naming the parameter.
 - **Jobs.** A result that names a job is returned as the registry returns it. The agent follows it with `job.wait`, whose hold is at most 30 s. A job whose `ownership` is `clients` lives as long as the adapter's connection, and the result says so with a `job-released` style warning as `luxforge-ctl` does.
 - **Pictures.** A result field that the registry marks as an image ([core additions](#core-additions)) is read by the adapter and attached as MCP image content (`image/jpeg`, base64), beside the structured result.
-  - This covers `preview.read`'s path, `preview.region`'s, and those fields in a `job.read` or `job.wait` result.
+  - This covers `preview.read`'s path and fallback, and the path of a preview job's result (`preview.region`'s among them, which answers only a job) in a `job.read` or `job.wait` result.
   - The largest photo tier is 2048 px, so a picture is at most a few hundred kilobytes. The adapter refuses to attach a file over 8 MiB, and the result carries a warning instead.
   - Full-resolution exports are never attached. Their paths are returned as data.
   - `--no-images` turns attachment off for a launch.
@@ -195,6 +195,63 @@ The adapter is a separate process that holds at most two live connections: one s
 | Held wait | 30 s |
 
 The adapter has no polling loop: waits are the owner's held `events.wait` and `job.wait`. The core additions are metadata on the static method table plus three small session methods; `session.clients` reads the owner's existing client table. Nothing renders, decodes or blocks on the catalog owner's thread.
+
+## Implementation
+
+What is built today: the live-session adapter with the compact profile. The typed profiles, list-change notifications, headless mode, `config`, packaging and the `rmcp` interoperability test are not built yet.
+
+### Command line
+
+`luxforge-mcp [--catalog PATH] [--tools compact] [--no-images]`, with `--help` and `--version`, which answer without serving. `--tools` takes only `compact` today; any other value, and any other argument, is a usage error: `{"error": {code: "usage", message}}` on standard error and exit status 2. The server ends with exit status 0 when standard input ends: requests still queued are dropped, and the one being answered finishes first. Diagnostics (attaching, a closed or lost connection, an unreadable registry) go to standard error as plain lines, never the session token.
+
+### Module layout
+
+The library side is `luxforge_cli::mcp`; the binary is `src/luxforge_mcp.rs`.
+
+- `protocol` reads one line as a JSON-RPC message and decides each request's era: modern when its `_meta` names `io.modelcontextprotocol/protocolVersion`, legacy after `initialize`. It builds results (a modern one gains `resultType: "complete"` and `_meta["io.modelcontextprotocol/serverInfo"]`), errors and notifications, the label and the actor.
+- `serve` is the reader thread and the one worker over a bounded queue. The reader frames standard input, refuses an unreadable line, an over-long line or a full queue at once, and applies `notifications/cancelled` at once. The worker answers queued requests in arrival order through a `Handle`. Both write whole lines through one shared output.
+- `adapter` is the `Handle`: discovery, `initialize`, `ping`, `subscriptions/listen`, `tools/list` and `tools/call`.
+- `tools` holds the `Profile` (only `Compact` today) and the three compact tools. `luxforge_call`'s path (check, envelope, one send, job warning, pictures) is one function a typed profile reuses per method.
+- `owner` is the seam to a catalog owner: a `Target` attaches (`LiveTarget` finds the live session and connects with `LiveClient::connect_as`) and a `Connection` carries calls (`LiveClient` implements it). `Owner` attaches lazily, ends a session whose connection failed, and warns `session-replaced` on the next attachment. A headless `luxforge-json` child is another `Target` and `Connection` pair, and a typed profile's event watch is a second `Target::attach`.
+- `images` finds pictures through the `images` and `job_images` markers and reads them within the bound.
+- `schema` generates the input schemas and the request check ([schema generation](#schema-generation)).
+
+### Protocol details
+
+- **Versions.** `server/discover` and a refusal list `["2026-07-28", "2025-11-25", "2025-06-18"]`. A request whose `_meta` names any other version, a legacy one included, is refused with `-32022` and `data: {supported, requested}`. A modern request missing `clientCapabilities`, and any request naming no version before `initialize`, is `-32602`. `initialize` answers the client's version when it is 2025-11-25 or 2025-06-18, and 2025-11-25 otherwise; a second `initialize` is `-32600`. A modern request is still served as one after `initialize`.
+- **Methods.** Modern: `server/discover`, `subscriptions/listen`, `tools/list`, `tools/call`. Legacy: `initialize`, `ping`, `tools/list`, `tools/call`. Anything else is `-32601`. A `tools/list` cursor is `-32602`: the list has one page.
+- **Caching.** `server/discover` and modern `tools/list` answer `ttlMs: 3600000` and `cacheScope: "private"`: the compact list is fixed for the life of the process.
+- **Capabilities.** `{tools: {}}`, without `listChanged`, since the compact list never changes. `subscriptions/listen` is acknowledged with `notifications/subscriptions/acknowledged` honouring nothing (`notifications: {}`) and stays open, unanswered, until the client cancels it.
+- **Instructions.** Discovery and `initialize` carry a short `instructions` text naming the three tools and saying that edits land in history under the agent's name.
+- **Framing errors.** An unparsable line is `-32700` and a message that is not a JSON-RPC request object (a batch, a null or fractional `id`, non-object `params`) is `-32600`, each without an `id` unless one could be read. A line over 1 MiB is `-32600` with `data: {limit}`, unread. A request arriving while 32 wait is refused at once with the application code `-31000` and `data: {limit: 32}`, outside the JSON-RPC reserved range as the 2026-07-28 code policy asks.
+- **Cancellation.** A cancelled queued request is removed and never answered. A cancelled running call stops at its next hold (after attaching, after the `asset.state` read, before the job read) and its answer is withheld; a call already sent to the owner, such as a held `job.wait`, finishes there and its answer is dropped.
+- **Legacy results.** `structuredContent` is included only when the result is a JSON object, as 2025-11-25 requires; the text block always carries the JSON.
+
+### The compact tools
+
+- **`luxforge_methods`.** `{source, catalog | session, count, methods}`. `source` is `live` with the session's `catalog`, or `built-in` with `session`, the failure that left no session (`no-session`, or `usage` listing several). It tries to attach, so it reads the running editor's registry when there is one. Each entry is `{name, summary, mutates, session_scoped, read_only?, reversible?, network?, callable}`: the markers as the entry gives them, and `callable` false for `authority: "permissions"`. The summary is the notes up to the first `. ` or `; `, at most 240 characters. `namespace` keeps a name equal to it or starting with it and a dot, so `module.settings` works as well as `edit`. Names are listed sorted, as `schema.list` gives them.
+- **`luxforge_describe`.** `{source, catalog | session, methods}`, each method once: `{name, notes, mutates, session_scoped, read_only?, reversible?, network?, callable, envelope, revision_of?, expected_revision?, session?, input_schema}`. `envelope` is `revision`, `request` or null; `expected_revision` is `optional` or `required` when the method has one. `input_schema` is the generated schema of `params`, without `expected_revision`, which `luxforge_call` takes beside `params`. `session` states a session-scoped method's lifetime. An unknown name, or more than 16, is a `validation` tool error.
+- **`luxforge_call`.** `expected_revision` is given beside `params`, never inside them. A `validation` tool error names the argument in `data.parameter`: `method`, `params`, `expected_revision` or `params.<name>`. A method with `authority: "permissions"` is refused `forbidden` before anything is sent. The registry's own failures pass through unchanged.
+
+### Warnings
+
+A result's warnings are `ApiFailure`-shaped, `{code, message, job_id?, data?}`, in one trailing text block `{"warnings": [...]}` after the result and any pictures; `structuredContent` stays the method's result exactly. The codes are:
+
+- `session-replaced`, `data: {catalog}`, on the first result after the adapter attached again.
+- `job-released`, `data: {kind, status, ownership}`, when `job.read` says a job the call started belongs to its clients.
+- `image-too-large`, `data: {field, path, bytes, limit}`, and `image-unreadable`, `data: {field, path}`, for a marked picture not attached.
+
+### Identity
+
+The label is the client's `clientInfo` title, else its name, with control characters removed and trimmed, shortened so that "*client* via MCP" is at most 64 characters. A client that gives neither is labelled "MCP client". The actor is `mcp:` and the name, cut at a character boundary to 128 bytes, or `mcp`. A modern request's own `clientInfo` names its actor; a legacy session's comes from `initialize`. The label is sent once, when the connection is made, from the request that attached.
+
+### Connection loss
+
+Before each call the adapter checks, without sending, whether the owner closed the idle connection. If it did, it attaches again before sending, so an edit after a desktop restart is applied normally with a `session-replaced` warning. A connection that fails while a call is on its way ends the session: a read reports `connection-lost`, and a mutation reports `outcome-unknown` with `data: {method, request_id}`. Neither is retried.
+
+### Tests
+
+Unit tests cover framing, era and version rules, the label and actor, the queue's bound and both cancellations over a scripted handler, picture markers and the file bound, and the compact tools over a scripted owner serving the built-in registry. The process tests (`tests/mcp/`) run the real binary against an in-process owner and `LocalServer`, with a proxy that cuts the connection after a forwarded edit. Every message the binary writes there is validated against `tests/mcp/spec/`'s vendored `schema.json` of its era, checked by the request it answers. The vendored files' source, commit, checksums and licence are in `THIRD_PARTY.md` beside them.
 
 ## Verification
 

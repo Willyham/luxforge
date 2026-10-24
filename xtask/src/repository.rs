@@ -1036,6 +1036,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The macOS update port's quit hook, waiting off the update loop for Sparkle's
             // installer to take or cancel an update.
             "crates/luxforge-app/src/app/sparkle_port.rs",
+            // The MCP adapter's request queue, its one worker asleep until a request arrives.
+            "crates/luxforge-cli/src/mcp/serve.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1155,6 +1157,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The Linux payload updater's port: its check worker and one download thread at a
             // time; and the macOS move port's one move into Applications.
             "crates/luxforge-app/src/app/update_port.rs",
+            // The MCP adapter's one worker, taking queued requests off its standard-input reader.
+            "crates/luxforge-cli/src/mcp/serve.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",
@@ -1706,8 +1710,9 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         manifests: &["crates/luxforge-cli"],
         tables: &[Table::Normal],
         allowed: &[],
-        reason: "luxforge-cli builds the headless luxforge-json and luxforge-ctl binaries and may \
-                 not depend on the GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
+        reason: "luxforge-cli builds the headless luxforge-json, luxforge-ctl and luxforge-mcp \
+                 binaries and may not depend on the GUI stack (iced, wgpu, naga, rfd, luxforge-ui or \
+                 luxforge-app)",
     },
     // The core evaluates nothing on a GPU and draws nothing: a module's GPU program is WGSL text
     // that the photo surface in luxforge-ui executes, so the core builds no GPU or GUI crate. Its

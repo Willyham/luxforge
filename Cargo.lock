@@ -2040,6 +2040,7 @@ dependencies = [
 name = "luxforge-cli"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "jsonschema",
  "luxforge-core",
  "luxforge-diffusion",

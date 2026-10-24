@@ -645,7 +645,7 @@ fn execute(
 }
 
 /// One line of standard input, at most [`MAX_REQUEST_BYTES`] long without its newline.
-enum Line {
+pub(crate) enum Line {
     End,
     Text(Vec<u8>),
     TooLong,
@@ -653,7 +653,7 @@ enum Line {
 
 /// Read the next line of `reader` within [`MAX_REQUEST_BYTES`]; the rest of a longer line is read
 /// and dropped, so memory stays bounded and the next line is read whole.
-fn next_line(reader: &mut dyn BufRead) -> std::io::Result<Line> {
+pub(crate) fn next_line(reader: &mut dyn BufRead) -> std::io::Result<Line> {
     let mut line = Vec::new();
     let read = (&mut *reader)
         .take(MAX_REQUEST_BYTES as u64 + 1)

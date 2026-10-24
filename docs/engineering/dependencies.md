@@ -109,6 +109,8 @@ The [MCP adapter](../design/mcp.md#schema-generation)'s generated input schemas 
 - Apache-2.0: `unicode-general-category` 1.1.0;
 - MIT-0: `borrow-or-share` 0.2.4, which `deny.toml`'s allowlist does not name. The graph cargo-deny checks under `cargo xtask audit` leaves out packages that only a development dependency reaches, so none of these is checked there; no build that ships links any of them.
 
+The adapter binary, `luxforge-mcp`, adds no package to the lockfile: it names `base64` 0.23.1 (MIT or Apache-2.0) with `std`, as `ureq` builds it, to encode the pictures it attaches. Its process tests hold every message it writes to the MCP specification's own `schema.json` for 2026-07-28 and 2025-11-25, vendored unmodified under `crates/luxforge-cli/tests/mcp/spec/` with their source commit, checksums and the specification project's licence (Apache-2.0, with earlier contributions under MIT) in `THIRD_PARTY.md`. They are test inputs; no binary includes them.
+
 As with every other dependency, passing the automated checks is not the deferred manual review.
 
 ## Usage statistics dependencies

@@ -4,11 +4,12 @@ use luxforge_test_macros::slow;
 
 #[test]
 #[slow]
-fn both_command_lines_report_the_same_compiled_version_without_a_catalog() {
+fn every_command_line_reports_the_same_compiled_version_without_a_catalog() {
     let home = luxforge_testbase::paths::temp_dir("version-home");
     for (name, binary) in [
         ("luxforge-json", env!("CARGO_BIN_EXE_luxforge-json")),
         ("luxforge-ctl", env!("CARGO_BIN_EXE_luxforge-ctl")),
+        ("luxforge-mcp", env!("CARGO_BIN_EXE_luxforge-mcp")),
     ] {
         let output = std::process::Command::new(binary)
             .arg("--version")

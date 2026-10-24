@@ -181,7 +181,7 @@ fn live_session_client_handshake_proves_the_address_is_the_session() {
     // handshake's deadline makes it stale rather than a hang.
     let endpoint = Endpoint::serve_all(|_, _| Reply::Silence);
     let session = LiveSession::discover(&endpoint.catalog).unwrap();
-    let silent = LiveClient::connect_within(&session, Duration::from_millis(200))
+    let silent = LiveClient::connect_within(&session, Duration::from_millis(200), LABEL)
         .err()
         .unwrap();
     assert_eq!(silent.code, STALE_SESSION, "{silent:?}");

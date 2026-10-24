@@ -14,11 +14,17 @@ path = "src/json.rs"
 name = "luxforge-ctl"
 path = "src/ctl.rs"
 
+[[bin]]
+name = "luxforge-mcp"
+path = "src/luxforge_mcp.rs"
+
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-net = { path = "../luxforge-net" }
 luxforge-onnx = { path = "../luxforge-onnx" }
 luxforge-diffusion = { path = "../luxforge-diffusion" }
+# The MCP adapter's attached pictures, base64-encoded in image content.
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
