@@ -1,0 +1,12 @@
+[
+  {"key": {"key": "q"}},
+  {"correction": {"kind": "remove"}},
+  {"wait": {"ms": 3000}},
+  {"correction": {"press": {"at": [0.782, 0.742], "to": [[0.79, 0.742], [0.798, 0.742], [0.806, 0.742], [0.812, 0.742]]}}},
+  {"wait": {"ms": 2000}},
+  {"correction": {"remove": {"generate": "done"}}},
+  {"wait": {"ms": 4000}},
+  {"correction": {"remove": "accept"}},
+  {"wait": {"ms": 5000}},
+  {"wait": {"ms": 5000}}
+]

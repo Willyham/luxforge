@@ -1,6 +1,22 @@
-# README screenshots
+# Screenshots
 
-These are native window-renderer captures from the release editor on macOS, each referencing its photographs without modifying them. The Develop, Select and Corrections shots use the maintainer's own photographs, which are not in the repository; the masking and colour grading shots use the [landscape fixture](../design/develop-workspace/html/sapa.jpg).
+These are native window-renderer captures from the release editor on macOS, each referencing its photographs without modifying them.
+
+## The README's images
+
+The README shows the [website](https://luxforge.app)'s captures of Luxforge 0.1.0 (the `v0.1.0` tag), copied from the website's `site/img` as it ships them: sRGB WebP without metadata. Each comes from a hidden 1440 × 900 background launch with a fresh catalog and no `script_step_failed` event in its log, at 2×. The landscape is the [fixture](../design/develop-workspace/html/sapa.jpg); the other photographs are the maintainer's own and are not in the repository.
+
+- `develop.webp` (2880 × 1800): `captures/develop.json` on the landscape fixture, its last frame at rev 3.
+- `agent.webp` (1440 × 900): `captures/agent.json`, which only waits, on a Nikon Z 6 RAW, while Claude Code was asked to "make the photo I have open in Luxforge look vintage" and sent the requests in [`captures/agent-transcript.txt`](captures/agent-transcript.txt) through `luxforge-ctl`; frame 30, at rev 6. `agent-before.webp` and `agent-after.webp` (560 × 373) are the photograph from frame 1 and from that frame.
+- `select.webp` (1440 × 900): the maintainer's own window screenshot of Select over a 792-photograph folder, cropped to 16:10, with six sidebar folder names replaced and the Info panel's preview filled with the selected photograph's embedded preview.
+- `masking.webp` (1440 × 900): `cargo xtask smoke --scenario mask-panel`'s `radial-dragged` frame, with the masks renamed Upper slopes, Paddies and Lower slopes for that run.
+- `remove.webp` (1440 × 900): `captures/remove.json` on a Nikon Z 6 RAW with the `ai.generative` flag on and its models installed; frame 10, after Accept, at rev 2. `remove-before.webp` and `remove-after.webp` (420 × 280) are crops of the road before the stroke and after.
+
+The full commands, crops, encoder settings and hashes are in the website repository's `site/img/README.md`. Refresh these by copying that repository's images again, not by re-encoding here.
+
+## The OmaStore listing
+
+[`omastore.toml`](../../omastore.toml) lists the PNGs. The Develop, Select and Corrections shots use the maintainer's own photographs; the masking and colour grading shots use the landscape fixture.
 
 - `develop.png`: a Nikon Z6 RAW with the Standard look, its automatic lens profile, and Basic, Presence, Tone curve and vignette edits.
 - `select.png`: the Select workspace over a folder of five photographs, two of them picked, ungrouped.

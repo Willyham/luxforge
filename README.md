@@ -1,29 +1,55 @@
-<h1 align="center">Luxforge</h1>
+<p align="center">
+  <img src="packaging/brand/cards/readme-banner.png" alt="Luxforge" width="800">
+</p>
+
+<h3 align="center">A fast, open-source, cross-platform photo editor.</h3>
 
 <p align="center">
-  A fast, non-destructive photo editor for macOS, Windows and Linux.<br>
-  Modular, hackable, programmable and open.
+  Written in Rust and rendered on the GPU. Free, open source and non-destructive,<br>
+  for macOS and Linux now and Windows later.
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue"></a>
-  <img alt="Status: v0, pre-release" src="https://img.shields.io/badge/status-v0%20pre--release-orange">
-  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
+  <a href="https://github.com/Willyham/luxforge/releases/tag/v0.1.0"><img alt="Release: 0.1.0 preview" src="https://img.shields.io/badge/release-0.1.0%20preview-9dc570?labelColor=202023"></a>
+  <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-4a75bf?labelColor=202023"></a>
+  <a href="https://luxforge.app"><img alt="Website: luxforge.app" src="https://img.shields.io/badge/web-luxforge.app-81aec9?labelColor=202023"></a>
+  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b64742?labelColor=202023">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/develop.png" alt="The Luxforge Develop workspace editing a Nikon Z6 RAW of a bamboo bridge: history on the left, the photograph in the centre, the histogram, Look and Basic adjustments on the right" width="1100">
+  <a href="#get-luxforge"><b>Download</b></a> ·
+  <a href="https://luxforge.app">Website</a> ·
+  <a href="docs/user-guide.md">User guide</a> ·
+  <a href="docs/features.md">Feature status</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/develop.webp" alt="The Luxforge Develop workspace: the Select and Develop switch, history on the left with Original, Basic (5 fields), Presence (2 fields) and Vignette amount -10, a rice-terrace photograph in the centre over the mode strip and filmstrip, the histogram and Basic sliders on the right, and a status bar" width="1100">
   <br>
-  <sub>The Develop workspace editing a RAW file, captured from the running app.</sub>
+  <sub>Luxforge 0.1.0's Develop workspace, captured from the running app.</sub>
 </p>
 
 ---
 
-## Getting started
+Luxforge aims to meet or exceed the quality and experience of Adobe Lightroom, a benchmark DHH once called "the last holdout" keeping him on macOS. Every slider, brush and crop is a request through one API, so AI agents and scripts can edit alongside you. Each tool is a module on a small core.
 
-Maintainers can [run `cargo xtask release v0.1` from clean, synchronized `main`](docs/engineering/releases.md) to build macOS and Linux downloads. The workflow automatically publishes pre-release build candidates; no qualified public download exists yet.
+Develop will feel familiar if you know Lightroom. Underneath it is new: a small, fast core that keeps every edit as data and never touches the original. Every edit is kept in the history, so you can step back to any point or save it as a named version, and the status bar says what just happened and what drew the picture on screen.
 
-You'll need Rust (the toolchain is pinned) and a few platform prerequisites, listed in [development](docs/engineering/development.md). Then:
+## Get Luxforge
+
+**[Luxforge 0.1.0](https://github.com/Willyham/luxforge/releases/tag/v0.1.0) is the first preview.** It is pre-release software, so its catalog format can change between versions; a version that can't read your catalog says so and leaves it as it is. It never writes to your originals.
+
+| Platform | Download | Install |
+| --- | --- | --- |
+| **macOS**, Apple silicon, macOS 14 or later | [Disk image](https://github.com/Willyham/luxforge/releases/download/v0.1.0/luxforge-0.1.0-macos-arm64.dmg) (65 MB) or [ZIP](https://github.com/Willyham/luxforge/releases/download/v0.1.0/luxforge-0.1.0-macos-arm64.zip) | Signed and notarized. Open it and drag Luxforge onto Applications. |
+| **Linux**, x86-64, built on Ubuntu 24.04 | [Tarball](https://github.com/Willyham/luxforge/releases/download/v0.1.0/luxforge-0.1.0-linux-x86_64.tar.gz) (71 MB) | Extract it and run `Luxforge/luxforge`; `./Luxforge/desktop-integration.sh install` adds it to your launcher. It needs a Vulkan driver and an XDG desktop portal, and `INSTALL.txt` lists the rest. Other distributions may work, but they are not tested. |
+
+[Checksums](https://github.com/Willyham/luxforge/releases/download/v0.1.0/SHA256SUMS) · [complete source](https://github.com/Willyham/luxforge/releases/download/v0.1.0/luxforge-0.1.0-source.tar.gz) · [every release](https://github.com/Willyham/luxforge/releases)
+
+### Or build it from source
+
+You'll need Rust (the toolchain is pinned) and the platform prerequisites in the [development guide](docs/engineering/development.md). Then:
 
 ```sh
 git clone https://github.com/Willyham/luxforge.git
@@ -31,81 +57,58 @@ cd luxforge
 cargo xtask develop --open fixtures/s0/orientation-6.jpg
 ```
 
-That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or `--open` any JPEG or supported RAW file of your own. Luxforge only records a reference to the original and never copies or changes it.
+That builds an optimized editor and opens a sample photo. Use `--catalog path/to/catalog.sqlite` to keep your edits somewhere specific, or point `--open` at any JPEG or supported RAW of your own. Luxforge only records a reference to the original and never copies or changes it.
 
-The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool. Initial [v0.1 distribution preparation](docs/design/release-v0.1.md) is planned; there is no published app download yet.
+The [user guide](docs/user-guide.md) covers the workspace, keyboard shortcuts and every tool. Maintainers cut releases with [`cargo xtask release`](docs/engineering/releases.md).
 
-## Why Luxforge
+## Fast where you feel it
 
-Luxforge is a free, open-source, cross-platform photo editor. Its goal: meet or exceed the quality and experience of Adobe Lightroom—a benchmark that DHH once called "the last holdout" keeping him on macOS.
+Luxforge opens before you've finished clicking, sorts a year of photographs while you watch, keeps up with your hand on every slider, and goes quiet when you stop.
 
-- **"The last holdout."** Luxforge aims for parity with leading commercial tools, so you never have to compromise on quality or workflow.
-- **"Anything you can click, a program can do."** Every slider, crop handle, and action in the interface goes through the same command service as the JSON API. Scripts, plugins, and AI agents interact with the app just like a user does: if they warm up a photo, their edits appear in the same non-destructive history, clearly attributed.
+| | |
+| ---: | --- |
+| **9 ms** | From slider to screen. Each move of a slider, drawn on a 20 MP RAW in the next frame of a 120 Hz display. |
+| **40 ms** | To flick to the next frame. Full screen, as fast as you press the arrow key. |
+| **0.3 s** | To open. From launch to a window ready to work. |
+| **1 s** | To sort a year. 3,507 photographs, 150 GB of RAW and JPEG, sorted into days, cameras, bursts and brackets. |
+| **25 s** | To preview all of it. Every one of those photographs, ready to look through. |
+| **< 1%** | CPU at rest. When you stop, Luxforge stops: no busy loops, no fans, no drained battery. |
 
-## The pillars
+<sub>Rounded from measurements of 0.1.0 on a MacBook Pro with an M4 Pro, browsing the owner's own 2023 folder in place. The [performance spec](docs/specs/performance.md) has the budgets and how they're measured. Luxforge shows its own memory, CPU and GPU use as it works, and any script can read them too.</sub>
 
-These are the core principles that development follows. 
+## API driven and agent friendly
 
-1. **Originals are sacred.** Source files are never modified. Edits are ordered layers in a recipe with immutable history. Incompatible data is refused, never quietly discarded.
-2. **Everything is programmable.** Every operation has a discoverable, schema-described equivalent through the same command service. A GUI gesture is never the only way in, and UI/API parity is tested, not assumed.
-3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, measured on photo-sized inputs. The GPU is the renderer of record, and its correctness is a declared tolerance against the whole-frame CPU reference, measured on the corpus.
-4. **Small core, deliberate extension points.** The core owns transactions, history and shared invariants. Tools own their own validation, controls and processing.
-5. **Open source, Mac first.** GPL-3.0-or-later project code and open-source dependencies, targeting Apple silicon Macs first while keeping Windows and Linux portable.
-6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests for the reference renderer, reference-buffer tests within the declared tolerance for the GPU, correlated state, logs and captures for UI, and recorded measurements with their scope.
-7. **Beautiful defaults, familiar feel.** A small, focused workspace that feels familiar if you've used Lightroom's Library and Develop.
+Everything you can do in Luxforge, a program can do too. Every slider, mask, correction, pick and export is a request through one documented API, so a script or an AI agent works on your photographs the way you do, in the same history, where you can see and undo it.
 
-## What it does today
+- **Every action, a request.** The API covers developing, masks, corrections, picking, merging, exporting and history. Right-click any control and choose **Copy as JSON request** to get the exact call it makes.
+- **Self-describing.** `schema.list` explains every method and parameter in plain words, with ranges and defaults, so an agent knows what Highlights −35 will do before it sends it.
+- **Attributed and undoable.** An agent's edits land in the photograph's history beside yours, each labelled with who made it.
+- **Safe beside you.** Each edit names the revision it expects. If you changed the photograph first, it's refused rather than applied on top, and a slider you're still dragging is kept.
 
-Luxforge is pre-release. Everything is v0, formats can change between builds, and there is no qualified public download yet. With that said, a lot already works and has been checked on Apple silicon Macs.
+> **Hey Claude, make the photo I have open in Luxforge look vintage.**
+>
+> ```sh
+> $ luxforge-ctl call recipe.describe --params '{"asset_id":"asset-effb…"}'
+> $ luxforge-ctl call edit.set-raw --asset asset-effb… --params '{"temperature":6900,"tint":6}'
+> $ luxforge-ctl call edit.set-basic --asset asset-effb… --params '{"contrast":-12,"highlights":-35,"shadows":25,"whites":-20,"saturation":-18,"vibrance":-8}'
+> $ luxforge-ctl call edit.set-curve --asset asset-effb… --params '{"luminance":[[0,0.09],[0.25,0.28],[0.75,0.75],[1,0.93]]}'
+> $ luxforge-ctl call edit.set-mixer --asset asset-effb… --params '{"grade-shadows-hue":195,"grade-shadows-saturation":18,"grade-highlights-hue":42,"grade-highlights-saturation":24,"green-saturation":-30,"blue-saturation":-25,…}'
+> $ luxforge-ctl call edit.set-vignette --asset asset-effb… --params '{"amount":-22,"feather":70}'
+> ```
+>
+> Done: a warmer white balance, lifted blacks and softened highlights for a faded-film curve, teal shadows under warm highlights, muted greens and blues, and a soft vignette. That's five entries in its history, each one undoable in Luxforge.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/select.png" alt="The Select workspace: events and folders on the left, a grid of five photographs with two picked, and the selected photograph's metadata on the right"><br><sub><b>Select</b>: browse a folder, pick photographs and develop them into the catalog.</sub></td>
-    <td width="50%"><img src="docs/screenshots/masking.png" alt="Mask mode with Sky, Face and Foreground masks; Face combines a radial gradient, a subtracting brush and an intersecting luminance range, with a green coverage overlay and local Clarity controls"><br><sub><b>Masking</b>: a radial gradient, a subtracting brush and a luminance intersection shape a local adjustment.</sub></td>
+    <td width="50%"><img src="docs/screenshots/agent-before.webp" alt="Before: Ginkaku-ji in Kyoto, the Silver Pavilion behind red maples, as the Nikon recorded it"><br><sub><b>Before</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/agent-after.webp" alt="After: the same photograph, warmer and faded, with teal shadows, cream highlights and a soft vignette"><br><sub><b>After</b></sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/grading.png" alt="The colour mixer's Grading tab with shadow, midtone and highlight wheels beside a terraced landscape"><br><sub><b>Colour grading</b>: shadow, midtone and highlight wheels in the colour mixer.</sub></td>
-    <td width="50%"><img src="docs/screenshots/corrections.png" alt="Corrections mode on a drone photograph of a lagoon, with six Heal spots over kayaks and the Corrections stack on the right"><br><sub><b>Corrections</b>: Heal spots, each with an automatic source, removing kayaks from a drone RAW.</sub></td>
+    <td colspan="2"><img src="docs/screenshots/agent.webp" alt="The Develop workspace after the agent's edit: Ginkaku-ji in faded, warm colour; history entries 2 to 6 (White balance, Basic, Tone curve, Colour mixer and Vignette) each by 'agent, luxforge-ctl'; Basic showing 6900 K, Contrast −12, Highlights −35, Shadows 25, Whites −20, Vibrance −8 and Saturation −18; and the status bar saying 'Agent luxforge-ctl applied Vignette (2 fields), entry 6'"><br><sub>The editor afterwards: five history entries, each signed by <code>luxforge-ctl</code>, the sliders showing the agent's values, and the status bar saying who changed what.</sub></td>
   </tr>
 </table>
 
-### Browse, pick, develop
-
-- **The Select workspace** browses disks and folders without importing anything. Photographs are grouped automatically into events and moments by date, place and camera. Filter and search them, look closely in the loupe, then pick the keepers and develop them into the catalog. Originals stay where they are and are never copied or changed.
-- **The catalog** keeps folders, collections, recently developed photographs and a Removed view. If you move or rename originals, **Missing originals** and **Locate** find them again.
-- **HDR merges** of RAW brackets and **panorama merges** of RAW or JPEG frames start from a selection. You get a merge preview first, and the result is an editable photograph stacked with its originals. Both are early: they've been checked on synthetic frames, and natural-scene quality hasn't been qualified yet.
-
-### Develop
-
-- **Non-destructive editing** with ordered layers, persistent history, undo and redo, append-only restore, and named versions. Nothing in history is ever deleted, and repeated drags on one control collapse into a single entry.
-- **RAW editing** from sensor data, with RawSpeed unpacking, a Standard look for new RAW photographs and automatic lens profiles. The camera catalog covers **259 camera and phone identities and 316 recording modes**, regression-tested against a corpus of authentic files. [Camera coverage](docs/design/raw-camera-profiles.md) records the exact scope.
-- **Basic adjustments**: white balance with a neutral picker and As shot, exposure, contrast, highlights, shadows, whites, blacks, vibrance and saturation, plus **Auto tone** (Cmd+U).
-- **Tone curve**, **Presence** (texture, clarity, dehaze), **Detail** (capture sharpening and noise reduction) and a **vignette**.
-- **Colour mixer** with hue, saturation and luminance for eight ranges, and **colour grading** wheels for shadows, midtones, highlights and global.
-- **Crop, transform and straighten**, with 90° rotation, mirror and flip, plus **lens correction** from Lensfun profiles and manual **perspective** correction.
-- **Local masking**: linear and radial gradients, feathered brushes with erase and colour constraints, and luminance and colour range selections. Combine components with Add, Subtract and Intersect, invert them or set the mask's amount, then apply Basic, Tone curve, Detail, colour mixer and Presence adjustments locally. Live coverage overlays and canvas handles show what you're adjusting.
-- **Corrections**: Clone and Heal, as spots or brush strokes, with a source picked automatically or set by hand.
-- **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets with a report of anything that couldn't be carried over, and **copy and paste settings** across one or many photographs.
-- **JPEG export** from JPEG or RAW originals at the edit's output size, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
-
-### See what you're doing
-
-- **GPU rendering** at every zoom. The GPU draws motion, the finished picture, the histogram and exports, all held within a declared tolerance of an independent whole-frame CPU reference.
-- **An RGB histogram** with clipping overlays, **Before/After** comparison with a draggable divider, **image information** (camera, lens and exposure), and a **minimap** at high zoom.
-- **A command palette**, and **Copy as JSON request** on any control.
-- **Live counters** for memory, CPU and GPU, alongside background jobs.
-- **Themes**, including six bundled Omarchy themes and import of your own, plus preferences for the defaults that matter.
-
-### Built for scripts and agents
-
-- **The JSON API** covers every operation, the **`luxforge-ctl`** command line drives the photograph open in the running editor, and the **`luxforge-mcp`** server connects AI agents such as Claude Code, Codex and Cursor to it (see [Scripting it](#scripting-it)).
-- **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top. Every edit is attributed in history.
-
-### On the way
-
-Generative Remove and Replace on local models are in progress behind an experiment flag. Automatic updates are built but not yet live. Lightroom catalog import and broader Windows and Linux verification are planned. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet, and the [roadmap](docs/plan.md) has what comes next.
-
-## Scripting it
+### Scripting it
 
 Every operation in the editor is a JSON request. You can talk to the running app, or start a headless process that holds the same catalog and send it one request per line. `cargo xtask build --release` builds it with the editor, and `cargo build --release -p luxforge-cli` builds it alone, without the GUI stack:
 
@@ -118,7 +121,7 @@ target/release/luxforge-json --catalog path/to/catalog.sqlite
 {"id":"expose","method":"edit.set-basic","params":{"asset_id":"asset-…","mutation":{"expected_revision":5,"request_id":"expose-1","actor":"my-script"},"exposure":0.5}}
 ```
 
-`schema.list` and `module.list` describe every method with its parameters, ranges and defaults, so a client can discover what's possible instead of hard-coding it. Edits carry an expected revision, so stale requests are refused rather than silently applied, and a retried request with the same `request_id` is never applied twice. In the app, right-click any control and choose **Copy as JSON request** to get the exact call it makes.
+`schema.list` and `module.list` describe every method with its parameters, ranges and defaults, so a client can discover what's possible instead of hard-coding it. Edits carry an expected revision, so stale requests are refused rather than silently applied, and a retried request with the same `request_id` is never applied twice.
 
 To drive the photograph open in the running editor from a shell or an agent, use `luxforge-ctl`, built alongside it. It finds the running session, fills in the revision and request identity for you, and its edits appear in history as its own:
 
@@ -128,7 +131,98 @@ target/release/luxforge-ctl call edit.set-basic --asset asset-… --params '{"ex
 target/release/luxforge-ctl call edit.auto-tone --asset asset-…
 ```
 
-To let an AI agent work in the running editor, connect it to `luxforge-mcp`, a Model Context Protocol server built alongside it. **Settings › Agents** shows the configuration for Claude Code, Claude Desktop, Codex, Cursor and other MCP clients with a Copy button, and lists the agents connected now; `luxforge-mcp config claude-code` prints the same text. An agent's edits land in history under its name, and an agent can never grant consent or permissions ([connecting an agent](docs/user-guide.md#connecting-an-agent)).
+To let an AI agent work in the running editor, connect it to `luxforge-mcp`, a Model Context Protocol server built alongside it. **Settings › Agents** shows the configuration for Claude Code, Claude Desktop, Codex, Cursor and other MCP clients with a Copy button, and lists the agents connected now; `luxforge-mcp config claude-code` prints the same text. An agent's edits land in history under its name, and an agent can never grant consent or permissions ([connecting an agent](docs/user-guide.md#connecting-an-agent)). If a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
+
+## A whole trip of photographs, nothing imported
+
+Point Select at a folder or a camera card and browse it where it is. Luxforge sorts every frame by day, camera and moment as it reads them: bursts gathered into one choice, exposure brackets and panoramas found and ready to merge, RAW and JPEG pairs kept together. Pick the keepers, and only those come into the catalog.
+
+<p align="center">
+  <img src="docs/screenshots/select.webp" alt="The Select workspace over a folder named Peru: 792 photographs of snow-capped mountains and thatched huts, with bursts of two and three frames each framed as one moment. The middle frame of a three-frame burst is selected, and the Info panel shows Burst, frame 2 of 3, about 1.0 s apart, with its camera, lens and exposure" width="1100">
+</p>
+
+- **Select** reads a folder where it sits, filters and searches it, and shows each frame in the loupe. Info says why frames belong together: a burst's frame number and spacing, beside the camera, lens and exposure. P picks a keeper; Develop takes the picks into the catalog. Originals are never copied or changed.
+- **The catalog** keeps folders, collections, recently developed photographs and a Removed view. If you move or rename originals, **Missing originals** and **Locate** find them again.
+- **HDR merges** of RAW brackets and **panorama merges** of RAW or JPEG frames start from a selection. You get a merge preview first, and the result is an editable photograph stacked with its originals. Both are early: they've been checked on synthetic frames, and natural-scene quality hasn't been qualified yet.
+
+## Change one part of the picture, exactly
+
+Masks reach every part of Develop: Basic, the Tone curve, Detail, the colour mixer and Presence can each work through one. Draw gradients, paint with a brush, or pick a colour or a band of tones from the photograph, then combine them. Every mask is numbers in the recipe rather than pixels, so it stays sharp at any size and can be changed at any time.
+
+<p align="center">
+  <img src="docs/screenshots/masking.webp" alt="Luxforge in Mask mode: a radial gradient with its handles over the rice terraces and a green coverage overlay; the Masks panel listing Upper slopes, Paddies and Lower slopes, three of sixteen; Paddies made of Radial 1, Brush 1 and Luminance 1; and Basic, Presence, Tone curve and Detail each marked Paddies where they work through it" width="1100">
+</p>
+
+- Up to sixteen masks on a photograph, each named, with its own amount and invert.
+- **Linear and radial gradients** with feather, angle and handles you drag on the photograph.
+- **A brush** with size, feather, flow and erase, which can keep to one colour as it paints.
+- **Colour and luminance ranges**, picked with an eyedropper from the photograph itself (an experiment in 0.1.0).
+- **Add, subtract and intersect** any of them. Here, Paddies is a radial gradient, minus a brush stroke, within a luminance range, with a live overlay of what it covers.
+
+## Take out what shouldn't be there
+
+Dust, power lines, strangers in the background. Heal and Clone fix small things in a click, finding their own source; Remove paints over something bigger and fills it in with AI that runs on your own computer, so your photographs never leave it.
+
+<p align="center">
+  <img src="docs/screenshots/remove.webp" alt="A Nikon Z 6 RAW of the Church of the Good Shepherd at Lake Tekapo in Corrections mode, after AI Remove: the Corrections band with Heal, Clone and Remove, its stack holding Generative fill 1, a frozen patch, one of 100; the history at rev 2 with Add Generative fill 1; and the status bar saying 'Accepted. ⌘Z undoes it'" width="1100">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/remove-before.webp" alt="Before: two people standing on the lakeside road"><br><sub><b>Before</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/remove-after.webp" alt="After: the same road and grass, with the two people removed"><br><sub><b>After</b>: two people on the road, gone. The fill ran on the Mac.</sub></td>
+  </tr>
+</table>
+
+- **Heal** blends a patch into its surroundings; **Clone** copies it exactly. Both work as spots or strokes.
+- Sources are found for you, or set by hand, and moved whenever you like.
+- **AI Remove** fills a painted selection on a local model, offering candidates to choose between. Describe something else and it becomes Replace. It's an experiment in 0.1.0, off by default.
+- Nothing is final. Up to 100 corrections on a photograph, each one a history entry you can edit, reorder or delete.
+
+## Where Luxforge stands
+
+Luxforge is pre-release, and everything is v0. With that said, a lot already works and has been checked on Apple silicon Macs. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet, and the [roadmap](docs/plan.md) has what comes next.
+
+### Working today
+
+- **Non-destructive editing** with ordered layers, persistent history, undo and redo, append-only restore, and named versions. Nothing in history is ever deleted, and repeated drags on one control collapse into a single entry.
+- **Select and the catalog**: browse folders where they are, pick and develop. Missing originals are found again.
+- **RAW editing** from sensor data, with RawSpeed unpacking, a Standard look for new RAW photographs and automatic lens profiles. The camera catalog covers **259 camera and phone identities and 316 recording modes**, regression-tested against a corpus of authentic files. [Camera coverage](docs/design/raw-camera-profiles.md) records the exact scope.
+- **Basic adjustments**: white balance with a neutral picker and As shot, exposure, contrast, highlights, shadows, whites, blacks, vibrance and saturation, with Lightroom's slider responses as the reference, plus **Auto tone** (Cmd+U).
+- **Tone curve**, **Presence** (texture, clarity, dehaze), **Detail** (capture sharpening and noise reduction) and a **vignette**.
+- **Colour mixer** with hue, saturation and luminance for eight ranges, and **colour grading** wheels for shadows, midtones, highlights and global.
+- **Crop, transform and straighten**, with 90° rotation, mirror and flip, plus **lens correction** from Lensfun profiles and manual **perspective** correction.
+- **Local masks**: gradients and brushes, combined by adding, subtracting and intersecting, applying Basic, Tone curve, Detail, colour mixer and Presence adjustments locally. Luminance and colour ranges are an experiment.
+- **Heal and Clone**: spots and strokes, each with a source picked for it or set by hand.
+- **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets with a report of anything that couldn't be carried over, and **copy and paste settings** across one or many photographs.
+- **Export** to JPEG, WebP and 8- or 16-bit TIFF, resized, size-limited and sharpened for screen or print. Exports never replace an existing file or touch the original.
+- **GPU rendering** at every zoom. The GPU draws motion, the finished picture, the histogram and exports, all held within a declared tolerance of an independent whole-frame CPU reference.
+- **An RGB histogram** with clipping overlays, **Before/After** comparison with a draggable divider, **image information**, a **minimap** at high zoom, a **command palette**, and **live counters** for memory, CPU and GPU alongside background jobs.
+- **Themes**, including six bundled Omarchy themes and import of your own, plus preferences for the defaults that matter.
+- **Programmable**: the JSON API, `luxforge-json`, `luxforge-ctl` and the `luxforge-mcp` server for AI agents.
+
+### In progress
+
+- **HDR and panorama merges**: checked on synthetic frames; real brackets and panoramas are still to be judged.
+- **AI Remove and Replace**: generative fill on local models, behind an experiment that is off by default.
+- **Automatic updates**: built, but not yet live.
+- **Linux and Windows**: Linux builds and passes its headless checks; native GPU checks are open. Windows comes later.
+
+### Planned
+
+- **Lightroom catalog import**: bringing a Lightroom Classic catalog's photographs and edits across.
+
+## The pillars
+
+These are the core principles that development follows.
+
+1. **Originals are sacred.** Source files are never modified. Edits are ordered layers in a recipe with immutable history. Incompatible data is refused, never quietly discarded.
+2. **Everything is programmable.** Every operation has a discoverable, schema-described equivalent through the same command service. A GUI gesture is never the only way in, and UI/API parity is tested, not assumed.
+3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, measured on photo-sized inputs. The GPU is the renderer of record, and its correctness is a declared tolerance against the whole-frame CPU reference, measured on the corpus.
+4. **Small core, deliberate extension points.** The core owns transactions, history and shared invariants. Tools own their own validation, controls and processing.
+5. **Open source, Mac first.** GPL-3.0-or-later project code and open-source dependencies, targeting Apple silicon Macs first while keeping Windows and Linux portable.
+6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests for the reference renderer, reference-buffer tests within the declared tolerance for the GPU, correlated state, logs and captures for UI, and recorded measurements with their scope.
+7. **Beautiful defaults, familiar feel.** A small, focused workspace that feels familiar if you've used Lightroom's Library and Develop.
 
 ## How it's built
 
@@ -177,7 +271,7 @@ cargo xtask verify --tier quick --output artifacts/my-change-quick
 Useful reading:
 
 - **Product:** [roadmap](docs/plan.md), [decisions](docs/decisions.md), [feature status](docs/features.md), [user guide](docs/user-guide.md)
-- **Design:** [architecture](docs/design/architecture.md), [Develop workspace](docs/design/develop-workspace.md), [versions and lineage](docs/design/versions-and-lineage.md), [tool modules](docs/design/modules-and-api.md)
+- **Design:** [architecture](docs/design/architecture.md), [Develop workspace](docs/design/develop-workspace.md), [versions and lineage](docs/design/versions-and-lineage.md), [tool modules](docs/design/modules-and-api.md), [brand](packaging/brand/README.md)
 - **Specs:** [edit history](docs/specs/edit-history.md), [crop and export](docs/specs/single-image.md), [source recovery](docs/specs/source-recovery.md), [performance](docs/specs/performance.md)
 - **Engineering:** [development](docs/engineering/development.md), [performance rules](docs/engineering/performance-rules.md), [dependencies](docs/engineering/dependencies.md)
 - **Research:** [stack options](docs/research/technical-options.md), [Lightroom Classic](docs/research/lightroom/README.md), [darktable](docs/research/darktable/README.md)
