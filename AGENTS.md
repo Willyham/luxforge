@@ -53,7 +53,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | Masks: model, kinds, commands, and the Masks panel and next kinds (proposal) | [docs/design/masking.md](docs/design/masking.md), [docs/design/masking-workspace.md](docs/design/masking-workspace.md) |
 | Corrections: Clone/Heal, the repair stage, and the Corrections mode, gestures and panel | [docs/design/corrections.md](docs/design/corrections.md), [docs/design/corrections-workspace.md](docs/design/corrections-workspace.md) |
-| AI editing: Remove, Select, generative fill and Replace, sky replacement on local models (in progress); Remove, Object and their setup in the workspace (proposal) | [docs/design/ai-editing.md](docs/design/ai-editing.md), [docs/design/ai-tools-workspace.md](docs/design/ai-tools-workspace.md) |
+| AI editing: Remove, Select, generative fill and Replace, sky replacement on local models (in progress); Remove, Object and their setup in the workspace (in progress) | [docs/design/ai-editing.md](docs/design/ai-editing.md), [docs/design/ai-tools-workspace.md](docs/design/ai-tools-workspace.md) |
 | Lightroom catalog import (planned) and slider alignment | [docs/design/lightroom-import.md](docs/design/lightroom-import.md), [docs/design/lightroom-alignment.md](docs/design/lightroom-alignment.md) |
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Browse, pick, develop: the Select workspace, events, moments, picks, the catalog, filmstrip, Locate | [docs/design/catalog.md](docs/design/catalog.md) |
