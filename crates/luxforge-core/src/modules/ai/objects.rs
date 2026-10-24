@@ -16,7 +16,9 @@ use super::{
         models::{AnalysisModels, SEGMENTER, SessionModel},
         models_value, prepared,
     },
+    object_region::ObjectRaster,
     pick::{self, Decision, Params, Stroke},
+    picked::{PickedObject, PickedObjects},
     segment::{Candidate, Embedding, Point, Prompt, Segmenter},
 };
 use crate::{
@@ -27,6 +29,7 @@ use crate::{
         host::{Requirement, RequirementKind},
         read::StageIdentity,
     },
+    mask::ObjectPrompt,
     mask::guided,
 };
 use serde_json::{Map, Value, json};
@@ -37,7 +40,7 @@ pub(crate) const MAX_PROMPT_POINTS: usize = 16;
 /// The most pixels one candidate's coverage preview holds: what a hover overlay uploads.
 pub(crate) const PREVIEW_PIXELS: u32 = 1 << 16;
 /// The class a selection of an object records.
-pub(crate) const OBJECT_CLASS: &str = "object";
+pub(crate) const OBJECT_CLASS: &str = crate::mask::OBJECT_CLASS;
 
 /// The segmenter's analysis of one stage, as the cache holds it.
 #[derive(Debug)]
@@ -407,12 +410,15 @@ pub(crate) fn pick_object(
 
 /// `task.select-object`: decode the request as the query does, choose its candidate (the one
 /// `candidate` names, or the decision's one object), refine it against the guide to the artifact's
-/// resolution and publish it as a `mask-alpha` artifact.
+/// resolution and publish it as a `mask-alpha` artifact, recorded in `picked` with the photograph
+/// it was computed from and the prompt it was picked with, which the result carries.
 pub(crate) fn select_object(
     context: &ModuleContext,
     models: &AnalysisModels,
     parameters: &Map<String, Value>,
+    picked_objects: &PickedObjects,
 ) -> Result<Value, Error> {
+    let prompt = ObjectPrompt::of_request(parameters)?;
     let [encoder, decoder] = segmenter(models)?;
     let (found, guide, _) = analysed(context, encoder)?;
     let mut embedding = found.embedding.clone();
@@ -481,6 +487,14 @@ pub(crate) fn select_object(
         },
     )?;
     let identity = context.identity()?;
+    picked_objects.record(PickedObject {
+        artifact: artifact.clone(),
+        asset: identity.asset.clone(),
+        source: identity.source.clone(),
+        prefix: identity.prefix.clone(),
+        prompt: prompt.clone(),
+        raster: ObjectRaster::of(&raster, guide.width, guide.height),
+    });
     context.progress(Some(1.0), "published");
     let mut answer = picked.value("none");
     let candidate = answer["candidates"][position].clone();
@@ -493,6 +507,7 @@ pub(crate) fn select_object(
         "model_version": encoder.file.version,
         "input_fingerprint": identity.source,
         "prefix_hash": identity.prefix,
+        "prompt": prompt,
         "decision": picked.decision.name(),
         "candidate": candidate,
         "models": models_value(&[encoder, decoder]),

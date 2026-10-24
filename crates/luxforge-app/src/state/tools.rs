@@ -2011,9 +2011,11 @@ fn value_model(
             "curve parameter {parameter} of action {action} needs a curve control"
         )),
         // An artifact is published by a task and committed with its result, never typed.
-        ParameterKind::Artifact => ControlModel::Unsupported(format!(
-            "artifact parameter {parameter} of action {action} is filled by a task, not a control"
-        )),
+        ParameterKind::Artifact | ParameterKind::Artifacts { .. } => {
+            ControlModel::Unsupported(format!(
+                "artifact parameter {parameter} of action {action} is filled by a task, not a control"
+            ))
+        }
         ParameterKind::String { .. } => ControlModel::Unsupported(format!(
             "string parameter {parameter} of action {action} needs a text control"
         )),

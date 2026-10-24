@@ -83,6 +83,10 @@ pub struct ModelReport {
     /// artifact row; `None` when the catalog does not record it.
     pub computed_ms: Option<i64>,
     pub stale: Option<Vec<ModelStale>>,
+    /// How an object was picked ([`crate::mask::ObjectPrompt`]), which Recompute sends
+    /// `task.select-object` again; `None` for another class or a prompt that was not stored.
+    #[serde(default)]
+    pub prompt: Option<crate::mask::ObjectPrompt>,
 }
 
 /// One reason a model selection no longer matches what it was computed from.
@@ -222,6 +226,7 @@ pub(crate) fn listing(
                         artifact: selection.artifact,
                         computed_ms: None,
                         stale: None,
+                        prompt: selection.prompt,
                     }),
                 })
                 .collect(),

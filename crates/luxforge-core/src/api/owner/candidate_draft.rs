@@ -233,7 +233,7 @@ fn drafted(
             artifact: artifact.id.clone(),
             rect: read.rect,
             label: read.label.clone(),
-            provenance: read.provenance.clone(),
+            provenance: crate::artifacts::candidates::stored_provenance(&read.provenance),
             input,
         }),
         artifact,

@@ -49,8 +49,12 @@ pub(crate) const MAX_CANDIDATE_CHUNK: u64 = 768 * 1024;
 pub(crate) const MAX_PREVIEW_SIDE: u32 = 1024;
 /// The longest label a candidate carries, in characters.
 pub(crate) const MAX_CANDIDATE_LABEL: usize = 32;
-/// The most bytes a candidate's provenance takes as compact JSON, the host's fields included.
+/// The most bytes a candidate's provenance takes as compact JSON, the host's fields included, its
+/// lists of objects left out.
 pub(crate) const MAX_PROVENANCE_BYTES: usize = 2048;
+/// The most bytes a candidate's lists of objects take together as compact JSON: what a fill of
+/// eight picked objects records of them, each with the prompt it was picked from.
+pub(crate) const MAX_PROVENANCE_LIST_BYTES: usize = 512 * 1024;
 /// The artifact kind an accepted patch is published as.
 // The accept seam: the repair layer's accept action calls it; until it lands only tests do.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -249,9 +253,21 @@ pub(crate) struct CandidatePatch<'a> {
     pub preview_height: u32,
     /// The display noun, 1 to 32 characters (`Remove`, the proof's `Patch`).
     pub label: &'a str,
-    /// String and number fields the producer declares (model, version, seed); `module` and `task`
-    /// are the host's.
+    /// String and number fields the producer declares (model, version, seed), and lists of
+    /// objects such as the objects a fill removed; `module` and `task` are the host's.
     pub provenance: Map<String, Value>,
+}
+
+/// What an accepted candidate's patch stores of its provenance: its string and number fields. A
+/// list of objects (what a fill removed) is the candidate's alone, and storing it with the
+/// operation is outstanding (`docs/design/ai-editing.md`, "Candidates, Accept and the frozen
+/// patch"), so the stored patch keeps the flat fields within [`MAX_PROVENANCE_BYTES`].
+pub(crate) fn stored_provenance(provenance: &Map<String, Value>) -> Map<String, Value> {
+    provenance
+        .iter()
+        .filter(|(_, value)| value.is_string() || value.is_number())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 impl CandidatePatch<'_> {
@@ -1143,19 +1159,37 @@ fn describe(
                 "provenance field {key:?} is not a name of 1 to 64 printable characters"
             )));
         }
-        if !(value.is_string() || value.is_number()) {
+        let list = value
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_object));
+        if !(value.is_string() || value.is_number() || list) {
             return Err(Error::validation(format!(
-                "provenance field {key} is a string or a number"
+                "provenance field {key} is a string, a number or a list of objects"
             )));
         }
         provenance.insert(key.clone(), value.clone());
     }
-    let length = serde_json::to_vec(&provenance)
-        .map_err(|error| Error::internal(error.to_string()))?
-        .len();
-    if length > MAX_PROVENANCE_BYTES {
+    let length = |fields: &Map<String, Value>| {
+        serde_json::to_vec(fields)
+            .map(|bytes| bytes.len())
+            .map_err(|error| Error::internal(error.to_string()))
+    };
+    let flat = stored_provenance(&provenance);
+    let flat_length = length(&flat)?;
+    if flat_length > MAX_PROVENANCE_BYTES {
         return Err(Error::validation(format!(
-            "a candidate's provenance is at most {MAX_PROVENANCE_BYTES} bytes, not {length}"
+            "a candidate's provenance is at most {MAX_PROVENANCE_BYTES} bytes, not {flat_length}"
+        )));
+    }
+    let lists: Map<String, Value> = provenance
+        .iter()
+        .filter(|(key, _)| !flat.contains_key(*key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let list_length = length(&lists)?;
+    if list_length > MAX_PROVENANCE_LIST_BYTES {
+        return Err(Error::validation(format!(
+            "a candidate's lists of objects are at most {MAX_PROVENANCE_LIST_BYTES} bytes, not {list_length}"
         )));
     }
     Ok((label.to_owned(), provenance))

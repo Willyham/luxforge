@@ -453,7 +453,13 @@ fn plan_geometry(
                 .cloned()
                 .ok_or_else(|| rules::unknown_kind(&component.kind))?;
             for (field, value) in parameters {
-                payload.insert(field.clone(), canonical(value));
+                // Only an optional field of a kind's own declaration may be null (the generic
+                // check refuses one anywhere else), and a null clears it.
+                if value.is_null() {
+                    payload.remove(field);
+                } else {
+                    payload.insert(field.clone(), canonical(value));
+                }
             }
             component.payload = Value::Object(payload);
             // A later edit to a component names that component, so the row says which one it was.
@@ -1157,11 +1163,11 @@ fn component_at(recipe: &Recipe, target: &MaskTarget) -> Result<(usize, usize), 
 /// The declared payload fields of one component kind: the names of the parameters that kind's own
 /// module declares, so a geometry parameter and a stored field are one spelling because they are one
 /// declaration.
-fn geometry_fields(kind: &str) -> Option<Vec<String>> {
+fn geometry_fields(kind: &str) -> Option<Vec<(String, bool)>> {
     component_parameters(kind, true).map(|parameters| {
         parameters
             .into_iter()
-            .map(|parameter| parameter.name)
+            .map(|parameter| (parameter.name, parameter.required))
             .collect()
     })
 }
@@ -1173,12 +1179,17 @@ fn geometry_fields(kind: &str) -> Option<Vec<String>> {
 fn geometry_payload(kind: &str, parameters: &Map<String, Value>) -> Result<Value, Error> {
     let fields = geometry_fields(kind).ok_or_else(|| rules::unknown_kind(kind))?;
     let mut payload = Map::new();
-    for field in &fields {
-        let value = parameters.get(field).ok_or_else(|| {
-            Error::validation(format!(
-                "missing required parameter {field} for a {kind} component"
-            ))
-        })?;
+    for (field, required) in &fields {
+        // An optional field (a model selection's prompt) is stored only when it is sent; a null
+        // sends nothing.
+        let value = match parameters.get(field) {
+            Some(Value::Null) | None if !required => continue,
+            value => value.ok_or_else(|| {
+                Error::validation(format!(
+                    "missing required parameter {field} for a {kind} component"
+                ))
+            })?,
+        };
         payload.insert(field.clone(), canonical(value));
     }
     // A sampling kind's list starts empty and present, rather than absent until the first pick: a

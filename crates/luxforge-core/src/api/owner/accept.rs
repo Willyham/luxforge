@@ -322,7 +322,9 @@ impl Owner {
             artifact,
             rect: request.candidate.rect,
             label: request.candidate.label.clone(),
-            provenance: request.candidate.provenance.clone(),
+            provenance: crate::artifacts::candidates::stored_provenance(
+                &request.candidate.provenance,
+            ),
             input: generated,
         });
         let result = self.service.accept_candidate(

@@ -181,7 +181,8 @@ fn collection_candidates(
 }
 
 /// What binding one referenced artifact found.
-enum Binding {
+#[derive(Debug)]
+pub(crate) enum Binding {
     /// Its verified bytes are kept ready under the file's current signature.
     Ready(Arc<PreparedArtifact>),
     /// Its file is present with the recorded length, and a worker must read and verify it.
@@ -391,6 +392,25 @@ impl EditorService {
                 Binding::Unprepared(read) => Some(read),
             })
             .collect())
+    }
+
+    /// The artifacts a task's parameters name, bound before it is queued: each must be recorded in
+    /// this catalog (`validation: unknown artifact <id>` otherwise, as a commit refuses one) and
+    /// present in the root with its recorded length; its verified bytes when they are kept ready,
+    /// and otherwise how the source work reads and verifies them. Lookup and stat only.
+    pub(crate) fn task_artifacts(
+        &self,
+        ids: &[ArtifactId],
+    ) -> Result<Vec<(ArtifactId, Binding)>, Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        for id in ids {
+            if artifact_row(&self.connection, id)?.is_none() {
+                return Err(Error::validation(format!("unknown artifact {id}")));
+            }
+        }
+        Ok(ids.iter().cloned().zip(self.bind(ids)?).collect())
     }
 
     /// Every artifact `recipe` references, split for a worker that reads its own artifacts off the
