@@ -1,13 +1,17 @@
-//! The application icon in `packaging/icon`. `luxforge.svg` is the editable source; the macOS ICNS
-//! and the Linux PNGs beside it are generated from it by `cargo xtask icon`, which rasterizes with
-//! macOS's `sips` and assembles the ICNS with `iconutil`. The generated files are committed, so
-//! packaging needs neither tool.
+//! The application icon in `packaging/icon`. `luxforge.svg` is the source, with pixel cuts for 16 and
+//! 32 pixels beside it, all written by `packaging/brand/generate.py`; the macOS ICNS and the Linux
+//! PNGs are generated from them by `cargo xtask icon`, which rasterizes with macOS's `sips` and
+//! assembles the ICNS with `iconutil`. The generated files are committed, so packaging needs neither
+//! tool.
 use crate::*;
 
 /// The icon's directory, relative to the repository root.
 pub const DIRECTORY: &str = "packaging/icon";
-/// The editable source.
+/// The source.
 pub const SOURCE: &str = "luxforge.svg";
+/// The pixel cuts drawn for the sizes at which the scaled source loses the mark: pixel size and
+/// file name.
+const CUTS: &[(u32, &str)] = &[(16, "luxforge-16.svg"), (32, "luxforge-32.svg")];
 /// The macOS icon, which the bundle names in `CFBundleIconFile`.
 pub const ICNS: &str = "luxforge.icns";
 /// The Linux icons: pixel size and file name.
@@ -44,23 +48,36 @@ fn rasterize(svg: &Path, size: u32, destination: &Path) -> Result {
     )
 }
 
-/// Regenerates the ICNS and the PNGs in `packaging/icon` from its SVG.
+/// The SVG drawn at `size` pixels: its pixel cut, or the source.
+fn source_for(size: u32) -> &'static str {
+    CUTS.iter()
+        .find(|(cut, _)| *cut == size)
+        .map_or(SOURCE, |(_, name)| name)
+}
+
+/// Regenerates the ICNS and the PNGs in `packaging/icon` from its SVGs.
 pub fn generate(root: &Path) -> Result {
     ensure(
         cfg!(target_os = "macos"),
         "Icon generation requires macOS sips and iconutil",
     )?;
     let directory = root.join(DIRECTORY);
-    let svg = directory.join(SOURCE);
-    ensure(
-        svg.is_file(),
-        format!("Missing icon source: {}", svg.display()),
-    )?;
+    for name in std::iter::once(SOURCE).chain(CUTS.iter().map(|(_, name)| *name)) {
+        let svg = directory.join(name);
+        ensure(
+            svg.is_file(),
+            format!("Missing icon source: {}", svg.display()),
+        )?;
+    }
     let temp = tempfile::tempdir()?;
     let iconset = temp.path().join("luxforge.iconset");
     fs::create_dir(&iconset)?;
     for (name, size) in ICONSET {
-        rasterize(&svg, *size, &iconset.join(name))?;
+        rasterize(
+            &directory.join(source_for(*size)),
+            *size,
+            &iconset.join(name),
+        )?;
     }
     let icns = temp.path().join(ICNS);
     let status = Command::new("iconutil")
@@ -70,7 +87,11 @@ pub fn generate(root: &Path) -> Result {
         .status()?;
     ensure(status.success(), "iconutil could not assemble the ICNS")?;
     for (size, name) in PNGS {
-        rasterize(&svg, *size, &temp.path().join(name))?;
+        rasterize(
+            &directory.join(source_for(*size)),
+            *size,
+            &temp.path().join(name),
+        )?;
     }
     for name in std::iter::once(ICNS).chain(PNGS.iter().map(|(_, name)| *name)) {
         fs::copy(temp.path().join(name), directory.join(name))?;
@@ -135,6 +156,13 @@ mod tests {
         let directory = directory();
         let source = fs::read_to_string(directory.join(SOURCE)).unwrap();
         assert!(source.contains("viewBox=\"0 0 1024 1024\""));
+        for (size, name) in CUTS {
+            let cut = fs::read_to_string(directory.join(name)).unwrap();
+            assert!(
+                cut.contains(&format!("viewBox=\"0 0 {size} {size}\"")),
+                "{name}"
+            );
+        }
         for (size, name) in PNGS {
             let image = image::open(directory.join(name)).unwrap();
             assert_eq!((image.width(), image.height()), (*size, *size), "{name}");
