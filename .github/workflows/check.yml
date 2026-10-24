@@ -6,7 +6,8 @@ permissions:
   contents: read
 concurrency:
   group: check-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A run on main finishes even when a later push queues behind it, so main's build has a result.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   # What each lane proves, and what it never proves, is the development guide's CI section
   # (docs/engineering/development.md#ci). No lane here is native GPU evidence.

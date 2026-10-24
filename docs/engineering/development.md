@@ -1908,7 +1908,8 @@ and downloaded Cargo sources. Its keys include the compiler, manifests, lockfile
 environment, with native lanes separated by runner image and native compiler/SDK identity; it excludes workspace and incremental
 artifacts, so checks still build the current source. The dependency-policy lane separately caches
 the exact cargo-deny 0.20.2 installation by OS, architecture and toolchain; it still runs the audit
-and fetches current advisories. Superseded runs on the same ref are cancelled; different refs and
+and fetches current advisories. Superseded runs on the same ref are cancelled, except on `main`,
+where a running check finishes and only the newest queued push runs after it; different refs and
 the extended corpus keep their own runs. The native lane saves on success so the first cache
 contains both debug and release dependencies; it does not freeze an incomplete profile set
 after an early test failure under the action's immutable exact key. Hosted warm-cache hit
