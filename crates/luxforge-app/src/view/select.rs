@@ -169,7 +169,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
             } else if let Some(photos) = &select.catalog.info {
                 crate::view::select_catalog::info(photos, grid.images, &model.copy_settings)
             } else {
-                info(&select.info)
+                info(&select.info, grid.images)
             })
             .width(Length::Fixed(TOOLS_PANEL_WIDTH))
             .height(Length::Fill)
@@ -919,7 +919,7 @@ fn strip(model: &StripModel) -> Element<'_, Message> {
 // -- Info panel ------------------------------------------------------------------------------------
 
 /// The active item's preview placeholder, Moment and Metadata bands; several selected, their count.
-fn info(model: &InfoModel) -> Element<'_, Message> {
+fn info<'a>(model: &'a InfoModel, images: GridImages<'a>) -> Element<'a, Message> {
     let content: Element<'_, Message> = match model {
         InfoModel::Nothing => caption("Nothing selected"),
         InfoModel::Reading => caption("Reading\u{2026}"),
@@ -936,7 +936,7 @@ fn info(model: &InfoModel) -> Element<'_, Message> {
             }
             content.into()
         }
-        InfoModel::One(item) => item_view(item),
+        InfoModel::One(item) => item_view(item, images),
     };
     scrollable(
         container(content)
@@ -948,9 +948,9 @@ fn info(model: &InfoModel) -> Element<'_, Message> {
     .into()
 }
 
-fn item_view(item: &ItemInfo) -> Element<'_, Message> {
-    let mut content =
-        column![preview_placeholder(item.aspect)].spacing(theme::PANEL_SECTION_SPACING);
+fn item_view<'a>(item: &'a ItemInfo, images: GridImages<'a>) -> Element<'a, Message> {
+    let mut content = column![info_preview(images.image(item.position), item.aspect)]
+        .spacing(theme::PANEL_SECTION_SPACING);
     if let Some(pick) = &item.pick {
         content = content.push(pick_band(pick));
     }
@@ -994,25 +994,38 @@ fn pick_band(band: &PickBand) -> Element<'_, Message> {
     band_column.width(Length::Fill).into()
 }
 
-/// The preview's place at the photograph's shape: previews come with the preview lane.
-pub(crate) fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
+/// The Info panel's preview of one item: its decoded grid preview, or a placeholder at its shape
+/// until then, in one box centred in the panel, so the panel does not move when the preview lands.
+pub(crate) fn info_preview<'a>(
+    handle: Option<&'a iced::widget::image::Handle>,
+    aspect: Option<f32>,
+) -> Element<'a, Message> {
     let width = TOOLS_PANEL_WIDTH - 2.0 * theme::PANEL_PADDING_X;
     let aspect = aspect
         .filter(|aspect| aspect.is_finite() && *aspect > 0.0)
         .unwrap_or(1.5);
     let height = (width / aspect).min(INFO_PREVIEW_MAX_HEIGHT);
-    container(Space::new())
-        .width(Length::Fixed(height * aspect))
-        .height(Length::Fixed(height))
-        .style(|theme: &Theme| {
-            container::Style::default()
-                .background(Derived::CellPlaceholder.resolve(theme.palette()))
-                .border(iced::Border {
-                    radius: theme::THUMBNAIL_RADIUS.into(),
-                    ..iced::Border::default()
-                })
-        })
-        .into()
+    let (width, height) = (Length::Fixed(height * aspect), Length::Fixed(height));
+    let preview: Element<'a, Message> = match handle {
+        Some(handle) => iced::widget::image(handle.clone())
+            .content_fit(iced::ContentFit::Contain)
+            .width(width)
+            .height(height)
+            .into(),
+        None => container(Space::new())
+            .width(width)
+            .height(height)
+            .style(|theme: &Theme| {
+                container::Style::default()
+                    .background(Derived::CellPlaceholder.resolve(theme.palette()))
+                    .border(iced::Border {
+                        radius: theme::THUMBNAIL_RADIUS.into(),
+                        ..iced::Border::default()
+                    })
+            })
+            .into(),
+    };
+    container(preview).center_x(Length::Fill).into()
 }
 
 /// A band: its title, then one label and value per row.
