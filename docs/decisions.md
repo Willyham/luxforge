@@ -407,7 +407,7 @@ For [the AI tools in the Develop workspace](design/ai-tools-workspace.md), taken
 
 - **Object detection is a separate tool, for removal and for masks.** Corrections › Object removes objects the person points at; Masks › New mask › Object makes a stored selection; one picker and one download serve both. Remove paints exactly what to fill, with no hover.
 - **Object removal ships on the Generative tier.** The Fast tier joins the Fill control Remove and Object share when its quality study passes.
-- **No experiment flag.** `ai.generative` and `ai.analysis` are removed and the tools are listed by default; downloads stay opt-in. Until the removal conditioning is published, the setups that need it say so and offer nothing.
+- **Object removal stays behind a flag.** `ai.analysis` (AI object picking) keeps gating object picking: Corrections › Object and Masks › Object are listed only while it is on. Remove is listed by default. Downloads stay opt-in. Until the removal conditioning is published, the setups that need it say so and offer nothing.
 - **Each tool sets up what it is missing**, the first time it is chosen, through one sheet and one consent with the combined size. Replace stays an add-on.
 
 The recorded defaults are in the [design](design/ai-tools-workspace.md#decisions).
