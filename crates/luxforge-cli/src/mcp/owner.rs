@@ -49,11 +49,34 @@ pub struct Attached {
     pub catalog: PathBuf,
 }
 
+/// The methods whose success can change the owner's registry, and so the tools generated from it
+/// ([list changes](../../../../docs/design/mcp.md#the-typed-profiles)). The registry has no
+/// module-enablement method today.
+pub const REGISTRY_CHANGES: &[&str] = &["flags.set"];
+
+/// How the adapter learns that the owner's registry changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListChanges {
+    /// Other clients share the owner and can change its registry: the adapter watches the owner's
+    /// event log, on a connection of its own from another [`Target::attach`].
+    Watch,
+    /// The adapter is the owner's only client and the owner serves no second connection: the
+    /// registry changes only through the adapter's own calls, so [`Owner::call`] reads
+    /// `schema.list` again after each of its own successful calls to a [`REGISTRY_CHANGES`]
+    /// method, and nothing watches.
+    OwnCalls,
+}
+
 /// How the adapter reaches a catalog owner.
 pub trait Target: Send {
     /// Connect, naming the adapter `label` to the owner, or say why there is nothing to connect
     /// to.
     fn attach(&mut self, label: &str) -> Result<Attached, ApiFailure>;
+
+    /// How changes to this owner's registry reach the adapter.
+    fn list_changes(&self) -> ListChanges {
+        ListChanges::Watch
+    }
 }
 
 /// The running desktop's live session: the one the registry of running sessions lists, or the
@@ -120,7 +143,7 @@ impl Owner {
             .as_ref()
             .is_some_and(|session| session.connection.closed())
         {
-            eprintln!("luxforge-mcp: the live session closed this connection");
+            eprintln!("luxforge-mcp: the catalog owner closed this connection");
             self.end();
         }
         let mut warning = None;
@@ -165,7 +188,9 @@ impl Owner {
         }
     }
 
-    /// Call `method` on the open session, ending the session when its connection fails.
+    /// Call `method` on the open session, ending the session when its connection fails. With
+    /// [`ListChanges::OwnCalls`], a successful call to a [`REGISTRY_CHANGES`] method reads the
+    /// registry again.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, ApiFailure> {
         let Some(session) = self.session.as_mut() else {
             return Err(failure(
@@ -175,12 +200,53 @@ impl Owner {
             ));
         };
         let answer = session.connection.call(method, params);
-        if let Err(error) = &answer
-            && (error.code == CONNECTION_LOST || error.code == PROTOCOL_ERROR)
-        {
-            eprintln!("luxforge-mcp: the connection to Luxforge failed during {method}");
-            self.end();
+        match &answer {
+            Err(error) if error.code == CONNECTION_LOST || error.code == PROTOCOL_ERROR => {
+                eprintln!("luxforge-mcp: the connection to Luxforge failed during {method}");
+                self.end();
+            }
+            Ok(_)
+                if self.target.list_changes() == ListChanges::OwnCalls
+                    && REGISTRY_CHANGES.contains(&method) =>
+            {
+                self.read_registry(method);
+            }
+            _ => {}
         }
         answer
     }
+
+    /// Read the open session's registry again after its own `cause` succeeded, keeping the one it
+    /// had when the read fails; a failed connection ends the session as any call's does.
+    fn read_registry(&mut self, cause: &str) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.connection.call("schema.list", json!({})) {
+            Ok(schema) => {
+                if schema != session.schema {
+                    eprintln!("luxforge-mcp: the registry changed after {cause}");
+                    session.inputs = MethodInputs::read(&schema);
+                    if let Err(error) = &session.inputs {
+                        eprintln!(
+                            "luxforge-mcp: the session's registry cannot be offered: {error}"
+                        );
+                    }
+                    session.schema = schema;
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "luxforge-mcp: the registry could not be read again after {cause}: {}",
+                    error.message
+                );
+                if error.code == CONNECTION_LOST || error.code == PROTOCOL_ERROR {
+                    self.end();
+                }
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+mod tests;

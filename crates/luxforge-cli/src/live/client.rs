@@ -139,25 +139,7 @@ impl LiveClient {
     /// [`RESPONSE_LIMIT`] fails without being kept. A connection that fails once the request is on
     /// its way is [`CONNECTION_LOST`]: whether the owner received the request is unknown.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, ApiFailure> {
-        let request = ApiRequest {
-            id: uuid::Uuid::new_v4().to_string(),
-            method: method.into(),
-            params,
-            token: Some(self.token.clone()),
-        };
-        let mut line = serde_json::to_vec(&request)
-            .map_err(|error| failure(INTERNAL, error.to_string(), None))?;
-        line.push(b'\n');
-        if line.len() > MAX_REQUEST_BYTES {
-            return Err(failure(
-                "resource-limit",
-                format!(
-                    "the {method} request is {} bytes; a request is at most {MAX_REQUEST_BYTES}",
-                    line.len()
-                ),
-                None,
-            ));
-        }
+        let (id, line) = request_line(method, params, Some(self.token.clone()))?;
         let lost = |detail: String| {
             failure(
                 CONNECTION_LOST,
@@ -176,34 +158,76 @@ impl LiveClient {
             .read_until(b'\n', &mut answer)
             .map_err(|error| lost(error.to_string()))?;
         if answer.len() > RESPONSE_LIMIT {
-            return Err(failure(
-                "resource-limit",
-                format!("the {method} answer is longer than {RESPONSE_LIMIT} bytes"),
-                None,
-            ));
+            return Err(too_long(method));
         }
         if answer.last() != Some(&b'\n') {
             return Err(lost("the editor closed the connection".into()));
         }
-        let response: ApiResponse = serde_json::from_slice(&answer).map_err(|error| {
-            failure(
-                PROTOCOL_ERROR,
-                format!("the {method} answer is malformed: {error}"),
-                None,
-            )
-        })?;
-        // A request the session could not parse, or a connection it refused, is answered with an
-        // empty identity.
-        if response.id != request.id && !response.id.is_empty() {
-            return Err(failure(
-                PROTOCOL_ERROR,
-                format!("the {method} answer is for another request"),
-                None,
-            ));
-        }
-        match response.error {
-            Some(error) => Err(error),
-            None => Ok(response.result.unwrap_or(Value::Null)),
-        }
+        read_answer(method, &id, &answer)
+    }
+}
+
+/// One request line for `method` with a new request identity and, over a live session, its token:
+/// the identity and the line, its newline included. A line over [`MAX_REQUEST_BYTES`] is refused
+/// before anything is written.
+pub(crate) fn request_line(
+    method: &str,
+    params: Value,
+    token: Option<String>,
+) -> Result<(String, Vec<u8>), ApiFailure> {
+    let request = ApiRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        method: method.into(),
+        params,
+        token,
+    };
+    let mut line =
+        serde_json::to_vec(&request).map_err(|error| failure(INTERNAL, error.to_string(), None))?;
+    line.push(b'\n');
+    if line.len() > MAX_REQUEST_BYTES {
+        return Err(failure(
+            "resource-limit",
+            format!(
+                "the {method} request is {} bytes; a request is at most {MAX_REQUEST_BYTES}",
+                line.len()
+            ),
+            None,
+        ));
+    }
+    Ok((request.id, line))
+}
+
+/// The failure for an answer to `method` longer than [`RESPONSE_LIMIT`], which is not kept.
+pub(crate) fn too_long(method: &str) -> ApiFailure {
+    failure(
+        "resource-limit",
+        format!("the {method} answer is longer than {RESPONSE_LIMIT} bytes"),
+        None,
+    )
+}
+
+/// Read `answer`, one whole line, as the owner's answer to the request `id` for `method`: its
+/// result, or its failure exactly as the owner gave it. A malformed answer, or one for another
+/// request, is [`PROTOCOL_ERROR`].
+pub(crate) fn read_answer(method: &str, id: &str, answer: &[u8]) -> Result<Value, ApiFailure> {
+    let response: ApiResponse = serde_json::from_slice(answer).map_err(|error| {
+        failure(
+            PROTOCOL_ERROR,
+            format!("the {method} answer is malformed: {error}"),
+            None,
+        )
+    })?;
+    // A request the owner could not parse, or a connection it refused, is answered with an empty
+    // identity.
+    if response.id != id && !response.id.is_empty() {
+        return Err(failure(
+            PROTOCOL_ERROR,
+            format!("the {method} answer is for another request"),
+            None,
+        ));
+    }
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(response.result.unwrap_or(Value::Null)),
     }
 }

@@ -11,6 +11,16 @@ fn the_flags_choose_the_catalog_profile_and_pictures() {
         parsed(&[]),
         Ok(Parsed::Serve(Options {
             catalog: None,
+            headless: false,
+            profile: Profile::Compact,
+            images: true,
+        }))
+    );
+    assert_eq!(
+        parsed(&["--headless", "--catalog", "/c.sqlite"]),
+        Ok(Parsed::Serve(Options {
+            catalog: Some("/c.sqlite".into()),
+            headless: true,
             profile: Profile::Compact,
             images: true,
         }))
@@ -25,6 +35,7 @@ fn the_flags_choose_the_catalog_profile_and_pictures() {
         ]),
         Ok(Parsed::Serve(Options {
             catalog: Some("/c.sqlite".into()),
+            headless: false,
             profile: Profile::Compact,
             images: false,
         }))
@@ -43,6 +54,8 @@ fn typed_profiles_and_unknown_or_repeated_flags_are_usage_errors() {
         &["--catalog", "a", "--catalog", "b"],
         &["--no-images", "--no-images"],
         &["--headless"],
+        &["--headless", "--no-images"],
+        &["--headless", "--headless", "--catalog", "a"],
         &["config"],
     ] {
         assert!(parsed(args).is_err(), "{args:?}");
@@ -52,6 +65,7 @@ fn typed_profiles_and_unknown_or_repeated_flags_are_usage_errors() {
             .unwrap_err()
             .contains("--tools compact")
     );
+    assert!(parsed(&["--headless"]).unwrap_err().contains("--catalog"));
 }
 
 #[test]

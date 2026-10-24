@@ -169,6 +169,8 @@ pub struct Mcp {
     lines: Receiver<String>,
     reader: Option<JoinHandle<()>>,
     stderr: Option<JoinHandle<String>>,
+    /// Each line the server writes to standard error, as it arrives.
+    diagnostics: Receiver<String>,
     /// Each request sent and not yet answered, by identity: its era and method.
     asked: HashMap<String, (Era, String)>,
     next: i64,
@@ -197,7 +199,9 @@ impl Mcp {
                 }
             }
         });
-        // Each diagnostic is echoed as it arrives, so a failing test shows what the server said.
+        // Each diagnostic is echoed as it arrives, so a failing test shows what the server said,
+        // and passed on for a test that waits for one.
+        let (diagnose, diagnostics) = channel();
         let stderr = std::thread::spawn(move || {
             let mut text = String::new();
             for line in BufReader::new(&mut stderr).lines() {
@@ -205,6 +209,7 @@ impl Mcp {
                 eprintln!("[luxforge-mcp] {line}");
                 text.push_str(&line);
                 text.push('\n');
+                let _ = diagnose.send(line);
             }
             text
         });
@@ -214,9 +219,22 @@ impl Mcp {
             lines,
             reader: Some(reader),
             stderr: Some(stderr),
+            diagnostics,
             asked: HashMap::new(),
             next: 0,
             read: Vec::new(),
+        }
+    }
+
+    /// The next diagnostic line starting with `prefix`, skipping the others: one the server must
+    /// write.
+    pub fn diagnostic(&mut self, prefix: &str) -> String {
+        loop {
+            match self.diagnostics.recv_timeout(STALL) {
+                Ok(line) if line.starts_with(prefix) => return line,
+                Ok(_) => {}
+                Err(error) => panic!("luxforge-mcp wrote no diagnostic {prefix:?}: {error}"),
+            }
         }
     }
 
