@@ -75,7 +75,7 @@
     {
       "id": "TASK-002",
       "description": "Let task.fill-generative fill a set of picked objects: the object-artifacts parameter, the removal region of an object artifact with its f64 reference, admission against stale and unknown artifacts, and the objects in the candidates' provenance; store the pick prompt on object model components.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "object-artifacts?: 1 to 8 mask-alpha artifacts published by task.select-object, instead of or beside selection-points. Each must be of this photograph's current source fingerprint and repair prefix (conflict with data.reason stale-selection naming it) and still published (validation: unknown artifact). The region joins each object's removal region and any painted footprint and effect stroke by maximum; the delivered admission (non-empty, candidate cap, half-frame, artifact budget) applies to the joined region.",
@@ -280,7 +280,7 @@
     {
       "id": "TASK-005",
       "description": "Deliver Object in the Masks panel: the Select group with Object… in New mask and Add component, the picking sub-state of Mask mode, one entry per pick through mask.create-model or mask.add-model, the model component's row with how and when it was picked, the stale note with Recompute and Keep, and the mask-object scenario.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002",
         "TASK-003"
