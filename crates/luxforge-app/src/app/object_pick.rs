@@ -12,7 +12,8 @@
 //! landed; the rest wait in a queue of at most [`crate::object_pick::SELECTION_LIMIT`]. What the
 //! published artifact becomes is the tool's ([`SelectFor`]): Masks › Object commits it through
 //! [`Editor::mask_object_selected`], a model row's Recompute through
-//! [`Editor::mask_recomputed`].
+//! [`Editor::mask_recomputed`], and Corrections › Object holds it for its fill through
+//! [`Editor::object_tool_selected`].
 //!
 //! **Off the loop.** Every owner call runs through [`owner_task`] or [`Task::perform`]; a pick's
 //! preview is decoded and highlighted on the blocking pool, so the update loop only wraps the
@@ -159,14 +160,16 @@ fn internal(message: String) -> CallError {
     }
 }
 
-/// Send one point pick and decode its answer. Blocks: run it off the update loop.
+/// Send one point pick and decode its answer, with the selected tint for a tool that holds what it
+/// selects. Blocks: run it off the update loop.
 pub(crate) fn pick(
     owner: &OwnerHandle,
     client: ClientId,
     params: Value,
+    held: bool,
 ) -> Result<Box<Picked>, CallError> {
     let answer = tasks::call_detailed(owner, client, PICK, params)?;
-    pick::picked(&answer).map(Box::new).map_err(internal)
+    pick::picked(&answer, held).map(Box::new).map_err(internal)
 }
 
 /// Send one stroke pick and decode its answer. Blocks: run it off the update loop.
@@ -174,12 +177,23 @@ pub(crate) fn find(
     owner: &OwnerHandle,
     client: ClientId,
     params: Value,
+    held: bool,
 ) -> Result<Box<Found>, CallError> {
     let answer = tasks::call_detailed(owner, client, PICK, params)?;
-    pick::found(&answer).map(Box::new).map_err(internal)
+    pick::found(&answer, held).map(Box::new).map_err(internal)
 }
 
-fn handle((width, height, rgba): (u32, u32, Vec<u8>)) -> iced::widget::image::Handle {
+/// What a tool that holds its selection keeps of a pick: its bounds and its tint as an image.
+pub(crate) fn held(bounds: Option<[f64; 4]>, tinted: Option<pick::Tinted>) -> Option<pick::Held> {
+    let (bounds, tinted) = (bounds?, tinted?);
+    Some(pick::Held {
+        bounds,
+        tint: handle(tinted.tint),
+        coverage: tinted.coverage,
+    })
+}
+
+pub(crate) fn handle((width, height, rgba): (u32, u32, Vec<u8>)) -> iced::widget::image::Handle {
     image_handle(DecodedPreview {
         width,
         height,
@@ -258,8 +272,9 @@ impl Editor {
     }
 
     /// Arm a picking session for `purpose` on the photograph on screen, at `radius` content
-    /// heights for a loose stroke: load the setup's models and analyse the photograph at once, so
-    /// hover is ready when the pointer arrives. It changes no mode and sends no edit.
+    /// heights for a loose stroke: load the models of `setup` (the picker's) and analyse the
+    /// photograph at once, so hover is ready when the pointer arrives. It changes no mode and sends
+    /// no edit.
     pub(crate) fn enter_object_pick(
         &mut self,
         purpose: PickUse,
@@ -320,11 +335,19 @@ impl Editor {
         );
         match session.purpose {
             PickUse::Mask => self.mask_object_left(),
+            PickUse::Object => self.object_tool_left(),
         }
     }
 
+    /// The screen compares, so nothing picks: a pick answers about the current state.
+    pub(crate) fn object_comparing(&self) -> bool {
+        self.document.compare_return.is_some()
+            || self.compare_key.is_down()
+            || self.presentation.compare_after.is_some()
+    }
+
     /// Why the session has to end after this message, or `None` while it stays.
-    fn object_pick_ended(&self, session: &ObjectPick) -> Option<&'static str> {
+    pub(crate) fn object_pick_ended(&self, session: &ObjectPick) -> Option<&'static str> {
         if self.document.state.as_ref().map(|state| &state.asset.id) != Some(&session.asset) {
             return Some("photograph");
         }
@@ -332,14 +355,12 @@ impl Editor {
         if self.object_select_module().is_none() {
             return Some("flag");
         }
-        if self.document.compare_return.is_some()
-            || self.compare_key.is_down()
-            || self.presentation.compare_after.is_some()
-        {
+        if self.object_comparing() {
             return Some("compare");
         }
         match session.purpose {
             PickUse::Mask => self.mask_object_ended(),
+            PickUse::Object => self.object_tool_ended(),
         }
     }
 
@@ -408,13 +429,14 @@ impl Editor {
             return Task::none();
         }
         let (owner, client) = (self.owner.clone(), self.client);
+        let holds = session.purpose.holds();
         if let Some((stroke, sent)) = &mut session.finding {
             *sent = true;
             let stroke = stroke.clone();
             let params = pick::stroke_query(&asset, &stroke, session.radius);
             session.last_request = Some(params.clone());
             return owner_task(
-                move || find(&owner, client, params),
+                move || find(&owner, client, params, holds),
                 move |result| {
                     Message::ObjectPick(ObjectPickMessage::Found {
                         asset,
@@ -441,7 +463,7 @@ impl Editor {
         let params = pick::point_query(&asset, point);
         session.last_request = Some(params.clone());
         owner_task(
-            move || pick(&owner, client, params),
+            move || pick(&owner, client, params, holds),
             move |result| {
                 Message::ObjectPick(ObjectPickMessage::Hovered {
                     asset,
@@ -482,21 +504,29 @@ impl Editor {
         let Some(session) = &self.object_pick else {
             return false;
         };
+        let purpose = session.purpose;
+        let asset = session.asset.clone();
+        self.queue_select(SelectFor::Pick(purpose), asset, prompt)
+    }
+
+    /// Put one selection in the queue: refused in the status bar when the queue is full.
+    pub(crate) fn queue_select(
+        &mut self,
+        purpose: SelectFor,
+        asset: AssetId,
+        prompt: ObjectPrompt,
+    ) -> bool {
         if !self.object_selects.room() {
-            self.status.text = format!(
-                "At most {} objects are selected at a time",
-                pick::SELECTION_LIMIT
-            );
+            self.status.text = selection_limit();
             return false;
         }
-        let (purpose, asset) = (session.purpose, session.asset.clone());
         self.event(
             "object_pick_queued",
-            || json!({"purpose": purpose.as_str(), "prompt": prompt.request_fields()}),
+            || json!({"for": purpose_name(&purpose), "prompt": prompt.request_fields()}),
         );
         self.object_selects
             .queued
-            .push_back((SelectFor::Pick(purpose), asset, prompt));
+            .push_back((purpose, asset, prompt));
         true
     }
 
@@ -506,10 +536,7 @@ impl Editor {
             return false;
         };
         if !self.object_selects.room() {
-            self.status.text = format!(
-                "At most {} objects are selected at a time",
-                pick::SELECTION_LIMIT
-            );
+            self.status.text = selection_limit();
             return false;
         }
         self.object_selects
@@ -531,6 +558,8 @@ impl Editor {
                 SelectFor::Recompute { mask, component } => {
                     self.mask_recomputed(mask, component, selection)
                 }
+                SelectFor::Pick(PickUse::Object) => Task::none(),
+                SelectFor::Object { ticket } => self.object_tool_selected(ticket, selection),
             };
         }
         if self.object_selects.running.is_some() {
@@ -580,6 +609,7 @@ impl Editor {
         let session = self.object_pick.as_ref()?;
         let shown = match session.purpose {
             PickUse::Mask => self.mask_mode_active() && self.drawn_mask().is_none(),
+            PickUse::Object => self.object_active(),
         };
         if !shown {
             return None;
@@ -591,6 +621,10 @@ impl Editor {
             radius: session.radius,
             nothing: session.nothing.is_some(),
             pins: session.pins.as_ref().map(|pins| pins.pins.as_slice()),
+            held: match session.purpose {
+                PickUse::Mask => None,
+                PickUse::Object => Some(self.object_tool_canvas()),
+            },
         })
     }
 
@@ -675,6 +709,7 @@ impl Editor {
                     self.status.text = format!("Finding objects failed: {error}");
                     return Task::none();
                 }
+                self.object_tool_found();
                 self.object_ask()
             }
             ObjectPickMessage::Loaded { resource, result } => {
@@ -686,6 +721,7 @@ impl Editor {
                            "state": result.as_ref().ok().map(|answer| answer["state"].clone()),
                            "error": result.as_ref().err()})
                 });
+                self.object_tool_found();
                 Task::none()
             }
             ObjectPickMessage::Pointer(pointer) => self.object_pointer(pointer),
@@ -710,6 +746,9 @@ impl Editor {
                 let Some(session) = self.object_pick.as_mut() else {
                     return Task::none();
                 };
+                if session.purpose == PickUse::Object {
+                    return self.object_tool_escape();
+                }
                 if session.press.take().is_some() {
                     return Task::none();
                 }
@@ -726,6 +765,13 @@ impl Editor {
                     .is_some_and(|session| session.pins.is_some())
                 {
                     return self.object_use();
+                }
+                if self
+                    .object_pick
+                    .as_ref()
+                    .is_some_and(|session| session.purpose == PickUse::Object)
+                {
+                    return self.object_tool_done();
                 }
                 self.leave_object_pick("done");
                 Task::none()
@@ -746,6 +792,7 @@ impl Editor {
                                 .as_ref()
                                 .is_some_and(|session| session.purpose == *use_),
                             SelectFor::Recompute { .. } => true,
+                            SelectFor::Object { ticket } => self.object_tool_holds(*ticket),
                         };
                         if wanted {
                             self.object_selects.answered = Some((purpose, selection));
@@ -754,6 +801,9 @@ impl Editor {
                     Err(error) => {
                         self.status.text = format!("Selecting the object failed: {error}");
                         self.event("object_select_failed", || json!({"error": error}));
+                        if let SelectFor::Object { ticket } = purpose {
+                            self.object_tool_failed(ticket);
+                        }
                     }
                 }
                 self.flush_selects()
@@ -777,12 +827,15 @@ impl Editor {
         match result {
             Ok(picked) if current => {
                 session.answered += 1;
+                let picked = *picked;
+                let kept = held(picked.bounds, picked.tinted);
                 session.overlay = match (picked.bounds, picked.image) {
                     (Some(bounds), Some(image)) => Some(HoverOverlay {
                         asset,
                         revision,
                         bounds,
                         handle: handle(image),
+                        held: kept,
                     }),
                     _ => None,
                 };
@@ -816,13 +869,26 @@ impl Editor {
         let Some(session) = self.object_pick.as_mut() else {
             return Task::none();
         };
+        // Corrections › Object's Paint shadow: the press paints, as Remove's does.
+        if session.purpose == PickUse::Object
+            && let Some(task) = self.object_tool_pointer(pointer)
+        {
+            return task;
+        }
+        let Some(session) = self.object_pick.as_mut() else {
+            return Task::none();
+        };
         match pointer {
-            ObjectPointer::Press { view, at } => {
+            ObjectPointer::Press {
+                view,
+                at,
+                modifiers,
+            } => {
                 // A press away from the pins or the Nothing notice dismisses them: the next
                 // gesture starts afresh.
                 session.pins = None;
                 session.nothing = None;
-                session.press = Some(pick::Press::pressed(view, at));
+                session.press = Some(pick::Press::pressed(view, at, modifiers));
                 Task::none()
             }
             ObjectPointer::Move { view, at } => {
@@ -835,7 +901,12 @@ impl Editor {
                 let Some(press) = session.press.take() else {
                     return Task::none();
                 };
+                let modifiers = press.modifiers;
+                let purpose = session.purpose;
                 match press.released(view, at, session.radius) {
+                    pick::Gesture::Click(point) if purpose == PickUse::Object => {
+                        self.object_tool_click(point, modifiers)
+                    }
                     pick::Gesture::Click(point) => {
                         if self.object_overlay().is_none() {
                             self.status.text = NOTHING_TO_SELECT.into();
@@ -856,6 +927,7 @@ impl Editor {
                         let session = self.object_pick.as_mut().expect("the armed session");
                         session.overlay = None;
                         session.finding = Some((stroke, false));
+                        session.adds = modifiers.shift;
                         self.object_ask()
                     }
                 }
@@ -877,14 +949,22 @@ impl Editor {
             return Task::none();
         };
         session.finding = None;
-        let radius = session.radius;
+        let (radius, adds, purpose) = (session.radius, session.adds, session.purpose);
         match result {
             Ok(found) if current => {
                 self.event("object_pick_found", || {
                     json!({"decision": format!("{:?}", found.decision).to_lowercase(),
                            "chosen": found.chosen, "points": stroke.len()})
                 });
+                let found = *found;
                 match found.decision {
+                    Decision::One if purpose == PickUse::Object => {
+                        let candidate = found.candidates.into_iter().next();
+                        let kept = candidate
+                            .and_then(|candidate| held(Some(candidate.bounds), candidate.tinted));
+                        let prompt = pick::stroke_prompt(&stroke, radius, None);
+                        return self.object_tool_pick(vec![(prompt, kept)], adds);
+                    }
                     Decision::One => {
                         self.object_enqueue(pick::stroke_prompt(&stroke, radius, None));
                         return self.flush_selects();
@@ -898,6 +978,7 @@ impl Editor {
                                 bounds: candidate.bounds,
                                 chosen: false,
                                 handle: candidate.image.map(handle),
+                                held: held(Some(candidate.bounds), candidate.tinted),
                             })
                             .collect();
                         let session = self.object_pick.as_mut().expect("the armed session");
@@ -905,6 +986,7 @@ impl Editor {
                             stroke,
                             radius,
                             pins,
+                            adds,
                         });
                     }
                     Decision::Nothing => {
@@ -945,8 +1027,18 @@ impl Editor {
             self.status.text = "Choose the numbered objects to use first".into();
             return Task::none();
         }
+        let adds = pins.adds;
+        let used: Vec<_> = pins
+            .used()
+            .into_iter()
+            .map(|(prompt, pin)| (prompt, pin.held.clone()))
+            .collect();
+        let purpose = self.object_pick.as_ref().map(|session| session.purpose);
         if let Some(session) = self.object_pick.as_mut() {
             session.pins = None;
+        }
+        if purpose == Some(PickUse::Object) {
+            return self.object_tool_pick(used, adds);
         }
         for prompt in prompts {
             if !self.object_enqueue(prompt) {
@@ -961,5 +1053,14 @@ fn purpose_name(purpose: &SelectFor) -> &'static str {
     match purpose {
         SelectFor::Pick(use_) => use_.as_str(),
         SelectFor::Recompute { .. } => "recompute",
+        SelectFor::Object { .. } => "object",
     }
+}
+
+/// What the status bar says when one more object would pass the selection limit.
+pub(crate) fn selection_limit() -> String {
+    format!(
+        "At most {} objects are selected at a time",
+        pick::SELECTION_LIMIT
+    )
 }

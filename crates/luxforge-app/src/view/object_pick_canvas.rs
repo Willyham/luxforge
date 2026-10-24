@@ -1,7 +1,9 @@
 //! The object picker's canvas ([`crate::object_pick`]): while a tool picks objects, a crosshair
 //! over the photograph, the object under the pointer washed white inside its outline, a loose
 //! drag's dashed stroke, a stroke that found nothing still tinted, and the numbered pins of one
-//! that found several.
+//! that found several. For a tool that holds what it selects (Corrections › Object) it also draws
+//! the selected objects, tinted and numbered in pick order, the painted shadow with a dashed edge,
+//! the brush while Paint shadow is armed, and a running generation's ring.
 //!
 //! The canvas owns pointer capture only. It publishes the hover, the press, its moves and its
 //! release in its own logical points and normalized content coordinates, and a press on a pin as
@@ -13,11 +15,13 @@ use crate::{
         Message,
         object_pick::{ObjectPickMessage, ObjectPointer},
     },
+    brush::Modifiers,
     object_pick::{HoverOverlay, Pin},
-    view::mask_canvas::Placement,
+    state::remove::{EffectStroke, SelectedObject},
+    view::{brush_overlay::Traces, corrections_canvas, mask_canvas::Placement},
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size, Vector, alignment,
+    Color, Point, Rectangle, Renderer, Size, Vector, alignment, keyboard,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, LineCap, LineDash, Path, Stroke, Text},
 };
@@ -26,11 +30,21 @@ use luxforge_ui::{Theme, theme};
 /// The dashes of a loose stroke's centre line, in logical points.
 const DASH: [f32; 2] = [4.0, 3.0];
 /// A pin's radius, and how far from its centre a press still catches it, in points.
-const PIN_RADIUS: f32 = 11.0;
-const PIN_CATCH: f32 = 14.0;
+const PIN_RADIUS: f32 = 13.0;
+const PIN_CATCH: f32 = 16.0;
+/// A selected object's numbered tag, just inside the top right of its bounds, dark like a pin so
+/// it reads over the object's own colour and its tint.
+const TAG_RADIUS: f32 = 11.0;
+const TAG_INSET: f32 = 4.0;
+/// A numeral's size, in points: large and semibold, in the interface's own bundled face, so it
+/// reads on any photograph and on a host with no system fonts.
+const NUMERAL: f32 = 15.0;
+const TAG_NUMERAL: f32 = 13.0;
 const WHITE: Color = Color::WHITE;
 const UNDER_INK: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.45);
-const PIN_FILL: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.75);
+/// A pin's disc: near-opaque dark, ringed white over a dark halo.
+const PIN_FILL: Color = Color::from_rgba(0.06, 0.06, 0.07, 0.92);
+const PIN_HALO: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.55);
 /// A chosen pin's number, dark on the accent.
 const PIN_CHOSEN_INK: Color = Color::from_rgb(0.1, 0.08, 0.05);
 /// A loose stroke's footprint while it is drawn, and once it found nothing.
@@ -49,13 +63,34 @@ pub(crate) struct ObjectPickData<'a> {
     pub(crate) radius: f64,
     pub(crate) nothing: bool,
     pub(crate) pins: Option<&'a [Pin]>,
+    /// What the tool holds: its selection and the painted shadow, and the strokes it paints.
+    pub(crate) held: Option<HeldData<'a>>,
+}
+
+/// What a tool that holds its selection lends the canvas for one frame.
+#[derive(Clone, Copy)]
+pub(crate) struct HeldData<'a> {
+    /// The selected objects in pick order, each drawn from its held tint.
+    pub(crate) objects: &'a [SelectedObject],
+    pub(crate) effect: Option<&'a EffectStroke>,
+    /// The shadow stroke being painted, at `brush`.
+    pub(crate) live: Option<&'a [[f64; 2]]>,
+    /// Paint shadow is armed: the brush's radius, which the cursor draws.
+    pub(crate) brush: Option<f64>,
+    /// A generation runs: its fraction, at this content position.
+    pub(crate) progress: Option<(Option<f64>, [f64; 2])>,
+    /// A candidate is shown in the photograph, so the selection is not tinted over it.
+    pub(crate) shown: bool,
 }
 
 /// The canvas's own pointer bookkeeping: whether the button went down on it, and where it last was.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct Interaction {
     pressed: bool,
     last: Option<((f32, f32), [f64; 2])>,
+    modifiers: Modifiers,
+    /// The painted figures last traced.
+    traces: Traces,
 }
 
 /// The picking canvas over the current render. Built for one `view`.
@@ -200,29 +235,91 @@ impl<'a> ObjectPickCanvas<'a> {
             let Some(centre) = self.placement.canvas_point_unbounded(x, y) else {
                 continue;
             };
-            let circle = Path::circle(centre, PIN_RADIUS);
-            frame.fill(
-                &circle,
-                if pin.chosen {
-                    theme::PHOTO_ANCHOR
-                } else {
-                    PIN_FILL
-                },
-            );
-            frame.stroke(
-                &circle,
-                Stroke::default().with_color(WHITE).with_width(1.25),
-            );
-            frame.fill_text(Text {
-                content: (index + 1).to_string(),
-                position: centre,
-                color: if pin.chosen { PIN_CHOSEN_INK } else { WHITE },
-                size: iced::Pixels(13.0),
-                align_x: alignment::Horizontal::Center.into(),
-                align_y: alignment::Vertical::Center,
-                ..Text::default()
-            });
+            numbered(frame, centre, (PIN_RADIUS, NUMERAL), index + 1, pin.chosen);
         }
+    }
+
+    /// What the tool holds: each selected object's tint over its bounds and its number at the top
+    /// right of them, the painted shadow with a dashed edge, the shadow being painted, and a
+    /// running generation's ring. A candidate shown in the photograph hides the tints, as it hides
+    /// Remove's selection.
+    fn held(&self, frame: &mut Frame, held: &HeldData<'_>, traces: &Traces) {
+        if !held.shown {
+            if let Some(effect) = held.effect {
+                corrections_canvas::painted_selection(
+                    frame,
+                    &self.placement,
+                    (&effect.points, effect.radius),
+                    false,
+                    true,
+                    traces,
+                );
+            }
+            for object in held.objects {
+                if let Some(kept) = &object.held {
+                    self.image_over(frame, kept.bounds, &kept.tint);
+                }
+            }
+            for (index, object) in held.objects.iter().enumerate() {
+                let Some(kept) = &object.held else {
+                    continue;
+                };
+                let [_, y0, x1, _] = kept.bounds;
+                if let Some(corner) = self.placement.canvas_point_unbounded(x1, y0) {
+                    let inset = TAG_RADIUS + TAG_INSET;
+                    let at = Point::new(corner.x - inset, corner.y + inset);
+                    numbered(frame, at, (TAG_RADIUS, TAG_NUMERAL), index + 1, false);
+                }
+            }
+        }
+        if let (Some(points), Some(radius)) = (held.live, held.brush) {
+            corrections_canvas::painted_selection(
+                frame,
+                &self.placement,
+                (points, radius),
+                true,
+                true,
+                traces,
+            );
+        }
+        if let Some((fraction, at)) = held.progress {
+            corrections_canvas::progress_ring(frame, &self.placement, at, fraction);
+        }
+    }
+}
+
+/// A numbered disc of `(radius, numeral size)` at `centre`: white semibold numerals on near-opaque
+/// dark, ringed white over a dark halo, or dark numerals on the accent when `accent`.
+fn numbered(frame: &mut Frame, centre: Point, size: (f32, f32), number: usize, accent: bool) {
+    let (radius, numeral) = size;
+    frame.fill(&Path::circle(centre, radius + 2.0), PIN_HALO);
+    let circle = Path::circle(centre, radius);
+    frame.fill(
+        &circle,
+        if accent {
+            theme::PHOTO_ANCHOR
+        } else {
+            PIN_FILL
+        },
+    );
+    frame.stroke(&circle, Stroke::default().with_color(WHITE).with_width(1.5));
+    frame.fill_text(Text {
+        content: number.to_string(),
+        position: centre,
+        color: if accent { PIN_CHOSEN_INK } else { WHITE },
+        size: iced::Pixels(numeral),
+        font: theme::FONT_SEMIBOLD,
+        align_x: alignment::Horizontal::Center.into(),
+        align_y: alignment::Vertical::Center,
+        ..Text::default()
+    });
+}
+
+fn modifiers_of(modifiers: keyboard::Modifiers) -> Modifiers {
+    Modifiers {
+        shift: modifiers.shift(),
+        command: modifiers.command(),
+        alt: modifiers.alt(),
     }
 }
 
@@ -244,6 +341,10 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
         cursor: Cursor,
     ) -> Option<Action<Message>> {
         match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = modifiers_of(*modifiers);
+                None
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if !self.covered => {
                 let point = cursor.position_in(bounds)?;
                 if let Some(index) = self.pin_at(point) {
@@ -254,7 +355,11 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
                 state.pressed = true;
                 state.last = Some((view, at));
                 Some(Self::publish(ObjectPickMessage::Pointer(
-                    ObjectPointer::Press { view, at },
+                    ObjectPointer::Press {
+                        view,
+                        at,
+                        modifiers: state.modifiers,
+                    },
                 )))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -269,6 +374,10 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
                 }
                 if self.covered {
                     return None;
+                }
+                // Paint shadow's brush follows the pointer without a pick.
+                if self.data.held.is_some_and(|held| held.brush.is_some()) {
+                    return Some(Action::request_redraw());
                 }
                 // Hover: each move over the photograph is a pick, the latest asked next.
                 let at = cursor
@@ -297,15 +406,20 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
-        _cursor: Cursor,
+        cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
+        if let Some(held) = &self.data.held {
+            self.held(&mut frame, held, &state.traces);
+        }
+        let brush = self.data.held.and_then(|held| held.brush);
         if let Some(overlay) = self.data.overlay
             && self.data.pins.is_none()
+            && brush.is_none()
         {
             self.image_over(&mut frame, overlay.bounds, &overlay.handle);
         }
@@ -314,6 +428,12 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
         }
         if let Some(pins) = self.data.pins {
             self.pins(&mut frame, pins);
+        }
+        if let Some(radius) = brush
+            && let Some(point) = super::brush_cursor::brush_cursor(cursor, bounds, self.covered)
+            && let Some(at) = self.content(point)
+        {
+            corrections_canvas::brush_ring(&mut frame, &self.placement, at, radius);
         }
         vec![frame.into_geometry()]
     }
@@ -325,8 +445,11 @@ impl canvas::Program<Message, Theme> for ObjectPickCanvas<'_> {
         cursor: Cursor,
     ) -> mouse::Interaction {
         // Off the canvas, or under a menu, sheet or the palette: the system's own pointer.
+        let brush = self.data.held.is_some_and(|held| held.brush.is_some());
         match super::brush_cursor::brush_cursor(cursor, bounds, self.covered) {
             Some(point) if self.pin_at(point).is_some() => mouse::Interaction::Pointer,
+            // Paint shadow draws the brush as its own cursor.
+            Some(point) if brush && self.content(point).is_some() => mouse::Interaction::Hidden,
             Some(_) => mouse::Interaction::Crosshair,
             None => mouse::Interaction::None,
         }
@@ -369,6 +492,7 @@ mod tests {
             radius: 0.03,
             nothing: false,
             pins: None,
+            held: None,
         };
         let program = ObjectPickCanvas::new(placement(), data);
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(960.0, 640.0));
@@ -413,6 +537,7 @@ mod tests {
             bounds: [0.4, 0.2, 0.6, 0.3],
             chosen: false,
             handle: None,
+            held: None,
         }];
         let data = ObjectPickData {
             pins: Some(&pins),

@@ -37,13 +37,13 @@ The flags:
 | Flag | Kind | Applies | Default | Listed | What it changes |
 | --- | --- | --- | --- | --- | --- |
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
-| `ai.analysis` | toggle | live | off | always | AI object picking: whether the analysis tasks, `query.pick-object` and `task.select-object` are offered, whether their models load and are listed in Settings › Models, and whether Remove draws the hover highlight ([gated object picking](#gated-object-picking)); never how a stored selection renders |
+| `ai.analysis` | toggle | live | off | always | AI object picking: whether the analysis tasks, `query.pick-object` and `task.select-object` are offered, whether their models load and are listed in Settings › Models, and whether the Corrections band offers Object and the mask menus offer Object… ([gated object picking](#gated-object-picking)); never how a stored selection renders |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
 
 ### Gated object picking
 
-`ai.analysis` gates analysing and picking, not having a selection. The analysis tasks, `query.pick-object` and `task.select-object` declare it, and the segmenter's resources name it, so the desktop hides them from the descriptor alone. Off, Remove draws no hover highlight and Settings › Models lists none of the analysis models; the owner refuses the tasks, the query and `module.runtime.load` of the analysis models as `not-ready` naming the flag, and still lists them and installs or removes them for any client. A stored `model` selection renders whatever the flag ([AI editing](ai-editing.md#analysis-and-the-per-photo-cache)).
+`ai.analysis` gates analysing and picking, not having a selection. The analysis tasks, `query.pick-object` and `task.select-object` declare it, and the segmenter's resources name it, so the desktop hides them from the descriptor alone. Off, the Corrections band lists Heal, Clone and Remove only (a band on Object returns to Remove), the New mask and Add component menus have no Select group (an open Masks › Object sub-state is left as Escape leaves it), Remove never picks, and Settings › Models lists none of the analysis models; the owner refuses the tasks, the query and `module.runtime.load` of the analysis models as `not-ready` naming the flag, and still lists them and installs or removes them for any client. A stored `model` selection renders whatever the flag ([AI editing](ai-editing.md#analysis-and-the-per-photo-cache)).
 
 The two proof flags follow the proof modules' rule: they exist only when the running host serves the test modules, and change nothing, so the choice and number controls have a real flag to render and test. A stored proof value is kept, and listed as unrecognized, by a host that does not list them.
 

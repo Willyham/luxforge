@@ -2,6 +2,7 @@
 //! answers to what they sent, whichever tool is picking.
 use crate::{
     app::{draft::GestureId, tasks::CallError},
+    brush::Modifiers,
     object_pick::{Found, Picked, SelectFor},
 };
 use luxforge_core::{AssetId, MappingDescriptor};
@@ -12,8 +13,12 @@ use serde_json::Value;
 /// content coordinates, which the picker and the selection take.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ObjectPointer {
-    /// The button went down on the photograph.
-    Press { view: (f32, f32), at: [f64; 2] },
+    /// The button went down on the photograph, with these modifiers held.
+    Press {
+        view: (f32, f32),
+        at: [f64; 2],
+        modifiers: Modifiers,
+    },
     /// The pointer moved with the button down.
     Move { view: (f32, f32), at: [f64; 2] },
     /// The button came up.
@@ -60,7 +65,8 @@ pub(crate) enum ObjectPickMessage {
     /// Escape: a press in progress is dropped, then pins or the Nothing notice are dismissed, then
     /// the tool leaves picking.
     Escape,
-    /// Done or Return with no pins up: the tool leaves picking.
+    /// Done or Return with no pins up: Masks › Object leaves picking; Corrections › Object hands a
+    /// stroke that found nothing to Remove, or generates.
     Done,
     /// A `task.select-object` this desktop sent ended: its result, or why it failed.
     Selected {

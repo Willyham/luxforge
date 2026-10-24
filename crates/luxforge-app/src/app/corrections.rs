@@ -922,7 +922,7 @@ impl Editor {
 
     /// Escape with no draft open, one level at a time: put the press held before its draft down,
     /// then deselect, then clear a set source, then leave the mode.
-    fn correction_escape(&mut self) -> Task<Message> {
+    pub(super) fn correction_escape(&mut self) -> Task<Message> {
         if let Some(task) = self.remove_escape() {
             return task;
         }

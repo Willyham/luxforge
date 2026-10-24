@@ -122,7 +122,7 @@ const FLAGS: &[FlagSpec] = &[
     FlagSpec {
         id: AI_ANALYSIS,
         title: "AI object picking",
-        description: "Analyses the photo with the installed segmenter so the pointer can pick objects in Remove, and offers the analysis and object selection tasks; nothing renders differently either way.",
+        description: "Offers the Object tool in Corrections and Object in New mask, which pick objects with the installed object finder; nothing renders differently either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
     },

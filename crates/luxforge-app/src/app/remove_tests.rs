@@ -66,12 +66,12 @@ fn fixture(name: &str) -> PathBuf {
 
 /// The desktop on one photograph, in Corrections, with the developer AI module beside the product
 /// modules.
-struct Filling {
-    editor: Editor,
-    root: PathBuf,
-    asset: AssetId,
-    agent: ClientId,
-    fake: Arc<FakeInference>,
+pub(super) struct Filling {
+    pub(super) editor: Editor,
+    pub(super) root: PathBuf,
+    pub(super) asset: AssetId,
+    pub(super) agent: ClientId,
+    pub(super) fake: Arc<FakeInference>,
 }
 
 impl Drop for Filling {
@@ -83,14 +83,19 @@ impl Drop for Filling {
 impl Filling {
     /// The photograph open in Corrections with the experiment on, as the desktop read it, and
     /// Remove chosen.
-    fn opened() -> Self {
+    pub(super) fn opened() -> Self {
         let mut filling = Self::corrections();
         filling.choose();
         filling
     }
 
     /// The photograph open in Corrections, with the flags read as the launch reads them.
-    fn corrections() -> Self {
+    pub(super) fn corrections() -> Self {
+        Self::corrections_on(&fixture("orientation-1.jpg"))
+    }
+
+    /// `photograph` open in Corrections, with the flags read as the launch reads them.
+    pub(super) fn corrections_on(photograph: &std::path::Path) -> Self {
         let root = std::env::temp_dir().join(format!(
             "luxforge-remove-{}-{}",
             std::process::id(),
@@ -129,7 +134,7 @@ impl Filling {
         let (editor, asset, agent, ()) = testing::real_photo_prepared(
             owner,
             join,
-            &fixture("orientation-1.jpg"),
+            photograph,
             Config {
                 developer: true,
                 ..Config::default()
@@ -154,27 +159,27 @@ impl Filling {
         filling
     }
 
-    fn owner(&self) -> OwnerHandle {
+    pub(super) fn owner(&self) -> OwnerHandle {
         self.editor.owner.clone()
     }
 
-    fn update(&mut self, message: Message) {
+    pub(super) fn update(&mut self, message: Message) {
         let _ = self.editor.update(message);
         answer_reads(&mut self.editor);
     }
 
-    fn remove(&mut self, message: RemoveMessage) {
+    pub(super) fn remove(&mut self, message: RemoveMessage) {
         self.update(Message::Remove(message));
     }
 
-    fn api(&self, method: &str, params: Value) -> Value {
+    pub(super) fn api(&self, method: &str, params: Value) -> Value {
         call(&self.owner(), self.editor.client, method, params)
             .unwrap_or_else(|error| panic!("{method}: {error}"))
             .0
     }
 
     /// Enter Corrections with its letter.
-    fn enter(&mut self) {
+    pub(super) fn enter(&mut self) {
         self.key(Key::Character("q".into()), Keys::empty());
         let _ = call(
             &self.owner(),
@@ -199,13 +204,13 @@ impl Filling {
     }
 
     /// Choose Remove, the kind control's last segment; the tiers are read.
-    fn choose(&mut self) {
+    pub(super) fn choose(&mut self) {
         self.remove(RemoveMessage::Choose);
         self.answer_capabilities();
         assert!(self.editor.remove_active());
     }
 
-    fn key(&mut self, key: Key, modifiers: Keys) {
+    pub(super) fn key(&mut self, key: Key, modifiers: Keys) {
         let event = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key: key.clone(),
             modified_key: key,
@@ -228,7 +233,7 @@ impl Filling {
 
     /// Run the capability operations the update function started, as the driver's tasks would,
     /// and hand each answer back; answer the requests they sent.
-    fn answer_capabilities(&mut self) -> Vec<Value> {
+    pub(super) fn answer_capabilities(&mut self) -> Vec<Value> {
         let mut sent = Vec::new();
         loop {
             let started = std::mem::take(&mut self.editor.capability_started);
@@ -247,12 +252,12 @@ impl Filling {
     }
 
     /// Read the AI module's status again, as a flag change or an install's end does.
-    fn refresh_tiers(&mut self) {
+    pub(super) fn refresh_tiers(&mut self) {
         let _ = self.editor.remove_refresh_tiers();
         self.answer_capabilities();
     }
 
-    fn model(&self) -> &RemoveModel {
+    pub(super) fn model(&self) -> &RemoveModel {
         self.editor
             .workspace
             .corrections
@@ -262,7 +267,7 @@ impl Filling {
     }
 
     /// Grant and install one developer model through the API, as any client does.
-    fn install(&self, resource: &str) {
+    pub(super) fn install(&self, resource: &str) {
         self.api(
             "module.permission.grant",
             json!({"module_id": AI, "capability": format!("download-{resource}"),
@@ -278,13 +283,13 @@ impl Filling {
     }
 
     /// The generator installed: the Generative tier is offered.
-    fn ready(&mut self) {
+    pub(super) fn ready(&mut self) {
         self.install(GENERATOR);
         self.refresh_tiers();
         assert_eq!(self.model().tiers.len(), 1, "{:?}", self.model());
     }
 
-    fn finished(&self, job: &str) -> Value {
+    pub(super) fn finished(&self, job: &str) -> Value {
         let mut record = Value::Null;
         wait_until("the job ending", || {
             record = self.api("job.read", json!({"job_id": job}));
@@ -293,7 +298,7 @@ impl Filling {
         record
     }
 
-    fn content_press(&mut self, at: [f64; 2]) {
+    pub(super) fn content_press(&mut self, at: [f64; 2]) {
         self.update(Message::Corrections(CorrectionMessage::Press {
             view: ((at[0] * 1000.0) as f32, (at[1] * 1000.0) as f32),
             content: at,
@@ -303,7 +308,7 @@ impl Filling {
     }
 
     /// Paint a horizontal stroke across the middle of the photograph: the selection.
-    fn paint(&mut self) {
+    pub(super) fn paint(&mut self) {
         self.content_press([0.4, 0.5]);
         for step in 1..=10 {
             let x = 0.4 + 0.02 * f64::from(step);
@@ -320,7 +325,7 @@ impl Filling {
     }
 
     /// The request the last control sent, taken.
-    fn sent(&mut self) -> (String, Value) {
+    pub(super) fn sent(&mut self) -> (String, Value) {
         let status = self.editor.status.text.clone();
         self.editor
             .remove_reads
@@ -330,7 +335,7 @@ impl Filling {
     }
 
     /// Copy one request as JSON: what the menu line copies.
-    fn copy(&mut self, request: RemoveRequest) -> Value {
+    pub(super) fn copy(&mut self, request: RemoveRequest) -> Value {
         self.remove(RemoveMessage::Copy(request));
         self.editor
             .remove_reads
@@ -340,7 +345,7 @@ impl Filling {
     }
 
     /// Run the start Generate or Regenerate sent, as its task would: its job's id.
-    fn start(&mut self) -> String {
+    pub(super) fn start(&mut self) -> String {
         let (method, params) = self.sent();
         assert_eq!(method, TASK);
         let answer = start_fill(&self.owner(), self.editor.client, &method, params);
@@ -352,7 +357,7 @@ impl Filling {
     }
 
     /// One read of `job`, handed back as its reader's pass would.
-    fn poll(&mut self, job: &str) -> Value {
+    pub(super) fn poll(&mut self, job: &str) -> Value {
         let record = self.api("job.read", json!({"job_id": job}));
         let parsed: JobRecord = serde_json::from_value(record.clone()).unwrap();
         self.remove(RemoveMessage::Polled {
@@ -363,7 +368,7 @@ impl Filling {
     }
 
     /// Run the preview reads the strip started until none is left.
-    fn read_previews(&mut self) {
+    pub(super) fn read_previews(&mut self) {
         loop {
             let reading: Vec<_> = self.editor.remove_reads.reading.iter().cloned().collect();
             if reading.is_empty() {
@@ -383,7 +388,7 @@ impl Filling {
 
     /// Generate (or Regenerate) to its end, its candidates' previews read and the chosen one
     /// shown: its job.
-    fn generate(&mut self, regenerate: bool) -> String {
+    pub(super) fn generate(&mut self, regenerate: bool) -> String {
         self.remove(if regenerate {
             RemoveMessage::Regenerate
         } else {
@@ -400,7 +405,7 @@ impl Filling {
 
     /// Run the candidate draft's sets and rebases that wait for the owner to read a patch, as the
     /// blocking pool would, until none is left.
-    fn show(&mut self) {
+    pub(super) fn show(&mut self) {
         for _ in 0..8 {
             let sets = std::mem::take(&mut self.editor.reads_waiting.sets);
             let reapplies = std::mem::take(&mut self.editor.reads_waiting.reapplies);
@@ -420,7 +425,7 @@ impl Filling {
     }
 
     /// The candidate the open candidate draft shows, once its set has been answered.
-    fn shown(&self) -> Option<(String, u8)> {
+    pub(super) fn shown(&self) -> Option<(String, u8)> {
         let gesture = self.editor.core_gesture()?;
         let candidate = gesture.candidate()?;
         if !gesture.draft.drafted() {
@@ -437,7 +442,7 @@ impl Filling {
     }
 
     /// Run the candidate draft's commit Accept sent, as its task would.
-    fn run_accept(&mut self) {
+    pub(super) fn run_accept(&mut self) {
         assert!(
             testing::run_commit(&mut self.editor),
             "Accept commits the candidate draft: {}",
@@ -447,7 +452,7 @@ impl Filling {
     }
 
     /// Run the cancel the band (or Escape) sent, as its task would.
-    fn run_cancel(&mut self) {
+    pub(super) fn run_cancel(&mut self) {
         let (method, params) = self.sent();
         assert_eq!(method, "job.cancel");
         let job_id = params["job_id"].as_str().unwrap().to_owned();
@@ -455,7 +460,7 @@ impl Filling {
         self.remove(RemoveMessage::Cancelled { job_id, result });
     }
 
-    fn history(&self) -> Vec<String> {
+    pub(super) fn history(&self) -> Vec<String> {
         let (page, _) = call(
             &self.owner(),
             self.agent,
@@ -472,7 +477,7 @@ impl Filling {
     }
 
     /// A candidate's preview bytes as an independent client reads them.
-    fn agent_preview(&self, job: &str, candidate: u8) -> Vec<u8> {
+    pub(super) fn agent_preview(&self, job: &str, candidate: u8) -> Vec<u8> {
         read_preview(&self.owner(), self.agent, job, candidate)
             .unwrap()
             .rgba
@@ -480,7 +485,7 @@ impl Filling {
 }
 
 /// A request as sent, without the request id each send draws afresh.
-fn without_request_id(mut request: Value) -> Value {
+pub(super) fn without_request_id(mut request: Value) -> Value {
     if let Some(mutation) = request["params"]["mutation"].as_object_mut() {
         mutation.remove("request_id");
     }
@@ -488,7 +493,7 @@ fn without_request_id(mut request: Value) -> Value {
 }
 
 /// What Copy as JSON copies is `{method, params}` of the request the control then sends.
-fn same_request(copied: Value, sent: &(String, Value)) {
+pub(super) fn same_request(copied: Value, sent: &(String, Value)) {
     assert_eq!(
         without_request_id(copied),
         without_request_id(json!({"method": sent.0, "params": sent.1})),
@@ -1352,128 +1357,4 @@ fn a_candidate_the_owner_refuses_leaves_the_photograph_unfilled_and_says_why() {
     filling.show();
     assert_eq!(filling.shown(), Some((second, 0)));
     assert_eq!(filling.model().notice, None);
-}
-
-/// Hover picking in Remove: with `ai.analysis` on and the fake segmenter installed, a pointer move
-/// is the `query.pick-object` an API client sends for it; the first is refused for want of an
-/// analysis, which the desktop runs once and then asks again; the answer's chosen object is drawn
-/// over its bounds from a preview within the cap; a move while a pick runs only changes what is
-/// asked next, and leaving the photograph clears the overlay.
-#[test]
-#[slow]
-fn hovering_in_remove_picks_the_object_under_the_pointer_after_one_analysis() {
-    use super::remove_hover::{PICK, pick, pick_params, queue_analysis};
-    let mut filling = Filling::opened();
-    filling.api("flags.set", json!({"flag": "ai.analysis", "value": true}));
-    testing::read_flags(&mut filling.editor);
-    for resource in ["fake-segmenter-encoder", "fake-segmenter-decoder"] {
-        filling.install(resource);
-    }
-    assert!(filling.editor.hover_picking());
-    let (owner, client) = (filling.owner(), filling.editor.client);
-    let asset = filling.asset.clone();
-    let revision = filling.editor.document.state.as_ref().unwrap().revision;
-    let point = [0.5, 0.5];
-
-    // The move sends exactly what an API client sends.
-    filling.remove(RemoveMessage::Hover(Some(point)));
-    let params = filling
-        .editor
-        .remove_reads
-        .hover
-        .last_request
-        .clone()
-        .unwrap();
-    assert_eq!(params, pick_params(&asset, point));
-    assert_eq!(filling.editor.remove_reads.hover.asking, Some(point));
-    // A second move while it runs is only remembered.
-    filling.remove(RemoveMessage::Hover(Some([0.52, 0.5])));
-    filling.remove(RemoveMessage::Hover(Some(point)));
-    assert_eq!(
-        filling.editor.remove_reads.hover.last_request,
-        Some(params.clone())
-    );
-
-    // Not analysed yet: the desktop runs the analysis once.
-    let refused = pick(&owner, client, params.clone()).unwrap_err();
-    assert_eq!(refused.code, "not-ready");
-    filling.remove(RemoveMessage::Picked {
-        asset: asset.clone(),
-        revision,
-        point,
-        result: Err(refused.clone()),
-    });
-    assert_eq!(
-        filling.editor.remove_reads.hover.analysing,
-        Some((asset.clone(), revision))
-    );
-    let job = queue_analysis(&owner, client, &asset).unwrap();
-    assert_eq!(filling.finished(&job)["status"], "ready");
-    filling.remove(RemoveMessage::Analysed {
-        asset: asset.clone(),
-        revision,
-        result: Ok(()),
-    });
-    assert_eq!(filling.editor.remove_reads.hover.asking, Some(point));
-    // Refused again for the same revision, the pick is shown refused and nothing is analysed
-    // again: one analysis a revision, whatever it answered.
-    filling.remove(RemoveMessage::Picked {
-        asset: asset.clone(),
-        revision,
-        point,
-        result: Err(refused),
-    });
-    assert_eq!(filling.editor.remove_reads.hover.analysing, None);
-    assert_eq!(filling.editor.remove_reads.hover.analyses, 1);
-    assert_eq!(filling.editor.remove_reads.hover.asking, None);
-    filling.remove(RemoveMessage::Hover(Some([0.51, 0.5])));
-    filling.remove(RemoveMessage::Hover(Some(point)));
-
-    // The answer is drawn: the chosen candidate's coverage over its bounds, within the cap.
-    let answer = pick(&owner, client, params.clone()).unwrap();
-    assert_eq!(answer.decision, "one");
-    let (width, height, rgba) = answer.image.clone().unwrap();
-    assert!(width * height <= 1 << 16);
-    assert_eq!(rgba.len() as u32, width * height * 4);
-    let independent = call(&owner, filling.agent, PICK, params.clone()).unwrap().0;
-    assert_eq!(independent["decision"], "one");
-    filling.remove(RemoveMessage::Picked {
-        asset: asset.clone(),
-        revision,
-        point,
-        result: Ok(answer.clone()),
-    });
-    let canvas = filling.editor.remove_canvas().unwrap();
-    assert!(canvas.picking);
-    let overlay = canvas.hover.expect("the hovered object is drawn");
-    assert_eq!(Some(overlay.bounds), answer.bounds);
-    assert_eq!(filling.editor.remove_reads.hover.answered, 1);
-
-    // Leaving the photograph clears it; leaving Remove stops picking.
-    filling.remove(RemoveMessage::Hover(None));
-    assert!(filling.editor.remove_canvas().unwrap().hover.is_none());
-    filling.update(Message::Corrections(CorrectionMessage::Kind("heal".into())));
-    assert!(!filling.editor.hover_picking());
-}
-
-#[test]
-fn a_hovered_object_is_outlined_whatever_its_colour() {
-    use super::remove_hover::highlight;
-    // A 4 x 4 square of full coverage in a 6 x 6 preview.
-    let mut codes = vec![0u8; 36];
-    for y in 1..5 {
-        for x in 1..5 {
-            codes[y * 6 + x] = 255;
-        }
-    }
-    let rgba = highlight(&codes, 6, 6);
-    let at = |x: usize, y: usize| &rgba[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4];
-    // The edge of the object is opaque white, whatever the photograph's colour under it.
-    assert_eq!(at(1, 1), [255, 255, 255, 255]);
-    assert_eq!(at(4, 2), [255, 255, 255, 255]);
-    // Inside, a white wash that takes no hue from the object.
-    assert_eq!(at(2, 2), [255, 255, 255, 89]);
-    // Outside the outline a translucent dark under-stroke, and nothing beyond it.
-    assert_eq!(at(0, 2), [0, 0, 0, 115]);
-    assert_eq!(at(0, 0)[3], 0);
 }

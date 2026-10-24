@@ -1,6 +1,6 @@
 //! Object picking, shared by every tool that points at an object rather than painting it: Masks ›
-//! Object today, and the Corrections band's Object kind next
-//! (`docs/design/ai-tools-workspace.md`, "Object" and "Object in the Masks panel").
+//! Object and the Corrections band's Object kind (`docs/design/ai-tools-workspace.md`, "Object" and
+//! "Object in the Masks panel").
 //!
 //! This is the gesture's plain data and the one place its requests are built, so a gesture and its
 //! Copy as JSON request cannot drift apart. Nothing here reads a pixel or calls the owner; the
@@ -25,7 +25,7 @@
 //! selection task take and a model mask stores.
 use crate::{
     app::{draft::GestureId, tasks::CallError},
-    brush::ContentMap,
+    brush::{ContentMap, Modifiers},
 };
 use iced::widget::image::Handle;
 use luxforge_core::{
@@ -34,7 +34,7 @@ use luxforge_core::{
     mask::{OBJECT_PROMPT_POINTS_MAX, ObjectPrompt},
 };
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 /// `query.pick-object`.
 pub(crate) const PICK: &str = "query.pick-object";
@@ -60,6 +60,10 @@ pub(crate) const NOTHING_FOUND: &str = "Nothing found here";
 /// object stays readable under it. A wash in a hue would vanish over an object of that hue.
 const WASH: [u8; 3] = [255, 255, 255];
 const WASH_ALPHA: f32 = 0.35;
+/// A selected object's tint: Remove's selection tint, so a picked object reads as a painted
+/// selection does.
+const TINT: [u8; 3] = [255, 69, 69];
+const TINT_ALPHA: f32 = 0.32;
 /// The outline, opaque white, and the under-stroke outside it, Corrections' translucent dark ink.
 const OUTLINE: [u8; 4] = [255, 255, 255, 255];
 const UNDER_STROKE: [u8; 4] = [0, 0, 0, 115];
@@ -98,12 +102,15 @@ pub(crate) fn select_module<'a>(
 pub(crate) enum SetupId {
     /// Masks › Object: the object finder.
     MaskObject,
+    /// Corrections › Object: the object finder and the generative fill.
+    Object,
 }
 
 impl SetupId {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::MaskObject => crate::state::fill_setup::MASK_OBJECT,
+            Self::Object => crate::state::fill_setup::OBJECT,
         }
     }
 }
@@ -135,10 +142,55 @@ pub(crate) struct HoverOverlay {
     /// `[x0, y0, x1, y1]`.
     pub(crate) bounds: [f64; 4],
     pub(crate) handle: Handle,
+    /// What a click on it keeps, for a tool that holds what it selects.
+    pub(crate) held: Option<Held>,
 }
 
 /// A candidate's highlight, decoded off the update loop: its width, height and RGBA bytes.
 pub(crate) type Highlight = (u32, u32, Vec<u8>);
+
+/// A pick's coverage preview over its bounds, kept for the hit test of a selected object. At most
+/// the picker's preview cap, 65,536 codes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Coverage {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) codes: Vec<u8>,
+}
+
+impl Coverage {
+    /// Whether the content position `at` lies inside the object, its coverage spread over
+    /// `bounds`. `O(1)`.
+    pub(crate) fn covers(&self, bounds: [f64; 4], at: [f64; 2]) -> bool {
+        let [x0, y0, x1, y1] = bounds;
+        if !(x1 > x0 && y1 > y0) || at[0] < x0 || at[0] > x1 || at[1] < y0 || at[1] > y1 {
+            return false;
+        }
+        let column = ((at[0] - x0) / (x1 - x0) * self.width as f64) as usize;
+        let row = ((at[1] - y0) / (y1 - y0) * self.height as f64) as usize;
+        let column = column.min(self.width.saturating_sub(1));
+        let row = row.min(self.height.saturating_sub(1));
+        self.codes
+            .get(row * self.width + column)
+            .is_some_and(|code| *code >= INSIDE)
+    }
+}
+
+/// What a tool that holds its selection keeps of a pick: its bounds, its selected tint and the
+/// coverage a `⌥`-click is hit-tested against.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Held {
+    pub(crate) bounds: [f64; 4],
+    pub(crate) tint: Handle,
+    pub(crate) coverage: Arc<Coverage>,
+}
+
+/// [`Held`] before its tint is wrapped in an image handle: what the blocking pool hands back.
+#[derive(Clone, Debug)]
+pub(crate) struct Tinted {
+    pub(crate) tint: Highlight,
+    pub(crate) coverage: Arc<Coverage>,
+}
 
 /// One point pick's answer, decoded off the update loop: the overlay of its chosen candidate, or
 /// none when it chose nothing.
@@ -147,11 +199,14 @@ pub(crate) struct Picked {
     pub(crate) decision: String,
     pub(crate) bounds: Option<[f64; 4]>,
     pub(crate) image: Option<Highlight>,
+    /// The selected tint and coverage, when the tool holds what it selects.
+    pub(crate) tinted: Option<Tinted>,
 }
 
 /// The answer of `query.pick-object` as the overlay it draws: the first chosen candidate's bounds
-/// and its coverage, washed and outlined. `O(preview pixels)`.
-pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
+/// and its coverage, washed and outlined, and, for a tool that holds what it selects (`held`), the
+/// same coverage tinted as a selection. `O(preview pixels)`.
+pub(crate) fn picked(answer: &Value, held: bool) -> Result<Picked, String> {
     let decision = answer["decision"].as_str().unwrap_or("nothing").to_owned();
     let chosen = answer["chosen"][0].as_u64().map(|index| index as usize);
     let Some(candidate) = chosen.map(|index| &answer["candidates"][index]) else {
@@ -159,18 +214,24 @@ pub(crate) fn picked(answer: &Value) -> Result<Picked, String> {
             decision,
             bounds: None,
             image: None,
+            tinted: None,
         });
     };
-    let (bounds, image) = candidate_image(candidate)?;
+    let (bounds, image, tinted) = candidate_image(candidate, held)?;
     Ok(Picked {
         decision,
         bounds,
         image,
+        tinted,
     })
 }
 
-/// One candidate's bounds and, when its preview was sent, the highlight drawn from it.
-fn candidate_image(candidate: &Value) -> Result<(Option<[f64; 4]>, Option<Highlight>), String> {
+/// A candidate's bounds, the highlight drawn from its preview and, when asked, its selected tint.
+type CandidateImage = (Option<[f64; 4]>, Option<Highlight>, Option<Tinted>);
+
+/// One candidate's bounds and, when its preview was sent, the highlight drawn from it and (`held`)
+/// its selected tint and coverage.
+fn candidate_image(candidate: &Value, held: bool) -> Result<CandidateImage, String> {
     let bounds = candidate["bounds"].as_array().and_then(|bounds| {
         let values: Vec<f64> = bounds.iter().filter_map(Value::as_f64).collect();
         <[f64; 4]>::try_from(values).ok()
@@ -181,7 +242,7 @@ fn candidate_image(candidate: &Value) -> Result<(Option<[f64; 4]>, Option<Highli
         preview["height"].as_u64(),
         preview["codes"].as_str(),
     ) else {
-        return Ok((bounds, None));
+        return Ok((bounds, None, None));
     };
     let codes = crate::app::remove::decode_base64(codes)?;
     if codes.len() as u64 != width * height {
@@ -191,20 +252,38 @@ fn candidate_image(candidate: &Value) -> Result<(Option<[f64; 4]>, Option<Highli
         ));
     }
     let (width, height) = (width as usize, height as usize);
-    Ok((
-        bounds,
-        Some((
-            width as u32,
-            height as u32,
-            highlight(&codes, width, height),
-        )),
-    ))
+    let image = (
+        width as u32,
+        height as u32,
+        highlight(&codes, width, height),
+    );
+    let tinted = held.then(|| Tinted {
+        tint: (width as u32, height as u32, tint(&codes, width, height)),
+        coverage: Arc::new(Coverage {
+            width,
+            height,
+            codes,
+        }),
+    });
+    Ok((bounds, Some(image), tinted))
 }
 
 /// A coverage preview of `width × height` codes as the highlight's RGBA: each pixel washed by its
 /// coverage, an inside pixel with an outside 4-neighbour (or on the preview's edge) drawn as the
 /// outline, and an outside pixel beside the outline as the under-stroke.
 pub(crate) fn highlight(codes: &[u8], width: usize, height: usize) -> Vec<u8> {
+    painted(codes, width, height, WASH, WASH_ALPHA)
+}
+
+/// A coverage preview as a selected object's RGBA: [`highlight`]'s outline and under-stroke around
+/// Remove's selection tint in place of the white wash.
+pub(crate) fn tint(codes: &[u8], width: usize, height: usize) -> Vec<u8> {
+    painted(codes, width, height, TINT, TINT_ALPHA)
+}
+
+/// A coverage preview washed in `wash` at `alpha` of its coverage, outlined white over a dark
+/// under-stroke.
+fn painted(codes: &[u8], width: usize, height: usize, wash: [u8; 3], alpha: f32) -> Vec<u8> {
     let inside = |x: isize, y: isize| {
         x >= 0
             && y >= 0
@@ -231,8 +310,8 @@ pub(crate) fn highlight(codes: &[u8], width: usize, height: usize) -> Vec<u8> {
                 UNDER_STROKE
             } else {
                 let code = codes[y as usize * width + x as usize];
-                let alpha = (f32::from(code) * WASH_ALPHA).round() as u8;
-                [WASH[0], WASH[1], WASH[2], alpha]
+                let alpha = (f32::from(code) * alpha).round() as u8;
+                [wash[0], wash[1], wash[2], alpha]
             };
             rgba.extend_from_slice(&pixel);
         }
@@ -323,14 +402,17 @@ pub(crate) struct Press {
     pub(crate) points: Vec<[f64; 2]>,
     /// It has travelled [`crate::range_pick::CLICK_TRAVEL`] or more, so it is a loose drag for the rest of its life.
     pub(crate) dragging: bool,
+    /// The modifiers held as it went down: `⇧` adds and `⌥` takes away, where the tool says so.
+    pub(crate) modifiers: Modifiers,
 }
 
 impl Press {
-    pub(crate) fn pressed(view: (f32, f32), at: [f64; 2]) -> Self {
+    pub(crate) fn pressed(view: (f32, f32), at: [f64; 2], modifiers: Modifiers) -> Self {
         Self {
             view,
             points: vec![at],
             dragging: false,
+            modifiers,
         }
     }
 
@@ -402,6 +484,8 @@ pub(crate) struct FoundCandidate {
     pub(crate) bounds: [f64; 4],
     /// Its highlight, decoded off the update loop.
     pub(crate) image: Option<Highlight>,
+    /// Its selected tint and coverage, when the tool holds what it selects.
+    pub(crate) tinted: Option<Tinted>,
 }
 
 /// A loose stroke's answer, decoded off the update loop.
@@ -414,8 +498,9 @@ pub(crate) struct Found {
     pub(crate) candidates: Vec<FoundCandidate>,
 }
 
-/// The answer of `query.pick-object` for a stroke. `O(preview pixels)`.
-pub(crate) fn found(answer: &Value) -> Result<Found, String> {
+/// The answer of `query.pick-object` for a stroke, with each candidate's selected tint and coverage
+/// for a tool that holds what it selects (`held`). `O(preview pixels)`.
+pub(crate) fn found(answer: &Value, held: bool) -> Result<Found, String> {
     let decision = match answer["decision"].as_str() {
         Some("one") => Decision::One,
         Some("several") => Decision::Several,
@@ -433,7 +518,7 @@ pub(crate) fn found(answer: &Value) -> Result<Found, String> {
     let mut candidates = Vec::with_capacity(chosen.len());
     for &position in &chosen {
         let candidate = &answer["candidates"][position as usize];
-        let (bounds, image) = candidate_image(candidate)?;
+        let (bounds, image, tinted) = candidate_image(candidate, held)?;
         let Some(bounds) = bounds else {
             return Err(format!("candidate {position} has no bounds"));
         };
@@ -441,6 +526,7 @@ pub(crate) fn found(answer: &Value) -> Result<Found, String> {
             position,
             bounds,
             image,
+            tinted,
         });
     }
     let decision = if candidates.is_empty() {
@@ -462,6 +548,8 @@ pub(crate) struct Pin {
     pub(crate) bounds: [f64; 4],
     pub(crate) chosen: bool,
     pub(crate) handle: Option<Handle>,
+    /// What a tool that holds its selection keeps of the candidate once it is used.
+    pub(crate) held: Option<Held>,
 }
 
 impl Pin {
@@ -478,6 +566,8 @@ pub(crate) struct Pins {
     pub(crate) stroke: Vec<[f64; 2]>,
     pub(crate) radius: f64,
     pub(crate) pins: Vec<Pin>,
+    /// The stroke was drawn with `⇧`: what it selects adds to the selection.
+    pub(crate) adds: bool,
 }
 
 impl Pins {
@@ -494,10 +584,18 @@ impl Pins {
 
     /// The prompt each chosen pin selects with, in pin order.
     pub(crate) fn prompts(&self) -> Vec<ObjectPrompt> {
+        self.used().into_iter().map(|(prompt, _)| prompt).collect()
+    }
+
+    /// Each chosen pin with the prompt it selects with, in pin order.
+    pub(crate) fn used(&self) -> Vec<(ObjectPrompt, &Pin)> {
         self.pins
             .iter()
             .filter(|pin| pin.chosen)
-            .map(|pin| stroke_prompt(&self.stroke, self.radius, Some(pin.position)))
+            .map(|pin| {
+                let prompt = stroke_prompt(&self.stroke, self.radius, Some(pin.position));
+                (prompt, pin)
+            })
             .collect()
     }
 }
@@ -509,13 +607,23 @@ impl Pins {
 pub(crate) enum PickUse {
     /// Masks › Object: each selection is one `mask.create-model` or `mask.add-model`.
     Mask,
+    /// Corrections › Object: each selection is one object the fill removes, held by the band until
+    /// Generate names it in `object-artifacts`.
+    Object,
 }
 
 impl PickUse {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Mask => "mask",
+            Self::Object => "object",
         }
+    }
+
+    /// The tool holds what it selects, so its picks are decoded with a selected tint and the
+    /// coverage a `⌥`-click is hit-tested against.
+    pub(crate) fn holds(self) -> bool {
+        matches!(self, Self::Object)
     }
 }
 
@@ -557,6 +665,8 @@ pub(crate) struct ObjectPick {
     pub(crate) press: Option<Press>,
     /// A loose stroke whose pick waits for its turn (`false`) or is in flight (`true`).
     pub(crate) finding: Option<(Vec<[f64; 2]>, bool)>,
+    /// The stroke was drawn with `⇧`: what it finds adds to the selection.
+    pub(crate) adds: bool,
     /// The pins of a stroke that found several objects.
     pub(crate) pins: Option<Pins>,
     /// A stroke that found nothing, still tinted.
@@ -586,6 +696,7 @@ impl ObjectPick {
             answered: 0,
             press: None,
             finding: None,
+            adds: false,
             pins: None,
             nothing: None,
             last_request: None,
@@ -639,15 +750,27 @@ pub(crate) enum SelectFor {
         mask: MaskId,
         component: ComponentId,
     },
+    /// One object of Corrections › Object's selection, by the ticket the band numbered it with.
+    Object { ticket: u64 },
 }
 
 impl SelectFor {
+    /// The picking tool this selection is for, which leaving drops it with.
+    pub(crate) fn pick_use(&self) -> Option<PickUse> {
+        match self {
+            Self::Pick(purpose) => Some(*purpose),
+            Self::Object { .. } => Some(PickUse::Object),
+            Self::Recompute { .. } => None,
+        }
+    }
+
     fn summary(&self) -> Value {
         match self {
             Self::Pick(purpose) => json!({"pick": purpose.as_str()}),
             Self::Recompute { mask, component } => {
                 json!({"recompute": {"mask": mask, "component": component}})
             }
+            Self::Object { ticket } => json!({"object": ticket}),
         }
     }
 }
@@ -695,15 +818,28 @@ impl ObjectSelects {
     pub(crate) fn drop_for(&mut self, purpose: PickUse) -> usize {
         let before = self.queued.len();
         self.queued
-            .retain(|(waiting, _, _)| waiting != &SelectFor::Pick(purpose));
+            .retain(|(waiting, _, _)| waiting.pick_use() != Some(purpose));
         if self
             .answered
             .as_ref()
-            .is_some_and(|(waiting, _)| waiting == &SelectFor::Pick(purpose))
+            .is_some_and(|(waiting, _)| waiting.pick_use() == Some(purpose))
         {
             self.answered = None;
         }
         before - self.queued.len()
+    }
+
+    /// Drop one object's waiting selection: it left the selection before its turn.
+    pub(crate) fn drop_object(&mut self, ticket: u64) {
+        let object = SelectFor::Object { ticket };
+        self.queued.retain(|(waiting, _, _)| waiting != &object);
+        if self
+            .answered
+            .as_ref()
+            .is_some_and(|(waiting, _)| waiting == &object)
+        {
+            self.answered = None;
+        }
     }
 
     pub(crate) fn summary(&self) -> Value {
@@ -727,13 +863,13 @@ mod tests {
     /// even if it comes back.
     #[test]
     fn object_pick_a_press_is_a_click_until_it_travels_three_points() {
-        let mut press = Press::pressed((10.0, 10.0), [0.5, 0.5]);
+        let mut press = Press::pressed((10.0, 10.0), [0.5, 0.5], Modifiers::default());
         press.moved((11.0, 11.0), [0.501, 0.501]);
         assert_eq!(
             press.released((12.0, 10.5), [0.502, 0.5], 0.02),
             Gesture::Click([0.5, 0.5])
         );
-        let mut press = Press::pressed((10.0, 10.0), [0.5, 0.5]);
+        let mut press = Press::pressed((10.0, 10.0), [0.5, 0.5], Modifiers::default());
         press.moved((40.0, 10.0), [0.6, 0.5]);
         let Gesture::Loose(stroke) = press.released((10.0, 10.0), [0.5, 0.5], 0.02) else {
             panic!("a press that travelled is a loose stroke")
@@ -810,11 +946,21 @@ mod tests {
                 {"candidate": 2, "bounds": [0.0, 0.5, 0.5, 1.0], "preview": preview},
             ],
         });
-        let found = found(&answer).unwrap();
+        let found = found(&answer, true).unwrap();
         assert_eq!(found.decision, Decision::Several);
         assert_eq!(found.chosen, vec![0, 2]);
         assert_eq!(found.candidates.len(), 2);
         assert!(found.candidates[1].image.is_some());
+        let coverage = found.candidates[1]
+            .tinted
+            .as_ref()
+            .unwrap()
+            .coverage
+            .clone();
+        // The left half of the bounds is inside the object, the right half is not.
+        assert!(coverage.covers(found.candidates[1].bounds, [0.1, 0.7]));
+        assert!(!coverage.covers(found.candidates[1].bounds, [0.4, 0.7]));
+        assert!(!coverage.covers(found.candidates[1].bounds, [0.6, 0.7]));
         let mut pins = Pins {
             stroke: vec![[0.2, 0.2], [0.3, 0.8]],
             radius: 0.03,
@@ -826,8 +972,10 @@ mod tests {
                     bounds: candidate.bounds,
                     chosen: false,
                     handle: None,
+                    held: None,
                 })
                 .collect(),
+            adds: false,
         };
         assert_eq!(pins.pins[1].centre(), [0.25, 0.75]);
         pins.toggle(1);
@@ -843,7 +991,34 @@ mod tests {
     }
 
     fn found_of(answer: Value) -> Found {
-        found(&answer).unwrap()
+        found(&answer, false).unwrap()
+    }
+
+    #[test]
+    fn object_pick_a_hovered_object_is_outlined_whatever_its_colour() {
+        // A 4 x 4 square of full coverage in a 6 x 6 preview.
+        let mut codes = vec![0u8; 36];
+        for y in 1..5 {
+            for x in 1..5 {
+                codes[y * 6 + x] = 255;
+            }
+        }
+        let at =
+            |rgba: &[u8], x: usize, y: usize| rgba[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4].to_vec();
+        let rgba = highlight(&codes, 6, 6);
+        // The edge of the object is opaque white, whatever the photograph's colour under it.
+        assert_eq!(at(&rgba, 1, 1), [255, 255, 255, 255]);
+        assert_eq!(at(&rgba, 4, 2), [255, 255, 255, 255]);
+        // Inside, a white wash that takes no hue from the object.
+        assert_eq!(at(&rgba, 2, 2), [255, 255, 255, 89]);
+        // Outside the outline a translucent dark under-stroke, and nothing beyond it.
+        assert_eq!(at(&rgba, 0, 2), [0, 0, 0, 115]);
+        assert_eq!(at(&rgba, 0, 0)[3], 0);
+        // A selected object keeps the outline around Remove's selection tint.
+        let tinted = tint(&codes, 6, 6);
+        assert_eq!(at(&tinted, 1, 1), [255, 255, 255, 255]);
+        assert_eq!(at(&tinted, 2, 2), [255, 69, 69, 82]);
+        assert_eq!(at(&tinted, 0, 2), [0, 0, 0, 115]);
     }
 
     /// The selection queue holds at most the selection limit, and a tool leaving drops what waits

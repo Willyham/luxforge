@@ -2498,14 +2498,15 @@ impl Editor {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
-        if !self.mask_mode_active() {
-            return self.fail_step("a mask step needs Mask mode");
-        }
-        // Masks › Object's steps wait for what they started, picks and selections included.
+        // Object picking's steps wait for what they started, picks and selections included; the
+        // gestures run in whichever tool is picking, Masks › Object or Corrections › Object.
         let step = match step {
             MaskStep::Object(step) => return self.mask_object_step(step),
             step => step,
         };
+        if !self.mask_mode_active() {
+            return self.fail_step("a mask step needs Mask mode");
+        }
         let overlay = self.mask_coverage_target().is_some();
         let selecting = matches!(step, MaskStep::SelectComponent(Some(_)));
         // A drag is several messages; every other gesture is exactly one.
