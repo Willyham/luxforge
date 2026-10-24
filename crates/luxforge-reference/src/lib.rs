@@ -2,7 +2,7 @@
 //! against: the sRGB transfer function in [`srgb`], exposure here, and one module per study
 //! (colour, the Tone curve, the DNG corrections, HDR exposure merges and their alignment, panorama
 //! scenes and their rotating cameras, the RAW look, the Lightroom alignment rounds' measures and
-//! fits, mask and its guided upsampler, mixer, the mixer's grading, Presence, the preview error
+//! fits, grain, mask and its guided upsampler, mixer, the mixer's grading, Presence, the preview error
 //! measure, range, the Clone and Heal repairs, tone, vignette), and the declared
 //! tolerance of each output kind against the reference renderer in [`tolerance`].
 //!
@@ -26,6 +26,7 @@ pub mod dng;
 pub mod geometry;
 pub mod grade;
 pub mod grade_response;
+pub mod grain;
 pub mod guided;
 pub mod hdr;
 pub mod hdr_align;
