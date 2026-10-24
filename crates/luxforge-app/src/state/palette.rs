@@ -330,6 +330,11 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::Models),
         ));
     }
+    entries.push((
+        "Settings \u{b7} Agents".to_owned(),
+        "session.clients \u{b7} session.disconnect".to_owned(),
+        PaletteAction::Settings(crate::state::settings::SettingsTab::Agents),
+    ));
     // Checks the feed now, as Settings › General's Check now does; a build that does not update
     // itself answers why, which the status bar says.
     entries.push((

@@ -45,7 +45,17 @@ pub fn spawn_with(
     env: &[(String, String)],
     log: &Path,
 ) -> Result<Guard> {
-    let launch = Background::new(bin)?;
+    spawn_from(Background::new(bin)?, root, args, env, log)
+}
+
+/// [`spawn_with`] from a launch already made, such as [`Background::alone`]'s.
+fn spawn_from(
+    launch: Background,
+    root: &Path,
+    args: &[OsString],
+    env: &[(String, String)],
+    log: &Path,
+) -> Result<Guard> {
     let f = fs::File::create(log)?;
     Ok(Guard {
         child: Command::new(&launch.executable)
@@ -215,6 +225,8 @@ pub struct Launch {
     exit: Option<i32>,
     watch: Option<Watcher>,
     keep: Option<String>,
+    /// Run the editor without the helpers built beside it ([`Background::alone`]).
+    alone: bool,
     /// Environment variables the editor is started with beside the harness's own, such as
     /// `LUXFORGE_TEST_CAMERAS=1`; recorded with the launch's command.
     env: Vec<(String, String)>,
@@ -245,8 +257,16 @@ impl Launch {
             exit: None,
             watch: None,
             keep: None,
+            alone: false,
             env: Vec::new(),
         }
+    }
+
+    /// Run the editor without the helpers built beside it, as a build that has none: Settings ›
+    /// Agents then finds no `luxforge-mcp` ([`Background::alone`]).
+    pub fn alone(mut self) -> Self {
+        self.alone = true;
+        self
     }
 
     /// Start the editor with `key` set to `value` in its environment.
@@ -864,9 +884,14 @@ impl Run {
             .map(|s| s.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         let started = Instant::now();
-        let mut child = spawn_with(
+        let made = if launch.alone {
+            Background::alone(&bin)?
+        } else {
+            Background::new(&bin)?
+        };
+        let mut child = spawn_from(
+            made,
             &self.root,
-            &bin,
             &args,
             &launch.env,
             &self.out.join(&launch.log),
@@ -874,6 +899,9 @@ impl Run {
         let index = self.launches.len();
         self.launches
             .push(json!({"evidence":listed,"log":launch.log,"command":command,"exit_code":null}));
+        if launch.alone {
+            self.launches[index]["alone"] = json!(true);
+        }
         if !launch.env.is_empty() {
             self.launches[index]["env"] = launch
                 .env
@@ -1075,6 +1103,14 @@ pub fn ctl_call(
         "result": serde_json::from_str::<Value>(stdout.trim()).unwrap_or_else(|_| json!(stdout)),
         "stderr": String::from_utf8_lossy(&output.stderr),
     }))
+}
+
+/// `luxforge-mcp` attaching to the live session of the editor that owns `catalog`, as a client
+/// configured with `--catalog` starts it: the harness's agent, which the scenario runs over stdio.
+pub fn mcp_command(mcp: &Path, catalog: &Path) -> Command {
+    let mut command = Command::new(mcp);
+    command.arg("--catalog").arg(catalog);
+    command
 }
 
 #[cfg(test)]

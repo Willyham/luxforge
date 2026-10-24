@@ -27,6 +27,9 @@
 mod actions;
 #[cfg(test)]
 mod actions_tests;
+mod agents;
+#[cfg(test)]
+mod agents_tests;
 #[cfg(test)]
 mod auto_tone_measure;
 pub(crate) mod capabilities;

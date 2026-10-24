@@ -359,6 +359,7 @@ fn usage_an_ineligible_launch_shows_neither_the_notice_nor_the_privacy_tab() {
         [
             SettingsTab::General,
             SettingsTab::Appearance,
+            SettingsTab::Agents,
             SettingsTab::Experiments
         ]
     );
@@ -389,7 +390,7 @@ fn usage_settings_lists_privacy_last_in_an_eligible_launch_and_keeps_the_other_t
     assert_eq!(editor.workspace.settings.tabs, shown);
     assert_eq!(
         editor.settings_summary()["tabs"],
-        json!(["general", "appearance", "experiments", "privacy"])
+        json!(["general", "appearance", "agents", "experiments", "privacy"])
     );
     let _ = editor.update(Message::Usage(UsageMessage::Details(true)));
     assert!(

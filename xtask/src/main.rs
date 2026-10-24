@@ -86,6 +86,7 @@ mod scenario;
 mod select_catalog_smoke;
 mod select_introduction_smoke;
 mod select_smoke;
+mod settings_agents_smoke;
 mod settings_smoke;
 mod smoke;
 mod sparkle;

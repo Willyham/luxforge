@@ -1,6 +1,7 @@
 //! The view model: pure functions from core state to plain data. Nothing here draws, allocates a
 //! texture or calls the owner, and no framework type appears in any model, so every rule the screen
 //! follows is testable without a window.
+pub(crate) mod agents;
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings › Agents: connected</title>
+<link rel="stylesheet" href="board.css">
+</head>
+<body>
+<!-- Settings › Agents in a packaged macOS build with Claude Code attached through luxforge-mcp:
+     the bundled server's path, Claude Code's command with Copy, and the one connected client with
+     Disconnect. The status bar counts the same client. -->
+<div class="screen">
+  <div class="title">
+    <div class="seg"><span>Select <i>G</i></span><span class="on">Develop <i>D</i></span></div>
+    <span class="name">orientation-1.jpg</span><span class="meta">480 × 320 · JPEG</span>
+  </div>
+  <div class="state"><div class="sec">History</div><div class="row"><b></b>Original</div></div>
+  <div class="canvas"><div class="photo"><div></div><div></div><div></div><div></div></div></div>
+  <div class="strip"></div>
+  <div class="tools"><div class="histo"></div><div class="band">Crop, transform, straighten</div><div class="band">Presets</div><div class="band">Basic</div><div class="band">Presence</div><div class="band">Tone curve</div></div>
+  <div class="status">Opened orientation-1.jpg<div class="r"><span><span class="dot on"></span>1 agent connected</span><span>GPU render · 21 ms</span><span>Fit · 179%</span></div></div>
+  <div class="scrim"></div>
+
+  <div class="sheet">
+    <div class="sheet-h"><span class="t">Settings</span><span class="done">Done</span></div>
+    <div class="sheet-b">
+      <div class="rail">
+        <div class="tab"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><circle cx="8" cy="8" r="5.6"/></svg>General</div>
+        <div class="tab"><svg viewBox="0 0 16 16"><path d="M8 2.2C10.5 5.6 12 7.6 12 9.8a4 4 0 0 1-8 0C4 7.6 5.5 5.6 8 2.2z"/></svg>Appearance</div>
+        <div class="tab"><svg viewBox="0 0 16 16"><path d="M8 2v4M8 10v4M2 8h4M10 8h4"/></svg>Models</div>
+        <div class="tab on"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M5 6.5l2 1.5-2 1.5M8.5 10h2.5"/></svg>Agents</div>
+        <div class="tab"><svg viewBox="0 0 16 16"><path d="M5.5 2h5M6.5 2v4l-4 7.5h11l-4-7.5V2M4.4 10h7.2"/></svg>Experiments</div>
+      </div>
+      <div class="content">
+        <div class="t">Agents</div>
+        <div class="cap">Agents use the same operations you do: every edit an agent makes is in history and can be undone, and an agent can never grant consent or permissions.</div>
+        <div class="rule"></div>
+        <div class="sec">Connect an agent</div>
+        <div class="pair"><div class="lab">luxforge-mcp</div><div class="cap">/Applications/Luxforge.app/Contents/Helpers/luxforge-mcp</div></div>
+        <div class="segc"><span class="on">Claude Code</span><span>Claude Desktop</span><span>Codex</span><span>Cursor</span><span>Other (MCP JSON)</span></div>
+        <div class="line">
+          <div class="snippet"><div class="code">claude mcp add --scope user luxforge -- '/Applications/Luxforge.app/Contents/Helpers/luxforge-mcp'</div></div>
+          <span class="btn control">Copy</span>
+        </div>
+        <div class="cap">Run this in a terminal; Luxforge is then available to Claude Code in every project.</div>
+        <div class="rule"></div>
+        <div class="sec">Connected</div>
+        <div class="client">
+          <div class="pair"><div class="lab">Claude Code via MCP</div><div class="cap">Connected 12 minutes ago · last request just now · 38 requests</div></div>
+          <span class="btn">Disconnect</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

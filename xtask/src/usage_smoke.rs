@@ -161,7 +161,7 @@ pub fn after_plan(_: &[PathBuf]) -> Plan {
 }
 
 /// The scripted number of the `work` step named `name`.
-fn scripted_number(plan: &Plan, name: &str) -> Result<u64> {
+pub(crate) fn scripted_number(plan: &Plan, name: &str) -> Result<u64> {
     plan.steps()
         .iter()
         .filter(|step| step.script().is_some())
@@ -464,7 +464,7 @@ fn watcher(
 }
 
 /// Whether the work launch's log records that its scripted step `number` has begun.
-fn step_begun(evidence: &Path, number: u64) -> bool {
+pub(crate) fn step_begun(evidence: &Path, number: u64) -> bool {
     fs::read_to_string(evidence.join("events.jsonl")).is_ok_and(|log| {
         log.lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())

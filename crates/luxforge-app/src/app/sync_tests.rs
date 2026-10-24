@@ -436,6 +436,7 @@ fn nothing_new() -> tasks::SyncResult {
         library: None,
         usage: false,
         updates: false,
+        sessions: false,
         own: Vec::new(),
         moved: Default::default(),
     }
