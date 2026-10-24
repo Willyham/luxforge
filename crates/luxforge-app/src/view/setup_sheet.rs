@@ -70,5 +70,7 @@ fn picture(picture: IntroductionPicture) -> SetupPicture {
         IntroductionPicture::Candidates => SetupPicture::Candidates,
         IntroductionPicture::History => SetupPicture::History,
         IntroductionPicture::Describe => SetupPicture::Describe,
+        IntroductionPicture::Hover => SetupPicture::Hover,
+        IntroductionPicture::Selected => SetupPicture::Selected,
     }
 }

@@ -44,6 +44,12 @@ struct Models {
 
 impl Models {
     fn start(machine_memory_bytes: Option<u64>) -> Self {
+        Self::start_in(machine_memory_bytes, true)
+    }
+
+    /// The editor over a developer run (`developer`), or over a product run, whose AI editing
+    /// module sets up the qualified models.
+    fn start_in(machine_memory_bytes: Option<u64>, developer: bool) -> Self {
         let unique = format!(
             "{}-{}",
             std::process::id(),
@@ -54,8 +60,8 @@ impl Models {
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let registry = luxforge_core::ModuleRegistry::assemble(&luxforge_core::RegistryOptions {
-            developer: true,
-            proof_endpoint: Some(&endpoint.base_url()),
+            developer,
+            proof_endpoint: developer.then(|| endpoint.base_url()).as_deref(),
             ..luxforge_core::RegistryOptions::default()
         })
         .unwrap();
@@ -333,7 +339,8 @@ fn a_machine_below_the_minimum_sees_the_requirement_and_cannot_install() {
 /// A download that introduces its feature asks through the setup sheet, from the consent the host
 /// answers its install with: what the model needs of the machine against what this machine has,
 /// and a past Not now. On a machine below the model's minimum it says the model cannot run,
-/// offers no Download and only closes, and neither Return nor a scripted Allow downloads.
+/// offers no Download and only closes, and neither Return nor a scripted Allow downloads. It runs
+/// over a product run, where the qualified generator is the one Remove's setup holds.
 #[test]
 fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
     const AI: &str = "luxforge.ai";
@@ -362,7 +369,7 @@ fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
             .expect("the setup sheet")
     };
 
-    let mut models = Models::start(Some(48 << 30));
+    let mut models = Models::start_in(Some(48 << 30), false);
     models.editor.select.state.shown = crate::state::select::Shown::Develop;
     let sheet = ask(&mut models);
     let memory = sheet.facts.last().expect("the memory fact");
@@ -407,7 +414,7 @@ fn a_setup_sheet_states_this_machine_against_the_model_and_a_past_decline() {
         )
     );
 
-    let mut models = Models::start(Some(8 << 30));
+    let mut models = Models::start_in(Some(8 << 30), false);
     models.editor.select.state.shown = crate::state::select::Shown::Develop;
     let sheet = ask(&mut models);
     let memory = sheet.facts.last().expect("the memory fact");

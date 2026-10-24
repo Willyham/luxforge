@@ -27,7 +27,8 @@ use crate::{
         host::{
             self, ClearSecretParams, CreateProfileParams, DenyParams, GrantParams, InstallParams,
             LoadParams, ModuleParams, PermissionList, RemoveProfileParams, ResetParams,
-            ResourceParams, RevokeParams, SetParams, SetSecretParams, TASK_PREFIX, UnloadParams,
+            ResourceParams, RevokeParams, SetParams, SetSecretParams, SetupInstallParams,
+            TASK_PREFIX, UnloadParams,
         },
         resources, runtime, settings,
     },
@@ -690,7 +691,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |owner, _, params| owner
             .host
             .status(&owner.jobs, owner.service.registry(), params),
-        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
+        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, setups?, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; setups, for a module that declares them, is [{id, state, missing_bytes, staged_bytes, minimum_memory?, fits?, parts: [{name, state, bytes, missing_bytes, staged_bytes, minimum_memory?, resources: [{id, state, bytes, staged_bytes?, job_id?}]}], jobs: [{resource_id, job_id, status}], error?, reason?}], state installed, missing, installing, failed (error the first failure), unavailable (reason no-runtime: this host's inference runtime offers none of a missing part's backends) or cannot-run (reason memory: this machine is below minimum_memory, the largest of its parts'); runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
     ),
     owner!(
         resources::RESOURCE_LIST,
@@ -712,6 +713,21 @@ pub(super) const METHODS: &[MethodSpec] = &[
             )
         },
         "queues a transfer-lane job that streams into staging, checks the pinned length and SHA-256, asks the module to check the format, checks the storage quota and only then installs; consent-required and resource-limit are reported before anything is queued: consent-required comes first on any machine, its disclosure carrying machine_memory_bytes and fits for a resource that declares a memory minimum, and with a grant held a machine below that minimum is refused resource-limit with data.requirements; an installed resource answers state: installed and a second request joins the running install; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        retries: Owner,
+    ),
+    owner!(
+        host::INSTALL_SETUP,
+        SetupInstallParams,
+        |owner, call, params| {
+            owner.host.setup_install(
+                &mut owner.jobs,
+                owner.service.registry(),
+                params,
+                &call.origin,
+                &mut owner.announced,
+            )
+        },
+        "installs everything a declared setup still needs, as one request: before anything is queued, a missing download-artifact grant of any resource it would install fails consent-required with data.consent {module_id, setup, grants: [{capability, kind, scope, denied}], disclosure: {module, setup, title, introduction, parts: [{name, purpose, bytes, installed, resources}], bytes, origins, licenses, use_restrictions, minimum_memory?, machine_memory_bytes?, fits?, downloads}, denied}, every missing scope listed so a client grants each with module.permission.grant and asks again; then a missing part this host's inference runtime cannot run, or a machine below the setup's memory minimum, fails not-ready naming it in data.requirements; then the storage quota and the transfer lane's room for every install it would queue are checked (resource-limit, nothing queued); then one module.resource.install job is queued per missing resource in declared order, an install already queued or running is joined and an installed resource skipped; returns {module_id, setup, jobs: [{resource_id, job_id, status}], deduplicated}, jobs empty when nothing is missing; each job is read and cancelled with job.read and job.cancel",
         retries: Owner,
     ),
     owner!(
