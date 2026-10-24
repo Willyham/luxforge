@@ -443,7 +443,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (json!({"settings":{}}), "missing field `open`"),
         (
             json!({"settings":{"open":true,"tab":"colours"}}),
-            "settings tab must be one of general, appearance, models, experiments, privacy, not \"colours\"",
+            "settings tab must be one of general, appearance, models, agents, experiments, privacy, not \"colours\"",
         ),
         (
             json!({"settings":{"open":false,"tab":"general"}}),
@@ -1687,8 +1687,41 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         (json!({"open": {"path": ""}}), "open path"),
         (
             json!({"settings": {"open": true, "tab": "telemetry"}}),
-            "settings tab must be one of general, appearance, models, experiments, privacy",
+            "settings tab must be one of general, appearance, models, agents, experiments, privacy",
         ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}
+
+#[test]
+fn agents_steps_round_trip_and_refuse_what_they_do_not_take() {
+    let steps = round_trip(json!([
+        {"settings": {"open": true, "tab": "agents"}},
+        {"agents": {"client": "codex"}},
+        {"agents": "copy"},
+        {"agents": {"listed": ["Claude Code via MCP"]}},
+        {"agents": {"listed": []}},
+        {"agents": {"disconnect": "Claude Code via MCP"}},
+    ]));
+    assert_eq!(
+        steps[3],
+        Step::from(AgentsStep::Listed(vec!["Claude Code via MCP".into()]))
+    );
+    for (script, expected) in [
+        (
+            json!({"agents": {"client": "vscode"}}),
+            "agents client must be one of claude-code, claude-desktop, codex, cursor, json",
+        ),
+        (
+            json!({"agents": {"disconnect": " "}}),
+            "agents disconnect label takes a non-empty string",
+        ),
+        (
+            json!({"agents": {"listed": [""]}}),
+            "agents listed label takes a non-empty string",
+        ),
+        (json!({"agents": "paste"}), "unknown variant `paste`"),
     ] {
         refused(json!([script]), expected);
     }

@@ -38,6 +38,7 @@ step_from! {
     PresetCreateStep => PresetCreate,
     CopySettingsStep => CopySettings,
     UsageStep => Usage,
+    AgentsStep => Agents,
     UpdateStep => Update,
     CapabilityStep => Capability,
     MaskStep => Mask,

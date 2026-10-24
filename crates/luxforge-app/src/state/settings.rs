@@ -1,7 +1,8 @@
 //! The Settings sheet: which tab is open, the flags as `flags.list` last answered them, the flag
 //! writes waiting and the number fields' text, and the model its tabs, General, Appearance,
-//! Models when a registered module holds a model, Experiments and, in a launch eligible for usage
-//! statistics, Privacy, are drawn from. The sheet is this desktop's own view state, like the gallery page; the preferences
+//! Models when a registered module holds a model, Agents ([`super::agents`]), Experiments and, in
+//! a launch eligible for usage statistics, Privacy, are drawn from. The sheet is this desktop's
+//! own view state, like the gallery page; the preferences
 //! and flags are the host's, read and written through `preferences.read`, `preferences.set`,
 //! `flags.list` and `flags.set` as any client does
 //! ([design](../../../../docs/design/settings-and-flags.md)). The preferences the General tab shows
@@ -9,6 +10,7 @@
 //! themes the Appearance tab lists by the theme library ([`super::themes`]).
 use super::{
     ViewState,
+    agents::{Agents, AgentsModel},
     capabilities::CapabilityStore,
     models::{self, ModelsModel},
     preferences::{GeneralRow, PreferenceWriter, general_rows},
@@ -57,16 +59,19 @@ pub(crate) enum SettingsTab {
     Appearance,
     /// The models registered modules hold, only when one does.
     Models,
+    /// Connecting agents through `luxforge-mcp`, and the live clients connected now.
+    Agents,
     Experiments,
     /// Usage statistics, only in a launch eligible for them.
     Privacy,
 }
 
 impl SettingsTab {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::General,
         Self::Appearance,
         Self::Models,
+        Self::Agents,
         Self::Experiments,
         Self::Privacy,
     ];
@@ -88,6 +93,7 @@ impl SettingsTab {
             Self::General => "general",
             Self::Appearance => "appearance",
             Self::Models => "models",
+            Self::Agents => "agents",
             Self::Experiments => "experiments",
             Self::Privacy => "privacy",
         }
@@ -103,6 +109,7 @@ impl SettingsTab {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Models => "Models",
+            Self::Agents => "Agents",
             Self::Experiments => "Experiments",
             Self::Privacy => "Privacy",
         }
@@ -134,6 +141,8 @@ pub(crate) struct Settings {
     /// The window asked to close while a flag write was outstanding; it closes once the last
     /// lands.
     pub(crate) closing: bool,
+    /// The Agents tab: the server beside this build, the client chosen and the connected clients.
+    pub(crate) agents: Agents,
 }
 
 impl Settings {
@@ -207,6 +216,8 @@ pub(crate) struct SettingsModel {
     pub(crate) privacy: Option<PrivacyModel>,
     /// The Models tab, while it is open.
     pub(crate) models: Option<ModelsModel>,
+    /// The Agents tab, while it is open.
+    pub(crate) agents: Option<AgentsModel>,
     /// General's Updates group.
     pub(crate) updates: UpdatesGroup,
 }
@@ -273,6 +284,8 @@ pub(crate) fn derive(
                 view_state.menu.as_ref(),
             )
         }),
+        agents: (open == SettingsTab::Agents)
+            .then(|| super::agents::derive(&settings.agents, now_ms())),
         updates: group(updates, update_switches(preferences), now_ms()),
     }
 }
@@ -621,6 +634,7 @@ mod tests {
             [
                 SettingsTab::General,
                 SettingsTab::Appearance,
+                SettingsTab::Agents,
                 SettingsTab::Experiments
             ]
         );

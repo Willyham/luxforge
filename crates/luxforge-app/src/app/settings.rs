@@ -51,11 +51,19 @@ impl Editor {
                 } else {
                     Task::none()
                 };
+                // The Agents tab looks for the server beside this build again, since a build may
+                // have put it there since, and reads the connected clients.
+                let agents = if tab == SettingsTab::Agents {
+                    self.read_agents()
+                } else {
+                    Task::none()
+                };
                 return Task::batch([
                     self.read_flags(),
                     self.list_themes(),
                     self.read_usage(),
                     statuses,
+                    agents,
                     self.read_updates(),
                 ]);
             }
@@ -151,6 +159,7 @@ impl Editor {
                 }
                 return Task::batch([read, self.write_flags()]);
             }
+            SettingsMessage::Agents(message) => return self.agents_update(message),
             SettingsMessage::NumberText { flag, text } => {
                 self.settings.number_text.insert(flag, text);
             }
@@ -327,6 +336,7 @@ impl Editor {
             .collect();
         json!({
             "models": self.models_summary(),
+            "agents": self.agents_summary(),
             "open": self.settings.open.map(SettingsTab::name),
             "tabs": self.workspace.settings.tabs.iter().map(|tab| tab.name()).collect::<Vec<_>>(),
             "general": {"rows": general, "error": self.workspace.settings.preferences_error},

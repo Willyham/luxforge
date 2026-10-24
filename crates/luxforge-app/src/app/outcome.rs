@@ -78,6 +78,8 @@ pub(crate) enum Outcome<'a> {
     FlagsRead,
     /// The Settings sheet's last outstanding `flags.set` answered, or was refused.
     FlagsWritten,
+    /// The Agents tab's read answered with nothing more in flight: no read, and no Disconnect.
+    AgentsRead,
     /// The preference writer's last outstanding `preferences.set` answered, or was refused.
     PreferencesWritten,
     /// The theme on screen changed to answer for the preferences' choice: drawn, or Luxforge Dark
@@ -177,6 +179,7 @@ impl Outcome<'_> {
             Self::PerformanceCancelled { .. } => "performance_cancelled",
             Self::FlagsRead => "flags_read",
             Self::FlagsWritten => "flags_written",
+            Self::AgentsRead => "agents_read",
             Self::PreferencesWritten => "preferences_written",
             Self::ThemeDrawn => "theme_drawn",
             Self::ThemesAnswered { .. } => "themes_answered",

@@ -151,6 +151,9 @@ pub(crate) struct Evidence {
     pub(crate) wait_until: Option<Instant>,
     /// A running usage `await` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) usage_await: Option<usage::UsageAwaiting>,
+    /// The labels a running agents `listed` or `disconnect` step waits for the Connected list to
+    /// show, in order.
+    pub(crate) agents_listed: Option<Vec<String>>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
     /// A running export `progressed` step, which the evidence tick checks as it checks a `wait`.
@@ -274,6 +277,7 @@ impl Evidence {
             capability_wait: None,
             wait_until: None,
             usage_await: None,
+            agents_listed: None,
             warm_wait: None,
             export_progress: None,
             agent: None,
@@ -518,11 +522,12 @@ pub(crate) struct PacedStroke {
 /// The script's step types are the shared evidence script crate's: the desktop reads them and
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
-    CapabilityAction, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent, DoubleClickStep,
-    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep, KindMenuStep, MaskRow,
-    MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
-    PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
-    SliderStep, Step, TabStep, ThemePick, ViewIdleStep, ViewStep, WorkspaceStep,
+    AgentsStep, CapabilityAction, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent,
+    DoubleClickStep, DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep,
+    KindMenuStep, MaskRow, MaskStep, PaintStep, PaletteStep, PickStep, PickerStep,
+    PresetCreateStep, PresetPick, PreviewStep, Reference, ResetStep, RowStep, SectionStep,
+    SliderDraftStep, SliderEnd, SliderStep, Step, TabStep, ThemePick, ViewIdleStep, ViewStep,
+    WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -626,6 +631,9 @@ pub(crate) enum Settle {
     UsageNotice,
     /// The usage statistics consent's read, or its last outstanding write, answered.
     Usage,
+    /// The Agents tab's read answered with nothing in flight and, for a `listed` or `disconnect`
+    /// step, its Connected list shows the labels the step waits for.
+    Agents,
     /// The update offer is on screen.
     UpdateOffer,
     /// An update step's call answered, or was refused.
@@ -680,6 +688,7 @@ impl Settle {
             Self::DevelopAhead => "develop_ahead",
             Self::UsageNotice => "usage_notice",
             Self::Usage => "usage",
+            Self::Agents => "agents",
             Self::UpdateOffer => "update_offer",
             Self::Update => "update",
             Self::Corrections => "corrections",
@@ -1637,6 +1646,7 @@ impl Editor {
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
             Step::Usage(step) => self.usage_step(step),
+            Step::Agents(step) => self.agents_step(step),
             Step::Update(step) => self.update_step(step),
             Step::Wait { ms } => self.wait_step(ms),
             Step::Open { path } => self.open_step(path),
@@ -5079,6 +5089,15 @@ impl Editor {
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
+            // The Agents tab is captured once its own read has answered.
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Agents)
+                if self.settings.open != Some(crate::state::settings::SettingsTab::Agents) =>
+            {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agents_listed = None;
+                }
+                self.await_step(Settle::Agents);
+            }
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
             PaletteAction::CheckForUpdates => self.await_step(Settle::Update),
@@ -5192,6 +5211,98 @@ impl Editor {
         }
     }
 
+    /// One gesture on Settings › Agents ([`AgentsStep`]). The sheet must be open at Agents.
+    fn agents_step(&mut self, step: AgentsStep) -> Task<Message> {
+        use super::message::settings::AgentsMessage;
+        use crate::state::settings::SettingsTab;
+        if self.settings.open != Some(SettingsTab::Agents) {
+            return self.fail_step("the Settings sheet is not open at Agents");
+        }
+        let agents = |message| Message::Settings(SettingsMessage::Agents(message));
+        match step {
+            AgentsStep::Listed(labels) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agents_listed = Some(labels);
+                }
+                if self.agents_listed_now() {
+                    self.capture_next_frame();
+                } else {
+                    self.await_step(Settle::Agents);
+                }
+                Task::none()
+            }
+            AgentsStep::Client(id) => {
+                let Some(index) = luxforge_core::agents::Client::ALL
+                    .iter()
+                    .position(|client| client.id() == id)
+                else {
+                    return self.fail_step(format!("no client {id:?} is offered"));
+                };
+                self.capture_next_frame();
+                self.update(agents(AgentsMessage::Choose(index)))
+            }
+            AgentsStep::Copy => {
+                if self
+                    .settings
+                    .agents
+                    .snippet()
+                    .is_none_or(|snippet| snippet.is_err())
+                {
+                    return self.fail_step("the Agents tab offers no configuration to copy");
+                }
+                self.capture_next_frame();
+                self.update(agents(AgentsMessage::Copy))
+            }
+            AgentsStep::Disconnect(label) => {
+                let rows = self
+                    .workspace
+                    .settings
+                    .agents
+                    .as_ref()
+                    .map(|tab| tab.rows.clone())
+                    .unwrap_or_default();
+                let Some(at) = rows.iter().position(|row| row.label == label) else {
+                    return self.fail_step(format!("the Connected list shows no {label:?}"));
+                };
+                if rows[at].disconnecting {
+                    return self.fail_step(format!("{label:?} is already disconnecting"));
+                }
+                let client_id = rows[at].client_id;
+                let remaining: Vec<String> = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != at)
+                    .map(|(_, row)| row.label.clone())
+                    .collect();
+                self.note_step(json!({"client_id": client_id}));
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agents_listed = Some(remaining);
+                }
+                self.await_step(Settle::Agents);
+                self.update(agents(AgentsMessage::Disconnect(client_id)))
+            }
+        }
+    }
+
+    /// Whether the Agents tab has nothing in flight and, for a step waiting on its list, shows the
+    /// labels the step waits for.
+    fn agents_listed_now(&self) -> bool {
+        let agents = &self.settings.agents;
+        if agents.reading || !agents.disconnecting.is_empty() || agents.clients.is_none() {
+            return false;
+        }
+        let Some(expected) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.agents_listed.as_ref())
+        else {
+            return true;
+        };
+        // From the read itself, not the drawn tab: the outcome arrives before this message's
+        // derive, and the rows are drawn from the same list in the same order.
+        agents.labels().eq(expected.iter().map(String::as_str))
+    }
+
     /// What opening the Settings sheet settles on: the flags it reads, unless it is already open,
     /// which reads nothing.
     fn arm_settings_settle(&mut self) {
@@ -5233,6 +5344,15 @@ impl Editor {
             }
             // The tab shows the consent, which opening it reads again.
             self.await_step(Settle::Usage);
+            return self.update(Message::Settings(SettingsMessage::Open(tab)));
+        }
+        if tab == SettingsTab::Agents {
+            // The tab shows the server beside this build and the connected clients, which opening
+            // it reads.
+            if let Some(evidence) = &mut self.evidence {
+                evidence.agents_listed = None;
+            }
+            self.await_step(Settle::Agents);
             return self.update(Message::Settings(SettingsMessage::Open(tab)));
         }
         if tab == SettingsTab::Models {
@@ -5894,6 +6014,11 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::AgentsRead => {
+                if self.agents_listed_now() {
+                    self.settle_step(Settle::Agents, by);
+                }
+            }
             Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
             Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
             Outcome::UpdateOffer => {
@@ -7012,6 +7137,7 @@ mod tests {
             capability_wait: None,
             wait_until: None,
             usage_await: None,
+            agents_listed: None,
             warm_wait: None,
             export_progress: None,
             agent: None,

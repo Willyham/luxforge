@@ -7,11 +7,17 @@
 //! [usage statistics](../../../../docs/design/usage-statistics.md#settings-and-programmatic-parity)).
 use crate::{
     app::message::{
-        Message, capability::CapabilityMessage, settings::SettingsMessage, theme::ThemeMessage,
-        update::UpdateMessage, usage::UsageMessage, view::ViewMessage,
+        Message,
+        capability::CapabilityMessage,
+        settings::{AgentsMessage, SettingsMessage},
+        theme::ThemeMessage,
+        update::UpdateMessage,
+        usage::UsageMessage,
+        view::ViewMessage,
     },
     state::{
         MenuTarget,
+        agents::{self as agents_state, AgentsModel, ClientRow, ServerLine},
         models::{ModelRequest, ModelRow, ModelsModel, ResidentRow},
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
@@ -98,6 +104,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
         SettingsTab::General => general(model),
         SettingsTab::Appearance => appearance(model),
         SettingsTab::Models => models_tab(model.models.as_ref()),
+        SettingsTab::Agents => agents_tab(model.agents.as_ref()),
         SettingsTab::Experiments => experiments(model),
         SettingsTab::Privacy => privacy(model.privacy.as_ref()),
     };
@@ -149,6 +156,7 @@ fn tab_icon(tab: SettingsTab) -> Icon {
         // The colour drop the Masks panel's colour range draws: the interface's colours.
         SettingsTab::Appearance => Icon::Colour,
         SettingsTab::Models => Icon::Spark,
+        SettingsTab::Agents => Icon::Terminal,
         SettingsTab::Experiments => Icon::Beaker,
         SettingsTab::Privacy => Icon::Lock,
     }
@@ -195,6 +203,112 @@ fn models_tab(model: Option<&ModelsModel>) -> Element<'_, Message> {
         content = content.push(resident_row_view(resident));
     }
     content.into()
+}
+
+/// The Agents tab: the introduction; under Connect an agent, the `luxforge-mcp` beside this build
+/// and the chosen client's configuration with Copy, or, without the server, where it should be
+/// and how to build it; under Connected, every other live client with Disconnect, or one line
+/// when there is none ([design](../../../../docs/design/mcp.md#settings--agents)).
+fn agents_tab(model: Option<&AgentsModel>) -> Element<'_, Message> {
+    let mut content = column![title("Agents"), caption(agents_state::INTRO)]
+        .spacing(theme::SPACING)
+        .width(Length::Fill);
+    let Some(tab) = model else {
+        return content.into();
+    };
+    content = content
+        .push(horizontal_rule())
+        .push(section_label("Connect an agent"));
+    let server = column![label("luxforge-mcp")].spacing(theme::ROW_SPACING);
+    content = content.push(match &tab.server {
+        ServerLine::Reading => server.push(caption("Looking for it beside this build\u{2026}")),
+        ServerLine::Found(path) => server.push(caption(path.clone())),
+        ServerLine::Missing { missing, build } => server
+            .push(error_caption(missing.clone()))
+            .push(caption(build.clone())),
+        ServerLine::Unknown(reason) => server.push(error_caption(reason.clone())),
+    });
+    // The configuration is drawn only for a server that is there: nothing is drawn as if it
+    // worked.
+    if matches!(tab.server, ServerLine::Found(_)) {
+        content = content.push(segmented(
+            &SegmentedModel {
+                options: tab.choices.iter().map(|name| (*name).to_owned()).collect(),
+                selected: tab.chosen,
+                enabled: true,
+            },
+            |index| Message::Settings(SettingsMessage::Agents(AgentsMessage::Choose(index))),
+        ));
+    }
+    if let Some(snippet) = &tab.snippet {
+        let code = container(
+            text(snippet.text.clone())
+                .size(theme::SIZE_CAPTION)
+                .line_height(iced::widget::text::LineHeight::Absolute(
+                    theme::CAPTION_LINE_HEIGHT.into(),
+                ))
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                .style(theme::ink(Token::TextLabel)),
+        )
+        .padding(theme::SPACING)
+        .width(Length::Fill)
+        .style(theme::control_surface);
+        let copy = text_button(
+            "Copy",
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            Some(Message::Settings(SettingsMessage::Agents(
+                AgentsMessage::Copy,
+            ))),
+        );
+        content = content.push(
+            row![code, copy]
+                .spacing(theme::SPACING * 2.0)
+                .align_y(Alignment::Start),
+        );
+        if let Some(location) = &snippet.location {
+            content = content.push(caption(location.clone()));
+        }
+        content = content.push(caption(snippet.instruction.clone()));
+    }
+    if let Some(error) = &tab.snippet_error {
+        content = content.push(error_caption(error.clone()));
+    }
+    content = content
+        .push(horizontal_rule())
+        .push(section_label("Connected"));
+    if let Some(error) = &tab.error {
+        content = content.push(error_caption(error.clone()));
+    }
+    if let Some(empty) = tab.empty {
+        content = content.push(caption(empty));
+    }
+    for client in &tab.rows {
+        content = content.push(client_row(client));
+    }
+    content.into()
+}
+
+/// One connected client: its label over when it connected, its last request and its count, and
+/// Disconnect, disabled while its last press is unanswered.
+fn client_row(client: &ClientRow) -> Element<'_, Message> {
+    let disconnect = Message::Settings(SettingsMessage::Agents(AgentsMessage::Disconnect(
+        client.client_id,
+    )));
+    row![
+        column![label(client.label.clone()), caption(client.detail.clone())]
+            .spacing(theme::ROW_SPACING)
+            .width(Length::Fill),
+        text_button(
+            "Disconnect",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            (!client.disconnecting).then_some(disconnect),
+        ),
+    ]
+    .spacing(theme::SPACING * 2.0)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// The trailing More button and, when open, the inline menu whose one item copies `copy`.

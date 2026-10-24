@@ -96,11 +96,13 @@ pub enum Icon {
     // The Select introduction: the title bar's button that shows it, and its promise.
     Help,
     Shield,
+    // Settings › Agents: a terminal's prompt, where an agent's server is started.
+    Terminal,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 79] = [
+    pub const NAMED: [(&'static str, Icon); 80] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -186,6 +188,8 @@ impl Icon {
         // The Select introduction.
         ("help", Self::Help),
         ("shield", Self::Shield),
+        // Settings › Agents.
+        ("terminal", Self::Terminal),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -1155,6 +1159,19 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             frame.fill(&canvas::Path::circle(p(8.0, 11.7), 0.8 * s), color);
         }
         // A drive or card: a flat rounded body with its light.
+        // A terminal window: a rounded frame holding a prompt's chevron and a cursor bar.
+        Icon::Terminal => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.0, 3.0),
+                    iced::Size::new(12.0 * s, 10.0 * s),
+                    (2.0 * s).into(),
+                ),
+                stroke,
+            );
+            poly(frame, &[(5.0, 6.5), (7.0, 8.0), (5.0, 9.5)]);
+            line(frame, (8.5, 10.0), (11.0, 10.0));
+        }
         Icon::Drive => {
             frame.stroke(
                 &canvas::Path::rounded_rectangle(

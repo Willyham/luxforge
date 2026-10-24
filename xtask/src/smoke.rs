@@ -22,7 +22,7 @@ use crate::{
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_introduction_smoke as select_introduction, select_smoke as select,
-    settings_smoke as settings, theme_smoke as theme,
+    settings_agents_smoke as settings_agents, settings_smoke as settings, theme_smoke as theme,
     unsupported_catalog_smoke as unsupported_catalog, usage_backend_smoke as usage_backend,
     usage_smoke as usage, viewport_smoke as viewport, vignette_smoke as vignette,
     visibility_smoke as visibility, workspace_smoke as workspace, zoom_smoke as zoom, *,
@@ -1088,6 +1088,28 @@ pub static SCENARIOS: &[Scenario] = &[
         note: None,
         // The catalog step names a folder inside the launch's own evidence directory.
         own: Some(settings::run),
+    },
+    Scenario {
+        name: settings_agents::SCENARIO,
+        about: "Settings › Agents: opened from the palette with no agent connected, a client's configuration shown and copied as the core writes it, a real luxforge-mcp attached as Claude Code listed with its session.clients row and disconnected through the tab; and a build with no luxforge-mcp beside it saying what it looked for and how to build it",
+        launches: &[
+            LaunchSpec {
+                name: settings_agents::AGENTS,
+                plan: settings_agents::agents_plan,
+                ..APP
+            },
+            LaunchSpec {
+                name: settings_agents::MISSING,
+                plan: settings_agents::missing_plan,
+                ..APP
+            },
+        ],
+        verify: settings_agents::verify,
+        source: Source::Fixtures(&[settings_agents::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(settings_agents::NOTE),
+        // The adapter runs in this process beside the first launch; the second runs alone.
+        own: Some(settings_agents::run),
     },
     Scenario {
         name: usage::SCENARIO,

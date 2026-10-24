@@ -65,7 +65,14 @@ pub const NAMED_KEYS: [&str; 11] = [
 
 /// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
 /// order.
-pub const SETTINGS_TABS: [&str; 5] = ["general", "appearance", "models", "experiments", "privacy"];
+pub const SETTINGS_TABS: [&str; 6] = [
+    "general",
+    "appearance",
+    "models",
+    "agents",
+    "experiments",
+    "privacy",
+];
 
 /// The longest gap a scripted double-click may leave between its release and its second press.
 /// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
@@ -269,6 +276,9 @@ pub enum Step {
     /// Usage statistics: the startup notice and the Settings sheet's Privacy tab. See
     /// [`UsageStep`].
     Usage(UsageStep),
+    /// Settings › Agents: the connected clients, the client chosen, Copy and Disconnect. See
+    /// [`AgentsStep`].
+    Agents(AgentsStep),
     /// Automatic updates: the offer and Settings › General's Updates group. See [`UpdateStep`].
     Update(UpdateStep),
     /// Change General rows of the Settings sheet as their own controls do, and wait for the
@@ -481,6 +491,7 @@ impl Step {
             Self::ThemeImportOmarchy { path } => text(path, "theme_import_omarchy path"),
             Self::Flag { id, .. } => text(id, "flag id"),
             Self::Usage(step) => step.validate(),
+            Self::Agents(step) => step.validate(),
             Self::Update(_) => Ok(()),
             Self::Preference(fields) => {
                 if fields.is_empty() {
@@ -1610,6 +1621,48 @@ pub enum CompareStep {
     Position(f32),
     Release,
     FocusLoss,
+}
+
+/// One gesture on Settings › Agents, through the messages its controls send. The sheet must be
+/// open at Agents.
+///
+/// - `{"listed": ["Claude Code via MCP"]}` waits until the Connected list, read again through
+///   `session.clients` each time the event log records a connection, an identification or a
+///   disconnection, shows exactly these labels in order ("Unnamed client" for a client with
+///   none), with nothing in flight, then captures; `[]` waits for none. This is how a script
+///   waits for a client another process connects.
+/// - `{"client": "codex"}` chooses a client in the segmented choice by its `luxforge-mcp config`
+///   id and captures.
+/// - `"copy"` presses Copy and captures; the frame records the text copied.
+/// - `{"disconnect": "Claude Code via MCP"}` presses Disconnect on the first row with that label
+///   and waits until `session.disconnect` has answered and the list read after it no longer shows
+///   that row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentsStep {
+    Listed(Vec<String>),
+    Client(String),
+    Copy,
+    Disconnect(String),
+}
+
+/// The clients an agents `client` step names, as `luxforge-mcp config` takes them.
+pub const AGENT_CLIENTS: [&str; 5] = ["claude-code", "claude-desktop", "codex", "cursor", "json"];
+
+impl AgentsStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Client(id) if !AGENT_CLIENTS.contains(&id.as_str()) => Err(format!(
+                "agents client must be one of {}, not {id:?}",
+                AGENT_CLIENTS.join(", ")
+            )),
+            Self::Disconnect(label) => text(label, "agents disconnect label"),
+            Self::Listed(labels) => labels
+                .iter()
+                .try_for_each(|label| text(label, "agents listed label")),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// One usage statistics gesture, through the messages the notice and the Privacy tab send. Only a

@@ -294,7 +294,8 @@ impl Editor {
                         } else {
                             Task::none()
                         };
-                        let flags = Task::batch([flags, updates]);
+                        let agents = self.agents_followed(sync.sessions);
+                        let flags = Task::batch([flags, updates, agents]);
                         self.develop_photos_moved(&sync.moved);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),

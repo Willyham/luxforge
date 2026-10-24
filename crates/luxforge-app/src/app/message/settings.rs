@@ -1,5 +1,6 @@
 //! The Settings sheet.
 use crate::state::{
+    agents::AgentsRead,
     preferences::{GeneralPreference, GeneralValue, Preferences},
     settings::SettingsTab,
 };
@@ -45,4 +46,24 @@ pub(crate) enum SettingsMessage {
     },
     /// Enter in a number field: send its text when it is a value the flag takes.
     NumberSubmit(String),
+    /// One Agents tab gesture or owner answer. Handled in `app/agents.rs`.
+    Agents(AgentsMessage),
+}
+
+/// One Agents tab gesture or owner answer.
+#[derive(Clone, Debug)]
+pub(crate) enum AgentsMessage {
+    /// `session.clients` answered, with the server beside this build as it was looked for.
+    Read(Box<AgentsRead>),
+    /// The segmented choice chose the client at this index of `Client::ALL`.
+    Choose(usize),
+    /// Copy: the chosen client's configuration to the system clipboard.
+    Copy,
+    /// Disconnect on a connected client's row.
+    Disconnect(u64),
+    /// `session.disconnect` answered.
+    Disconnected {
+        client_id: u64,
+        result: Result<(), String>,
+    },
 }

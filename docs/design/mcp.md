@@ -164,7 +164,7 @@ The registry gains the markers the adapter needs, so the adapter holds no per-me
 
 ## Settings › Agents
 
-A tab in the Settings sheet, after Models and before Experiments, also opened from the palette (Settings · Agents). Its boards are drawn with the implementation, in this design's folder, at 1440 × 900 logical points like the other Settings boards.
+A tab in the Settings sheet, after Models and before Experiments, with a terminal icon, also opened from the palette (Settings · Agents). Every build shows it. Its boards, at 1440 × 900 logical points like the other Settings boards, are [connected](mcp/connected.png), [empty](mcp/empty.png) and [missing binary](mcp/missing.png), drawn from the standalone pages in [mcp/html](mcp/html).
 
 - **Introduction.** One opening sentence: agents use the same operations you do, every edit is in history and undoable, and an agent can never grant consent or permissions.
 - **Connect an agent.**
@@ -182,6 +182,11 @@ A tab in the Settings sheet, after Models and before Experiments, also opened fr
   - Each row has **Disconnect** (`session.disconnect`).
   - With none connected, one line says so.
   - The list follows connections live while the tab is open.
+- **What it reads.**
+  - Opening the tab reads the server beside this build (one file check) and `session.clients` in one task off the update loop. Disconnect sends `session.disconnect` through the desktop's own client, which holds permission authority, and the list is read again when it answers; a refusal is said under the list and in the status bar, and the row's button is disabled while its request is out.
+  - There is no polling. A transport client's connection, identification and disconnection are recorded in the event log, which wakes the desktop's event sync; a `session.*` event, or a gap, reads the list again while the tab is open, one read at a time, and nothing while it is closed. Connected and last-activity times are said to the minute when the tab is drawn.
+  - The configuration is the core's snippet for the server found, without a catalog or `--headless`; with none found there is no chooser or Copy. Copy writes the shown text to the system clipboard and says "Copied the *client* configuration" in the status bar.
+- **Evidence.** The step `{"agents": …}` drives the tab's own messages: `{"listed": [labels]}` captures once the list shows exactly those labels, `{"client": id}` chooses a client, `"copy"` presses Copy and `{"disconnect": label}` presses that row's Disconnect, capturing once the list no longer shows it. A frame's `settings.agents` records the server as looked for, the chosen client, the configuration and rows as drawn, what Copy copied and `session.clients` as the desktop last read it. The `settings-agents` smoke scenario captures the empty list, Codex's configuration copied and Claude Code's, a real `luxforge-mcp` started by the harness and listed as "Claude Code via MCP", and its Disconnect; a second launch runs the editor alone in a folder of its own and captures the missing state.
 
 There is no switch to turn live sessions off. That is [later work](#later).
 

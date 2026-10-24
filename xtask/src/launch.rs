@@ -229,8 +229,20 @@ impl Drop for TimingGate {
 /// Keep the temporary bundle alive until its child has exited and been reaped.
 pub struct Background {
     pub executable: PathBuf,
-    #[cfg(target_os = "macos")]
-    _bundle: tempfile::TempDir,
+    /// The temporary bundle on macOS, or the folder a launch [`Background::alone`] runs from;
+    /// `None` for a binary run where it was built.
+    _folder: Option<tempfile::TempDir>,
+}
+
+/// The helpers that ship beside the editor and that a launch runs with when they were built beside
+/// its binary: `luxforge-mcp`, which Settings › Agents looks for there
+/// (`Contents/Helpers` of a macOS bundle).
+#[cfg(target_os = "macos")]
+const HELPERS: [&str; 1] = ["luxforge-mcp"];
+
+/// `to` as a hard link to `from`, or a copy where the two are on different volumes.
+fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::hard_link(from, to).or_else(|_| fs::copy(from, to).map(|_| ()))
 }
 
 pub const MODE: &str = if cfg!(target_os = "macos") {
@@ -391,6 +403,17 @@ impl Background {
     }
 
     pub fn new(binary: &Path) -> Result<Self> {
+        Self::made(binary, true)
+    }
+
+    /// The editor without the helpers that ship beside it, as a build that has none: on macOS a
+    /// bundle without `Contents/Helpers`, elsewhere a hard link to the binary (or a copy) alone in
+    /// a temporary folder beside it, so Settings › Agents finds no `luxforge-mcp`.
+    pub fn alone(binary: &Path) -> Result<Self> {
+        Self::made(binary, false)
+    }
+
+    fn made(binary: &Path, helpers: bool) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
             // Iced's winit runner activates ordinary unbundled executables. A background-only
@@ -420,15 +443,40 @@ impl Background {
 "#
                 ),
             )?;
+            if helpers {
+                for helper in HELPERS {
+                    let built = binary.with_file_name(helper);
+                    if built.is_file() {
+                        fs::create_dir_all(contents.join("Helpers"))?;
+                        link_or_copy(&built, &contents.join("Helpers").join(helper))?;
+                    }
+                }
+            }
             Ok(Self {
                 executable,
-                _bundle: bundle,
+                _folder: Some(bundle),
             })
         }
         #[cfg(not(target_os = "macos"))]
         {
+            if helpers {
+                return Ok(Self {
+                    executable: binary.into(),
+                    _folder: None,
+                });
+            }
+            let folder = tempfile::Builder::new()
+                .prefix(".luxforge-alone-")
+                .tempdir_in(binary.parent().unwrap_or(Path::new(".")))?;
+            let executable = folder.path().join(
+                binary
+                    .file_name()
+                    .ok_or("The editor binary has no file name")?,
+            );
+            link_or_copy(binary, &executable)?;
             Ok(Self {
-                executable: binary.into(),
+                executable,
+                _folder: Some(folder),
             })
         }
     }

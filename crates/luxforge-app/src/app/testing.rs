@@ -487,6 +487,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         capability_wait: None,
         wait_until: None,
         usage_await: None,
+        agents_listed: None,
         warm_wait: None,
         export_progress: None,
         agent: None,
