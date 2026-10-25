@@ -19,11 +19,15 @@ Each release's notes include its section here. A pre-release such as `v0.2.0-rc.
 - **Masks › Object…** (behind the same experiment) adds a picked object to a mask as a model component, with Recompute and Keep on a stale component.
 - Generative fill is always available; it no longer needs a feature flag. While a generation is running, a notice pinned to the tools panel says the editor may be slow.
 - Fixes from qualification on the M4: a small object keeps its removal region, and a point on a small object picks the object, not what surrounds it. A selection too large to fill is refused in a plain status line. Status lines and hover outlines no longer lag behind the selected tool and object.
+- A Remove stroke is drawn at the brush's current size while you paint it, not at the size of the selection already painted.
 
 ### Workspace
 
 - Luxforge launches into Develop where you left it: the same catalog folder and photograph. If the folder is gone, the photograph opens with its own folder.
 - Select's Info panel shows the selected photograph's preview, in a box that does not shift when the preview arrives.
+- Select's title bar has the Settings gear, and Cmd+, shows Settings in Select too.
+- With no Develop folder chosen and no photograph open, `D` in Select develops the picks in view, as **Develop N** does.
+- All 22 of Omarchy's built-in themes are built in, not only six of them.
 - Range masks are always available. Feature flags are reduced to developer mode and `ai.analysis`.
 - Updates follow the default and pre-release channels without a flag, and `update.status` no longer reports `prerelease_channel`.
 
