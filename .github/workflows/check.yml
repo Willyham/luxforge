@@ -12,7 +12,8 @@ jobs:
   # What each lane proves, and what it never proves, is the development guide's CI section
   # (docs/engineering/development.md#ci). No lane here is native GPU evidence.
   native-build:
-    timeout-minutes: 90
+    # The macOS lane takes 80 to 90 minutes; the limit leaves it room on a slow runner.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
