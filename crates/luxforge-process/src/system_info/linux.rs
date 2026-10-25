@@ -21,6 +21,10 @@ pub(super) fn read() -> Raw {
             .ok()
             .map(|n| n.get() as u64)
     });
+    #[cfg_attr(
+        not(any(target_arch = "x86", target_arch = "x86_64")),
+        allow(unused_mut)
+    )]
     let mut raw = Raw {
         os_release: std::fs::read_to_string("/etc/os-release")
             .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
