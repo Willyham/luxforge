@@ -77,6 +77,7 @@ Programmatic access to the operation registry beyond the JSON API itself.
 
 | Plan | Purpose |
 | --- | --- |
+| [Module manager](programmability/modules.json) ([design](../docs/design/module-manager.md)) | Decided, not authorized: turning built-in modules off and on and reordering the tools panel and mode strip as a presentation-only preference with its API and Settings › Modules (phase 1); then separately authored adjustment modules as sandboxed WebAssembly with their own WGSL programs, installed from a package file and applied at the next launch, with the SDK, the Split toning example, the background journey and measurement (phase 2); no community index |
 | [MCP adapter](programmability/mcp.json) ([design](../docs/design/mcp.md)) | Implemented and verified on Linux: `luxforge-mcp`, a dual-era stdio MCP server with compact and generated typed tool profiles, the registry markers and client identity it needs, inline pictures, headless mode, packaging, Settings › Agents and the background `mcp` journey; the journeys' M4 runs and real-client qualification remain |
 
 ### Project (`project/`)

@@ -17,7 +17,7 @@ For the planned [visibility and monitoring](design/visibility-and-monitoring.md)
 - Engineering baselines: macOS 14+ arm64, Windows 11 24H2+ x64, Ubuntu 24.04 x64 and arm64 with GNOME Wayland and X11. These are intended targets, not verified support; see [platforms](engineering/platforms.md).
 - Development packages stay unsigned. Tag-build candidates have optional explicit signing/notarization; stores and a public release remain absent. [Automatic updates](#automatic-updates) ship with the first release.
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
-- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported until 1.0.0, when catalogs gain guaranteed migrations ([catalog compatibility](#catalog-compatibility)); no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No public compatibility framework, cloud or accounts, marketplace or generalized processing graph.
+- Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported until 1.0.0, when catalogs gain guaranteed migrations ([catalog compatibility](#catalog-compatibility)); no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No public compatibility framework, cloud or accounts, marketplace or generalized processing graph. External modules install from package files; a free community library is the direction, not a plan ([module manager](#module-manager)).
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI, with the supplied DJI Air 2S DNG for qualification. Benchmark established decoders before proposing a custom one.
 - RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
 - Lightroom Library and Develop are familiarity references; their sliders' responses are followed ([Lightroom alignment](#lightroom-alignment)). Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
@@ -116,7 +116,7 @@ For the [shared module capabilities](design/module-capabilities.md), each a defa
 
 ## Programmable operations and modules
 
-Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. Modules are linked, with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. Still open: the first external use case, package and runtime format, trust and UI contribution. See [modules](design/modules-and-api.md).
+Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. Modules are linked, with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. The first external use case, runtime, trust and UI contribution are decided under [module manager](#module-manager). See [modules](design/modules-and-api.md).
 
 ## Owner workflow priorities
 
@@ -523,13 +523,12 @@ Corrections is implemented from the [design](design/corrections.md) and delivere
 
 ## Open product questions
 
-[Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
+[Product decisions](../tasks/project/product-decisions.json) carries the storage, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
 
 Masking phases A–D are delivered. Brush strokes are content-addressed by a hash of their contents, history entries remain complete recipe snapshots, and pure deltas are rejected. A missing or corrupt stroke fails explicitly. The `points` kind, stroke list and `brush-paint` interaction are shared host primitives, including for Corrections ([stroke storage](design/masking.md#stroke-storage)).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work? A consistent backup must account for the catalog's live WAL and derived artifacts as well as its rows.
 - Do the [catalog design](design/catalog.md#proposals)'s eighteen recorded defaults stand? The feature is implemented on them; P13's choice of how to meet the photographs view's time remains open.
-- What is the first external module the owner would use, and what enablement and recovery behaviour does it need? A processing tool needs its CPU reference and GPU qualification; external GPU loading is not delivered by the built-in module interface.
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving the system appearance for later.
 - [AI editing](design/ai-editing.md) ([above](#ai-editing)) leaves open the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
 - Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond TASK-007 authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
@@ -551,7 +550,7 @@ Masking phases A–D are delivered. Brush strokes are content-addressed by a has
 - **Masking and Corrections.** Masking's P1–P11 recorded defaults are accepted ([design](design/masking.md)). The Corrections repair layer precedes Detail, its GPU qualification uses the spatial class, and its descriptor has `preset: false` ([design](design/corrections.md)).
 - **Lightroom scope.** Imported Lightroom previews supply grid first tiles only, never a large Develop tile; an import has no grouped undo. Calibrated RAW preset white-balance conversion belongs to alignment. The prohibition on Adobe-derived code and tables applies to the alignment work; the existing RAW importer's DNG SDK isotemperature table requires a separate review. Export scope stays as designed. Implementation authorisation for both Lightroom plans remains open beyond what [Lightroom alignment](#lightroom-alignment) records.
 - **Verification and attribution.** Cost attribution uses `resources.read` and the Performance section. RAW Look verification is the Look scenario, with no additional catalog/export steps or Look-specific corpus gate; it measures current behaviour, not historical rendering parity. Acceptance supplies no unmeasured performance or total-memory claim.
-- **Other recorded defaults.** Catalog P1–P18, Tone curve, presets, themes, Presence, storage and external-module defaults remain proposals in their designs. No additional decision task is added.
+- **Other recorded defaults.** Catalog P1–P18, Tone curve, presets, themes, Presence, storage and module manager defaults remain proposals in their designs. No additional decision task is added.
 - **Hosted GPU checks.** The portability dependency stays. The lavapipe lane uses small functional journeys, omits `large24` and `large60`, and runs every retained scenario before failing at the end. This authorises no CI or engineering fix, and lavapipe is not the production renderer.
 
 ## Auto tone planning
@@ -604,3 +603,14 @@ The derivation constants, the input site's colour-stage rule and the canvas deta
 ## Code structure consolidation
 
 The GPU code splits statically into `luxforge-gpu-types` and `luxforge-gpu` ([design](design/code-structure.md#approved-boundary-task-003)). The shared crate holds std-only GPU primitives, shader conventions and pure layout rules; the backend owns the wgpu executor and tile runner. Core keeps semantic planning and `TileService`, the app keeps one lowering path and host source/worker policy, and UI keeps Iced presentation on its own device. The split leaves the separate tile-worker device, budgets, bounded caches, retirement, cancellation and fallback behaviour as they are.
+
+## Module manager
+
+For the [module manager](design/module-manager.md) ([implementation plan](../tasks/programmability/modules.json)), decided by the owner on 2026-10-25:
+
+- **Built-in modules first.** A person can turn any built-in module that is not locked off or on, and reorder the tools panel's sections and the mode strip's module tools. Corrections and mask-kind contributions follow their module's switch and keep a fixed order. The layout is a preference that changes only what the workspace offers: an off module stays registered, so its photos render and export unchanged, and the registry order and processing order never depend on it.
+- **External modules run as WebAssembly plus WGSL.** The module's logic and CPU reference run in a sandboxed WebAssembly component. Its GPU program is WGSL, which the host validates and qualifies against that reference. Native libraries and declarative-only modules were rejected.
+- **The first external kind is an adjustment section,** a processing module with its own controls in the tools panel. This answers the first-external-use-case question. Canvas tools, mask kinds and correction kinds come later.
+- **No community index yet.** Modules install from a package file, and in developer mode load from a folder. Modules are free; there are no paid modules or accounts.
+
+The design's other choices are recorded defaults the owner can revise. Implementation is not authorized.

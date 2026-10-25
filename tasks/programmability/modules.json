@@ -1,0 +1,756 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "modules",
+  "title": "Module manager: layout and external modules",
+  "objective": "Let a person turn built-in modules off and on and reorder the tools panel and mode strip (phase 1), then install separately authored adjustment modules that run as sandboxed WebAssembly with their own WGSL programs, from a package file (phase 2).",
+  "context_summary": "Owner decisions of 2026-10-25 are in docs/decisions.md and docs/design/module-manager.md: phase 1 arranges the panel and the mode strip; external modules are WASM plus WGSL; the first kind is an adjustment section; there is no community index yet. The layout is a presentation-only preference that never changes the registry order, rendering or schema.list; an off module stays registered so its photos render and export. An external module is a field-patch module from its manifest whose colour unit runs in WebAssembly with no imports; installs apply at the next launch. Phase 1 (TASK-001 to TASK-004) and phase 2 (TASK-005 to TASK-012) start independently. Routine engineering, layout and numerical choices are delegated within the design. Implementation is not authorized. Minimum model: the high tier; re-review against current main before each task.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Core module layout: the descriptor's toolset and locked fields, placements derived in the core, the person's module_layout in preferences.json, module.layout.read, module.enable, module.disable, module.order.set and module.layout.reset, the new module.list fields and the module.layout event.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Add `toolset` (required; one of adjustments, corrections, masking, tools, processing) and `locked` (optional {reason}) to ModuleDescriptor in crates/luxforge-core/src/modules/descriptor/types.rs. Every built-in declares its home as the design lists; Crop, transform, straighten, Basic and RAW declare locked. Regenerate the built-in descriptor snapshot and the MCP static schema the snapshot tests pin.",
+        "Derive placements in the core from existing declarations, moving the desktop's rule unchanged: a drawn section (state/tools.rs draws_section), a crop-frame or brush-mask takeover canvas (state/canvas.rs's strip derivation, state/corrections.rs brush_module), a fill- task or object pick (state/remove.rs, object_pick.rs) and object selection. module.list answers toolset, locked, origin (built-in for every linked module), placements and the person's enabled.",
+        "Store `module_layout {disabled: [id], order: {adjustments: [id], tools: [id]}}` in Preferences (crates/luxforge-core/src/preferences.rs) through the existing bounded, locked, format-marked writer. It is written only by the module.* layout methods, never by preferences.set, as usage_statistics is. Only explicit choices are stored; unregistered ids are kept and listed as unrecognized; a newly registered module takes its default place after its preceding registry neighbour. Implementation of that merge is delegated within this rule.",
+        "Do not touch ModuleRegistry::assemble or the registry order: providers() order decides Original layers, first-open, the GPU warm list and the Corrections/Remove/Object providers. The layout is presentation only and never consulted by rendering, planning or presets.",
+        "Methods go in crates/luxforge-core/src/api/methods.rs beside module.list. Locked and unregistered ids refuse with invalid-params by name; module.order.set refuses anything but a permutation of that toolset's registered placements. Each change answers the new layout and announces module.layout. Evidence runs keep the layout inside their evidence directory."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Phase 1: arranging the built-in modules"
+        },
+        {
+          "kind": "file",
+          "label": "Module registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "relevance": "The one assembly and linked_modules; must stay unchanged in order"
+        },
+        {
+          "kind": "file",
+          "label": "Descriptor types",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "ModuleDescriptor, CanvasInteraction"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "Storage, writer and the protected-record pattern"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences design",
+          "target": "docs/design/preferences.md",
+          "relevance": "Only explicit choices are stored; automated launches never touch the person's file"
+        },
+        {
+          "kind": "file",
+          "label": "API methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "module.list and the method table"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop tools derivation",
+          "target": "crates/luxforge-app/src/state/tools.rs",
+          "relevance": "draws_section, the rule moving into the core"
+        }
+      ],
+      "acceptance_criteria": [
+        "module.list reports toolset, locked, origin, placements and enabled for every module, and the built-in descriptor snapshot is regenerated with every built-in's toolset.",
+        "module.layout.read answers both orderable toolsets with their current and default orders, the disabled set and unrecognized ids; enable, disable, order.set and reset store only explicit choices, refuse locked, unregistered and non-permutation requests by name, and announce one module.layout event per change.",
+        "An unregistered id in the stored layout survives every write untouched; a module newly registered appears at its default place.",
+        "schema.list, the registry order and every render are byte-identical with any layout; a preferences file holding a layout is read by the same build, and a malformed one is refused without rewriting it."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Core unit tests for the layout store, merge rule, refusals and events.",
+          "The descriptor snapshot and method-table tests.",
+          "A render under two layouts compared byte for byte."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core module_layout",
+          "tools/cargo-cached test -p luxforge-core --test modules descriptors",
+          "tools/cargo-cached test -p luxforge-core api::methods",
+          "tools/cargo-cached test -p luxforge-cli mcp"
+        ],
+        "expected_results": [
+          "Layout, descriptor, method and MCP schema tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Desktop workspace follows the layout: the tools panel in the person's order with the band context menu and the off-modules footer, the mode strip's order and its ⋯ menu, the palette and keymap without off modules, letter precedence, and the Off · edit kept band.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Read module.layout.read with module.list in app/tasks.rs's modules task and again on the module.layout event in app/sync.rs. Derive the effective layout once in state/ and feed tools::derive (state/tools.rs), the strip (state/canvas.rs), palette::derive (state/palette.rs), mode_shortcuts and action_shortcuts (state/tools.rs, state/host_commands.rs) and app/keymap.rs from it. No layout logic in widgets.",
+        "Placements now come from module.list; remove the desktop's own copy of the rule moved into the core.",
+        "The Off · edit kept band: a module that is off but has a non-neutral layer in the displayed recipe (the recipe.describe row the band's dot already reads) draws at its place, collapsed, in the neutral grey, listing its values read-only with Enable Title. It differs from the delivered unavailable band, which stays red.",
+        "Letter precedence: host letters first, then registry order; a later claimant gets no letter and its tooltip names the owner. Today's built-ins do not collide, so test it with a variant registry.",
+        "Board B, C and D in the design's board are the visual reference; layout details are delegated to the implementer within the module-panel density and hierarchy."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Design board",
+          "target": "docs/design/module-manager/board.html",
+          "relevance": "Boards B, C and D"
+        },
+        {
+          "kind": "file",
+          "label": "Screen notes",
+          "target": "docs/design/module-manager/screens.md",
+          "relevance": "Interaction rules per board"
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Tool array, module panels and the mode strip",
+          "locator": "Tool array"
+        },
+        {
+          "kind": "file",
+          "label": "Strip derivation",
+          "target": "crates/luxforge-app/src/state/canvas.rs",
+          "relevance": "The mode strip's entries"
+        },
+        {
+          "kind": "file",
+          "label": "Keymap",
+          "target": "crates/luxforge-app/src/app/keymap.rs",
+          "relevance": "Mode letters and action chords"
+        }
+      ],
+      "acceptance_criteria": [
+        "Sections and strip tools draw in the person's order; an off module offers no section, strip entry, kind, palette entry, letter or chord; a locked module's menu has no Turn off item.",
+        "The band menu's moves and Turn off, the footer, the strip's ⋯ menu and the palette's Customize, Turn off and Enable entries each send the method the design names and adopt its answer; another client's change is followed through the event.",
+        "A photo with an off module's non-neutral layer shows the Off · edit kept band with its values and Enable; the picture, history and export are unchanged.",
+        "No change to the registry, rendering or history; the delivered unavailable band and its notice are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Desktop state tests over a variant registry and layouts.",
+          "Rendered evidence is TASK-004's."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app module_layout",
+          "tools/cargo-cached test -p luxforge-app palette",
+          "tools/cargo-cached test -p luxforge-app keymap"
+        ],
+        "expected_results": [
+          "Desktop layout, palette and keymap tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Settings › Modules: the tab with modules grouped by home, switches and locks, the detail pane, drag and keyboard reorder within a group, Reset order and Reset all, the Undo toast and event sync.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Add SettingsTab::Modules after Appearance in crates/luxforge-app/src/state/settings.rs and its view in view/settings.rs, in every build, with the palette entry Settings · Modules and Customize… opening it at the module it came from.",
+        "Rows: grip, title, qualifier (RAW photos only for Look), letter, switch or lock with its reason. The detail pane shows the hint, placements, the stage it renders in among the stages with \"Panel order doesn't change this\", and the edit/query/task methods module.list lists. No photo count.",
+        "Drag by the grip within a group with the masks list's insertion line; ⌥↑/⌥↓ move, Space toggles; one write per gesture through module.order.set or enable/disable; Escape cancels a drag. Undo toast reverts the last change by writing back what was read; ⌘Z does the same while it shows, which extends the sheet's shortcut rule in settings-and-flags.md.",
+        "Phase 2's community rows are TASK-010's; draw nothing for them here.",
+        "Board A is the visual reference; spacing and exact drag rendering are delegated."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Design board",
+          "target": "docs/design/module-manager/board.html",
+          "relevance": "Boards A and A·2"
+        },
+        {
+          "kind": "file",
+          "label": "Screen notes",
+          "target": "docs/design/module-manager/screens.md",
+          "relevance": "Board A"
+        },
+        {
+          "kind": "file",
+          "label": "Settings surface",
+          "target": "docs/design/settings-and-flags.md",
+          "relevance": "Sheet, tabs, writes and event sync",
+          "locator": "Settings surface"
+        },
+        {
+          "kind": "file",
+          "label": "Settings state",
+          "target": "crates/luxforge-app/src/state/settings.rs",
+          "relevance": "SettingsTab and derive"
+        }
+      ],
+      "acceptance_criteria": [
+        "The tab lists every registered module in its home group in the person's order, with switches, locks and the detail pane as the design says.",
+        "Every gesture sends exactly one layout write and adopts its answer; a refused write says why and reads back what is stored; Undo and both resets work; another client's change reaches the open tab.",
+        "The sheet changes no recipe and needs no draft."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Desktop state tests for grouping, reorder gestures, toggles, Undo and sync.",
+          "Rendered evidence is TASK-004's."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app settings"
+        ],
+        "expected_results": [
+          "Settings tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Phase 1 evidence and documentation: the background module-layout smoke scenario, and the module, workspace, settings and preferences designs, feature status and user guide updated to the delivered behaviour.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "The scenario, in xtask/src/smoke.rs and its scenario script, runs hidden with an isolated evidence directory: reorder the panel and strip, turn Vignette off, open a photo with a Vignette layer, open Settings › Modules, reset; capture each step and correlate it with module.layout.read, module.list and a render hash that never changes.",
+        "Documentation: modules-and-api.md (registry and descriptor fields), develop-workspace.md (sections follow the person's order, the strip's ⋯), settings-and-flags.md (the Modules tab and ⌘Z in the sheet), preferences.md (module_layout), features.md, user-guide.md, and the design's status. Shared docs are the integrator's when several agents' work is merged.",
+        "Run fmt, xtask check-repository, Clippy on the changed crates and verify quick once; rendered at this integration point."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Smoke scenarios",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Scenario registration, including unavailable"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence rules and when to verify",
+          "locator": "When to verify"
+        }
+      ],
+      "acceptance_criteria": [
+        "The module-layout scenario passes in the background with correlated captures, state and logs, and identical render hashes across layouts.",
+        "Designs, feature status and the user guide describe phase 1 as delivered, with nothing claimed beyond the evidence."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the scenario.",
+          "Run the hand-off checks and the rendered tier."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario module-layout --output target/evidence/module-layout",
+          "tools/cargo-cached xtask verify --tier rendered --output target/evidence/module-layout-rendered",
+          "tools/cargo-cached xtask check-repository"
+        ],
+        "expected_results": [
+          "The scenario and the rendered tier pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "External module contract: the luxforge-module.toml manifest, the .lfmodule package and its bounded reader and validator in the core, the luxforge:module/adjustment@0.1 WIT world, and the manifest's field table turned into a field-patch Spec.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The core reads and validates packages without any WebAssembly engine: zip size and entry limits, no paths outside the root, manifest fields as the design lists, an id that is reverse-DNS, not luxforge.*, and a valid identity, toolset adjustments only, one effect on the colour or finish stage, not maskable, every source kind.",
+        "Field tables use the existing parameter and control vocabulary. Build them through field_patch.rs's Spec so the host's checks refuse a table it could not draw; Spec currently takes static data and may need owned strings, a delegated change that must leave built-ins' descriptors byte-identical.",
+        "The WIT world exports coefficients, apply-row and label, and declares no imports. Put the .wit file where both the host crate and the SDK read it (a delegated location).",
+        "Independent of phase 1; it can start now."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Contract"
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch module",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "Spec, Field, Group and everything the host already does for a field table"
+        },
+        {
+          "kind": "file",
+          "label": "Pointwise colour",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
+          "relevance": "The PointwiseColor contract apply-row follows"
+        },
+        {
+          "kind": "file",
+          "label": "Modules and API",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Field patches, missing effects, formats",
+          "locator": "Field patches"
+        }
+      ],
+      "acceptance_criteria": [
+        "A valid package reads into a manifest and a Spec whose descriptor, actions and controls match a hand-written field-patch module of the same table.",
+        "Every refusal (oversize, traversal, bad id, luxforge.* id, unknown toolset or stage, maskable, undrawable table, missing file) names its reason; nothing is written.",
+        "Built-in descriptors are byte-identical (the snapshot test passes unchanged)."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Package and manifest unit tests over fixture packages.",
+          "The descriptor snapshot."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core module_package",
+          "tools/cargo-cached test -p luxforge-core --test modules descriptors"
+        ],
+        "expected_results": [
+          "Package, manifest and snapshot tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "The luxforge-wasm crate: a pinned Wasmtime host that instantiates an adjustment component with no imports, bounded memory, epoch deadlines, deterministic floats and a compiled-code cache, and provides a ToolModule per package to the one registry assembly.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Pin Wasmtime with the component model; relaxed SIMD and threads off, NaN canonicalization on; keep notices; no licence audit is claimed. Record binary-size and build-time deltas in the hand-off.",
+        "A provider is a field-patch module from TASK-005's Spec whose FieldPatch::compile calls coefficients and returns a PointwiseColor whose apply_row calls apply-row on a per-worker instance created lazily; identity is the words. A trap, deadline or wrong-length answer fails the render with an error naming the module and never a partial frame.",
+        "Extend RegistryOptions with the external providers so ModuleRegistry::assemble stays the one assembly (the registry-assembly repository rule); externals register after the built-ins, so registry-order roles are unaffected. A package that fails to instantiate registers unavailable with its reason via the existing path.",
+        "luxforge-core names neither Wasmtime nor a GPU crate; the desktop and luxforge-json link luxforge-wasm.",
+        "Answer the performance-rules checklist in the hand-off; measurement is TASK-012's."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Contract"
+        },
+        {
+          "kind": "file",
+          "label": "Module registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "relevance": "assemble, RegistryOptions, register_unavailable"
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "The gpu-free core and the extension path",
+          "locator": "Modules and extension path"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "A test component built in the test suite instantiates, compiles a layer and renders a reference frame equal, byte for byte, to a native Rust implementation of the same arithmetic.",
+        "A component with any import, one that traps, one that overruns its deadline and one that answers the wrong length each fail explicitly by name; the render produces no frame.",
+        "Two runs on the same inputs, and the cached and uncached compiled code, give identical buffers.",
+        "With an external module registered, built-in registry order, Original layers and first-open actions are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Host unit and integration tests over test components.",
+          "Registry tests with an external provider."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-wasm",
+          "tools/cargo-cached test -p luxforge-core registry"
+        ],
+        "expected_results": [
+          "luxforge-wasm and registry tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "External GPU programs: load program.wgsl as a Colour program at runtime, validate it with naga under the surface prelude, give its names a unique prefix, and enable it only after a bounded first-use probe against the reference within the colour class's tolerance, cached per package hash and adapter.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "GpuProgram holds &'static text and GPU_PROGRAMS is a static list; let runtime programs join the surface's and tile worker's program sets for the launch (a delegated representation: leaked per-launch strings or a shared owned type), without a GPU dependency in the core.",
+        "Names must start with lf_module; the loader rewrites the prefix to a unique one after a naga parse, not by text search. A program that fails validation is not registered and the module renders through the reference with the program named.",
+        "The probe renders fixed probe patches at field values spanning each range through the reference and the GPU on a worker at first use, never at launch, and sets the program enabled within the colour class's limits; otherwise GpuFallback::DisabledProgram names it. Cache the result under the data root."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Contract"
+        },
+        {
+          "kind": "file",
+          "label": "GPU programs",
+          "target": "crates/luxforge-core/src/render/gpu/program.rs",
+          "relevance": "GpuProgram, GpuProgramKind::Colour and the prelude convention"
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Tolerance classes and the reference fallback"
+        }
+      ],
+      "acceptance_criteria": [
+        "A correct program passes the probe and draws within tolerance; a program with a deliberate error fails the probe and the stack falls back to the reference with the program named; an invalid or misnamed program is refused at load.",
+        "The probe runs once per package hash and adapter, off the UI and owner threads, and is cancellable with its photo's work."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "GPU tests over fixture programs on the host adapter; the no-adapter path keeps the reference."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-gpu external_program",
+          "tools/cargo-cached test -p luxforge-wasm"
+        ],
+        "expected_results": [
+          "External program tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Authoring: the luxforge-module-sdk guest crate with its native-versus-Wasmtime identity harness, cargo xtask module-package and module-check, and the Split toning example in examples/modules/split-toning as a separate Cargo project.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "The example depends only on the SDK and is outside the workspace; xtask builds it for wasm32 with the pinned toolchain. Its unit and program are a simple, honest split toning (highlight and shadow hue and saturation, balance) on the colour stage with an order after the mixer; its exact numerics are delegated.",
+        "module-check validates the manifest and program, runs the reference over fixed fixtures and reports the GPU difference on the local adapter against the colour class's limits; it reports, it does not qualify.",
+        "Document authoring in a short guide under docs/engineering/ (a delegated name) linked from the design."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Authoring"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "xtask conventions and the pinned toolchain"
+        }
+      ],
+      "acceptance_criteria": [
+        "module-package builds a package that TASK-005's reader accepts; module-check passes on it and refuses a broken fixture by name.",
+        "The SDK harness shows identical buffers natively and through Wasmtime for the example."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Build, package and check the example.",
+          "Run the SDK's own tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-module-sdk",
+          "tools/cargo-cached xtask module-package examples/modules/split-toning --output target/evidence/split-toning.lfmodule",
+          "tools/cargo-cached xtask module-check target/evidence/split-toning.lfmodule"
+        ],
+        "expected_results": [
+          "The example packages and checks."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Install store and lifecycle API: modules.json and the per-version store under the data root, module.package.inspect, module.install, module.uninstall, module.folder.load and module.folder.remove in developer mode, load states in module.status, the module.installed event, and assembly of installed modules in the desktop and luxforge-json at launch.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Every write takes effect at the next launch; module.status reports pending-relaunch until then. A same-id install replaces at relaunch and its answer says when the payload format differs from the installed one. No rollback store.",
+        "modules.json is format-marked and written atomically; an unreadable one is refused without rewriting it. Evidence runs keep their own store.",
+        "A package that no longer validates or instantiates registers unavailable with its reason when its manifest is readable; photos keep their layers and render, sample, append and export refuse through Error::unavailable_effect.",
+        "module.list's origin is community or folder for external modules; usage statistics report them as external with no id (crates/luxforge-core/src/usage/registry.rs).",
+        "luxforge-json gains the same assembly from its data root."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Lifecycle"
+        },
+        {
+          "kind": "file",
+          "label": "Missing effects",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "The unavailable-effect refusal external failures reuse",
+          "locator": "Missing effects"
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "module.status and the document store pattern"
+        }
+      ],
+      "acceptance_criteria": [
+        "Inspect, install, uninstall and folder methods behave as the design says, refuse bad input by name, announce module.installed and take effect at the next launch in both binaries.",
+        "An uninstalled or broken module leaves every layer in the catalog untouched; export refuses with the module named; reinstalling a compatible version restores rendering with no data change.",
+        "Folder methods are absent outside developer mode."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Core and binary integration tests over fixture packages across a relaunch."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core module_install",
+          "tools/cargo-cached test -p luxforge-cli json"
+        ],
+        "expected_results": [
+          "Install and lifecycle tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Desktop for external modules: Install module… with the system file picker and the review sheet from module.package.inspect, Community and From folder rows in Settings › Modules with Relaunch to apply, Didn't load and Uninstall…, the Community badge on a band, and the Not installed and Didn't load bands.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "The review sheet is the one modal step: identity, version, authors, licence, repository, package hash, what it adds and where, GPU program or CPU reference only, \"Network: none · Files: none\", and that Luxforge has not reviewed it. Install sends module.install.",
+        "Relaunch to apply mirrors Experiments' launch-flag row, with a Relaunch button. Uninstall… is a destructive confirm stating that photos keep their edits but cannot be previewed or exported with them until reinstalled.",
+        "The uninstall confirmation counts the photos in the open catalog with a layer of the module when an existing catalog read answers it off the owner thread within the sheet's open time; otherwise it states the consequence without a count (a delegated choice). Relaunch reopens the same catalog and photo, and pending changes stay pending if the sheet closes. A manifest the reader refuses shows its reason in the sheet with no Install button.",
+        "Generated sections need no desktop change for an external field-patch module; check that and draw only the badge.",
+        "Boards E, F and F·2 are the visual reference."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Lifecycle"
+        },
+        {
+          "kind": "file",
+          "label": "Design board",
+          "target": "docs/design/module-manager/board.html",
+          "relevance": "Boards E and F"
+        },
+        {
+          "kind": "file",
+          "label": "Screen notes",
+          "target": "docs/design/module-manager/screens.md",
+          "relevance": "Boards E and F"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each gesture sends the method the design names and shows its answer; a refused package says why from the inspect answer.",
+        "An installed module's section draws from its descriptor like a built-in's; Didn't load quotes the loader's reason; Not installed shows with the stale-preview notice and export refuses."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Desktop state tests over fixture packages and load states.",
+          "Rendered evidence is TASK-011's."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app settings",
+          "tools/cargo-cached test -p luxforge-app external_module"
+        ],
+        "expected_results": [
+          "Desktop tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "The external-module proof: the background external-module journey from an empty data root (inspect, install, relaunch, edit by desktop and API, GPU against reference, export, off, uninstall, refusal, reinstall), and the designs, feature status and user guide updated.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007",
+        "TASK-008",
+        "TASK-010"
+      ],
+      "extra_context": [
+        "The journey uses the Split toning package built by module-package and makes no host source change for it; that is the success criterion the owner set: a separately authored module loads and exposes its actions through the common APIs.",
+        "It checks module.list, schema.list, edit.set-split-toning, a preset and a copy-settings paste carrying it, an MCP tool call, the original's bytes unchanged, an export identical after reinstall, and correlated captures and logs.",
+        "Update modules-and-api.md, architecture.md (the extension path), features.md, user-guide.md and the design's status; mark the product decision on the first external module as delivered in the decisions."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Evidence and measurement"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence rules",
+          "locator": "When to verify"
+        }
+      ],
+      "acceptance_criteria": [
+        "The journey passes in the background with correlated state, captures and logs, on Linux under Xvfb and on the M4; each platform's result is reported separately.",
+        "Docs describe phase 2 as delivered within that evidence."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the journey, then the rendered tier."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario external-module --output target/evidence/external-module",
+          "tools/cargo-cached xtask verify --tier rendered --output target/evidence/external-module-rendered"
+        ],
+        "expected_results": [
+          "The journey and the rendered tier pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Measure external modules on the M4: launch and idle RSS with none, one unused and five installed; first use (instantiation, shader compilation, the probe); and the reference's per-frame cost at 24 and 60 MP against the native vignette; record the figures in the performance spec.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "A measurement task: run after feature work on a quiet host, in release. Report misses as misses; no budget is set by this task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The contract: rules, API, lifecycle and recorded defaults",
+          "locator": "Evidence and measurement"
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where measured figures live"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Measurement rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each figure is recorded with its scope, machine and build in the performance spec; nothing unmeasured is claimed."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Extend the measure workloads, or add a dedicated xtask workload (a delegated choice), with the package fixtures, then run them on the M4 in release."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Figures recorded."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-006",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004",
+        "TASK-007",
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-012"
+      ]
+    }
+  ]
+}

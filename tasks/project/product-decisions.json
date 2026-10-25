@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks cover storage and backup, the first external module use case, performance workloads and provisional budgets, Presence/mixer/vignette defaults, reconciliation of the owner's GPU decisions with remaining implementation and qualification, UI themes defaults, and Lightroom implementation authorization. The catalog, presets and Tone curve defaults remain proposals in their designs; no additional decision task is introduced.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks cover storage and backup, the first external module use case (decided), performance workloads and provisional budgets, Presence/mixer/vignette defaults, reconciliation of the owner's GPU decisions with remaining implementation and qualification, UI themes defaults, and Lightroom implementation authorization. The catalog, presets and Tone curve defaults remain proposals in their designs; no additional decision task is introduced.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -61,12 +61,13 @@
     {
       "id": "TASK-002",
       "description": "Choose the first external module use case and user-visible enablement/recovery behavior.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "External module loading remains required, but the use case, runtime and user-facing lifecycle need a concrete decision.",
         "The linked tool-module milestone is already selected and does not wait on external packaging or a marketplace.",
-        "GPU-first changes the processing-tool host boundary: a new image effect needs a CPU reference unit with exact fixtures and a module-owned WGSL program held within the declared tolerance by gpu-qualification. Without a GPU program the stack uses the named no-program reference fallback, including export; missing or disabled providers must still report affected edits rather than omit them. External GPU loading remains unimplemented and is not implied by the built-in program interface."
+        "GPU-first changes the processing-tool host boundary: a new image effect needs a CPU reference unit with exact fixtures and a module-owned WGSL program held within the declared tolerance by gpu-qualification. Without a GPU program the stack uses the named no-program reference fallback, including export; missing or disabled providers must still report affected edits rather than omit them. External GPU loading remains unimplemented and is not implied by the built-in program interface.",
+        "Decided by the owner on 2026-10-25 and recorded in docs/decisions.md (Module manager) and docs/design/module-manager.md: an adjustment-section module as WebAssembly plus WGSL, installed from a package file with no index, applied at the next launch, with off modules still rendering and uninstalled ones refusing export with their edits kept."
       ],
       "context_links": [
         {
@@ -93,6 +94,12 @@
           "label": "Programmable operations and module host",
           "target": "docs/design/modules-and-api.md",
           "relevance": "Records accepted programmable-operation requirements, host/module responsibilities, staged delivery and measurable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Module manager design",
+          "target": "docs/design/module-manager.md",
+          "relevance": "The recorded answer: use case, boundary, lifecycle and success criterion."
         }
       ],
       "acceptance_criteria": [
