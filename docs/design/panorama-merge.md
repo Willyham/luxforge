@@ -8,13 +8,13 @@ Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and re
 
 | Board | Shows |
 | --- | --- |
-| [Selection menu](merges/selection-menu.png) | A bracket header with Pick all 3, Import merged and Pick merged. Seven overlapping frames selected, with the menu's HDR and Panorama groups (Pick merged…, Import merged…, each with its hint). HDR is disabled, with the plan's refusal as its tooltip, and holding ⌥ drops the ellipsis |
-| [HDR preview](merges/hdr-preview.png) | "Merge HDR · 3 exposures": the picture with the deghost overlay tinting a moving boat "From 0 EV". The frames with exposure steppers and Reference, Alignment, Deghosting, the folder and the output. Cancel, Import merged, and Pick merged as primary |
-| [Panorama preview](merges/panorama-preview.png) | "Merge panorama · 7 photos": the whole cylindrical stitch with numbered frame outlines, the crop rectangle, the dimmed coverage outside it and "Crop loses 9% at the edges". Projection with Auto's choice, Boundary Warp 0, the overlay switches, the frames with Reference, the folder and the output |
-| [Boundary Warp](merges/panorama-warp.png) | The same sheet at Boundary Warp 70: bent edges and outlines, "Crop loses 2%" and a larger output. Inset: the sheet while preparing, "Reading 5 of 7", with its settings and buttons live |
-| [Panorama result](merges/panorama-result.png) | Select after Pick merged: the active result with "Panorama · 7 photos" and its stack expanded, "Frame 1 of 7" … "Frame 7 of 7". The Info panel's Stack band with the projection, field of view and size, In the Development set, Collapse stack and Remove merge |
-| [Large panorama in Develop](merges/large-develop.png) | The 342 MP result at Fit, with the histogram captioned "Overview". Inset: a far corner at 100%, a full-resolution window refreshed as the view moves |
-| [Components](merges/components.png) | Menu items (normal, ⌥ held, refused), pending and failed rows for both kinds, badges at three cell sizes, the preview sheet's status lines (preparing, ready, refused) and the overlay legend chips |
+| [Selection menu](merges/selection-menu.webp) | A bracket header with Pick all 3, Import merged and Pick merged. Seven overlapping frames selected, with the menu's HDR and Panorama groups (Pick merged…, Import merged…, each with its hint). HDR is disabled, with the plan's refusal as its tooltip, and holding ⌥ drops the ellipsis |
+| [HDR preview](merges/hdr-preview.webp) | "Merge HDR · 3 exposures": the picture with the deghost overlay tinting a moving boat "From 0 EV". The frames with exposure steppers and Reference, Alignment, Deghosting, the folder and the output. Cancel, Import merged, and Pick merged as primary |
+| [Panorama preview](merges/panorama-preview.webp) | "Merge panorama · 7 photos": the whole cylindrical stitch with numbered frame outlines, the crop rectangle, the dimmed coverage outside it and "Crop loses 9% at the edges". Projection with Auto's choice, Boundary Warp 0, the overlay switches, the frames with Reference, the folder and the output |
+| [Boundary Warp](merges/panorama-warp.webp) | The same sheet at Boundary Warp 70: bent edges and outlines, "Crop loses 2%" and a larger output. Inset: the sheet while preparing, "Reading 5 of 7", with its settings and buttons live |
+| [Panorama result](merges/panorama-result.webp) | Select after Pick merged: the active result with "Panorama · 7 photos" and its stack expanded, "Frame 1 of 7" … "Frame 7 of 7". The Info panel's Stack band with the projection, field of view and size, In the Development set, Collapse stack and Remove merge |
+| [Large panorama in Develop](merges/large-develop.webp) | The 342 MP result at Fit, with the histogram captioned "Overview". Inset: a far corner at 100%, a full-resolution window refreshed as the view moves |
+| [Components](merges/components.webp) | Menu items (normal, ⌥ held, refused), pending and failed rows for both kinds, badges at three cell sizes, the preview sheet's status lines (preparing, ready, refused) and the overlay legend chips |
 
 Choices the boards make within the design:
 

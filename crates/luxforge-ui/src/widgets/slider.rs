@@ -411,7 +411,7 @@ mod tests {
         [color.r, color.g, color.b].map(|c| (c * 255.0).round() as u8)
     }
 
-    /// crop-and-straighten.png (drafting) and components.png (Exposure dragging): the thumb sits
+    /// crop-and-straighten.webp (drafting) and components.webp (Exposure dragging): the thumb sits
     /// in an 18 pt halo, (81, 69, 53) over the panel and (100, 88, 75) over the empty rail, each
     /// within one code of rounding.
     #[test]

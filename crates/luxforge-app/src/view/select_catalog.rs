@@ -1,4 +1,4 @@
-//! The catalog's regions in the Select workspace ([catalog board](../../../../docs/design/catalog/catalog.png)):
+//! The catalog's regions in the Select workspace ([catalog board](../../../../docs/design/catalog/catalog.webp)):
 //! the Catalog sources' folder tree and collections with their menus and names typed in place,
 //! the filter bar over the catalog with Save as smart collection… and the view's count, the
 //! Metadata browser, and the Info panel over photographs (one photograph's Organize band, or the

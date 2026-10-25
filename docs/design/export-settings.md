@@ -2,9 +2,9 @@
 
 Status: **delivered** on the M4 Mac. Export has settings, JPEG, WebP and a lossless hand-off format, optimised output by default for the web and a separate print setting. The owner's choices are under [decisions](#decisions). The other defaults are recommendations recorded under [proposals](#proposals-with-recorded-defaults). `export.write` and `batch.export` write every setting below, output sharpening included, and the desktop's sheet, menu, palette entries and Select's batch export are delivered over them, with their rendered journey (`cargo xtask smoke --scenario export`, and `select` for the batch). The GPU's resized, 16-bit and sharpened exports are within their declared limits on the whole corpus, and the cost of every format and preset is measured on both renderers ([qualification and measurement](#qualification-and-measurement)). What remains is listed under [outstanding](#outstanding). This design extends the [JPEG export](export.md) and keeps its freeze, render, publish and never-replace rules unchanged.
 
-Boards: [Web preset](export-settings/web.png), [Print preset, changed](export-settings/print.png), [many photographs from Select](export-settings/batch.png) and [components and states](export-settings/components.png). The standalone pages are under [export-settings/html](export-settings/html/index.html).
+Boards: [Web preset](export-settings/web.webp), [Print preset, changed](export-settings/print.webp), [many photographs from Select](export-settings/batch.webp) and [components and states](export-settings/components.webp). The standalone pages are under [export-settings/html](export-settings/html/index.html).
 
-![The Export sheet on the Web preset](export-settings/web.png)
+![The Export sheet on the Web preset](export-settings/web.webp)
 
 ## Behavior and scope
 

@@ -188,7 +188,7 @@ mod tests {
         }
     }
 
-    /// components.png: Develop 18, Developing 7 of 18 and a bare Develop at zero picks.
+    /// components.webp: Develop 18, Developing 7 of 18 and a bare Develop at zero picks.
     #[test]
     fn develop_says_what_it_will_do_or_is_doing() {
         assert_eq!(

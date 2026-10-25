@@ -145,7 +145,7 @@ mod tests {
         assert!(photo_surface((10.0, 10.0), true, true, true).1 >= 0.0);
     }
 
-    /// development-set.png: the filmstrip takes its 92 pt off the canvas's height, and nothing off
+    /// development-set.webp: the filmstrip takes its 92 pt off the canvas's height, and nothing off
     /// its width, the photo surface and the canvas region alike.
     #[test]
     fn the_filmstrip_takes_its_height_off_the_canvas() {

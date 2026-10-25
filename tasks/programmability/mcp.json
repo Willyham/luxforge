@@ -395,7 +395,7 @@
         "TASK-007"
       ],
       "extra_context": [
-        "A Settings tab after Models and before Experiments, also in the palette as Settings · Agents. Draw its boards first in docs/design/mcp/ (standalone HTML and 2× PNG at 1440 × 900 logical points, like the other Settings boards), then implement to them; owner review of the boards is not a prerequisite.",
+        "A Settings tab after Models and before Experiments, also in the palette as Settings · Agents. Draw its boards first in docs/design/mcp/ (standalone HTML and 2× WebP at 1440 × 900 logical points, like the other Settings boards), then implement to them; owner review of the boards is not a prerequisite.",
         "The introduction sentence; the resolved luxforge-mcp beside this build (Contents/Helpers on macOS, beside the editor elsewhere) or, when absent, a line saying so with the build command; a segmented client choice showing the core snippet with Copy to the system clipboard. Never edit another application's configuration.",
         "Connected: every other live client from session.clients with its label (Unnamed client when none), connected-for, last activity and request count, each with Disconnect (session.disconnect through the desktop's permission-authority client); one line when none. The list follows the event log while the tab is open, with no polling loop.",
         "Framework widgets hold no logic: snippet text, client listing and disconnect all go through core."

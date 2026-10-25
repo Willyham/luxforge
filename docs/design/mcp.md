@@ -166,7 +166,7 @@ The registry gains the markers the adapter needs, so the adapter holds no per-me
 
 ## Settings › Agents
 
-A tab in the Settings sheet, after Models and before Experiments, with a terminal icon, also opened from the palette (Settings · Agents). Every build shows it. Its boards, at 1440 × 900 logical points like the other Settings boards, are [connected](mcp/connected.png), [empty](mcp/empty.png) and [missing binary](mcp/missing.png), drawn from the standalone pages in [mcp/html](mcp/html).
+A tab in the Settings sheet, after Models and before Experiments, with a terminal icon, also opened from the palette (Settings · Agents). Every build shows it. Its boards, at 1440 × 900 logical points like the other Settings boards, are [connected](mcp/connected.webp), [empty](mcp/empty.webp) and [missing binary](mcp/missing.webp), drawn from the standalone pages in [mcp/html](mcp/html).
 
 - **Introduction.** One opening sentence: agents use the same operations you do, every edit is in history and undoable, and an agent can never grant consent or permissions.
 - **Connect an agent.**

@@ -62,7 +62,7 @@ pub fn tab_row<'a, M: Clone + 'a>(
     for (index, tab) in model.tabs.iter().enumerate() {
         let selected = index == model.selected;
         let mut label = row![
-            // Semibold, as colour-mixer.png draws every tab: its stems are a semibold's width.
+            // Semibold, as colour-mixer.webp draws every tab: its stems are a semibold's width.
             text(tab.label.clone())
                 .size(if crowded {
                     theme::SIZE_CAPTION

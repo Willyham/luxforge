@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(percent(2.0), 100);
     }
 
-    /// components.png's `24% · 2 jobs`; `working` in place of a percentage the work cannot
+    /// components.webp's `24% · 2 jobs`; `working` in place of a percentage the work cannot
     /// state; the job count only when there is more than one.
     #[test]
     fn the_status_caption_says_how_far_and_how_many() {

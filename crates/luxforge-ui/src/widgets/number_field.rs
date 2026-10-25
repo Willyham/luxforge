@@ -183,7 +183,7 @@ fn field_row<'a, M: Clone + 'a>(
     body.into()
 }
 
-/// A colour's field row, as developer-pixel.png draws RGB: the label at the left, then the swatch
+/// A colour's field row, as developer-pixel.webp draws RGB: the label at the left, then the swatch
 /// and the channel boxes ([`boxed_input`] at [`theme::CHANNEL_FIELD_WIDTH`]) at the right.
 pub fn channel_row<'a, M: 'a>(
     label: String,
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(box_text("877", &None), "877");
     }
 
-    /// developer-pixel.png: `px` sits 8 pt after its box, 2 pt more than the row's 6 pt spacing
+    /// developer-pixel.webp: `px` sits 8 pt after its box, 2 pt more than the row's 6 pt spacing
     /// between a stepper's buttons and its box.
     #[test]
     fn a_word_unit_sits_its_own_gap_from_the_box() {
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(theme::FIELD_UNIT_SPACING + super::unit_lead(), 8.0);
     }
 
-    /// developer-pixel.png and crop-and-straighten.png: a 56 × 20 pt box on a 24 pt row.
+    /// developer-pixel.webp and crop-and-straighten.webp: a 56 × 20 pt box on a 24 pt row.
     #[test]
     fn a_field_is_its_box_on_its_row() {
         assert_eq!((theme::FIELD_WIDTH, theme::FIELD_HEIGHT), (56.0, 20.0));

@@ -129,7 +129,7 @@ impl<M> canvas::Program<M, Theme> for Switch {
 mod tests {
     use super::*;
 
-    /// crop-and-straighten.png: a 26 × 14 pt track, a 10 pt knob inset 2 pt.
+    /// crop-and-straighten.webp: a 26 × 14 pt track, a 10 pt knob inset 2 pt.
     #[test]
     fn the_switch_matches_the_crop_reference() {
         assert_eq!((theme::SWITCH_WIDTH, theme::SWITCH_HEIGHT), (26.0, 14.0));

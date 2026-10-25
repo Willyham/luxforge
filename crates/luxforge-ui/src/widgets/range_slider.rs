@@ -5,7 +5,7 @@
 //! the rail line. A caller that types the band's numbers in place draws its own label lines around
 //! the rail alone ([`range_rail`]). The rail is plain or a colour rail (a luminance band's runs black to white); the
 //! band between the thumbs is filled, and each shoulder is drawn as a fade from the band outwards
-//! to its grip, as mask-panels.png draws the luminance range.
+//! to its grip, as mask-panels.webp draws the luminance range.
 //!
 //! The widget owns no value. It reports which grip moved and the value that grip now stands for,
 //! already clamped so the low edge never passes the high one and a shoulder never leaves the rail,

@@ -56,7 +56,7 @@ pub fn readout_card<'a, M: 'a>(
 mod tests {
     use super::*;
 
-    /// crop-and-straighten.png: four rows on a 16 pt pitch in a 75 pt card.
+    /// crop-and-straighten.webp: four rows on a 16 pt pitch in a 75 pt card.
     #[test]
     fn the_card_matches_the_crop_reference() {
         assert_eq!(readout_card_height(4), 75.0);

@@ -2,7 +2,7 @@
 
 Status: functional implementation verified on the owner's M4 Mac. Seven product questions about the Lens section and first open are settled ([decisions](#decisions)); two further recorded defaults are proposals the owner can revise. The modules and shared geometry pass quick checks and native rendered integration; the section's states and first open pass their targeted tests and the native `lens-perspective` scenario. First open on the authentic Air 2S DNG and Z 6 NEF, quiet-host performance measurement, the full tier and photographic qualification have not been run.
 
-The planned sections are drawn on the [lens and perspective board](develop-workspace/lens-and-perspective.png) (a Perspective drag over a selected profile) and in their states on the [planned module panels](develop-workspace/planned-module-panels.png), with renders of [Lens correction](develop-workspace/modules/lens-correction.png) and [Perspective](develop-workspace/modules/perspective.png). Camera, lens and profile names on them are illustrative, not claims about the pinned database. The boards are design references, not evidence of anything built.
+The planned sections are drawn on the [lens and perspective board](develop-workspace/lens-and-perspective.webp) (a Perspective drag over a selected profile) and in their states on the [planned module panels](develop-workspace/planned-module-panels.webp), with renders of [Lens correction](develop-workspace/modules/lens-correction.webp) and [Perspective](develop-workspace/modules/perspective.webp). Camera, lens and profile names on them are illustrative, not claims about the pinned database. The boards are design references, not evidence of anything built.
 
 ## Scope
 

@@ -111,4 +111,4 @@ Desktop structure:
 - **The gate.** `gpu-qualification` over the whole corpus; a selection of the range stacks passes, which is not the gate's pass.
 - **Corpus breadth.** The corpus RAWs hold one sky and one small face (the Nikon Z 6) and no portrait; skin and skies on more photographs, and the [sample corpus](sample-corpus.md), are not picked yet.
 - **Platforms.** Windows and Linux evidence, unless run natively.
-- The board's PNG export.
+- The board's WebP export.

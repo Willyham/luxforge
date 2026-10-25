@@ -2,7 +2,7 @@
 //! row, the label at the left, then the decrement and increment buttons and the value box at the
 //! right, as a number field has it.
 //!
-//! A stepper may also carry a rail, as crop-and-straighten.png draws the angle: the rail sits
+//! A stepper may also carry a rail, as crop-and-straighten.webp draws the angle: the rail sits
 //! between the decrement and increment buttons and fills the row, and it is the slider's own rail
 //! line ([`super::slider`]), so its geometry, fill, zero tick, handle and halo are the slider's.
 //! Dragging it publishes rail fractions the host maps to values, exactly as a slider does.
@@ -46,7 +46,7 @@ pub struct StepperRailMessages<'a, M> {
 }
 
 /// The rail's width in a stepper row `row_width` points wide with no label: the row less the two
-/// buttons, the value box and the four gaps between them. crop-and-straighten.png's 274 pt row
+/// buttons, the value box and the four gaps between them. crop-and-straighten.webp's 274 pt row
 /// leaves a 160 pt rail.
 #[cfg(test)]
 pub(crate) fn stepper_rail_width(row_width: f32) -> f32 {
@@ -148,7 +148,7 @@ mod tests {
     use crate::geometry::{fraction_from_value, rail_geometry, zero_fraction};
     use crate::theme;
 
-    /// crop-and-straighten.png, drafting, measured at 2x from the card's content edge: minus
+    /// crop-and-straighten.webp, drafting, measured at 2x from the card's content edge: minus
     /// 0..40, rail 52..372, plus 384..424, value box 436..548. At 2.40° on −45..+45 the handle's
     /// centre is at 220 (219.8 here) and the zero sits under the handle, so no fill shows.
     #[test]

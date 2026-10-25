@@ -2,7 +2,7 @@
 
 Status: **implemented; quality qualification incomplete.** The four supplied photographs have been inspected at 100% and final size; unresolved synthetic gates, observed fine-detail loss and missing controlled captures remain in the [study](detail-study.md). The module's choices are recorded [below](#decisions), including the three consequential ones: the 16-bit hand-off on the JPEG path, the bounded input-grid cache for value-based mask overlays and the off-owner mutation path ([decisions](../decisions.md#detail)). Two further defaults are proposals the implementation runs on until the owner revises them ([below](#proposals-with-recorded-defaults)).
 
-The planned panel is drawn on the [Detail board](develop-workspace/detail.png) (at 100%) and in its neutral, masked and Fit states on the [planned module panels](develop-workspace/planned-module-panels.png); [its own render](develop-workspace/modules/detail.png) shows the adjusted section. The boards are design references, not evidence of anything built.
+The planned panel is drawn on the [Detail board](develop-workspace/detail.webp) (at 100%) and in its neutral, masked and Fit states on the [planned module panels](develop-workspace/planned-module-panels.webp); [its own render](develop-workspace/modules/detail.webp) shows the adjusted section. The boards are design references, not evidence of anything built.
 
 ## Outcome and scope
 

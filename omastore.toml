@@ -7,11 +7,11 @@ summary = "Open source, non-destructive photo editor"
 categories = ["Graphics", "Photography", "RasterGraphics"]
 icon = "packaging/icon/luxforge.svg"
 screenshots = [
-  "docs/screenshots/develop.png",
-  "docs/screenshots/select.png",
-  "docs/screenshots/masking.png",
-  "docs/screenshots/grading.png",
-  "docs/screenshots/corrections.png",
+  "docs/screenshots/omastore/develop.webp",
+  "docs/screenshots/omastore/select.webp",
+  "docs/screenshots/omastore/masking.webp",
+  "docs/screenshots/omastore/grading.webp",
+  "docs/screenshots/omastore/corrections.webp",
 ]
 
 # The tag's version is normalized (v0.1 builds 0.1.0), so the version is matched, not expanded.

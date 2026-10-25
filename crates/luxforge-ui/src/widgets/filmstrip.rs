@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(filmstrip_caption(&model(None, Some(1200))), None);
     }
 
-    /// development-set.png: the strip between the side panels at 1440 pt holds eight cells and
+    /// development-set.webp: the strip between the side panels at 1440 pt holds eight cells and
     /// more room; each cell is 78 pt, 4 pt apart, inside 10 pt insets.
     #[test]
     fn capacity_is_whole_cells_inside_the_insets() {

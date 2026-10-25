@@ -10,12 +10,12 @@ Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each o
 
 | Board | Shows |
 | --- | --- |
-| [Copy settings…](copy-settings/copy.png) | Develop with the chooser open under the title bar's Copy button: one checkbox per adjustment group with its Custom or Original caption, All · Edited · None, the note naming what stays with each photograph, and Copy |
-| [Pasted, filmstrip selection](copy-settings/paste.png) | Develop after a paste: the history entry, the status bar's skipped white balance with Undo, the Paste tooltip, four photographs selected in the filmstrip and the menu a right press on one of them opens |
-| [Paste in Select](copy-settings/select-paste.png) | Select with six photographs selected: the Info panel's clipboard card and **Paste settings to 6**, and the confirmation every paste to more than one photograph asks for |
-| [Components and states](copy-settings/components.png) | The title-bar buttons in each state, chooser rows, status-bar sentences, palette entries, the batch report and filmstrip cells |
+| [Copy settings…](copy-settings/copy.webp) | Develop with the chooser open under the title bar's Copy button: one checkbox per adjustment group with its Custom or Original caption, All · Edited · None, the note naming what stays with each photograph, and Copy |
+| [Pasted, filmstrip selection](copy-settings/paste.webp) | Develop after a paste: the history entry, the status bar's skipped white balance with Undo, the Paste tooltip, four photographs selected in the filmstrip and the menu a right press on one of them opens |
+| [Paste in Select](copy-settings/select-paste.webp) | Select with six photographs selected: the Info panel's clipboard card and **Paste settings to 6**, and the confirmation every paste to more than one photograph asks for |
+| [Components and states](copy-settings/components.webp) | The title-bar buttons in each state, chooser rows, status-bar sentences, palette entries, the batch report and filmstrip cells |
 
-![Copy settings chooser](copy-settings/copy.png)
+![Copy settings chooser](copy-settings/copy.webp)
 
 ## What a person does
 

@@ -1,4 +1,4 @@
-//! The Select workspace's screen ([event board](../../../../docs/design/catalog/event.png)): its
+//! The Select workspace's screen ([event board](../../../../docs/design/catalog/event.webp)): its
 //! title bar with the workspace switch, the sources panel, the filter bar over the grouped
 //! virtualized grid with its floating strip, the Info panel and the status bar, drawn from
 //! `state/select.rs`'s model with the Develop workspace's tokens.

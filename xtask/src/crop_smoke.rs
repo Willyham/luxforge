@@ -54,7 +54,7 @@ fn off_centre() -> Result<CropPayload> {
 /// Where `crop-draft` releases its drag on the angle's rail: 2.4° on the −45..+45° rail, a hair
 /// past it so the rail's 0.05° step, not float arithmetic, lands the angle.
 const RAIL_ANGLE_FRACTION: f64 = 0.5 + RAIL_ANGLE / 90.0 + 1e-4;
-/// The angle `crop-draft` drags the rail to, as crop-and-straighten.png draws it.
+/// The angle `crop-draft` drags the rail to, as crop-and-straighten.webp draws it.
 const RAIL_ANGLE: f64 = 2.4;
 
 /// The ratio chips a committed crop reads as, in the order the crop module declares them, each with

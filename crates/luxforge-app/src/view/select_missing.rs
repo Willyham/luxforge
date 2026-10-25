@@ -1,4 +1,4 @@
-//! Missing originals' region ([resolve board](../../../../docs/design/catalog/resolve-missing.png)):
+//! Missing originals' region ([resolve board](../../../../docs/design/catalog/resolve-missing.webp)):
 //! the filter segments over the groups, each group's header with Find in a folder… and its rows
 //! with what a search found, the floating bar with Stop search and Relink N, and the Info panel for
 //! the selected row. Drawn from `state/select_missing.rs`'s model with the `luxforge-ui` resolve

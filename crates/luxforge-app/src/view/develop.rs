@@ -1,5 +1,5 @@
-//! Developing picks and the filmstrip ([event board](../../../../docs/design/catalog/event.png),
-//! [development-set board](../../../../docs/design/catalog/development-set.png)): Develop N in
+//! Developing picks and the filmstrip ([event board](../../../../docs/design/catalog/event.webp),
+//! [development-set board](../../../../docs/design/catalog/development-set.webp)): Develop N in
 //! Select's title bar and its confirmation under it, and Develop's filmstrip under the canvas,
 //! drawn from `state/develop.rs`'s model.
 use crate::{

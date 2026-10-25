@@ -1,4 +1,4 @@
-//! The loupe's region ([burst board](../../../../docs/design/catalog/choosing-from-a-burst.png)),
+//! The loupe's region ([burst board](../../../../docs/design/catalog/choosing-from-a-burst.webp)),
 //! drawn in Select's centre in place of the grid while the loupe is open, from
 //! `state/loupe.rs`'s model. Like every view it reads only its model, and what the app lends it for
 //! the frame ([`LoupeImages`]): each picture's and strip thumbnail's handle by its own frame's item

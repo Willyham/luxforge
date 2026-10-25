@@ -234,6 +234,8 @@ The check also refuses a stale row: one that reads no file, names a path that do
 
 A task that finishes a concept adds the rule that keeps it single as a row of one of these tables, with a test that shows an allowed and a refused path; it never writes a bespoke check. A deliberate new home for something a rule confines is a change to that row's allowed paths, made in review.
 
+Images under `docs/` (design boards and screenshots) are committed as minimized WebP at full resolution, never PNG: the smallest encoding whose SSIM against the rendered PNG is at least 0.995. The conversion script, `convert.sh`, is the maintainer's and is kept outside the repository; there is no repository command for it.
+
 ### When to verify
 
 Verification is for finished work. Several agent sessions share the owner's M4, and a whole-workspace

@@ -43,7 +43,7 @@ mod gallery_select_grid;
 mod gallery_thumbnails;
 
 /// Builds one instance of every widget in every state shown on the components board
-/// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
+/// (`docs/design/develop-workspace/components.webp`), as `Element<'_, ()>` values, so a caller can
 /// prove the whole set builds without panicking.
 ///
 /// Hidden because it exists for unit checks and the real-app gallery evidence renderer,

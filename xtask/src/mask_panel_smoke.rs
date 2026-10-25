@@ -32,7 +32,7 @@ pub const SCENARIO: &str = "mask-panel";
 /// The photograph the design's boards are drawn over, so a frame compares with them side by side.
 pub const FIXTURE: &str = "docs/design/develop-workspace/html/sapa.jpg";
 /// What `reproduce.md` says about the run.
-pub const NOTE: &str = "Opens the photograph the design boards are drawn over. Three masks built through the panel (Sky, Face of a radial, a subtracting brush and an intersecting luminance range, Foreground with its overlay hidden), Exposure and Clarity through Face, then the panel's states: the New mask menu, the selected component's fields, the overlay in each mode and tint, a hovered row, the Brush section armed and put down, and the draft bar for a stroke and for a radial. Compare `radial-dragged`, the last frame, with `docs/design/develop-workspace/mask-mode.png`.";
+pub const NOTE: &str = "Opens the photograph the design boards are drawn over. Three masks built through the panel (Sky, Face of a radial, a subtracting brush and an intersecting luminance range, Foreground with its overlay hidden), Exposure and Clarity through Face, then the panel's states: the New mask menu, the selected component's fields, the overlay in each mode and tint, a hovered row, the Brush section armed and put down, and the draft bar for a stroke and for a radial. Compare `radial-dragged`, the last frame, with `docs/design/develop-workspace/mask-mode.webp`.";
 
 const LINEAR: &str = "linear";
 const RADIAL: &str = "radial";
@@ -643,7 +643,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         run.out(),
         SCENARIO,
         json!({
-            "board": {"compare": "radial-dragged", "with": "docs/design/develop-workspace/mask-mode.png"},
+            "board": {"compare": "radial-dragged", "with": "docs/design/develop-workspace/mask-mode.webp"},
             "density": "not checked: no frame records the tools panel's content height",
         }),
     )

@@ -1215,7 +1215,7 @@ fn rail_decoration(rail: &RailStyle) -> RailDecoration {
 }
 
 /// A band: its label and readout, the two-thumb rail, and under it the band's own number fields,
-/// two to a row as mask-panels.png lays out the luminance range. Each thumb or grip publishes
+/// two to a row as mask-panels.webp lays out the luminance range. Each thumb or grip publishes
 /// exactly the messages a slider's rail publishes for that one field — its fraction while dragged,
 /// its release, and a reset on a double-click — so a drag drafts and commits the one parameter it
 /// moves through the slider's own path. A right-click on the band offers the request that sets the

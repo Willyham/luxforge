@@ -541,7 +541,7 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             line(frame, (9.5, 4.0), (12.0, 6.5));
             line(frame, (11.0, 2.5), (13.5, 5.0));
         }
-        // A crosshair, as raw.png draws As shot: a small ring with a tick out from it on each side.
+        // A crosshair, as raw.webp draws As shot: a small ring with a tick out from it on each side.
         Icon::Target => {
             frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 2.5 * s), stroke);
             line(frame, (8.0, 1.4), (8.0, 4.4));

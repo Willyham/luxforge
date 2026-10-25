@@ -1,5 +1,5 @@
 //! Missing originals in the Select workspace ([catalog design](../../../../docs/design/catalog.md#missing-originals),
-//! [resolve board](../../../../docs/design/catalog/resolve-missing.png)): the photographs whose
+//! [resolve board](../../../../docs/design/catalog/resolve-missing.webp)): the photographs whose
 //! originals are not where they were, grouped by the folder on disk each was developed from, what a
 //! search of a chosen folder found for each, and the Relink that commits exactly what was verified.
 //! Locate original… in Develop's Original not found notice shares its Locate. Like every view model

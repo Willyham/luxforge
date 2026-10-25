@@ -358,7 +358,7 @@ mod tests {
         }
     }
 
-    /// event.png: a top-level leaf starts with its icon 8 pt in; a volume that opens has a 10 pt
+    /// event.webp: a top-level leaf starts with its icon 8 pt in; a volume that opens has a 10 pt
     /// chevron column before it; a nested folder is 12 pt further in and keeps the column empty.
     #[test]
     fn rows_inset_by_level_and_keep_the_chevron_column_when_nested() {

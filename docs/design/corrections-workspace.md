@@ -10,12 +10,12 @@ Boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is als
 
 | Board | Shows |
 | --- | --- |
-| [Placing](corrections/place.png) | Corrections mode with four corrections and nothing selected: a pin on each, the brush with its `+` over an unrepaired blotch, the band's **New correction** group with Heal, Size, Feather, Opacity and Source **Auto**, and the stack |
-| [Selected and stacked](corrections/selected.png) | Heal 5, a stroke painted over Heal 2, selected: its outline, dashed source, arrow and source pin; Heal 2's pin still visible inside it; the selected row expanded with its own settings, **New source** and **Delete** |
-| [Painting from a set source](corrections/source.png) | A Clone stroke in progress after `⌥`-click: the live repair, the faint painted footprint, the source crosshair moving with the brush at the set offset, the draft bar, a drafting row at the top of the stack and Source **Set** in the accent |
-| [Components and states](corrections/components.png) | Cursors for each gesture, pins and handles in each state, stack rows, the row menu, the key map, notices and status-bar sentences |
+| [Placing](corrections/place.webp) | Corrections mode with four corrections and nothing selected: a pin on each, the brush with its `+` over an unrepaired blotch, the band's **New correction** group with Heal, Size, Feather, Opacity and Source **Auto**, and the stack |
+| [Selected and stacked](corrections/selected.webp) | Heal 5, a stroke painted over Heal 2, selected: its outline, dashed source, arrow and source pin; Heal 2's pin still visible inside it; the selected row expanded with its own settings, **New source** and **Delete** |
+| [Painting from a set source](corrections/source.webp) | A Clone stroke in progress after `⌥`-click: the live repair, the faint painted footprint, the source crosshair moving with the brush at the set offset, the draft bar, a drafting row at the top of the stack and Source **Set** in the accent |
+| [Components and states](corrections/components.webp) | Cursors for each gesture, pins and handles in each state, stack rows, the row menu, the key map, notices and status-bar sentences |
 
-![Corrections mode with Heal 5 selected over Heal 2](corrections/selected.png)
+![Corrections mode with Heal 5 selected over Heal 2](corrections/selected.webp)
 
 ## Principles
 

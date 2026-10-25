@@ -129,7 +129,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         (),
         None,
     ));
-    // The angle as crop-and-straighten.png draws it while drafting: minus, the rail with its
+    // The angle as crop-and-straighten.webp draws it while drafting: minus, the rail with its
     // accent handle in its halo, plus, and the value with its symbol unit in the box.
     states.push(stepper(
         &StepperModel {

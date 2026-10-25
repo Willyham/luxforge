@@ -151,7 +151,7 @@ pub fn chip_wrap<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
 mod tests {
     use super::*;
 
-    /// crop-and-straighten.png: 22 pt chips 4 pt apart, the selected one tinted.
+    /// crop-and-straighten.webp: 22 pt chips 4 pt apart, the selected one tinted.
     #[test]
     fn chips_match_the_crop_reference() {
         assert_eq!(theme::CHIP_HEIGHT, 22.0);

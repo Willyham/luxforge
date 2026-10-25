@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(codes(rail_colour_at(&stops[..1], 0.3)), [255, 0, 255]);
     }
 
-    /// Sampled from colour-mixer.png's Red hue, Red saturation and Red luminance rails: the declared
+    /// Sampled from colour-mixer.webp's Red hue, Red saturation and Red luminance rails: the declared
     /// stops mixed in sRGB and laid over the panel at 85%, to within two 8-bit codes.
     #[test]
     fn colour_rails_match_the_mixer_reference_samples() {

@@ -1,6 +1,6 @@
 //! The merge preview sheet ([design](../../../../../docs/design/panorama-merge.md#the-merge-preview);
-//! the boards `docs/design/merges/hdr-preview.png`, `panorama-preview.png` and
-//! `panorama-warp.png`), as plain data: what the sheet holds between the owner's answers, and what
+//! the boards `docs/design/merges/hdr-preview.webp`, `panorama-preview.webp` and
+//! `panorama-warp.webp`), as plain data: what the sheet holds between the owner's answers, and what
 //! it draws from them.
 //!
 //! The sheet opens on Merge HDR or Merge panorama, with Cancel and Merge as its buttons. It shows

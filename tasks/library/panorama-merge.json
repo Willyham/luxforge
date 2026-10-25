@@ -112,7 +112,7 @@
         "`merge.preview`, `merge.preview-update` and `merge.preview-close` for any registered kind, and `merge.create` with `preview_id`: the preview job reads frames into the spool exactly as a merge does, adds a colour preview proxy (the analysis proxies hold luminance and levels only), registers, and writes a display-referred JPEG under the preview cache with diagnostics, overlay data and the output estimate; updates redraw or re-register from the retained proxies without reading frames; a merge given `preview_id` continues from that spool and registration.",
         "Session bounds: one open preview a client, the merge lane occupied while reading and aligning, the spool counted against the kind's temporary ceiling, closed on merge, close, 30 minutes idle, disconnect or restart cleanup; a preview publishes nothing.",
         "HDR's picture fuses the colour proxies with the resolved exposures, registration and motion; its overlay data are the motion regions with their source input and exposure.",
-        "Desktop: Merge HDR (header and menu, the item with an ellipsis) opens the HDR preview sheet, whose buttons are Cancel and Merge; ⌥ drops the ellipsis and ⌥-click on Merge HDR merges at once with the kind's last settings, remembered in the desktop's remembered state; the sheet replaces Merge options… and follows the boards (docs/design/merges/hdr-preview.png, components.png) except their Pick merged and Import merged pair.",
+        "Desktop: Merge HDR (header and menu, the item with an ellipsis) opens the HDR preview sheet, whose buttons are Cancel and Merge; ⌥ drops the ellipsis and ⌥-click on Merge HDR merges at once with the kind's last settings, remembered in the desktop's remembered state; the sheet replaces Merge options… and follows the boards (docs/design/merges/hdr-preview.webp, components.webp) except their Pick merged and Import merged pair.",
         "Done: the core commands and the desktop's preview sheet, with ⌥-click merging at once. The hdr-merge journey goes through the preview, with a setting changed and the overlay on, and once by ⌥-click; its run is TASK-012's."
       ],
       "context_links": [
@@ -139,7 +139,7 @@
         {
           "kind": "file",
           "label": "Merge boards",
-          "target": "docs/design/merges/hdr-preview.png",
+          "target": "docs/design/merges/hdr-preview.webp",
           "relevance": "The HDR preview sheet's target."
         },
         {
@@ -656,7 +656,7 @@
       "extra_context": [
         "Minimum implementation model: roadmap high tier or stronger. Re-review the design and current main, and look for a branch or worktree already carrying this task, before starting. Numerical, solver, backend and layout details are delegated within the design; do not add a product-review or research gate. A test filter named here must run the tests this task adds; an empty filtered run is not evidence. Run quick once at the task's handoff; rendered and timing runs follow the project's verification rules.",
         "The selection menu's Merge panorama… and Panorama options… for 2–32 frames beside HDR's for 2–9, each planned at once and disabled with its refusal; no panorama header.",
-        "The panorama preview sheet as the boards draw it (docs/design/merges/panorama-preview.png, panorama-warp.png): projection, Boundary Warp, frame outlines and crop and coverage, frames with Reference and folder, redrawn on each change, with ⌥-click merging at once; the pending row \"Merging panorama · N photos\" with stage, bar and Cancel, and failures naming the frame or stage.",
+        "The panorama preview sheet as the boards draw it (docs/design/merges/panorama-preview.webp, panorama-warp.webp): projection, Boundary Warp, frame outlines and crop and coverage, frames with Reference and folder, redrawn on each change, with ⌥-click merging at once; the pending row \"Merging panorama · N photos\" with stage, bar and Cancel, and failures naming the frame or stage.",
         "Result cell badge \"Panorama · N photos\" / \"Pano · N\" / icon; originals' \"Frame k of N\"; Info band with projection and field of view. Every action sends the documented request."
       ],
       "context_links": [
@@ -670,8 +670,8 @@
         {
           "kind": "file",
           "label": "Merge boards",
-          "target": "docs/design/merges/panorama-result.png",
-          "relevance": "Targets for the result tile, stack and Info band; panorama-preview.png and panorama-warp.png for the sheet."
+          "target": "docs/design/merges/panorama-result.webp",
+          "relevance": "Targets for the result tile, stack and Info band; panorama-preview.webp and panorama-warp.webp for the sheet."
         },
         {
           "kind": "file",

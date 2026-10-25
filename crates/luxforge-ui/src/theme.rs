@@ -320,7 +320,7 @@ pub const THUMB_OUTLINE_WIDTH: f32 = 1.0;
 pub const THUMB_HALO_RADIUS: f32 = 9.0;
 /// How strongly the halo's accent sits over the panel and the rail under it.
 pub const THUMB_HALO_OPACITY: f32 = 0.25;
-/// A range's shoulder grip: an 8 pt disc at the outer end of a shoulder (mask-panels.png, the
+/// A range's shoulder grip: an 8 pt disc at the outer end of a shoulder (mask-panels.webp, the
 /// luminance range's `.sth`), in the tertiary text colour so it reads as secondary to a thumb.
 pub const SHOULDER_GRIP_RADIUS: f32 = 4.0;
 /// The zero tick's height across the rail.
@@ -389,7 +389,7 @@ pub const FIELD_INSET: f32 = 6.0;
 pub const FIELD_PADDING_Y: f32 = 2.0;
 /// Between a field row's label, its box and a stepper's buttons and rail.
 pub const FIELD_UNIT_SPACING: f32 = 6.0;
-/// Between a value box and the word unit after it (`px`), as developer-pixel.png draws it.
+/// Between a value box and the word unit after it (`px`), as developer-pixel.webp draws it.
 pub const FIELD_UNIT_GAP: f32 = 8.0;
 /// A toggle's row: its label and the switch.
 pub const TOGGLE_ROW_HEIGHT: f32 = 26.0;
@@ -2859,7 +2859,7 @@ mod tests {
         );
         assert_eq!(TAB_ROW_HEIGHT, 24.0);
         assert_eq!(LIST_ROW_HEIGHT, 26.0);
-        // default.png: history rows on a 28 pt pitch, a 6 pt marker, the current row tinted.
+        // default.webp: history rows on a 28 pt pitch, a 6 pt marker, the current row tinted.
         assert_eq!(LIST_ROW_HEIGHT + LIST_ROW_SPACING, 28.0);
         assert_eq!(MARKER_SIZE, 6.0);
         assert_eq!(DARK.list_row_current, Color::from_rgb8(47, 47, 50));
@@ -3036,7 +3036,7 @@ mod tests {
     }
 
     /// The white-balance rails, drawn at the colour-rail opacity over the panel, land on the
-    /// colours sampled from basic.png at their start, middle and end.
+    /// colours sampled from basic.webp at their start, middle and end.
     #[test]
     fn white_balance_rails_composite_to_the_basic_reference() {
         let drawn = |colour: Color| {
