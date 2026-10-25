@@ -78,7 +78,7 @@ fn named<'a>(content: &'a str, name: &'a str) -> ThemeInput<'a> {
 }
 
 /// The built-in themes' names, in their order: Luxforge Dark, then the bundled Omarchy themes.
-const BUILT_IN: [&str; 7] = [
+const BUILT_IN: [&str; 23] = [
     LUXFORGE_DARK_NAME,
     "Tokyo Night",
     "Catppuccin",
@@ -86,6 +86,22 @@ const BUILT_IN: [&str; 7] = [
     "Gruvbox",
     "Nord",
     "Everforest",
+    "Ethereal",
+    "Flexoki Light",
+    "Hackerman",
+    "Kanagawa",
+    "Last Horizon",
+    "Lumon",
+    "Lupine",
+    "Matte Black",
+    "Miasma",
+    "Osaka Jade",
+    "Retro 82",
+    "Ristretto",
+    "Rose Pine",
+    "Solitude",
+    "Vantablack",
+    "White",
 ];
 
 fn names(listing: &Listing) -> Vec<&str> {

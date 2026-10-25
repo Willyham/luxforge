@@ -45,7 +45,6 @@ struct Expected {
     mode: Mode,
     values: Vec<Option<String>>,
     other: BTreeMap<String, String>,
-    palette: Option<String>,
 }
 
 fn parity() -> Vec<Expected> {
@@ -69,36 +68,23 @@ fn parity() -> Vec<Expected> {
             },
             values: serde_json::from_value(theme["values"].clone()).unwrap(),
             other: serde_json::from_value(theme["other"].clone()).unwrap(),
-            // A minimal copy of the palette, one `key = "value"` line each, as Omarchy read it.
-            palette: theme["palette"].as_array().map(|lines| {
-                lines
-                    .iter()
-                    .map(|line| {
-                        let (key, value) = line.as_str().unwrap().split_once('=').unwrap();
-                        format!("{key} = \"{value}\"\n")
-                    })
-                    .collect()
-            }),
         })
         .collect()
 }
 
 /// Omarchy's 22 built-in themes at [`OMARCHY_COMMIT`], each its slug and the files a client sends
-/// for it: the bundled `colors.toml`, or the fixture's copy of the palette.
+/// for it: the bundled `colors.toml`.
 pub(crate) fn built_in_folders() -> Vec<(String, BTreeMap<String, String>)> {
     parity()
         .into_iter()
         .filter(|expected| expected.source == "omarchy")
         .map(|expected| {
-            let text = expected.palette.unwrap_or_else(|| {
-                BUNDLED
-                    .iter()
-                    .find(|bundled| bundled.slug == expected.slug)
-                    .expect("a built-in theme is bundled or copied")
-                    .colors_toml
-                    .to_owned()
-            });
-            (expected.slug, files(&[(COLORS_TOML, &text)]))
+            let text = BUNDLED
+                .iter()
+                .find(|bundled| bundled.slug == expected.slug)
+                .expect("a built-in theme is bundled")
+                .colors_toml;
+            (expected.slug, files(&[(COLORS_TOML, text)]))
         })
         .collect()
 }
@@ -167,12 +153,11 @@ fn every_built_in_and_synthetic_theme_resolves_as_omarchy_resolves_it() {
     assert_eq!(themes.iter().filter(|t| t.source == "omarchy").count(), 22);
     let mut synthetic = 0;
     for expected in &themes {
-        let palette = match (expected.source.as_str(), &expected.palette) {
-            ("omarchy", Some(text)) => colors(text),
-            ("omarchy", None) => BUNDLED
+        let palette = match expected.source.as_str() {
+            "omarchy" => BUNDLED
                 .iter()
                 .find(|bundled| bundled.slug == expected.slug)
-                .unwrap_or_else(|| panic!("{} is neither bundled nor copied", expected.slug))
+                .unwrap_or_else(|| panic!("{} is not bundled", expected.slug))
                 .read(),
             _ => {
                 synthetic += 1;
@@ -187,8 +172,8 @@ fn every_built_in_and_synthetic_theme_resolves_as_omarchy_resolves_it() {
 
 /// The same check on Omarchy's own files: a clone at the pinned commit in `target/omarchy`
 /// (`git clone https://github.com/omacom/omarchy target/omarchy && git -C target/omarchy checkout
-/// 035ce29f03bdd97a09af80ef5f2d22d7a98930d6`). The test above runs on the bundled files and on
-/// the fixture's copies of the other sixteen; this one shows those copies are faithful.
+/// 035ce29f03bdd97a09af80ef5f2d22d7a98930d6`). The test above runs on the bundled files; this
+/// one shows they are Omarchy's.
 #[test]
 #[ignore = "needs an Omarchy clone at the pinned commit in target/omarchy"]
 fn omarchy_clone_resolves_as_the_fixture() {
@@ -205,11 +190,10 @@ fn omarchy_clone_resolves_as_the_fixture() {
     for path in slugs {
         let slug = path.file_name().unwrap().to_str().unwrap();
         let expected = themes.iter().find(|t| t.slug == slug).unwrap();
-        let palette = read(&folder(&path)).unwrap();
-        assert_parity(&palette, expected);
-        if let Some(copy) = &expected.palette {
-            assert_eq!(colors(copy).unwrap().colours, palette.colours, "{slug}");
-        }
+        let files = folder(&path);
+        assert_parity(&read(&files).unwrap(), expected);
+        let bundled = BUNDLED.iter().find(|bundled| bundled.slug == slug).unwrap();
+        assert_eq!(bundled.colors_toml, files[COLORS_TOML], "{slug}");
     }
 }
 
@@ -241,6 +225,70 @@ fn bundled_files_are_the_pinned_commits() {
             "everforest",
             "1adc95c8b6ee34d71106bacf23079f14667b82ec7d8f0b7a478ce3f8d57d1c09",
         ),
+        (
+            "ethereal",
+            "411a9316828a0251d960e4a449ed7253251ac83f4589e6833a8db0458d5b733a",
+        ),
+        (
+            "flexoki-light",
+            "bb3b5c43fc247f7e2f874c2b5b8e1c32f102245e55addb63bb0a2e7df9351ec7",
+        ),
+        (
+            "hackerman",
+            "cf921c499dc64223631fc3a9a1e7826465bf5cbad2c09526ca4d430b56233a3d",
+        ),
+        (
+            "kanagawa",
+            "93c0ad7187196f39350b940b7e0f100305ab0c72aba19a621d696df715edb953",
+        ),
+        (
+            "last-horizon",
+            "2e03df6d3283409061b959851f0e5cb2bb4e6acc56628fd5debad37741a9751b",
+        ),
+        (
+            "lumon",
+            "bafd2347d54e8e44774ffb3243895482e9ed23fe45aba269200855f75cc2925c",
+        ),
+        (
+            "lupine",
+            "c3ffc08fe854a1488dc47eddca43dc43aaada2e89c2a747afb72fed4519120bd",
+        ),
+        (
+            "matte-black",
+            "71437ba25539371740722baa01de9ffde2dd2d5f35d448a7432ab51adb248c5a",
+        ),
+        (
+            "miasma",
+            "ea38c4fb07b93938a4f3a1ec3970b99270a3ad0a4e648d1065185b1deff5acfa",
+        ),
+        (
+            "osaka-jade",
+            "4e6b6f1c49e38dfad7a248a9a0e456f4bfb84752837bc0dcd79c7e88ae2aaa7c",
+        ),
+        (
+            "retro-82",
+            "00a3ddc589250e02a331000f62b245d48dbc51211295289b94090a305ba8310b",
+        ),
+        (
+            "ristretto",
+            "a256444c82c41ceb7203280414a6bd7540e7044d1e54943a3557733a50a287d4",
+        ),
+        (
+            "rose-pine",
+            "c9d45f2434edc45520d9a05765b88d42d3053796b6531b4be3d6cc34d2839ae1",
+        ),
+        (
+            "solitude",
+            "7307db1d52dfc396f6d185c5447517b7a66cea20db9f39158eb56a2a1f2c3ef4",
+        ),
+        (
+            "vantablack",
+            "8a9272c46b4eeeb0376026e81586d636b6ff6e4916aadf5a0aa99980567efe33",
+        ),
+        (
+            "white",
+            "fd1ed111b8fb919bee5f497416b810405927a7c3c1992571513956b1a53795b3",
+        ),
     ];
     assert_eq!(BUNDLED.map(|b| b.slug), pinned.map(|(slug, _)| slug));
     for (bundled, (_, digest)) in BUNDLED.iter().zip(pinned) {
@@ -261,7 +309,14 @@ fn bundled_themes_are_named_as_omarchy_lists_them() {
     }
     let modes = BUNDLED.map(|bundled| bundled.read().unwrap().mode);
     use Mode::{Dark, Light};
-    assert_eq!(modes, [Dark, Dark, Light, Dark, Dark, Dark]);
+    assert_eq!(
+        modes,
+        [
+            Dark, Dark, Light, Dark, Dark, Dark, // The first six, in their listed order.
+            Dark, Light, Dark, Dark, Dark, Dark, Light, Dark, Dark, Dark, Dark, Dark, Light, Dark,
+            Dark, Light,
+        ]
+    );
     let tokyo_night = BUNDLED[0].read().unwrap();
     assert_eq!(
         (

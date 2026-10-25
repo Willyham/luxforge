@@ -198,7 +198,7 @@ Luxforge is pre-release, and everything is v0. With that said, a lot already wor
 - **Export** to JPEG, WebP and 8- or 16-bit TIFF, resized, size-limited and sharpened for screen or print. Exports never replace an existing file or touch the original.
 - **GPU rendering** at every zoom. The GPU draws motion, the finished picture, the histogram and exports, all held within a declared tolerance of an independent whole-frame CPU reference.
 - **An RGB histogram** with clipping overlays, **Before/After** comparison with a draggable divider, **image information**, a **minimap** at high zoom, a **command palette**, and **live counters** for memory, CPU and GPU alongside background jobs.
-- **Themes**, including six bundled Omarchy themes and import of your own, plus preferences for the defaults that matter.
+- **Themes**, including Omarchy's 22 built-in themes bundled and import of your own, plus preferences for the defaults that matter.
 - **Programmable**: the JSON API, `luxforge-json`, `luxforge-ctl` and the `luxforge-mcp` server for AI agents.
 
 ### In progress

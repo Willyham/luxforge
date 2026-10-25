@@ -454,7 +454,7 @@ impl Bundled {
 }
 
 /// The bundled themes, in the order they are listed.
-pub const BUNDLED: [Bundled; 6] = [
+pub const BUNDLED: [Bundled; 22] = [
     Bundled {
         slug: "tokyo-night",
         name: "Tokyo Night",
@@ -484,6 +484,86 @@ pub const BUNDLED: [Bundled; 6] = [
         slug: "everforest",
         name: "Everforest",
         colors_toml: include_str!("omarchy/bundled/everforest/colors.toml"),
+    },
+    Bundled {
+        slug: "ethereal",
+        name: "Ethereal",
+        colors_toml: include_str!("omarchy/bundled/ethereal/colors.toml"),
+    },
+    Bundled {
+        slug: "flexoki-light",
+        name: "Flexoki Light",
+        colors_toml: include_str!("omarchy/bundled/flexoki-light/colors.toml"),
+    },
+    Bundled {
+        slug: "hackerman",
+        name: "Hackerman",
+        colors_toml: include_str!("omarchy/bundled/hackerman/colors.toml"),
+    },
+    Bundled {
+        slug: "kanagawa",
+        name: "Kanagawa",
+        colors_toml: include_str!("omarchy/bundled/kanagawa/colors.toml"),
+    },
+    Bundled {
+        slug: "last-horizon",
+        name: "Last Horizon",
+        colors_toml: include_str!("omarchy/bundled/last-horizon/colors.toml"),
+    },
+    Bundled {
+        slug: "lumon",
+        name: "Lumon",
+        colors_toml: include_str!("omarchy/bundled/lumon/colors.toml"),
+    },
+    Bundled {
+        slug: "lupine",
+        name: "Lupine",
+        colors_toml: include_str!("omarchy/bundled/lupine/colors.toml"),
+    },
+    Bundled {
+        slug: "matte-black",
+        name: "Matte Black",
+        colors_toml: include_str!("omarchy/bundled/matte-black/colors.toml"),
+    },
+    Bundled {
+        slug: "miasma",
+        name: "Miasma",
+        colors_toml: include_str!("omarchy/bundled/miasma/colors.toml"),
+    },
+    Bundled {
+        slug: "osaka-jade",
+        name: "Osaka Jade",
+        colors_toml: include_str!("omarchy/bundled/osaka-jade/colors.toml"),
+    },
+    Bundled {
+        slug: "retro-82",
+        name: "Retro 82",
+        colors_toml: include_str!("omarchy/bundled/retro-82/colors.toml"),
+    },
+    Bundled {
+        slug: "ristretto",
+        name: "Ristretto",
+        colors_toml: include_str!("omarchy/bundled/ristretto/colors.toml"),
+    },
+    Bundled {
+        slug: "rose-pine",
+        name: "Rose Pine",
+        colors_toml: include_str!("omarchy/bundled/rose-pine/colors.toml"),
+    },
+    Bundled {
+        slug: "solitude",
+        name: "Solitude",
+        colors_toml: include_str!("omarchy/bundled/solitude/colors.toml"),
+    },
+    Bundled {
+        slug: "vantablack",
+        name: "Vantablack",
+        colors_toml: include_str!("omarchy/bundled/vantablack/colors.toml"),
+    },
+    Bundled {
+        slug: "white",
+        name: "White",
+        colors_toml: include_str!("omarchy/bundled/white/colors.toml"),
     },
 ];
 

@@ -117,7 +117,7 @@ fn import(content: &str, request_id: &str) -> Value {
 }
 
 /// The built-in themes' names, in their order: Luxforge Dark, then the bundled Omarchy themes.
-const BUILT_IN: [&str; 7] = [
+const BUILT_IN: [&str; 23] = [
     "Luxforge Dark",
     "Tokyo Night",
     "Catppuccin",
@@ -125,6 +125,22 @@ const BUILT_IN: [&str; 7] = [
     "Gruvbox",
     "Nord",
     "Everforest",
+    "Ethereal",
+    "Flexoki Light",
+    "Hackerman",
+    "Kanagawa",
+    "Last Horizon",
+    "Lumon",
+    "Lupine",
+    "Matte Black",
+    "Miasma",
+    "Osaka Jade",
+    "Retro 82",
+    "Ristretto",
+    "Rose Pine",
+    "Solitude",
+    "Vantablack",
+    "White",
 ];
 
 const METHODS: [&str; 6] = [
@@ -242,8 +258,11 @@ fn an_import_is_listed_chosen_announced_and_read_back_and_a_retry_changes_nothin
         .map(|theme| theme["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, [BUILT_IN.as_slice(), &["Night"]].concat());
-    assert_eq!(listed["themes"][7]["built_in"], false);
-    assert_eq!(listed["themes"][7]["origin"], json!({"kind": "luxforge"}));
+    assert_eq!(listed["themes"][BUILT_IN.len()]["built_in"], false);
+    assert_eq!(
+        listed["themes"][BUILT_IN.len()]["origin"],
+        json!({"kind": "luxforge"})
+    );
 
     let read = harness.ok("read", "theme.read", json!({"theme_id": id}));
     assert_eq!(read["theme"]["source"], json!({"Night.lftheme": text}));
@@ -377,9 +396,9 @@ fn every_refusal_is_by_name_and_changes_nothing() {
         ),
         (
             "preferences.set",
-            json!({"theme": "omarchy.kanagawa"}),
+            json!({"theme": "omarchy.deep-sea"}),
             "validation",
-            "unknown theme omarchy.kanagawa".to_owned(),
+            "unknown theme omarchy.deep-sea".to_owned(),
         ),
         (
             "theme.import",
@@ -799,7 +818,7 @@ fn the_launch_draws_omarchys_current_theme_while_following_it() {
         ("omarchy.nord", Some("omarchy.nord"))
     );
     // A theme the library does not hold leaves the stored choice.
-    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("rose-pine"));
+    let launch = crate::preferences::LaunchPreferences::read(config.clone(), Some("deep-sea-dusk"));
     assert_eq!(
         (
             launch.theme.id.as_str(),

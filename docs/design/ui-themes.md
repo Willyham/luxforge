@@ -5,14 +5,14 @@ Status: **implemented** ([decisions](../decisions.md#ui-themes)):
 - themes, light ones included;
 - a surround held neutral;
 - each theme's own accent;
-- a few bundled [Omarchy](https://github.com/omacom/omarchy) themes.
+- Omarchy's 22 built-in themes, bundled.
 
 The visual language's first principle, "the photograph is the only colour on screen" ([Develop workspace](develop-workspace.md#principles)), holds for the default theme alone. The remaining questions run on the [recorded defaults](#proposals-with-recorded-defaults) below.
 
 ## Where it lives
 
 - **The model**, in `luxforge_core::theme`: roles, the derivation, the chroma bound, the contrast floors and their moves, the report and the Luxforge theme document. CIEDE2000 joins the core's other colour equations in `colour.rs`.
-- **The Omarchy reader**, `theme::omarchy`, and the six bundled palettes beside it under `theme/omarchy/bundled/`.
+- **The Omarchy reader**, `theme::omarchy`, and the 22 bundled palettes beside it under `theme/omarchy/bundled/`.
 - **The library**, `theme::library`, and the `theme.*` methods in `api/owner/themes.rs`. The rule for which theme is Omarchy's current one, `follows_omarchy`, lives there too.
 - **The runtime theme**, `luxforge_ui::Theme` and its `Palette`, in `crates/luxforge-ui/src/theme/`. `theme.rs` keeps the sizes, the fonts and the fixed colours.
 - **The desktop's theme**: the mapping from the core's tokens, the launch read, the change, the fallback and following Omarchy in `app/themes.rs`; the folder import in `app/theme_folder.rs`; the read of Omarchy's current theme in `app/omarchy_current.rs`; the Appearance tab's plain data in `state/themes.rs`.
@@ -21,7 +21,7 @@ The [preferences](preferences.md) meet themes in two places. The **canvas backgr
 
 ## What a theme is
 
-A theme is a named set of colours for the interface, chosen by the person and kept outside every catalog. The default theme, **Luxforge Dark**, is the [visual language](develop-workspace.md#visual-language) exactly. Six popular Omarchy themes are built in beside it ([bundled themes](#bundled-themes)). Any other theme comes from an import, of an Omarchy theme folder or of a Luxforge theme document, and is stored as a Luxforge theme, so once imported it does not depend on the folder it came from. The desktop draws it; every client can read it; nothing else in Luxforge reads it.
+A theme is a named set of colours for the interface, chosen by the person and kept outside every catalog. The default theme, **Luxforge Dark**, is the [visual language](develop-workspace.md#visual-language) exactly. Omarchy's 22 built-in themes are built in beside it ([bundled themes](#bundled-themes)). Any other theme comes from an import, of an Omarchy theme folder or of a Luxforge theme document, and is stored as a Luxforge theme, so once imported it does not depend on the folder it came from. The desktop draws it; every client can read it; nothing else in Luxforge reads it.
 
 ## Rules
 
@@ -258,29 +258,24 @@ These figures are the implementation's, run on Omarchy's 22 built-in palettes at
 
 ### Bundled themes
 
-A few popular Omarchy themes are bundled, beside imports from a folder. The recorded default is six:
+All 22 of Omarchy's built-in themes are bundled, beside imports from a folder. The list after Luxforge Dark opens with the six first bundled, then the other sixteen by slug:
 
-| Theme | Mode | Why |
+| Theme | Mode | Note |
 | --- | --- | --- |
 | Tokyo Night | Dark | Omarchy's default theme |
 | Catppuccin | Dark | The most-starred scheme on GitHub of those behind Omarchy's built-in themes (19.8k stars on 2026-10-05) |
 | Catppuccin Latte | Light | The light theme of that same scheme |
-| Gruvbox | Dark | Gruvbox has 15.8k stars; Omarchy's palette is the Gruvbox Material variant |
-| Nord | Dark | 6.9k stars |
-| Everforest | Dark | 4.2k stars, and a teal accent apart from its text |
+| Gruvbox | Dark | Omarchy's palette is the Gruvbox Material variant |
+| Nord | Dark | |
+| Everforest | Dark | |
+| Ethereal, Flexoki Light, Hackerman, Kanagawa, Last Horizon, Lumon, Lupine, Matte Black, Miasma, Osaka Jade, Retro 82, Ristretto, Rose Pine, Solitude, Vantablack, White | Light for Flexoki Light, Lupine, Rose Pine and White; the rest Dark | By slug |
 
-Kanagawa (6.4k stars) is left out because its accent is its text colour, so its state marks would not stand out against its labels. The six together are about 3.6 KB.
+Kanagawa's accent is its text colour (`#dcd7ba`), so its state marks do not stand out from its labels by colour; its report notes the accent's closeness to the mask white (14.87 ΔE00). White's accent is a grey, with the same effect.
 
-- **The files** are Omarchy's own `colors.toml` files, vendored verbatim from the pinned commit beside the core's theme module, never edited. Omarchy's MIT licence and a notice naming each palette's upstream scheme sit beside them, and a test pins each file's SHA-256 to that commit. Changing the set, or the commit, is a deliberate change of its own.
-- **The same reader.** A bundled theme is read by the same reader and mapping as an import, once, when the library is first used, so the bundled files are also the reader's real-file tests. Its report is part of what `theme.read` answers, and its `source` is the vendored `colors.toml`.
+- **The files** are Omarchy's own `colors.toml` files, vendored verbatim from the pinned commit beside the core's theme module, never edited, 13 KB in all. Omarchy's MIT licence and a notice naming each palette's upstream, where Omarchy's theme folder names one, sit beside them, and a test pins each file's SHA-256 to that commit. Changing the set, or the commit, is a deliberate change of its own.
+- **The same reader.** A bundled theme is read by the same reader and mapping as an import, once, when the library is first used, so the bundled files are also the reader's real-file tests, and the parity test resolves them. Its report is part of what `theme.read` answers, and its `source` is the vendored `colors.toml`.
 - **Built in.** Bundled themes are listed after Luxforge Dark, in the order above, with ids of the form `omarchy.tokyo-night` and an origin of `{kind: "omarchy", folder, form: "omarchy4", commit}` naming the pinned commit. They are never stored and cannot be deleted, and their names are taken: an import under the same name, ignoring case, is a conflict, so importing the same folder again is listed as one. `preferences.set {theme: "omarchy.nord"}` chooses one like any other theme.
-- **What they become:**
-  - Tokyo Night, Catppuccin, Nord and Everforest have their surround neutralised; Gruvbox and Catppuccin Latte keep theirs.
-  - Tokyo Night, Everforest, Gruvbox and Catppuccin Latte have their text moved to its floor, by 0.55 to 3.41 ΔE00. No bundled theme's accent is moved.
-  - Catppuccin Latte, Everforest and Nord have the error ink moved in lightness.
-  - All six have the tertiary tier stop short, and all but Catppuccin the secondary too.
-  - Tokyo Night, Catppuccin, Nord and Catppuccin Latte keep accents under 15 ΔE00 from a reserved colour.
-  - Each takes its control from `lighter_background`.
+- **What they become** is [the 22 built-in themes' table](#what-the-22-built-in-themes-become).
 
 ## Library and API
 
@@ -357,7 +352,7 @@ The palette has **Settings · Appearance** and one **Theme: \<name\>** entry per
 
 A folder that holds a file the reader takes is one theme. A folder whose subfolders hold them is a set, each subfolder one theme. Examples of sets are a clone of Omarchy's repository, whose `themes` directory brings all 22 built-in themes at once, and Omarchy's own theme directories on Linux. There the picker opens at `~/.config/omarchy/themes`, `/usr/share/omarchy/themes` or `~/.local/share/omarchy/themes`, whichever exists first.
 
-The desktop reads only the files the reader takes: each at most 64 KiB, from at most 256 subfolders. It reads them on a task rather than on the update loop ([performance rule 12](../engineering/performance-rules.md#rules)). Each theme is one `theme.import` with its own report. A file that cannot be read fails its own theme only, with the reason. A name the library already holds is listed as a conflict, never renamed or replaced; importing Omarchy's whole `themes` directory therefore imports 16 themes and lists the six bundled themes as already built in. The tab then shows a summary line, the themes imported, those already built in or already imported, and each failure with its folder and reason, until the next import or delete; the status bar shows the summary, and its copy button copies every answer and report.
+The desktop reads only the files the reader takes: each at most 64 KiB, from at most 256 subfolders. It reads them on a task rather than on the update loop ([performance rule 12](../engineering/performance-rules.md#rules)). Each theme is one `theme.import` with its own report. A file that cannot be read fails its own theme only, with the reason. A name the library already holds is listed as a conflict, never renamed or replaced; importing Omarchy's whole `themes` directory therefore imports none and lists all 22 as already built in. The tab then shows a summary line, the themes imported, those already built in or already imported, and each failure with its folder and reason, until the next import or delete; the status bar shows the summary, and its copy button copies every answer and report.
 
 ### Following Omarchy
 
@@ -428,7 +423,7 @@ Recorded in [decisions](../decisions.md#ui-themes):
 | Tinted chrome | Allowed in any theme but Luxforge Dark, which keeps the principle that the photograph is the only colour on screen |
 | The surround | Near-neutral in every theme (at most 0.010 OKLCh chroma), at the theme's lightness |
 | An accent near a reserved colour | Each theme keeps its own accent; the report notes one under 15 ΔE00 from a reserved colour |
-| Bundled themes | A few popular Omarchy themes, beside imports from a folder |
+| Bundled themes | All 22 of Omarchy's built-in themes, beside imports from a folder |
 | Following Omarchy's current theme | Where Omarchy runs, the active theme follows Omarchy's current one when the library holds it, through a preference on by default that choosing a theme turns off. A theme the library does not hold is not imported or drawn ([following Omarchy](#following-omarchy)) |
 
 ### Proposals with recorded defaults
@@ -437,7 +432,6 @@ Luxforge runs on these until the owner revises them.
 
 | Question | Recorded default | Alternatives |
 | --- | --- | --- |
-| Which themes are bundled | Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest ([bundled themes](#bundled-themes)) | Another set, such as all 22 of Omarchy's built-in themes, or a second light theme (Rose Pine or Flexoki Light) |
 | Contrast | 7:1 for primary text; 4.5:1 for labels and secondary text; 3:1 for tertiary text, the accent and the error ink. An imported theme's own ink is moved to its floor and reported (6 of the 22). A Luxforge document that misses a floor is refused | Refuse an import that misses a floor; or accept it and only warn |
 | Omarchy forms | Omarchy 4 and Omarchy 3 palettes, `light.mode`, and `alacritty.toml` where there is no palette (37 of the 145 reachable curated community themes) | The Omarchy 4 palette only |
 | The canvas background | A fourth choice, Theme, the theme's surround, as the default; Dark, Black and Grey stay fixed greys | No Theme choice: themes never set the canvas around the photograph, only the histogram plot |

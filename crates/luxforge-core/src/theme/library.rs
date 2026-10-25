@@ -8,7 +8,7 @@
 //! kept as the JSON value it is and read on its own, so a record this build cannot read is listed
 //! in [`Listing::unrecognized`] with its reason, never makes the others unreadable, and is written
 //! back as it was by every later change. Built-in themes are never stored: Luxforge Dark and the
-//! six bundled Omarchy themes ([`built_in_themes`]).
+//! bundled Omarchy themes ([`built_in_themes`]).
 //!
 //! An Omarchy theme folder's files are read by [`omarchy::read`], and the palette it resolves
 //! becomes roles by [`omarchy_roles`]; the bundled themes are read the same way.

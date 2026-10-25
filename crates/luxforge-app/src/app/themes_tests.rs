@@ -881,7 +881,7 @@ fn the_theme_follows_omarchys_until_one_is_chosen_by_hand() {
     assert_eq!(editor.themes.drawn.id, "omarchy.everforest");
 
     // A theme the library does not hold changes nothing, and the switch says so.
-    omarchy_switches(&mut editor, &home, "rose-pine");
+    omarchy_switches(&mut editor, &home, "deep-sea");
     assert!(editor.preferences.idle());
     assert_eq!(editor.themes.drawn.id, "omarchy.everforest");
     let _ = editor.update(Message::Settings(SettingsMessage::Open(
@@ -897,7 +897,7 @@ fn the_theme_follows_omarchys_until_one_is_chosen_by_hand() {
         .unwrap();
     assert!(row.following);
     assert!(
-        row.caption.contains("Rose Pine, is not in the library"),
+        row.caption.contains("Deep Sea, is not in the library"),
         "{}",
         row.caption
     );

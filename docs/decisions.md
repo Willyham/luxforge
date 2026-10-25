@@ -376,10 +376,10 @@ For [UI themes](design/ui-themes.md):
 - **Themes, light ones included.** Luxforge Dark, the visual language's palette, is the default. The principle that the photograph is the only colour on screen holds for it alone, so other themes may tint the chrome.
 - **The photograph's surround stays neutral** in every theme. A theme chooses its lightness, never its hue.
 - **Each theme keeps its own accent**, even near the clipping or mask colours. The import report notes an accent within 15 ΔE00 of one of them.
-- **A few popular Omarchy themes are bundled** for now, beside themes imported from a folder.
+- **Omarchy's 22 built-in themes are bundled**, beside themes imported from a folder.
 - **The theme follows Omarchy's current one** where Omarchy runs, whenever the library holds it: a preference, on by default, that choosing a theme by hand turns off. A theme the library does not hold changes nothing ([following Omarchy](design/ui-themes.md#following-omarchy)).
 
-The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving the system appearance for later.
+The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving the system appearance for later.
 
 ## AI editing
 
@@ -530,7 +530,7 @@ Masking phases A–D are delivered. Brush strokes are content-addressed by a has
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work? A consistent backup must account for the catalog's live WAL and derived artifacts as well as its rows.
 - Do the [catalog design](design/catalog.md#proposals)'s eighteen recorded defaults stand? The feature is implemented on them; P13's choice of how to meet the photographs view's time remains open.
 - What is the first external module the owner would use, and what enablement and recovery behaviour does it need? A processing tool needs its CPU reference and GPU qualification; external GPU loading is not delivered by the built-in module interface.
-- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover the six bundled Omarchy themes, contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving the system appearance for later.
+- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They cover contrast floors and moving an imported theme's own ink to meet them, the Omarchy forms read, the Theme canvas-background default, the Appearance tab, and leaving the system appearance for later.
 - [AI editing](design/ai-editing.md) ([above](#ai-editing)) leaves open the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
 - Are [Lightroom import](design/lightroom-import.md) and [Lightroom alignment](design/lightroom-alignment.md) beyond TASK-007 authorised for implementation? Their design decisions, including the scope refinements below, do not grant that authorisation.
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.

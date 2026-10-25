@@ -38,7 +38,6 @@ KEYS = sorted(
     + ["fg", "dark_fg", "light_fg", "bright_fg"],
     key=str.encode,
 )
-BUNDLED = ["tokyo-night", "catppuccin", "catppuccin-latte", "gruvbox", "nord", "everforest"]
 
 
 def awk_program(script, opening, closing):
@@ -247,7 +246,7 @@ def main():
             folders.append((name, "synthetic", os.path.join(TESTDATA, name)))
     themes = []
     for slug, source, folder in folders:
-        text, resolved = read_theme(resolver, folder)
+        _, resolved = read_theme(resolver, folder)
         resolved = {k: v for k, v in resolved.items() if v}
         mode = resolved.pop("mode")
         assert resolved.pop("theme_type") == mode
@@ -259,9 +258,6 @@ def main():
             # The rest of what `--all` prints: the keys the resolver does not know, verbatim.
             "other": resolved,
         }
-        if source == "omarchy" and slug not in BUNDLED:
-            # The palette as Omarchy's parser read it, so the test can write a minimal copy.
-            entry["palette"] = [f"{k}={v}" for k, v in Resolver.parse(text).items()]
         themes.append(entry)
     with open(output, "w") as f:
         f.write('{"omarchy_commit": "%s",\n"keys": %s,\n"themes": [\n' % (COMMIT, json.dumps(KEYS)))
