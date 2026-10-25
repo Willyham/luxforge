@@ -885,6 +885,9 @@ impl Editor {
                 self.status.text = "Showing Develop".into();
                 return self.show_develop_workspace();
             }
+            if let Some(task) = self.develop_picks_instead() {
+                return task;
+            }
             self.status.text = DEVELOP_GUIDANCE.into();
             return Task::none();
         };
@@ -897,6 +900,22 @@ impl Editor {
         self.develop.state.entering = true;
         self.status.text = "Reading the catalog folder for Develop\u{2026}".into();
         self.read_strip_task(folder)
+    }
+
+    /// With nothing for Develop to show, the picks in a view of files go through Develop N as its
+    /// button does: its confirmation opens, or closes when it is open. `None` without picks.
+    fn develop_picks_instead(&mut self) -> Option<Task<Message>> {
+        let picks = self.select.state.summary.as_ref()?.picked;
+        if !self.select_shown() || self.select.state.over_catalog() || picks == 0 {
+            return None;
+        }
+        Some(if self.develop.state.confirm.is_some() {
+            self.develop_update(DevelopMessage::Cancel)
+        } else if self.develop.state.planning {
+            Task::none()
+        } else {
+            self.develop_open()
+        })
     }
 
     /// Develop shown on the strip as it is: on the open photograph when it is in it, otherwise on

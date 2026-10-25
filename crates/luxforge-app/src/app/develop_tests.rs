@@ -1333,6 +1333,27 @@ fn develop_without_a_folder_stays_in_select_and_explains_the_choice() {
     finish(scene);
 }
 
+/// With nothing for Develop to show, `D` over picks in view is Develop N's button: it opens the
+/// confirmation on their plan, and while that is open it closes it, developing nothing.
+#[test]
+fn develop_without_a_folder_develops_the_picks_in_view() {
+    let mut scene = scene("no-folder-picks");
+    let picked = scene.files[..2].to_vec();
+    pick(&mut scene, &picked);
+    let editor = &mut scene.editor;
+    let message = key(editor, Key::Character("d".into()), Modifiers::empty()).expect("D acts");
+    let _ = editor.update(message);
+    assert!(editor.select_shown());
+    answer_plan(editor);
+    let model = editor.workspace.develop.confirm.clone().expect("open");
+    assert_eq!(model.title, "Develop 2 picks");
+    let message = key(editor, Key::Character("d".into()), Modifiers::empty()).expect("D acts");
+    let _ = editor.update(message);
+    assert!(editor.develop.state.confirm.is_none());
+    assert_eq!(editor.status.text, "Nothing developed");
+    finish(scene);
+}
+
 /// A catalog folder viewed in Select is the Develop folder, and browsing files or another catalog
 /// view keeps it. `D` reads it through a client of its own, leaving Select's session as it was: an
 /// empty folder keeps Select shown and says so; a folder holding the open photograph opens Develop

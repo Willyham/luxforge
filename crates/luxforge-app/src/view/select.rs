@@ -12,7 +12,7 @@ use crate::{
         loupe::LoupeImages,
         message::{
             Message, loupe::LoupeMessage, select::SelectMessage, select_merge::MergeMessage,
-            view::ViewMessage,
+            settings::SettingsMessage, view::ViewMessage,
         },
         select_previews::GridImages,
     },
@@ -116,6 +116,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         &select.title,
         &model.develop,
         &model.copy_settings,
+        model.settings.open.is_some(),
     ))
     .width(Length::Fill)
     .height(Length::Fixed(TITLE_BAR_HEIGHT))
@@ -245,6 +246,11 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         Some(sheet) => stack![screen, sheet].into(),
         None => screen,
     };
+    // Settings is the application's, so it opens over Select as over Develop.
+    let screen = match crate::view::settings::settings(&model.settings) {
+        Some(sheet) => stack![screen, sheet].into(),
+        None => screen,
+    };
     // The Select introduction, modal over everything; it waits for the other sheets to close.
     match &model.select_introduction {
         Some(introduction) => stack![
@@ -259,11 +265,12 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
 // -- Title bar -------------------------------------------------------------------------------------
 
 /// The switch, the view's name and summary; Add a folder…, Undo and Redo of library changes, the
-/// ? that shows the Select introduction again, Develop N and the two panel toggles.
+/// ? that shows the Select introduction again, Develop N, the two panel toggles and Settings.
 fn title_bar<'a>(
     model: &'a SelectTitle,
     develop: &'a crate::state::develop::DevelopModel,
     copying: &'a crate::state::copy_settings::CopyModel,
+    settings_open: bool,
 ) -> Element<'a, Message> {
     let identity = row![
         switch(Shown::Select, develop.can_enter),
@@ -360,6 +367,15 @@ fn title_bar<'a>(
             "Toggle the Info panel (Tab)",
             model.info_open,
             SelectPanel::Info,
+        ),
+        title_bar_icon_button(
+            &IconButtonModel {
+                icon: Icon::Settings,
+                tooltip: crate::state::title::SETTINGS_TOOLTIP.into(),
+                enabled: true,
+                selected: settings_open,
+            },
+            Some(Message::Settings(SettingsMessage::Toggle)),
         ),
     ]
     .spacing(theme::TITLE_ACTION_SPACING)
