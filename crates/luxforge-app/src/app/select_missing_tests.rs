@@ -587,7 +587,12 @@ fn resolve_missing_from_the_desktop_is_the_apis() {
     let deleted = scene.asset("DSC_0004.jpg");
     locate(&mut scene.editor, &deleted, "DSC_0004.jpg", &scene.rescued);
     let client = &scene.client;
-    assert_eq!(client.locator(&deleted), scene.rescued);
+    assert_eq!(
+        client.locator(&deleted),
+        scene.rescued,
+        "{}",
+        scene.editor.status.text
+    );
     let changes = client.journal()["changes"].as_array().unwrap().clone();
     assert_eq!(changes.last().unwrap()["method"], "source.locate");
     assert!(scene.editor.select.state.missing.row(&deleted).is_none());

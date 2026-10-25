@@ -1427,7 +1427,8 @@ fn the_exact_phase_publishes_its_progress_until_it_ends() {
 
 /// The exact phase's meter wakes the consumer only once the phase has run
 /// [`super::worker::PROGRESS_QUIET`], and then at most once per interval however many batches
-/// finish; before the phase starts it wakes nothing.
+/// finish; before the phase starts it wakes nothing. The meter reads the test's own clock, so a
+/// descheduled test thread cannot move a batch into the next interval.
 #[test]
 fn the_exact_meter_wakes_the_consumer_only_after_the_quiet_interval() {
     use std::sync::{
@@ -1439,19 +1440,22 @@ fn the_exact_meter_wakes_the_consumer_only_after_the_quiet_interval() {
     let waker: crate::latest::Wake = Arc::new(move || {
         counted.fetch_add(1, Ordering::Relaxed);
     });
-    let meter_for = |phase: Option<Instant>| {
+    let epoch = Instant::now();
+    let meter_for = |phase: Option<Duration>, now: Duration| {
         let started = Arc::new(OnceLock::new());
         if let Some(phase) = phase {
-            let _ = started.set(phase);
+            let _ = started.set(epoch + phase);
         }
-        let meter = super::worker::exact_meter(None, Some(waker.clone()), started);
+        let meter =
+            super::worker::exact_meter(None, Some(waker.clone()), started, move || epoch + now);
         meter.plan(8);
         meter
     };
+    let at = Duration::from_secs(1);
 
-    let unstarted = meter_for(None);
+    let unstarted = meter_for(None, at);
     unstarted.advance(1);
-    let fresh = meter_for(Some(Instant::now()));
+    let fresh = meter_for(Some(at), at);
     fresh.advance(1);
     assert_eq!(
         wakes.load(Ordering::Relaxed),
@@ -1459,7 +1463,7 @@ fn the_exact_meter_wakes_the_consumer_only_after_the_quiet_interval() {
         "before the quiet interval"
     );
 
-    let long = meter_for(Instant::now().checked_sub(Duration::from_secs(1)));
+    let long = meter_for(Some(Duration::ZERO), at);
     for _ in 0..4 {
         long.advance(1);
     }

@@ -32,10 +32,12 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// The progress meter of one job's exact phase: it reports each finished tile's fraction to the
 /// job's activity and, once the phase has run [`PROGRESS_QUIET`], wakes the consumer at most once
 /// per [`PROGRESS_INTERVAL`]. It wakes nothing before `phase` is set, when the exact phase starts.
+/// `clock` is the time it reads: `Instant::now`, or a test's own.
 pub(super) fn exact_meter(
     activity: Option<&Activity>,
     waker: Option<crate::latest::Wake>,
     phase: Arc<OnceLock<Instant>>,
+    clock: impl Fn() -> Instant + Send + Sync + 'static,
 ) -> RenderProgress {
     let report = activity.map(Activity::reporter);
     // Milliseconds into the phase of the last wake, plus one, so zero means none yet.
@@ -47,7 +49,7 @@ pub(super) fn exact_meter(
         let Some(started) = phase.get() else {
             return;
         };
-        let elapsed = started.elapsed();
+        let elapsed = clock().saturating_duration_since(*started);
         if elapsed < PROGRESS_QUIET {
             return;
         }
@@ -103,8 +105,14 @@ pub(super) fn run(
     // The exact phase reports its spatial tiles on its own token. An interactive job has no exact
     // phase, and its full-resolution compilation reads the proxy phase's token.
     let phase = Arc::new(OnceLock::new());
-    let meter = (job.intent != PreviewIntent::Interactive)
-        .then(|| exact_meter(activity.as_ref(), running.waker(), phase.clone()));
+    let meter = (job.intent != PreviewIntent::Interactive).then(|| {
+        exact_meter(
+            activity.as_ref(),
+            running.waker(),
+            phase.clone(),
+            Instant::now,
+        )
+    });
     let metered: Cancel;
     let full_cancel = match &meter {
         None => proxy_cancel,
