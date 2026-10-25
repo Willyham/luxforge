@@ -144,7 +144,10 @@ impl<'a> RemoveImages<'a> {
 pub(crate) struct RemoveCanvas<'a> {
     pub(crate) selection: Option<&'a [[f64; 2]]>,
     pub(crate) live: Option<&'a [[f64; 2]]>,
+    /// The painted selection's radius, which a size change since does not move.
     pub(crate) radius: f64,
+    /// The stroke being painted's radius: the band's Size now, not the selection's.
+    pub(crate) live_radius: f64,
     /// A generation runs: its fraction, when it reports one.
     pub(crate) progress: Option<Option<f64>>,
     /// A candidate is shown in the photograph, so the selection is neither tinted nor outlined.
@@ -1349,6 +1352,7 @@ impl Editor {
                 .as_ref()
                 .map(|(_, points)| points.as_slice()),
             radius: selection.map_or_else(|| self.remove_radius(), |selection| selection.radius),
+            live_radius: self.remove_radius(),
             progress: self.remove.running_on(asset).map(|job| job.fraction),
             shown,
         })

@@ -1393,3 +1393,28 @@ fn a_selection_too_large_to_fill_is_refused_in_a_plain_line() {
     assert_eq!(notice.code, "resource-limit");
     assert_eq!(notice.text, error.message);
 }
+
+/// A stroke painted after the brush was resized is drawn at the new size, while the selection
+/// already painted keeps the size it was painted at.
+#[test]
+#[slow]
+fn a_stroke_over_a_selection_is_drawn_at_the_brush_size_now() {
+    let mut filling = Filling::opened();
+    filling.ready();
+    filling.paint();
+    let painted = filling.editor.remove_canvas().unwrap().radius;
+    filling.update(Message::Corrections(CorrectionMessage::Nudge {
+        feather: false,
+        up: false,
+    }));
+    filling.content_press([0.4, 0.7]);
+    filling.update(Message::Corrections(CorrectionMessage::Drag {
+        view: (500.0, 700.0),
+        content: [0.5, 0.7],
+    }));
+    let canvas = filling.editor.remove_canvas().unwrap();
+    assert!(canvas.live.is_some(), "a stroke is being painted");
+    assert_eq!(canvas.radius, painted, "the selection keeps its size");
+    assert_eq!(canvas.live_radius, filling.editor.remove_radius());
+    assert!(canvas.live_radius < painted, "the brush was made smaller");
+}

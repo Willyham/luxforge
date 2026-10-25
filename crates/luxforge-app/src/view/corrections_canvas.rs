@@ -600,7 +600,7 @@ impl CorrectionsCanvas<'_> {
             painted_selection(
                 frame,
                 &self.placement,
-                (points, remove.radius),
+                (points, remove.live_radius),
                 true,
                 false,
                 traces,
@@ -959,6 +959,7 @@ mod tests {
             selection: None,
             live,
             radius: 0.05,
+            live_radius: 0.05,
             progress: None,
             shown: false,
         };
