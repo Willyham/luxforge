@@ -58,11 +58,21 @@ pub fn usage(root: &Path, pid: u32) -> Result<(f64, f64)> {
     let raw = output(root, "ps", &["-o", "time=,rss=", "-p", &pid.to_string()])?;
     let fields: Vec<_> = raw.split_whitespace().collect();
     ensure(fields.len() == 2, "Missing ps measurements")?;
-    let (min, sec) = fields[0].split_once(':').ok_or("Unexpected ps CPU time")?;
-    Ok((
-        min.parse::<f64>()? * 60.0 + sec.parse::<f64>()?,
-        fields[1].parse::<f64>()? / 1024.0,
-    ))
+    Ok((cpu_seconds(fields[0])?, fields[1].parse::<f64>()? / 1024.0))
+}
+
+/// `ps`'s CPU time in seconds: macOS writes `MM:SS.ss`, procps `[DD-]HH:MM:SS`.
+fn cpu_seconds(time: &str) -> Result<f64> {
+    let (days, clock) = match time.split_once('-') {
+        Some((days, clock)) => (days.parse::<f64>()?, clock),
+        None => (0.0, time),
+    };
+    ensure(clock.contains(':'), "Unexpected ps CPU time")?;
+    let mut seconds = 0.0;
+    for part in clock.split(':') {
+        seconds = seconds * 60.0 + part.parse::<f64>()?;
+    }
+    Ok(days * 86_400.0 + seconds)
 }
 
 /// A running child, watched for its own resource usage. Every timing tool's RSS-sampling loop reads
@@ -197,6 +207,14 @@ mod tests {
         assert!(distribution(&report, "b").is_none());
         assert!(distribution(&report, "c").is_none());
         assert!(rows(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn ps_cpu_time_reads_in_both_hosts_formats() {
+        assert_eq!(cpu_seconds("1:02.50").unwrap(), 62.5);
+        assert_eq!(cpu_seconds("01:02:03").unwrap(), 3723.0);
+        assert_eq!(cpu_seconds("2-00:00:01").unwrap(), 172_801.0);
+        assert!(cpu_seconds("12").is_err());
     }
 
     #[test]

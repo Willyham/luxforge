@@ -68,6 +68,7 @@ mod minimap_smoke;
 mod mixer_smoke;
 mod module_check;
 mod module_layout_smoke;
+mod module_measure;
 mod module_package;
 mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
@@ -938,6 +939,44 @@ fn main_result() -> Result {
                     rounds,
                     binary,
                     natural,
+                    only,
+                },
+            )?;
+        }
+        "module-measure" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let binary = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let fixtures = a.value("--fixtures")?.map_or_else(
+                || root.join("fixtures/generated"),
+                |dir| absolute(&root, Path::new(&dir)),
+            );
+            let launches = a
+                .value("--launches")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(5);
+            let samples = samples(&mut a, 30)?;
+            let only = a
+                .value("--only")?
+                .map(|steps| module_measure::parse_only(&steps.to_string_lossy()))
+                .transpose()?;
+            if a.flag("--editor-software-adapter") {
+                launch::draw_on_a_software_adapter();
+            }
+            a.done()?;
+            // Timing runs never overlap, whether they were started by `verify` or by hand.
+            let _gate = launch::TimingGate::acquire()?;
+            module_measure::run(
+                &root,
+                &out,
+                module_measure::Options {
+                    binary,
+                    fixtures,
+                    launches,
+                    samples,
                     only,
                 },
             )?;

@@ -383,7 +383,7 @@ pub(crate) mod gpu {
 
     /// The adapter a check runs on: the first hardware adapter of the primary backends, else the
     /// first software one.
-    fn adapter() -> Option<luxforge_gpu::adapters::Adapter> {
+    pub(crate) fn adapter() -> Option<luxforge_gpu::adapters::Adapter> {
         let mut adapters = luxforge_gpu::adapters::enumerate(wgpu::Backends::PRIMARY);
         adapters.sort_by_key(|adapter| adapter.device_type == "Cpu");
         adapters.into_iter().next()
