@@ -2,7 +2,7 @@
 
 How to write, package and check an external adjustment module: a sandboxed WebAssembly component with its own WGSL program, installed from a `.lfmodule` package. The contract is the [module manager design](../design/module-manager.md#phase-2-external-adjustment-modules); this guide is the workflow. The example, [`examples/modules/split-toning`](../../examples/modules/split-toning), is a complete module to copy.
 
-Installing a package and the panel it draws arrive with the rest of phase 2. Today a module can be written, built, packaged, checked and held to its component, and a package reads through the core's package reader exactly as installing it will.
+A module is written, built, packaged and checked here, then installed through Settings › Modules ([installing](#installing)). The whole path has been run on Linux only; nothing of it has been run on the M4.
 
 ## What a module is
 
@@ -63,3 +63,7 @@ tools/cargo-cached xtask module-check target/evidence/split-toning.lfmodule [--j
 5. **GPU**: the program alone, in the host's probe harness on the local adapter (the first hardware adapter of Vulkan, Metal or DirectX 12), over the same patches and value sets, against the reference by the pointwise class's limits. It is reported, not gated: outside the limits, the command names the cells and says that the host would render through the reference. Without an adapter it says it did not measure.
 
 `module-check` reports; it does not qualify a module. The host checks a package again when it is installed and probes its program at first use on the person's adapter, as this step runs it, keeping the module on its reference until the probe passes.
+
+## Installing
+
+In the desktop, Settings › Modules › **Install module…** opens the package's review sheet, and **Install** stores it; the module joins Adjustments when Luxforge relaunches. Programs install with `module.install {path}` and relaunch the same way ([lifecycle](../design/module-manager.md#lifecycle)). While developing, turn on developer mode and use **Load from folder…** on the module's directory to load it without packaging; it is never written, and is read again at each launch. The Modules tab's detail shows whether the program draws on the GPU or the module renders through its CPU reference, with the reason. The `external-module` smoke scenario ([commands](development.md#commands)) runs this path end to end on the example.

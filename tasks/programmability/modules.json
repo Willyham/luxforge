@@ -346,7 +346,7 @@
     {
       "id": "TASK-006",
       "description": "The luxforge-wasm crate: a pinned Wasmtime host that instantiates an adjustment component with no imports, bounded memory, epoch deadlines, deterministic floats and a compiled-code cache, and provides a ToolModule per package to the one registry assembly.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -409,7 +409,7 @@
     {
       "id": "TASK-007",
       "description": "External GPU programs: load program.wgsl as a Colour program at runtime, validate it with naga under the surface prelude, give its names a unique prefix, and enable it only after a bounded first-use probe against the reference within the colour class's tolerance, cached per package hash and adapter.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
@@ -460,7 +460,7 @@
     {
       "id": "TASK-008",
       "description": "Authoring: the luxforge-module-sdk guest crate with its native-versus-Wasmtime identity harness, cargo xtask module-package and module-check, and the Split toning example in examples/modules/split-toning as a separate Cargo project.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -507,7 +507,7 @@
     {
       "id": "TASK-009",
       "description": "Install store and lifecycle API: modules.json and the per-version store under the data root, module.package.inspect, module.install, module.uninstall, module.folder.load and module.folder.remove in developer mode, load states in module.status, the module.installed event, and assembly of installed modules in the desktop and luxforge-json at launch.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-006"
@@ -563,7 +563,7 @@
     {
       "id": "TASK-010",
       "description": "Desktop for external modules: Install module… with the system file picker and the review sheet from module.package.inspect, Community and From folder rows in Settings › Modules with Relaunch to apply, Didn't load and Uninstall…, the Community badge on a band, and the Not installed and Didn't load bands.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-009"
@@ -618,7 +618,7 @@
     {
       "id": "TASK-011",
       "description": "The external-module proof: the background external-module journey from an empty data root (inspect, install, relaunch, edit by desktop and API, GPU against reference, export, off, uninstall, refusal, reinstall), and the designs, feature status and user guide updated.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-007",
         "TASK-008",
@@ -627,7 +627,8 @@
       "extra_context": [
         "The journey uses the Split toning package built by module-package and makes no host source change for it; that is the success criterion the owner set: a separately authored module loads and exposes its actions through the common APIs.",
         "It checks module.list, schema.list, edit.set-split-toning, a preset and a copy-settings paste carrying it, an MCP tool call, the original's bytes unchanged, an export identical after reinstall, and correlated captures and logs.",
-        "Update modules-and-api.md, architecture.md (the extension path), features.md, user-guide.md and the design's status; mark the product decision on the first external module as delivered in the decisions."
+        "Update modules-and-api.md, architecture.md (the extension path), features.md, user-guide.md and the design's status; mark the product decision on the first external module as delivered in the decisions.",
+        "The Linux part passes: the journey runs in the background under Xvfb with llvmpipe, and the shared docs describe phase 2 within that evidence. The M4 run of the journey and of the rendered tier remains."
       ],
       "context_links": [
         {

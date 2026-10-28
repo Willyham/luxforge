@@ -234,6 +234,21 @@ You choose which modules the workspace offers and in what order. This changes on
 
 The layout is yours, stored with your preferences outside every catalog, and only what you changed is stored. Agents and scripts read it with `module.layout.read` and change it with `module.enable`, `module.disable`, `module.order.set {toolset, order}` (the whole order) and `module.layout.reset {toolset?}`; `module.list` gives each module's home, lock, placements and switch. A change from another client reaches the workspace and an open Settings sheet at once.
 
+### Installing a module
+
+Modules that other people write add an adjustment section to the tools panel. Each comes as a `.lfmodule` package file that you choose: there is no library to browse. Luxforge hasn't reviewed community modules. Each runs sandboxed, with no network or file access, and can only compute colours.
+
+- **Install module…** in Settings › Modules opens a file picker for `.lfmodule` files. The stale-preview notice of a photo whose module is missing offers it too.
+- **The review sheet** asks `Install Split toning 0.1.0?` and shows what the package adds (a section in Adjustments, last), where it renders, its GPU program, Network and Files (None), author, licence, source, version, the API methods it adds and the package hash. **Install** (or Return) stores it; Cancel or Escape closes the sheet. A package Luxforge can't install says why, word for word. A newer or older version of an installed module offers **Replace**, and a red **Replace anyway** when its edits are stored differently.
+- **Relaunch to apply.** Installing, replacing or uninstalling takes effect when Luxforge relaunches. The row is marked **Relaunch to apply**, a line under the header counts the pending changes, and **Relaunch** beside it quits and reopens on the same photo. Closing Settings keeps the change for the next launch.
+- **Badges.** An installed module's row and section carry **Community**. A module loaded from a folder in developer mode carries **From folder**: **Load from folder…** in the header loads it without a package, and **Remove** unloads it. A module that couldn't be read is marked **Didn't load** in red, with the reason and **Copy error**.
+- **Uninstall…** on the module's detail asks first. Its red **Uninstall** removes it at the next launch. Photos that use it keep their edits, but can't be previewed or exported with them until it is installed again.
+- **Not installed and Didn't load.** A photo with an edit from a module that isn't installed shows a red **Not installed** band, titled with the module's identity, after the other sections. A module that is installed but failed to load shows **Didn't load** with the reason. The edit is kept, the preview notice offers Install module…, and export refuses and says why in the status bar. Installing the module again restores the picture exactly.
+- **GPU program or CPU reference.** Every module carries a CPU reference that defines its result. Its GPU program is checked against that reference the first time the module is used on your graphics adapter, and is used only if it matches. The module's detail says which renders it: *GPU program, drawing on* your adapter; *being checked*; or the CPU reference, with the reason, which is correct but slower.
+- **Off** works as for any module: it stays installed, and its photos render and export unchanged.
+
+Agents and scripts use `module.package.inspect {path}`, `module.install {path}`, `module.uninstall {module}` and `module.package.list`, and in developer mode `module.folder.load {path}` and `module.folder.remove {module}`. An installed module's controls are ordinary edit actions, such as `edit.set-split-toning`, listed by `module.list` and `schema.list`, and work in presets, copy and paste settings and MCP. To write a module, see the [authoring guide](engineering/module-authoring.md).
+
 ### Settings and experiments
 
 A storage error after publication can leave a preference, module setting, theme, resource or export preset visibly changed. The editor refreshes the stored state and keeps the error visible; it does not claim that the change is durable.

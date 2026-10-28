@@ -116,7 +116,7 @@ For the [shared module capabilities](design/module-capabilities.md), each a defa
 
 ## Programmable operations and modules
 
-Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. Modules are linked, with cheap registration and lazy resources. Real external loading is required later, and a missing or disabled provider must never silently erase edits or produce an incomplete export. The first external use case, runtime, trust and UI contribution are decided under [module manager](#module-manager). See [modules](design/modules-and-api.md).
+Every operation is programmable, including future tools, masks, clone strokes, settings and module lifecycle. The core owns recipe transactions, history, invariants and bounded services; tool modules own parameters, validation, controls and algorithms through those APIs. Modules are linked, with cheap registration and lazy resources. External loading is required, and a missing or disabled provider must never silently erase edits or produce an incomplete export. The first external use case, runtime, trust and UI contribution are decided under [module manager](#module-manager), and external adjustment modules are delivered there. See [modules](design/modules-and-api.md).
 
 ## Owner workflow priorities
 
@@ -614,4 +614,4 @@ For the [module manager](design/module-manager.md) ([implementation plan](../tas
 - **No community index yet.** Modules install from a package file, and in developer mode load from a folder. Modules are free; there are no paid modules or accounts.
 - **The SDK is permissively licensed** (decided 2026-10-28). `luxforge-module-sdk` and the example module are MIT OR Apache-2.0, so a module built on the SDK chooses its own licence; the host crates, `luxforge-wasm` included, stay GPL-3.0-or-later.
 
-The design's other choices are recorded defaults the owner can revise. Implementation is not authorized.
+The design's other choices are recorded defaults the owner can revise. The owner authorized implementation. The first external module is delivered within its evidence, which is Linux only, under Xvfb: the Split toning example, packaged separately with no host source change, installs from its package. It exposes `edit.set-split-toning` through `module.list`, `schema.list`, presets, copy settings and MCP, and renders on the GPU within the colour class of its reference. Its M4 run is open.

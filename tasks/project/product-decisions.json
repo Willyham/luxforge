@@ -66,8 +66,8 @@
       "extra_context": [
         "External module loading remains required, but the use case, runtime and user-facing lifecycle need a concrete decision.",
         "The linked tool-module milestone is already selected and does not wait on external packaging or a marketplace.",
-        "GPU-first changes the processing-tool host boundary: a new image effect needs a CPU reference unit with exact fixtures and a module-owned WGSL program held within the declared tolerance by gpu-qualification. Without a GPU program the stack uses the named no-program reference fallback, including export; missing or disabled providers must still report affected edits rather than omit them. External GPU loading remains unimplemented and is not implied by the built-in program interface.",
-        "Decided by the owner on 2026-10-25 and recorded in docs/decisions.md (Module manager) and docs/design/module-manager.md: an adjustment-section module as WebAssembly plus WGSL, installed from a package file with no index, applied at the next launch, with off modules still rendering and uninstalled ones refusing export with their edits kept."
+        "GPU-first changes the processing-tool host boundary: a new image effect needs a CPU reference unit with exact fixtures and a module-owned WGSL program held within the declared tolerance by gpu-qualification. Without a GPU program the stack uses the named no-program reference fallback, including export; missing or disabled providers must still report affected edits rather than omit them. External adjustment modules load their own WGSL program, probed against their reference at first use.",
+        "Decided by the owner on 2026-10-25 and recorded in docs/decisions.md (Module manager) and docs/design/module-manager.md: an adjustment-section module as WebAssembly plus WGSL, installed from a package file with no index, applied at the next launch, with off modules still rendering and uninstalled ones refusing export with their edits kept. The first external module, the Split toning example, is delivered within Linux evidence; its M4 run is open."
       ],
       "context_links": [
         {

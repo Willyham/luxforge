@@ -41,6 +41,8 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 The [MCP adapter](../tasks/programmability/mcp.json) ([design](design/mcp.md)) is implemented and verified on Linux: the registry markers, client identity, `luxforge-mcp` with both profiles, headless mode and pictures, packaging and Settings › Agents. TASK-009's `mcp` journey passes under Xvfb on Linux; its M4 run remains. TASK-011, qualification with real clients on the owner's M4 against a packaged build, follows it and needs the owner's session.
 
+The [module manager](../tasks/programmability/modules.json) ([design](design/module-manager.md)) is implemented: phase 1's layout and phase 2's external adjustment modules, with the engine, GPU programs, the install store and lifecycle, the desktop and authoring. TASK-011's `external-module` journey passes in the background on Linux under Xvfb; its M4 run remains, then TASK-012, the M4 measurement.
+
 [Auto tone](../tasks/editing/auto-tone.json) is implemented and qualified on the owner's M4: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. TASK-008, the owner's Lightroom exports and review, remains.
 
 [AI tools in the Develop workspace](../tasks/editing/ai-tools-workspace.json) ([design](design/ai-tools-workspace.md)): module setups with one sheet per tool, Remove (painting), the Corrections **Object** kind and Masks › Object, with object picking behind `ai.analysis`, are implemented over the developer fakes and pass their smoke scenarios on Linux under Xvfb (TASK-001 to TASK-005). TASK-006, a network setup of Remove's model with the published conditioning from an empty data root and one generation, is done on the M4. TASK-007, native qualification with the pinned segmenter and klein, has run on the M4: hover, object selection and the combined residency are within budget; open are the analysis-ready budgets (missed at 24 and 60 MP), a direct pointer-to-drawn-overlay measurement, removal of the corpus road, and a native rerun of the remove-kayaks and remove-bridge journeys after the small-object fixes (the half-peak removal core and the box probe for a point whose answer surrounds it), which confirms whether the kayaks are now removed.
@@ -196,9 +198,10 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 - Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
 - `managed-storage` when a module first needs it; `local-runtime` is defined by the [AI editing](design/ai-editing.md) proposal as its first consumer
 
-**Module manager** ([design](design/module-manager.md), [plan](../tasks/programmability/modules.json)). Authorized; phase 1 is delivered, with its M4 run outstanding.
-- Phase 1 on the M4: the `module-layout` scenario has run only on Linux under Xvfb
-- Phase 2: separately authored adjustment modules as sandboxed WebAssembly with a WGSL program qualified against their reference at first use, installed from a package file at the next launch, with the SDK, the Split toning example as the loader proof, the background journey and the activation, idle and reference-cost measurements
+**Module manager** ([design](design/module-manager.md), [plan](../tasks/programmability/modules.json)). Phases 1 and 2 are implemented and verified on Linux under Xvfb; nothing has run on the M4.
+- Both phases on the M4: the `module-layout` and `external-module` scenarios have run only on Linux
+- The activation, idle, first-use and reference-cost measurements on the M4, after the M4 run
+- The deployed usage ingest taking the `external` tool before clients report it
 - Later, not planned: a community library to browse and publish, external canvas tools, mask and correction kinds, capabilities for external modules and live loading
 
 ## Inspection
