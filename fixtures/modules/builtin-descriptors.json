@@ -7756,10 +7756,12 @@
         "optional": {},
         "parameters": [],
         "patch": false,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.reset-lens-profile": {
@@ -8349,10 +8351,12 @@
           }
         ],
         "patch": true,
+        "read_only": false,
         "required": [
           "asset_id",
           "mutation"
         ],
+        "reversible": true,
         "revision_of": "asset"
       },
       "edit.set-look": {
