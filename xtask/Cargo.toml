@@ -38,6 +38,10 @@ luxforge-update = { path = "../crates/luxforge-update" }
 # `wgpu` (`luxforge-gpu`'s `external_program`, adapter choice and device).
 luxforge-module-sdk = { path = "../crates/luxforge-module-sdk", features = ["host"] }
 luxforge-gpu = { path = "../crates/luxforge-gpu" }
+# `module-measure`: the module engine as the desktop loads and probes with it, and the demangled
+# symbol paths that attribute the editor binary's text to Wasmtime's packages.
+luxforge-wasm = { path = "../crates/luxforge-wasm" }
+rustc-demangle = "=0.1.28"
 wgpu.workspace = true
 sha2.workspace = true
 tempfile = "=3.27.0"
