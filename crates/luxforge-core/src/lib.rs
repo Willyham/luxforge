@@ -155,12 +155,12 @@ pub use modules::{
     ORIENTATION_EFFECT, OperationIdentity, OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
     PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
-    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
-    RepairInput, RepairTable, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
-    SettingsOrigin, SourceFit, SpatialOperation, Stage, StageContext, StageQuestions,
-    StaleCorrection, StaleReason, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, basic_response, check_parameters,
-    check_value, controls_module, current_effect_format, fit_correction_source,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, RefusedExternal, Region,
+    RegistryOptions, RepairInput, RepairTable, Resample, ResetAction, ResolvedControl,
+    ResolvedReset, SamplingScale, SettingsOrigin, SourceFit, SpatialOperation, Stage, StageContext,
+    StageQuestions, StaleCorrection, StaleReason, TaskControl, ToggleControl, ToolModule,
+    VIGNETTE_EFFECT, ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, basic_response,
+    check_parameters, check_value, controls_module, current_effect_format, fit_correction_source,
     gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
     palette_bytes, resolve_control, resolve_group_reset, slider_response,
     temperature_tint_from_gains,
@@ -229,7 +229,7 @@ pub use previews::{DecodedPreview, decode_preview};
 /// through (`docs/design/module-manager.md#contract`). The core runs no WebAssembly.
 pub mod module_package {
     pub use crate::modules::{
-        AdjustmentUnits, COMPONENT_FILE, FieldEntry, FieldValue, MANIFEST_FILE,
+        AdjustmentUnits, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue, MANIFEST_FILE,
         MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
         ManifestEffect, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE,
         PackageRefusal,

@@ -59,6 +59,12 @@ impl Paths {
         self.data.join("modules").join("resources")
     }
 
+    /// Where external modules' compiled code is cached, by package hash and engine: disposable,
+    /// rebuilt from the installed packages when removed.
+    pub fn module_code_cache(&self) -> PathBuf {
+        self.data.join("modules").join("compiled")
+    }
+
     /// Where the local model runtime keeps what it compiles, such as Core ML's compiled models.
     pub fn inference_cache(&self) -> PathBuf {
         self.data.join("inference")
@@ -87,6 +93,10 @@ mod tests {
         assert_eq!(paths.data, root.join("data"));
         assert_eq!(paths.logs, root.join("logs"));
         assert_eq!(paths.module_config(), root.join("config").join("modules"));
+        assert_eq!(
+            paths.module_code_cache(),
+            root.join("data").join("modules").join("compiled")
+        );
         assert_eq!(
             paths.module_resources(),
             root.join("data").join("modules").join("resources")

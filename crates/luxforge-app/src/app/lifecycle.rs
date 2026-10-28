@@ -171,7 +171,12 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         .ok_or("no usable application data directory; pass --data-root")?
         .path
         .clone();
-    let registry = Arc::new(ModuleRegistry::assemble(&config.registry_options())?);
+    // Installed packages are not read yet: the module store passes them here.
+    let external = luxforge_cli::external_modules(config.paths.as_ref(), &[]);
+    let registry = Arc::new(ModuleRegistry::assemble(&luxforge_core::RegistryOptions {
+        external: &external,
+        ..config.registry_options()
+    })?);
     // The launch's one GPU tile worker, refused with the GPU stage: the owner's export lane
     // streams through it, and the renderer report names it the window's adapter once known.
     let tiles = super::gpu_tiles::launch(launch);

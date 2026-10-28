@@ -866,6 +866,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             disabled: &disabled,
             developer,
             proof_endpoint,
+            external: &[],
         })
     };
     let ids = |registry: &ModuleRegistry| {
@@ -1184,6 +1185,7 @@ fn current_effect_formats_match_the_builtin_descriptors() {
         disabled: &[],
         developer: true,
         proof_endpoint: None,
+        external: &[],
     })
     .expect("the developer registry");
     let mut checked = 0;

@@ -1,0 +1,43 @@
+[package]
+name = "luxforge-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The engine behind external adjustment modules (`docs/design/module-manager.md#contract`): Wasmtime
+# with the component model, the bindings of `wit/adjustment.wit`, bounded per-worker instances,
+# epoch deadlines and the compiled-code cache. It hands the registry assembly one
+# `luxforge_core::module_package::ExternalModule` per installed package; the core names no engine.
+[dependencies]
+luxforge-core = { path = "../luxforge-core" }
+wasmtime.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+# Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
+[dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
+luxforge-testbase = { path = "../luxforge-testbase" }
+luxforge-testkit = { path = "../luxforge-testkit" }
+# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
+# `test-skip-disk-flush`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"] }
+# The tests' components: hand-written core modules in WAT, wrapped into components of
+# `wit/adjustment.wit` (and of worlds that break it) by `wit-component`, from the wasm-tools
+# release Wasmtime 47 is built on (0.252), so the tests add no second parser or encoder family.
+wat = "=1.252.0"
+wit-component = "=0.252.0"
+wit-parser = "=0.252.0"
+
+# `unsafe` is allowed by name on one function only, beside its `SAFETY:` comment: loading compiled
+# code from the cache (`cache.rs`), which Wasmtime can only do unsafely because the bytes become
+# machine code. The crate denies `unsafe` everywhere else, and the rest of the workspace keeps its
+# forbid(unsafe_code) policy.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

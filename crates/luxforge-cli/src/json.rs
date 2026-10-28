@@ -91,13 +91,16 @@ fn run() -> Result<(), (String, String)> {
         }
     }
     let catalog = catalog.ok_or_else(|| startup("--catalog is required"))?;
+    let paths = Paths::resolve(data_root.as_ref());
+    // Installed packages are not read yet: the module store passes them here.
+    let external = luxforge_cli::external_modules(paths.as_ref(), &[]);
     let registry = ModuleRegistry::assemble(&RegistryOptions {
         disabled: &[],
         developer,
         proof_endpoint: proof_endpoint.as_deref(),
+        external: &external,
     })
     .map_err(|error| startup(&error))?;
-    let paths = Paths::resolve(data_root.as_ref());
     let secrets: Arc<dyn SecretStore> = if memory_secrets {
         Arc::new(MemorySecretStore::new())
     } else {

@@ -20,7 +20,7 @@ mod manifest;
 #[cfg(test)]
 mod tests;
 
-pub use external::{AdjustmentUnits, FieldEntry, FieldValue};
+pub use external::{AdjustmentUnits, ExternalModule, FieldEntry, FieldValue};
 pub use manifest::{ManifestEffect, ModuleManifest};
 
 use crate::Error;

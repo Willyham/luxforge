@@ -8,6 +8,8 @@
 mod compile;
 #[cfg(test)]
 mod compile_tests;
+#[cfg(test)]
+mod external_tests;
 mod lookups;
 #[cfg(test)]
 mod lookups_tests;
@@ -29,9 +31,10 @@ pub(crate) use variants::{Superseded, superseded_in, superseded_refusal_in};
 
 use super::{
     BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule,
-    CorrectionsModule, CropModule, CurveModule, DetailModule, LensModule, LookModule, MixerModule,
-    ModelsProofModule, ModuleDescriptor, PerspectiveModule, PresenceModule, PresetsModule,
-    RawModule, SelectionProofModule, ToolModule, VignetteModule, ai::AiModule, controls_module,
+    CorrectionsModule, CropModule, CurveModule, DetailModule, ExternalModule, LensModule,
+    LookModule, MixerModule, ModelsProofModule, ModuleDescriptor, PerspectiveModule,
+    PresenceModule, PresetsModule, RawModule, SelectionProofModule, ToolModule, VignetteModule,
+    ai::AiModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -50,7 +53,7 @@ use std::{
 /// look's section sits above Basic's while its layer follows Basic's. The three proofs are test
 /// modules — their descriptors declare `developer` — so only a `developer` run gets them; AI editing also serves
 /// the developer models in one. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
-/// own starts from them too. External loading is a later, separately measured step.
+/// own starts from them too. External modules register after these ([`RegistryOptions::external`]).
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
     let linked: [Arc<dyn ToolModule>; 17] = [
         Arc::new(CropModule::new()),
@@ -95,6 +98,15 @@ pub struct RegistryOptions<'a> {
     /// The base URL of a capability proof endpoint a harness started, whose palette the capability
     /// proof installs. Only a developer run takes one.
     pub proof_endpoint: Option<&'a str>,
+    /// The installed external modules an engine loaded, in the order to register them. They
+    /// register after every linked module, so the linked modules' order, and everything it
+    /// decides (the Original's layers, first-open actions, letters), is the same with or without
+    /// them. One the engine could not load registers unavailable with its reason, and one
+    /// `disabled` names registers unavailable as a linked module does. One whose registration is
+    /// refused, such as an identity, action or effect a linked or earlier module already provides,
+    /// is left out and listed by [`ModuleRegistry::refused_externals`]; the assembly itself never
+    /// fails because of a package.
+    pub external: &'a [ExternalModule],
 }
 
 impl RegistryOptions<'_> {
@@ -188,6 +200,19 @@ pub struct ModuleRegistry {
     shortcuts: HashMap<String, usize>,
     /// Action shortcut to the module that declares it, so one chord runs one action.
     chords: HashMap<crate::Chord, usize>,
+    /// The external modules the assembly was handed and could not register, in its order.
+    refused: Vec<RefusedExternal>,
+}
+
+/// An external module the registry assembly could not register, and why: its identity, an action,
+/// effect or letter is already provided, by a linked module or an earlier external. It is not
+/// registered at all, so a photo's layer of its effect reports an unknown effect, kept as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedExternal {
+    /// The module's identity, its manifest's `id`.
+    pub id: String,
+    /// The registration's refusal.
+    pub reason: String,
 }
 
 impl std::fmt::Debug for ModuleRegistry {
@@ -235,12 +260,34 @@ impl ModuleRegistry {
             };
             registered.map_err(|error| error.to_string())?;
         }
-        if let Some(id) = unknown.first() {
-            return Err(format!("--disable-module names no registered module: {id}"));
-        }
         registry
             .check_complete()
             .expect("built-in control variants are valid");
+        // Externals after every linked module: a manifest's table declares no control variant,
+        // so the check above stays the linked modules' own.
+        for external in options.external {
+            let id = external.id().to_owned();
+            let module = external.module().clone();
+            let reason = if options.disabled.contains(&id) {
+                unknown.retain(|named| *named != id);
+                Some(DISABLED_REASON)
+            } else {
+                external.unavailable_reason()
+            };
+            let registered = match reason {
+                Some(reason) => registry.register_unavailable(module, reason),
+                None => registry.register(module),
+            };
+            if let Err(error) = registered {
+                registry.refused.push(RefusedExternal {
+                    id,
+                    reason: error.detail,
+                });
+            }
+        }
+        if let Some(id) = unknown.first() {
+            return Err(format!("--disable-module names no registered module: {id}"));
+        }
         // The host's own descriptors are published beside the modules' and never registered, so
         // they are held to the same rules here, by the host's form of the one validation.
         for host in registry.host_descriptors() {
@@ -248,6 +295,12 @@ impl ModuleRegistry {
                 .expect("the host's descriptors are valid");
         }
         Ok(registry)
+    }
+
+    /// The external modules [`Self::assemble`] was handed and could not register, with the reason
+    /// each was refused, in the order it was handed them.
+    pub fn refused_externals(&self) -> &[RefusedExternal] {
+        &self.refused
     }
 
     /// The registry of an ordinary run: every product module, available, and no test module.
