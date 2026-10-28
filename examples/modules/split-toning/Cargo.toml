@@ -1,0 +1,29 @@
+[package]
+name = "split-toning"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Split toning: an example Luxforge adjustment module"
+
+# A module crate of its own, outside the Luxforge workspace: `cargo xtask module-package` builds it
+# for wasm32-unknown-unknown with the pinned toolchain and packages it with `luxforge-module.toml`
+# and `program.wgsl` (docs/engineering/module-authoring.md).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+luxforge-module-sdk = { path = "../../../crates/luxforge-module-sdk" }
+
+# A small, self-contained module: one codegen unit, link-time optimization and no unwinding.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true

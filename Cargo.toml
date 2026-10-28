@@ -1,7 +1,8 @@
 [workspace]
-members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-webp", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "xtask", "xtask/cli"]
+members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-webp", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "crates/luxforge-module-sdk", "xtask", "xtask/cli"]
 # Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
-exclude = ["services/usage-ingest"]
+# The example module is built for WebAssembly by `cargo xtask module-package`.
+exclude = ["services/usage-ingest", "examples/modules/split-toning"]
 resolver = "3"
 
 [workspace.package]

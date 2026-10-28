@@ -65,6 +65,8 @@ mod mcp_smoke;
 mod minify_smoke;
 mod minimap_smoke;
 mod mixer_smoke;
+mod module_check;
+mod module_package;
 mod move_to_applications_smoke;
 mod no_gpu_render_smoke;
 mod object_remove_smoke;
@@ -420,6 +422,18 @@ fn main_result() -> Result {
                 .unwrap_or(raw_camera::DEFAULT_SOURCE_MIB);
             a.done()?;
             raw_camera::run(&index, &ids, &out, mib)?;
+        }
+        "module-package" => {
+            let out = absolute(&root, &a.path("--output")?);
+            ensure(a.0.len() == 1, "Usage: module-package DIR --output FILE")?;
+            let project = absolute(&root, Path::new(&a.0.remove(0)));
+            module_package::run(&root, &project, &out)?;
+        }
+        "module-check" => {
+            let json = a.value("--json")?.map(|p| absolute(&root, Path::new(&p)));
+            ensure(a.0.len() == 1, "Usage: module-check FILE [--json NEW_FILE]")?;
+            let package = absolute(&root, Path::new(&a.0.remove(0)));
+            module_check::run(&package, json.as_deref())?;
         }
         "inspect-dng" => {
             let source = absolute(&root, &a.path("--source")?);

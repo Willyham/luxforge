@@ -16,6 +16,8 @@ const FULL_COMMANDS: &[&str] = &[
     "generate-catalog",
     "raw-camera-metadata",
     "inspect-dng",
+    "module-package",
+    "module-check",
     "raw-authentic",
     "lens-qualification",
     "lensfun-import",

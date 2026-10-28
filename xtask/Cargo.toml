@@ -32,6 +32,15 @@ luxforge-reference = { path = "../crates/luxforge-reference" }
 luxforge-testbase = { path = "../crates/luxforge-testbase" }
 luxforge-testkit = { path = "../crates/luxforge-testkit" }
 luxforge-update = { path = "../crates/luxforge-update" }
+# `module-package` and `module-check`: building a module crate into its component and running it
+# through Wasmtime (the SDK's `host` tooling); validating its WGSL program under the surface's
+# prelude with `naga`, and running it on the local adapter through `wgpu` (`luxforge-gpu`'s adapter
+# choice and device).
+luxforge-module-sdk = { path = "../crates/luxforge-module-sdk", features = ["host"] }
+luxforge-gpu = { path = "../crates/luxforge-gpu" }
+luxforge-gpu-types = { path = "../crates/luxforge-gpu-types" }
+wgpu.workspace = true
+naga = { workspace = true, features = ["wgsl-in"] }
 sha2.workspace = true
 tempfile = "=3.27.0"
 flate2 = "=1.1.10"
