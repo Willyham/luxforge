@@ -256,6 +256,7 @@ impl CapabilitiesProofModule {
             "reset": {"action": RESET_PROOF_TINT},
             "canvas": null,
             "developer": true,
+            "toolset": "adjustments",
             "availability": {"kind": "available"},
             "capabilities": [
                 {

@@ -38,6 +38,7 @@ pub use types::{
     ResolvedControl, ResolvedReset, TaskControl, ToggleControl, ViewControl, WheelControl,
     WheelStyle,
 };
+pub use types::{MAX_LOCK_REASON, ModuleLock, Toolset};
 pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{
     check_declaration, check_parameter_declarations, valid_identity, valid_name,

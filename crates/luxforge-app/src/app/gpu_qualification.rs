@@ -281,7 +281,8 @@ fn apply_suggestion(
         .ok_or("a query choice names its action")?;
     let mut listed = call(owner, client, "module.list", json!({}))?;
     let modules: Vec<luxforge_core::ModuleDescriptor> =
-        serde_json::from_value(listed["modules"].take()).map_err(|error| error.to_string())?;
+        luxforge_core::module_layout::listed_descriptors(listed["modules"].take())
+            .map_err(|error| error.to_string())?;
     let control = super::query_choice::declaration(&modules, action)
         .ok_or_else(|| format!("no module declares a query choice for {action}"))?;
     let entry = state(owner, client, asset)?["current_entry"]["id"].clone();

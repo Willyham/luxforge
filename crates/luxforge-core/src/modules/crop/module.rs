@@ -149,6 +149,8 @@ impl CropModule {
             descriptor: ModuleDescriptor {
                 id: "luxforge.crop".into(),
                 title: "Crop, transform, straighten".into(),
+                toolset: crate::Toolset::Adjustments,
+                locked: Some(crate::ModuleLock::new("Every photo's geometry")),
                 hint: Some("Frame, rotate, mirror and angle".into()),
                 effects: vec![
                     transform::effect(),

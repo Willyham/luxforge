@@ -690,7 +690,7 @@ mod tests {
     fn module() -> ModuleDescriptor {
         serde_json::from_value(json!({
             "id": "m", "title": "M", "effects": [], "actions": [], "controls": [], "canvas": null,
-            "availability": {"kind": "available"},
+            "toolset": "adjustments", "availability": {"kind": "available"},
             "capabilities": [
                 {"id": "d", "kind": "download-artifact", "resource": "seg", "purpose": "p"},
                 {"id": "r", "kind": "local-runtime", "resource": "seg", "model": "session",

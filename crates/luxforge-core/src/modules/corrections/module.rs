@@ -235,6 +235,7 @@ impl CorrectionsModule {
             descriptor: ModuleDescriptor {
                 id: MODULE.into(),
                 title: "Corrections".into(),
+                toolset: crate::Toolset::Tools,
                 hint: Some("Clone and Heal".into()),
                 effects: vec![EffectDescriptor {
                     single: true,

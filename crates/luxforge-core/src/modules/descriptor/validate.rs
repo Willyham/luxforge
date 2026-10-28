@@ -82,6 +82,17 @@ impl ModuleDescriptor {
                 self.id
             )));
         }
+        if let Some(lock) = &self.locked
+            && (lock.reason.trim().is_empty()
+                || lock.reason.len() > super::MAX_LOCK_REASON
+                || lock.reason.chars().any(char::is_control))
+        {
+            return Err(Error::validation(format!(
+                "module {} is locked without a reason of 1..={} printable bytes",
+                self.id,
+                super::MAX_LOCK_REASON
+            )));
+        }
         let mut effects = HashSet::with_capacity(self.effects.len());
         for effect in &self.effects {
             if !valid_identity(&effect.id) {

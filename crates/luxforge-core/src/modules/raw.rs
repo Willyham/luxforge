@@ -359,6 +359,8 @@ impl RawModule {
             descriptor: ModuleDescriptor {
                 id: RAW_MODULE.into(),
                 title: "RAW".into(),
+                toolset: crate::Toolset::Processing,
+                locked: Some(crate::ModuleLock::new("Develops every RAW photo")),
                 hint: Some("Source development".into()),
                 effects: vec![EffectDescriptor {
                     format: RAW_EFFECT_FORMAT,

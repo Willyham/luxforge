@@ -1911,6 +1911,83 @@ pub enum ModuleLayout {
     Tabs,
 }
 
+/// Where a module's interface lives: its **home**, the toolset Settings › Modules lists it and its
+/// switch in, and the kind of a **placement**, one module's entry in one toolset
+/// ([module manager](../../../../../docs/design/module-manager.md#terms)). Presentation only: a
+/// toolset never changes what the host accepts or how anything renders.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Toolset {
+    /// The tools panel's sections. The default of a descriptor built by struct update, since
+    /// almost every module is a section; every built-in still names its own.
+    #[default]
+    Adjustments,
+    /// The Corrections band's kinds.
+    Corrections,
+    /// The New mask and Add component kinds.
+    Masking,
+    /// The mode strip's canvas takeovers.
+    Tools,
+    /// No interface of its own, as the RAW development.
+    Processing,
+}
+
+impl Toolset {
+    /// Every toolset, in the order Settings › Modules groups them.
+    pub const ALL: [Self; 5] = [
+        Self::Adjustments,
+        Self::Corrections,
+        Self::Tools,
+        Self::Masking,
+        Self::Processing,
+    ];
+
+    /// The toolsets a person can reorder: the tools panel's sections and the mode strip's tools.
+    /// Corrections and mask kinds keep their fixed order.
+    pub const ORDERABLE: [Self; 2] = [Self::Adjustments, Self::Tools];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjustments => "adjustments",
+            Self::Corrections => "corrections",
+            Self::Masking => "masking",
+            Self::Tools => "tools",
+            Self::Processing => "processing",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|toolset| toolset.as_str() == value)
+    }
+
+    /// Whether a person can reorder this toolset's placements ([`Self::ORDERABLE`]).
+    pub fn orderable(self) -> bool {
+        Self::ORDERABLE.contains(&self)
+    }
+}
+
+/// The longest reason a [`ModuleLock`] gives, in bytes.
+pub const MAX_LOCK_REASON: usize = 160;
+
+/// A module that is always on: a person can move it but never turn it off, because every photo
+/// depends on it. The reason is what a client shows beside its lock and what `module.disable`
+/// refuses with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleLock {
+    pub reason: String,
+}
+
+impl ModuleLock {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
 /// An unavailable provider keeps its descriptor and effect identities so stored data stays readable.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -1932,6 +2009,13 @@ pub struct ModuleDescriptor {
     /// A short line for the collapsed section header, e.g. `Rotate, mirror and flip`.
     #[serde(default)]
     pub hint: Option<String>,
+    /// The module's home: the toolset Settings › Modules lists it and its switch in. Required in
+    /// a descriptor's JSON; where its interface actually appears is its placements, which the host
+    /// derives from the rest of the descriptor ([`crate::module_layout::placements`]).
+    pub toolset: Toolset,
+    /// Always on, with the reason: a person can move the module but never turn it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<ModuleLock>,
     pub effects: Vec<EffectDescriptor>,
     pub actions: Vec<ActionDescriptor>,
     /// Read-only questions this module answers about a stored stack, declared and validated exactly

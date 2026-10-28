@@ -55,6 +55,7 @@ impl LensModule {
             descriptor: ModuleDescriptor {
                 id: LENS_MODULE.into(),
                 title: "Lens correction".into(),
+                toolset: crate::Toolset::Adjustments,
                 hint: Some("Profile distortion correction".into()),
                 collapsed: true,
                 effects: vec![EffectDescriptor {

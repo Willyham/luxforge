@@ -612,7 +612,7 @@ mod tests {
         let finder = json!({"name": "Object finder", "purpose": "p", "resources": ["enc", "dec"]});
         serde_json::from_value(json!({
             "id": "ai", "title": "AI editing", "effects": [], "actions": [], "controls": [],
-            "canvas": null, "availability": {"kind": "available"},
+            "canvas": null, "toolset": "corrections", "availability": {"kind": "available"},
             "tasks": [{"id": "fill-generative", "title": "Generative fill", "notes": "n"}],
             "resources": [
                 resource("gen", 2_720_267_065, None),

@@ -81,6 +81,7 @@ impl ModelsProofModule {
             "controls": [],
             "canvas": null,
             "developer": true,
+            "toolset": "adjustments",
             "availability": {"kind": "available"},
             "capabilities": [
                 {

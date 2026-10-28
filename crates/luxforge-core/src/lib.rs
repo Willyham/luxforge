@@ -41,6 +41,8 @@ mod mask_field;
 /// brackets.
 pub mod merge;
 mod model;
+/// The person's module layout: which modules the workspace offers and in what order.
+pub mod module_layout;
 mod modules;
 /// Events, days, cameras and moments, computed from header metadata.
 mod organize;
@@ -165,6 +167,7 @@ pub use modules::{
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{DeveloperDownloads, DeveloperModels, HostView, TaskAdmission, TaskNeeds};
+pub use modules::{MAX_LOCK_REASON, ModuleLock, Toolset};
 pub use modules::{
     MODELS_PROOF_MODULE, PROOF_DECODER_PATH, PROOF_ENCODER_PATH, PROOF_MODEL_RESOURCE,
     PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF, proof_model_files,

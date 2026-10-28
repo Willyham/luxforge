@@ -148,6 +148,7 @@ impl PresetsModule {
             descriptor: ModuleDescriptor {
                 id: "luxforge.presets".into(),
                 title: "Presets".into(),
+                toolset: crate::Toolset::Adjustments,
                 hint: Some("Saved and imported settings".into()),
                 effects: Vec::new(),
                 actions: vec![ActionDescriptor {

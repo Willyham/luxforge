@@ -25,6 +25,10 @@ const PERMISSION_ONLY: &[&str] = &[
 const CHANGES_WITHOUT_ENVELOPE: &[&str] = &[
     "preferences.set",
     "flags.set",
+    "module.enable",
+    "module.disable",
+    "module.order.set",
+    "module.layout.reset",
     "update.check",
     "update.skip",
     "job.adopt",

@@ -300,6 +300,7 @@ impl LookModule {
             descriptor: ModuleDescriptor {
                 id: LOOK_MODULE.into(),
                 title: "Look".into(),
+                toolset: crate::Toolset::Adjustments,
                 hint: Some("The RAW photo's starting rendition".into()),
                 effects: vec![EffectDescriptor {
                     order: 3,

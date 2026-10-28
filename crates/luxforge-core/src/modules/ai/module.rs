@@ -246,6 +246,7 @@ impl AiModule {
             descriptor: ModuleDescriptor {
                 id: AI_MODULE.into(),
                 title: "AI editing".into(),
+                toolset: crate::Toolset::Corrections,
                 hint: Some(
                     "Generative fill over the Corrections band's brush, and picking objects".into(),
                 ),

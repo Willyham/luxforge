@@ -52,6 +52,8 @@ pub fn find_query(method: &str) -> Option<&'static ActionDescriptor> {
 static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| ModuleDescriptor {
     id: HOST_MODULE.to_owned(),
     title: "Masks".to_owned(),
+    toolset: crate::Toolset::Masking,
+    locked: Some(crate::ModuleLock::new("Masks belong to the host")),
     hint: Some(
         "Selections the adjustments of Basic, Presence and the colour mixer apply through"
             .to_owned(),

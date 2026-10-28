@@ -154,9 +154,16 @@ fn published() -> String {
     owner.close().expect("the owner stops");
     let _ = std::fs::remove_file(&catalog);
 
-    // `schema.list` repeats both descriptor arrays under the same keys; the snapshot holds them
-    // once.
-    assert_eq!(schema["modules"], listed["modules"]);
+    // `schema.list` repeats both descriptor arrays under the same keys, without what `module.list`
+    // adds to each module; the snapshot holds them once.
+    let mut descriptors = listed["modules"].clone();
+    for module in descriptors.as_array_mut().expect("a module list") {
+        let module = module.as_object_mut().expect("a module");
+        for added in ["origin", "placements", "enabled"] {
+            assert!(module.remove(added).is_some(), "module.list adds {added}");
+        }
+    }
+    assert_eq!(schema["modules"], descriptors);
     assert_eq!(schema["host"], listed["host"]);
 
     // The methods the registry generates from the modules' and the host's descriptors, and not the

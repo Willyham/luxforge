@@ -621,6 +621,9 @@ pub(crate) struct Spec {
     /// Whether the module is a developer proof, listed and registered only in developer mode.
     developer: bool,
     presettable: bool,
+    /// Always on, with the reason ([`crate::ModuleLock`]). A field patch's home is always the
+    /// tools panel's adjustments, since it always draws a section.
+    locked: Option<crate::ModuleLock>,
 }
 
 impl Spec {
@@ -675,6 +678,7 @@ impl Spec {
             layout: ModuleLayout::Stacked,
             developer: false,
             presettable: true,
+            locked: None,
         }
     }
 
@@ -758,6 +762,12 @@ impl Spec {
     /// The module is a developer proof, listed and registered only in developer mode.
     pub(crate) fn developer(mut self) -> Self {
         self.developer = true;
+        self
+    }
+
+    /// The module is always on, for `reason`: a person can move it but never turn it off.
+    pub(crate) fn locked(mut self, reason: &str) -> Self {
+        self.locked = Some(crate::ModuleLock::new(reason));
         self
     }
 
@@ -1057,6 +1067,8 @@ impl Spec {
             collapsed: self.collapsed,
             layout: self.layout,
             availability: Availability::Available,
+            toolset: crate::Toolset::Adjustments,
+            locked: self.locked.clone(),
             ..ModuleDescriptor::default()
         }
     }

@@ -90,10 +90,11 @@ fn defaults() -> Value {
 }
 
 /// `preferences` as `preferences.read` and `preferences.set` answer them, with no usage statistics
-/// record stored, which no `preferences.set` can change.
+/// record, skipped version or module layout stored, which no `preferences.set` can change.
 fn answered(mut preferences: Value) -> Value {
     preferences["usage_statistics"] = json!({"prompt_shown": false, "enabled": false});
     preferences["update_skipped_version"] = Value::Null;
+    preferences["module_layout"] = Value::Null;
     preferences
 }
 
