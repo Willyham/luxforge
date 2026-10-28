@@ -67,7 +67,9 @@ fn external_program_registering_renames_the_declared_names_and_nothing_else() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect();
     assert_eq!(
-        code.replace("lf_module_local", "").matches("lf_module").count(),
+        code.replace("lf_module_local", "")
+            .matches("lf_module")
+            .count(),
         0,
         "{source}"
     );
@@ -94,22 +96,61 @@ fn external_program_two_registered_programs_share_one_shader() {
 fn external_program_refuses_a_misnamed_or_invalid_program_by_its_fault() {
     let entry = "fn lf_module(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> { return rgb; }\n";
     let cases: [(&str, String, &str); 9] = [
-        ("no entry", "fn lf_module_helper() -> f32 { return 1.0; }".into(), "declares no `lf_module` entry function"),
-        ("misnamed function", format!("{entry}fn helper() -> f32 {{ return 1.0; }}"), "function `helper` is not named lf_module…"),
-        ("misnamed constant", format!("{entry}const k: f32 = 1.0;"), "constant `k` is not named lf_module…"),
-        ("global", format!("{entry}var<private> lf_module_g: f32;"), "is a global variable"),
-        ("override", format!("{entry}override lf_module_o: f32 = 1.0;"), "is an override"),
-        ("type", format!("{entry}struct lf_module_s {{ x: f32 }}"), "`lf_module_s` is a type"),
-        ("alias", format!("{entry}alias lf_module_t = f32;"), "`lf_module_t` is a type"),
-        ("entry point", format!("{entry}@compute @workgroup_size(1) fn lf_module_main() {{}}"), "is an entry point"),
-        ("wrong signature", "fn lf_module(rgb: vec3<f32>) -> f32 { return rgb.x; }".into(), "lf_module"),
+        (
+            "no entry",
+            "fn lf_module_helper() -> f32 { return 1.0; }".into(),
+            "declares no `lf_module` entry function",
+        ),
+        (
+            "misnamed function",
+            format!("{entry}fn helper() -> f32 {{ return 1.0; }}"),
+            "function `helper` is not named lf_module…",
+        ),
+        (
+            "misnamed constant",
+            format!("{entry}const k: f32 = 1.0;"),
+            "constant `k` is not named lf_module…",
+        ),
+        (
+            "global",
+            format!("{entry}var<private> lf_module_g: f32;"),
+            "is a global variable",
+        ),
+        (
+            "override",
+            format!("{entry}override lf_module_o: f32 = 1.0;"),
+            "is an override",
+        ),
+        (
+            "type",
+            format!("{entry}struct lf_module_s {{ x: f32 }}"),
+            "`lf_module_s` is a type",
+        ),
+        (
+            "alias",
+            format!("{entry}alias lf_module_t = f32;"),
+            "`lf_module_t` is a type",
+        ),
+        (
+            "entry point",
+            format!("{entry}@compute @workgroup_size(1) fn lf_module_main() {{}}"),
+            "is an entry point",
+        ),
+        (
+            "wrong signature",
+            "fn lf_module(rgb: vec3<f32>) -> f32 { return rgb.x; }".into(),
+            "lf_module",
+        ),
     ];
     for (case, program, refusal) in cases {
         let error = register(&program, ENTRY_A).expect_err(case);
         assert!(error.contains(refusal), "{case}: {error}");
     }
-    let error = register("fn lf_module(rgb: vec3<f32>) -> vec3<f32> { return rgb +; }", ENTRY_A)
-        .expect_err("a syntax error");
+    let error = register(
+        "fn lf_module(rgb: vec3<f32>) -> vec3<f32> { return rgb +; }",
+        ENTRY_A,
+    )
+    .expect_err("a syntax error");
     assert!(error.contains("error"), "{error}");
 }
 
@@ -122,7 +163,11 @@ fn judged(gpu: &[Vec<[f32; 3]>], words: [u32; 2]) -> (bool, f64) {
         let mut reference = patch.rgb.clone();
         for y in 0..patch.height {
             let start = (y * patch.width) as usize;
-            twin(words, y, &mut reference[start..start + patch.width as usize]);
+            twin(
+                words,
+                y,
+                &mut reference[start..start + patch.width as usize],
+            );
         }
         let codes = |pixels: &[[f32; 3]]| -> Vec<u8> {
             pixels
@@ -151,7 +196,10 @@ fn external_program_runs_alone_within_the_colour_limits_and_a_wrong_one_does_not
     else {
         return;
     };
-    eprintln!("{test}: {} ({:?}, {}, {})", info.name, info.backend, info.driver, info.driver_info);
+    eprintln!(
+        "{test}: {} ({:?}, {}, {})",
+        info.name, info.backend, info.driver, info.driver_info
+    );
     let patches = patches();
     let words = [1.25_f32.to_bits(), 0.03_f32.to_bits()];
     let correct = register(GAIN_LIFT, ENTRY_A).expect("registers");
@@ -159,7 +207,10 @@ fn external_program_runs_alone_within_the_colour_limits_and_a_wrong_one_does_not
     let drawn = harness.run(&device, &queue, &words).expect("it runs");
     assert_eq!(drawn.len(), patches.len());
     let (within, mean) = judged(&drawn, words);
-    assert!(within, "the correct program is within the limits (largest mean {mean})");
+    assert!(
+        within,
+        "the correct program is within the limits (largest mean {mean})"
+    );
     // A second set of words through the same harness.
     let other = [0.5_f32.to_bits(), (-0.1_f32).to_bits()];
     let drawn = harness.run(&device, &queue, &other).expect("it runs");
@@ -177,5 +228,8 @@ fn external_program_runs_alone_within_the_colour_limits_and_a_wrong_one_does_not
     let harness = Harness::new(&device, &wrong, &patches).expect("the device accepts it");
     let drawn = harness.run(&device, &queue, &words).expect("it runs");
     let (within, mean) = judged(&drawn, words);
-    assert!(!within, "the wrong program is outside the limits (largest mean {mean})");
+    assert!(
+        !within,
+        "the wrong program is outside the limits (largest mean {mean})"
+    );
 }

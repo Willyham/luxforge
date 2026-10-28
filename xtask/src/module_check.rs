@@ -9,21 +9,23 @@
 //!    same code and words.
 //! 2. **Component**: loaded by the module engine, `luxforge-wasm`, as the host loads it: refused
 //!    if it imports anything or does not export the `adjust` interface.
-//! 3. **Reference**: `coefficients` for fixed value sets the manifest's table gives (the defaults,
-//!    the minimum, middle and maximum, each field at each end with the rest at their defaults, and
-//!    three mixed sets), and `apply-row` over the SDK's fixed patches for each: every answer
-//!    accepted, the right length and finite, and the same from a second instance. The engine
-//!    instantiates the component on the first call, under the host's memory limit and deadline.
-//! 4. **Program**: `program.wgsl` validated by `naga` under the surface's prelude, declaring only
-//!    functions and constants named `lf_module…` and the entry `lf_module` of the colour
-//!    signature, called by a harness.
-//! 5. **GPU**: on the local adapter, the program alone in a compute harness over the same patches
-//!    and value sets, against the reference, as 8-bit sRGB by the pointwise (colour) class's
-//!    limits. Reported, not gated: outside the limits, the host's probe would leave the program
-//!    off and render the module through the reference. Not measured without an adapter.
+//! 3. **Reference**: `coefficients` for the value sets the host's probe runs
+//!    (`ModuleManifest::probe_values`: the defaults, the minimum, middle and maximum, each field
+//!    at each end with the rest at their defaults, and three mixed sets), and `apply-row` over the
+//!    probe's patches for each: every answer accepted, the right length and finite, and the same
+//!    from a second instance. The engine instantiates the component on the first call, under the
+//!    host's memory limit and deadline.
+//! 4. **Program**: `program.wgsl` registered by the host's own check
+//!    (`luxforge_gpu::external_program::register`): validated by `naga` under the surface's
+//!    prelude, declaring only functions and constants named `lf_module…` and the entry
+//!    `lf_module` of the colour signature, called by a harness.
+//! 5. **GPU**: on the local adapter, the program alone in the probe's harness over the same
+//!    patches and value sets, against the reference, as 8-bit sRGB by the pointwise (colour)
+//!    class's limits. Reported, not gated: outside the limits, the host's probe leaves the program
+//!    off and renders the module through the reference. Not measured without an adapter.
 use crate::*;
-use luxforge_core::module_package::ModulePackage;
-use luxforge_core::{ParameterDescriptor, ParameterKind};
+use luxforge_core::ParameterDescriptor;
+use luxforge_core::module_package::{self, ModulePackage};
 use luxforge_module_sdk::host::fixtures::{self, Patch};
 use luxforge_module_sdk::host::{Instance, Runner};
 use luxforge_module_sdk::{Field, Value as FieldValue};
@@ -37,141 +39,31 @@ pub(crate) struct ValueSet {
     pub fields: Vec<Field>,
 }
 
-/// The fields of the table, in the manifest's order: the parameters of its `set-<name>` action.
-fn fields(package: &ModulePackage) -> Result<Vec<ParameterDescriptor>> {
-    let set = format!("set-{}", package.manifest.name);
-    let action = package
-        .manifest
-        .descriptor()
-        .actions
-        .iter()
-        .find(|action| action.id == set)
-        .ok_or_else(|| format!("the descriptor has no {set} action"))?;
-    Ok(action.parameters.clone())
-}
-
-fn default_of(parameter: &ParameterDescriptor) -> Result<FieldValue> {
-    let default = parameter
-        .default
-        .as_ref()
-        .ok_or_else(|| format!("field {} has no default", parameter.name))?;
-    let mismatch = || {
-        format!(
-            "field {}'s default {default} is not its kind",
-            parameter.name
-        )
-    };
-    Ok(match &parameter.kind {
-        ParameterKind::Number { .. } => FieldValue::Number(default.as_f64().ok_or_else(mismatch)?),
-        ParameterKind::Integer { .. } => {
-            FieldValue::Integer(default.as_i64().ok_or_else(mismatch)?)
-        }
-        ParameterKind::Boolean => FieldValue::Boolean(default.as_bool().ok_or_else(mismatch)?),
-        ParameterKind::Enum { .. } => {
-            FieldValue::Choice(default.as_str().ok_or_else(mismatch)?.to_owned())
-        }
-        ParameterKind::Color => {
-            let channels: Vec<u8> = default
-                .as_array()
-                .ok_or_else(mismatch)?
-                .iter()
-                .map(|channel| channel.as_u64().and_then(|c| u8::try_from(c).ok()))
-                .collect::<Option<_>>()
-                .ok_or_else(mismatch)?;
-            let [r, g, b] = channels[..] else {
-                return Err(mismatch().into());
-            };
-            FieldValue::Color([r, g, b])
-        }
-        _ => {
-            return Err(format!("field {} is of a kind a manifest has not", parameter.name).into());
-        }
-    })
-}
-
-/// A field's value at `t` of its range, 0 its least and 1 its greatest: a number or integer within
-/// its range, a boolean false below the middle, an enum's option at that share of its list, and a
-/// grey of that level.
-fn at(parameter: &ParameterDescriptor, t: f64) -> FieldValue {
-    match &parameter.kind {
-        ParameterKind::Number { min, max } => {
-            // Two decimals, as a person types a value.
-            FieldValue::Number(((min + t * (max - min)) * 100.0).round() / 100.0)
-        }
-        ParameterKind::Integer { min, max } => {
-            FieldValue::Integer(*min + ((*max - *min) as f64 * t).round() as i64)
-        }
-        ParameterKind::Boolean => FieldValue::Boolean(t >= 0.5),
-        ParameterKind::Enum { options } => {
-            let last = options.len().saturating_sub(1);
-            FieldValue::Choice(options[(last as f64 * t).round() as usize].clone())
-        }
-        _ => FieldValue::Color([(t * 255.0).round() as u8; 3]),
+/// A core field value as the SDK's.
+fn sdk_value(value: module_package::FieldValue) -> FieldValue {
+    match value {
+        module_package::FieldValue::Number(value) => FieldValue::Number(value),
+        module_package::FieldValue::Integer(value) => FieldValue::Integer(value),
+        module_package::FieldValue::Boolean(value) => FieldValue::Boolean(value),
+        module_package::FieldValue::Choice(value) => FieldValue::Choice(value),
+        module_package::FieldValue::Color(value) => FieldValue::Color(value),
     }
 }
 
-/// The value sets a check runs: the defaults; every field at its least, middle and greatest; each
-/// field at each end of its range with the rest at their defaults; and three mixed sets from a
-/// fixed sequence.
+/// The value sets a check runs: those the host's probe runs (`ModuleManifest::probe_values`).
 pub(crate) fn value_sets(parameters: &[ParameterDescriptor]) -> Result<Vec<ValueSet>> {
-    let defaults: Vec<Field> = parameters
-        .iter()
-        .map(|parameter| Ok(Field::new(&parameter.name, default_of(parameter)?)))
-        .collect::<Result<_>>()?;
-    let uniform = |t: f64| -> Vec<Field> {
-        parameters
-            .iter()
-            .map(|parameter| Field::new(&parameter.name, at(parameter, t)))
-            .collect()
-    };
-    let mut sets = vec![
-        ValueSet {
-            name: "defaults".into(),
-            fields: defaults.clone(),
-        },
-        ValueSet {
-            name: "minimum".into(),
-            fields: uniform(0.0),
-        },
-        ValueSet {
-            name: "middle".into(),
-            fields: uniform(0.5),
-        },
-        ValueSet {
-            name: "maximum".into(),
-            fields: uniform(1.0),
-        },
-    ];
-    for (index, parameter) in parameters.iter().enumerate() {
-        for (end, t) in [("min", 0.0), ("max", 1.0)] {
-            let mut fields = defaults.clone();
-            fields[index].value = at(parameter, t);
-            sets.push(ValueSet {
-                name: format!("{}={end}", parameter.name),
-                fields,
-            });
-        }
-    }
-    let mut state = 0x2545_f491_u32;
-    for mixed in 1..=3 {
-        let fields = parameters
-            .iter()
-            .map(|parameter| {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                Field::new(
-                    &parameter.name,
-                    at(parameter, f64::from(state >> 8) / 16_777_215.0),
-                )
-            })
-            .collect();
-        sets.push(ValueSet {
-            name: format!("mixed-{mixed}"),
-            fields,
-        });
-    }
-    Ok(sets)
+    let sets = module_package::probe_values(parameters).map_err(|error| error.detail)?;
+    Ok(sets
+        .into_iter()
+        .map(|set| ValueSet {
+            name: set.name,
+            fields: set
+                .values
+                .into_iter()
+                .map(|entry| Field::new(&entry.name, sdk_value(entry.value)))
+                .collect(),
+        })
+        .collect())
 }
 
 /// The reference's answer for one value set: its words and, per patch, the transformed pixels.
@@ -353,7 +245,7 @@ pub fn run(package_path: &Path, json_path: Option<&Path>) -> Result {
             .map_or("unreadable", |refusal| refusal.code());
         format!("package: refused ({code}): {}", error.detail)
     })?;
-    let parameters = fields(&package)?;
+    let parameters = package.manifest.fields().to_vec();
     let manifest = &package.manifest;
     println!(
         "PASS package: {} {} ({}), {} fields, effect {} on the {} stage at order {}",
@@ -396,12 +288,12 @@ pub fn run(package_path: &Path, json_path: Option<&Path>) -> Result {
         report["program"] = json!("none");
         return finish(json_path, &report);
     };
-    let shader = gpu::validate(program).map_err(|error| format!("program: {error}"))?;
+    let registered = gpu::validate(program).map_err(|error| format!("program: {error}"))?;
     println!("PASS program: validates under the prelude, every name lf_module…");
     report["program"] = json!("valid");
 
     let limits = Class::Pointwise.limits();
-    match gpu::run(&shader, &references, &patches)? {
+    match gpu::run(&registered, &references, &patches)? {
         gpu::Outcome::NotMeasured(why) => {
             println!("NOTE GPU: not measured: {why}");
             report["gpu"] = json!({ "measured": false, "reason": why });
@@ -428,8 +320,8 @@ pub fn run(package_path: &Path, json_path: Option<&Path>) -> Result {
                     String::new()
                 } else {
                     format!(
-                        ". Outside the limits on {} cells ({}): the host's probe would leave the \
-                         program off and render through the reference",
+                        ". Outside the limits on {} cells ({}): the host's probe leaves the \
+                         program off and renders through the reference",
                         summary.outside.len(),
                         summary.outside.join(", ")
                     )
@@ -465,122 +357,19 @@ fn finish(json_path: Option<&Path>, report: &Value) -> Result {
     Ok(())
 }
 
-/// The program's validation and its run on the local adapter.
+/// The program's validation and its run on the local adapter, by the host's own check and probe
+/// harness (`luxforge_gpu::external_program`).
 pub(crate) mod gpu {
     use super::Reference;
     use crate::*;
+    use luxforge_gpu::external_program::{ENTRY, Harness, Registered, register};
     use luxforge_module_sdk::host::fixtures::Patch;
-    use std::borrow::Cow;
 
-    /// The entry every program declares, and the prefix of every name it declares.
-    const ENTRY: &str = "lf_module";
-    /// The workgroup size of the harness.
-    const LANES: u32 = 64;
-
-    /// The harness: each invocation reads one pixel of the concatenated patches, calls the program
-    /// at its position within its patch, and writes the answer.
-    fn harness(pixels: u32, side: u32) -> String {
-        format!(
-            "\n@group(0) @binding(2) var<storage, read> lf_check_in: array<f32>;\n\
-             @group(0) @binding(3) var<storage, read_write> lf_check_out: array<f32>;\n\
-             @compute @workgroup_size({LANES})\n\
-             fn lf_check(@builtin(global_invocation_id) id: vec3<u32>) {{\n    \
-                 let i = id.x;\n    \
-                 if i >= {pixels}u {{ return; }}\n    \
-                 let at = 3u * i;\n    \
-                 let j = i % {patch}u;\n    \
-                 let rgb = vec3<f32>(lf_check_in[at], lf_check_in[at + 1u], lf_check_in[at + 2u]);\n    \
-                 let pos = vec2<f32>(f32(j % {side}u), f32(j / {side}u));\n    \
-                 let out: vec3<f32> = {ENTRY}(rgb, pos, 0u, 0u);\n    \
-                 lf_check_out[at] = out.x;\n    \
-                 lf_check_out[at + 1u] = out.y;\n    \
-                 lf_check_out[at + 2u] = out.z;\n\
-             }}\n",
-            patch = side * side,
-        )
-    }
-
-    fn parse(source: &str) -> std::result::Result<naga::Module, String> {
-        naga::front::wgsl::parse_str(source).map_err(|error| error.emit_to_string(source))
-    }
-
-    /// Check `program` under the prelude and answer the shader the harness runs: it must parse and
-    /// validate with the harness, declare only functions and constants whose names start
+    /// Check `program` as the host registers it, under its own entry `lf_module`: it must parse
+    /// and validate with the harness, declare only functions and constants whose names start
     /// `lf_module`, and no binding, global, override, type or entry point of its own.
-    pub fn validate(program: &str) -> std::result::Result<String, String> {
-        let prelude = luxforge_gpu_types::PRELUDE;
-        let host =
-            parse(prelude).map_err(|error| format!("the prelude does not parse: {error}"))?;
-        let declared = parse(&format!("{prelude}\n{program}"))?;
-        let mut refusals = Vec::new();
-        let named = |name: &Option<String>| name.clone().unwrap_or_default();
-        let host_functions: Vec<String> =
-            host.functions.iter().map(|(_, f)| named(&f.name)).collect();
-        for (_, function) in declared.functions.iter() {
-            let name = named(&function.name);
-            if !host_functions.contains(&name) && !name.starts_with(ENTRY) {
-                refusals.push(format!("function `{name}` is not named {ENTRY}…"));
-            }
-        }
-        for (_, constant) in declared.constants.iter() {
-            let name = named(&constant.name);
-            if !name.starts_with(ENTRY) {
-                refusals.push(format!("constant `{name}` is not named {ENTRY}…"));
-            }
-        }
-        let host_globals = host.global_variables.len();
-        for (_, global) in declared.global_variables.iter().skip(host_globals) {
-            refusals.push(format!(
-                "`{}` is a global variable; a program declares only functions and constants",
-                named(&global.name)
-            ));
-        }
-        for (_, value) in declared.overrides.iter() {
-            refusals.push(format!(
-                "`{}` is an override; a program declares only functions and constants",
-                named(&value.name)
-            ));
-        }
-        for entry in &declared.entry_points {
-            refusals.push(format!(
-                "`{}` is an entry point; the host owns every entry point",
-                entry.name
-            ));
-        }
-        let host_types: Vec<String> = host
-            .types
-            .iter()
-            .filter_map(|(_, ty)| ty.name.clone())
-            .collect();
-        for (_, ty) in declared.types.iter() {
-            if let Some(name) = &ty.name
-                && !host_types.contains(name)
-            {
-                refusals.push(format!(
-                    "`{name}` is a type; a program declares only functions and constants"
-                ));
-            }
-        }
-        if !declared
-            .functions
-            .iter()
-            .any(|(_, function)| function.name.as_deref() == Some(ENTRY))
-        {
-            refusals.push(format!("it declares no `{ENTRY}` entry function"));
-        }
-        if !refusals.is_empty() {
-            return Err(refusals.join("; "));
-        }
-        let pixels = 1;
-        let shader = format!("{prelude}\n{program}{}", harness(pixels, 1));
-        let module = parse(&shader)?;
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .map_err(|error| error.emit_to_string(&shader))?;
-        Ok(format!("{prelude}\n{program}"))
+    pub fn validate(program: &str) -> std::result::Result<Registered, String> {
+        register(program, ENTRY)
     }
 
     pub enum Outcome {
@@ -600,27 +389,12 @@ pub(crate) mod gpu {
         adapters.into_iter().next()
     }
 
-    fn buffer(
-        device: &wgpu::Device,
-        label: &str,
-        bytes: &[u8],
-        usage: wgpu::BufferUsages,
-    ) -> wgpu::Buffer {
-        use wgpu::util::DeviceExt;
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytes,
-            usage,
-        })
-    }
-
-    fn words_bytes(words: &[u32]) -> Vec<u8> {
-        let words = if words.is_empty() { &[0][..] } else { words };
-        words.iter().flat_map(|word| word.to_le_bytes()).collect()
-    }
-
-    /// Run `program` (validated, with the prelude) over every patch for each reference's words.
-    pub fn run(program: &str, references: &[Reference], patches: &[Patch]) -> Result<Outcome> {
+    /// Run `program` over every patch for each reference's words.
+    pub fn run(
+        program: &Registered,
+        references: &[Reference],
+        patches: &[Patch],
+    ) -> Result<Outcome> {
         let Some(chosen) = adapter() else {
             return Ok(Outcome::NotMeasured(
                 "this host offers no Vulkan, Metal or DirectX 12 adapter".into(),
@@ -648,177 +422,28 @@ pub(crate) mod gpu {
             opened.adapter.driver
         );
         let (device, queue) = (&opened.device, &opened.queue);
-        let side = patches.first().map_or(1, |patch| patch.width);
-        let pixels = patches.iter().map(|patch| patch.rgb.len()).sum::<usize>() as u32;
-        let shader = format!("{program}{}", harness(pixels, side));
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("module-check"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Owned(shader)),
-        });
-        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("module-check"),
-            entries: &[
-                storage(0, true),
-                storage(1, true),
-                storage(2, true),
-                storage(3, false),
-            ],
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("module-check"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("module-check"),
-                    bind_group_layouts: &[&layout],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            module: &module,
-            entry_point: Some("lf_check"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        if let Some(error) = pollster(device.pop_error_scope()) {
-            return Err(format!("program: the adapter refuses the program: {error}").into());
-        }
-        let input: Vec<u8> = patches
-            .iter()
-            .flat_map(|patch| patch.rgb.iter().flatten())
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        let size = input.len() as u64;
-        let input = buffer(
-            device,
-            "module-check.in",
-            &input,
-            wgpu::BufferUsages::STORAGE,
-        );
-        let blocks = buffer(
-            device,
-            "module-check.blocks",
-            &words_bytes(&[]),
-            wgpu::BufferUsages::STORAGE,
-        );
-        let output = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("module-check.out"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("module-check.readback"),
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let harness =
+            Harness::new(device, program, patches).map_err(|error| format!("program: {error}"))?;
         let mut outputs = Vec::with_capacity(references.len());
         for reference in references {
-            let words = buffer(
-                device,
-                "module-check.words",
-                &words_bytes(&reference.words),
-                wgpu::BufferUsages::STORAGE,
+            let answered = harness
+                .run(device, queue, &reference.words)
+                .map_err(|error| format!("GPU: value set `{}`: {error}", reference.set))?;
+            outputs.push(
+                answered
+                    .into_iter()
+                    .map(|pixels| pixels.into_iter().flatten().collect())
+                    .collect(),
             );
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("module-check"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: words.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: blocks.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: output.as_entire_binding(),
-                    },
-                ],
-            });
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("module-check"),
-            });
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("module-check"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &group, &[]);
-                pass.dispatch_workgroups(pixels.div_ceil(LANES), 1, 1);
-            }
-            encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
-            let index = queue.submit([encoder.finish()]);
-            let (sender, receiver) = std::sync::mpsc::channel();
-            readback
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, move |result| {
-                    let _ = sender.send(result);
-                });
-            device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(index),
-                    timeout: None,
-                })
-                .map_err(|error| format!("the GPU did not finish: {error}"))?;
-            receiver
-                .recv()
-                .map_err(|_| "the readback was dropped")?
-                .map_err(|error| format!("the readback did not map: {error}"))?;
-            let values: Vec<f32> = readback
-                .slice(..)
-                .get_mapped_range()
-                .chunks_exact(4)
-                .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                .collect();
-            readback.unmap();
-            let mut per_patch = Vec::with_capacity(patches.len());
-            let mut start = 0;
-            for patch in patches {
-                let len = patch.rgb.len() * 3;
-                per_patch.push(values[start..start + len].to_vec());
-                start += len;
-            }
-            outputs.push(per_patch);
         }
         Ok(Outcome::Measured { adapter, outputs })
-    }
-
-    /// A native wgpu future's output; native futures are ready at their first poll.
-    fn pollster<F: std::future::Future>(future: F) -> F::Output {
-        let mut future = std::pin::pin!(future);
-        loop {
-            if let std::task::Poll::Ready(value) = future
-                .as_mut()
-                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-            {
-                return value;
-            }
-            std::thread::yield_now();
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luxforge_core::ParameterKind;
     use luxforge_test_macros::slow;
 
     const PROGRAM: &str = include_str!("../../examples/modules/split-toning/program.wgsl");

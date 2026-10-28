@@ -101,7 +101,11 @@ fn declared(program: &str, entry: &str) -> Result<HashSet<String>, String> {
         }
         names.insert(name);
     }
-    for (_, global) in module.global_variables.iter().skip(host.global_variables.len()) {
+    for (_, global) in module
+        .global_variables
+        .iter()
+        .skip(host.global_variables.len())
+    {
         refusals.push(format!(
             "`{}` is a global variable; a program declares only functions and constants",
             named(&global.name)
@@ -277,7 +281,12 @@ pub struct Harness {
     lengths: Vec<usize>,
 }
 
-fn storage(device: &wgpu::Device, label: &str, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
+fn storage(
+    device: &wgpu::Device,
+    label: &str,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
@@ -325,7 +334,12 @@ impl Harness {
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("external-program"),
-            entries: &[entry(0, true), entry(1, true), entry(2, true), entry(3, false)],
+            entries: &[
+                entry(0, true),
+                entry(1, true),
+                entry(2, true),
+                entry(3, false),
+            ],
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("external-program"),

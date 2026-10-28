@@ -411,9 +411,15 @@ mod tests {
             .expect("comparable");
             let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * (1.0 + b.abs());
             assert!(close(ours.mean, theirs.mean), "{ours:?} {theirs:?}");
-            assert!(close(ours.worst_block, theirs.worst_block), "{ours:?} {theirs:?}");
+            assert!(
+                close(ours.worst_block, theirs.worst_block),
+                "{ours:?} {theirs:?}"
+            );
             assert!(close(ours.p99, theirs.p99), "{ours:?} {theirs:?}");
-            assert!(close(ours.mean_delta_l, theirs.mean_delta_l), "{ours:?} {theirs:?}");
+            assert!(
+                close(ours.mean_delta_l, theirs.mean_delta_l),
+                "{ours:?} {theirs:?}"
+            );
             assert_eq!(
                 ours.within(&COLOUR_LIMITS),
                 preview_error::verdict(&theirs, Class::Pointwise).passed()

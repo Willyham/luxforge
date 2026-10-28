@@ -126,9 +126,9 @@ impl Programs {
             Err(error) => return Registration::Refused(error.detail),
         };
         match self.loader.register(source, &entry) {
-            Ok(text) => Registration::Registered(Arc::new(Program::new(
-                package, entry, text, values, self,
-            ))),
+            Ok(text) => {
+                Registration::Registered(Arc::new(Program::new(package, entry, text, values, self)))
+            }
             Err(reason) => Registration::Refused(reason),
         }
     }
@@ -241,8 +241,7 @@ impl Program {
         {
             return program;
         }
-        *self
-            .disabled
+        self.disabled
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry(words)

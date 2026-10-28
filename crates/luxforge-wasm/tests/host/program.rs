@@ -64,8 +64,7 @@ struct Device {
 }
 
 fn device(test: &str) -> Option<Device> {
-    let (device, queue, info) =
-        luxforge_gpu::headless::device(test, wgpu::Limits::default())?;
+    let (device, queue, info) = luxforge_gpu::headless::device(test, wgpu::Limits::default())?;
     let adapter = format!(
         "{} ({:?}, {} {})",
         info.name, info.backend, info.driver, info.driver_info
@@ -122,11 +121,18 @@ fn a_correct_program_passes_its_probe_once_per_package_and_adapter_and_is_planne
     let Some(device) = device(test) else {
         return;
     };
-    let found = programs.probe(&entry).expect("the plan's program is found by its name");
+    let found = programs
+        .probe(&entry)
+        .expect("the plan's program is found by its name");
     assert_eq!(found.module(), "org.example.gainlift");
-    let run = found.begin(&device.adapter).expect("a pending program is probed");
+    let run = found
+        .begin(&device.adapter)
+        .expect("a pending program is probed");
     assert_eq!(module.program_state(), ProgramState::Probing);
-    assert!(found.begin(&device.adapter).is_none(), "one probe at a time");
+    assert!(
+        found.begin(&device.adapter).is_none(),
+        "one probe at a time"
+    );
     let steps = run.steps();
     assert_eq!(probe(run, &device), steps, "every value set, one a step");
     assert_eq!(
@@ -140,7 +146,10 @@ fn a_correct_program_passes_its_probe_once_per_package_and_adapter_and_is_planne
     assert_eq!(unit.program.entry, entry);
     assert!(unit.program.enabled);
     assert_eq!(unit.words.len(), 2);
-    assert!(found.begin(&device.adapter).is_none(), "probed once on this adapter");
+    assert!(
+        found.begin(&device.adapter).is_none(),
+        "probed once on this adapter"
+    );
 
     // A later launch on the same adapter reads the result and does not probe again; another
     // adapter probes it afresh.
@@ -163,7 +172,8 @@ fn a_correct_program_passes_its_probe_once_per_package_and_adapter_and_is_planne
 
 #[test]
 fn a_program_with_a_deliberate_error_fails_its_probe_and_the_stack_falls_back_naming_it() {
-    let test = "a_program_with_a_deliberate_error_fails_its_probe_and_the_stack_falls_back_naming_it";
+    let test =
+        "a_program_with_a_deliberate_error_fails_its_probe_and_the_stack_falls_back_naming_it";
     let package = package_with_program(&wrong_program());
     let entry = entry_of(&package.hash);
     let programs = naga_programs(None);
@@ -234,7 +244,9 @@ fn a_probe_stopped_before_its_end_leaves_the_program_pending() {
         .with_programs(programs.clone())
         .external(&package)
         .expect("a module");
-    let found = programs.probe(&entry_of(&package.hash)).expect("registered");
+    let found = programs
+        .probe(&entry_of(&package.hash))
+        .expect("registered");
     let mut run = found.begin("an adapter").expect("probed");
     // One step answered by a stand-in for the GPU: the component's native twin.
     let patches = run.patches().to_vec();
@@ -253,7 +265,10 @@ fn a_probe_stopped_before_its_end_leaves_the_program_pending() {
     assert_eq!(module.program_state(), ProgramState::Probing);
     drop(run);
     assert_eq!(module.program_state(), ProgramState::Pending);
-    assert!(found.begin("an adapter").is_some(), "probed again at its next use");
+    assert!(
+        found.begin("an adapter").is_some(),
+        "probed again at its next use"
+    );
 }
 
 #[test]
@@ -274,6 +289,9 @@ fn a_host_that_checks_no_program_and_a_host_that_never_probes_render_through_the
         .external(&package)
         .expect("a module");
     let answer = plan(&registry(module.clone()));
-    assert_eq!(answer.fallback().map(GpuFallback::code), Some("disabled-program"));
+    assert_eq!(
+        answer.fallback().map(GpuFallback::code),
+        Some("disabled-program")
+    );
     assert_eq!(module.program_state(), ProgramState::Pending);
 }

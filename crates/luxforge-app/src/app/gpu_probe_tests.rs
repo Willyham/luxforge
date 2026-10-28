@@ -70,14 +70,16 @@ fn codes(pixels: &ReadPixels) -> Vec<u8> {
     let ReadPixels::Codes(codes) = pixels else {
         panic!("codes were read");
     };
-    codes.iter().flat_map(|code| [code[0], code[1], code[2]]).collect()
+    codes
+        .iter()
+        .flat_map(|code| [code[0], code[1], code[2]])
+        .collect()
 }
 
 #[test]
 #[slow]
 fn a_pending_program_is_probed_on_the_tile_worker_once_and_its_stack_then_drawn_within_limits() {
-    let test =
-        "a_pending_program_is_probed_on_the_tile_worker_once_and_its_stack_then_drawn_within_limits";
+    let test = "a_pending_program_is_probed_on_the_tile_worker_once_and_its_stack_then_drawn_within_limits";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
