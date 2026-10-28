@@ -191,6 +191,14 @@ pub trait PointwiseColor: Send + Sync {
     fn gpu(&self) -> Option<GpuDescription> {
         None
     }
+    /// Whether this unit, compiled for a stage reduced from full resolution, draws a stand-in
+    /// there for its full-resolution output rather than that output at the reduced size, as
+    /// grain's reduced-stage field, matched to the full-resolution field in its statistics alone,
+    /// does. `false`, the default: a unit whose equations are normalized to the stage, as every
+    /// pointwise colour unit and the vignette's are, draws the same picture at any size.
+    fn stands_in_when_reduced(&self) -> bool {
+        false
+    }
 }
 
 /// What one colour-stage layer compiles into: an ordered, bounded list of pointwise units evaluated

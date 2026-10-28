@@ -466,6 +466,22 @@ impl Compiled {
         })
     }
 
+    /// Whether a colour unit in any segment draws a reduced-stage stand-in for its full-resolution
+    /// output ([`crate::modules::PointwiseColor::stands_in_when_reduced`]). `O(units)`, no pixel
+    /// read.
+    pub(crate) fn reduced_stand_ins(&self) -> bool {
+        self.segments.iter().any(|segment| {
+            segment.operations.iter().any(|operation| match operation {
+                Processing::Color(colour) => colour
+                    .units()
+                    .iter()
+                    .chain(colour.tail())
+                    .any(|unit| unit.stands_in_when_reduced()),
+                _ => false,
+            })
+        })
+    }
+
     /// Whether a spatial operation placed at `stage` (a restoration or a spatial layer) enters any
     /// segment. `O(segments)`, no pixel read.
     pub(crate) fn runs_spatial(&self, stage: crate::EffectStage) -> bool {

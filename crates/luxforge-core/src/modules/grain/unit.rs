@@ -463,6 +463,13 @@ impl PointwiseColor for Grain {
         }
     }
 
+    /// A non-neutral grain compiled with a footprint above 1 draws the study's reduced-stage
+    /// field, which matches the reduced full-resolution grain in its statistics, not pixel for
+    /// pixel.
+    fn stands_in_when_reduced(&self) -> bool {
+        self.field.beta != 0.0 && (self.footprint.x > 1.0 || self.footprint.y > 1.0)
+    }
+
     fn is_finite(&self) -> bool {
         [self.amount, self.size, self.roughness]
             .into_iter()
