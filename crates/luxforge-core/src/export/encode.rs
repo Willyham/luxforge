@@ -334,15 +334,26 @@ pub(crate) fn encode_jpeg_limited(
     limit::search(limit_bytes, options.quality, &mut attempt, progress, cancel)
 }
 
+/// The embedded profile header's creation date and time (ICC.1 header bytes 24 to 35: year, month,
+/// day, hours, minutes and seconds, each a big-endian `u16`). `moxcms` stamps the moment it encodes,
+/// so without a fixed date the same picture exported by two launches differs in those bytes.
+const PROFILE_DATE: [u16; 6] = [2000, 1, 1, 0, 0, 0];
+
 /// The one embedded sRGB ICC profile, built once from `moxcms`'s own sRGB definition (which
-/// carries its `ProfileDescription` tag) and encoded through its writer.
+/// carries its `ProfileDescription` tag) and encoded through its writer, dated [`PROFILE_DATE`]:
+/// the same pixels always export as the same bytes. The header carries no profile ID, so nothing
+/// else covers the date.
 pub(crate) fn srgb_profile() -> &'static [u8] {
     static PROFILE: OnceLock<Vec<u8>> = OnceLock::new();
     PROFILE
         .get_or_init(|| {
-            moxcms::ColorProfile::new_srgb()
+            let mut profile = moxcms::ColorProfile::new_srgb()
                 .encode()
-                .expect("the built-in sRGB profile always encodes")
+                .expect("the built-in sRGB profile always encodes");
+            for (field, value) in profile[24..36].chunks_exact_mut(2).zip(PROFILE_DATE) {
+                field.copy_from_slice(&value.to_be_bytes());
+            }
+            profile
         })
         .as_slice()
 }
@@ -809,6 +820,19 @@ mod tests {
             .expect("icc present");
         assert_eq!(decoded_profile, srgb_profile());
         crate::profile::check(&decoded_profile, 3).expect("accepted as standard sRGB");
+    }
+
+    #[test]
+    fn the_embedded_profile_is_dated_the_same_whenever_it_is_encoded() {
+        let profile = srgb_profile();
+        let date: Vec<u16> = profile[24..36]
+            .chunks_exact(2)
+            .map(|field| u16::from_be_bytes([field[0], field[1]]))
+            .collect();
+        assert_eq!(date, PROFILE_DATE);
+        // No profile ID (an MD5 over the header with the date in it) to go stale.
+        assert!(profile[84..100].iter().all(|byte| *byte == 0));
+        crate::profile::check(profile, 3).expect("still accepted as standard sRGB");
     }
 
     #[test]
