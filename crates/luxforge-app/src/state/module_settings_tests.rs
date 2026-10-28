@@ -53,6 +53,7 @@ fn read(disabled: &[&str]) -> ModulesRead {
         modules,
         host: registry.host_descriptors().into_iter().cloned().collect(),
         layout,
+        packages: crate::state::external_modules::PackageList::default(),
     }
 }
 

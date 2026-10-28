@@ -44,6 +44,9 @@ impl Editor {
                         .collect();
                     self.layout.adopt_listing(&discovery.modules, &modules);
                     self.layout.adopt_view(discovery.layout, &modules);
+                    if let Some(packages) = &discovery.packages {
+                        self.layout.adopt_packages(packages);
+                    }
                     self.modules_loaded(Ok(modules));
                     self.layout_event("read");
                 }
@@ -272,9 +275,10 @@ impl Editor {
             .iter()
             .chain(&tools.developer)
             .map(|section| {
-                json!({"module": section.module_id, "kept": section.kept,
-                       "expanded": section.expanded,
-                       "unavailable": section.unavailable.is_some()})
+                json!({"module": section.module_id, "title": section.title,
+                       "kept": section.kept, "expanded": section.expanded,
+                       "unavailable": section.unavailable.is_some(),
+                       "unavailable_reason": section.unavailable, "badge": section.badge})
             })
             .collect();
         let band_menu = tools

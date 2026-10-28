@@ -147,19 +147,26 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
     // The sheet claims the pointer over everything it covers, so a canvas tool under it draws no
     // cursor of its own and the system's arrow is shown.
     .interaction(iced::mouse::Interaction::Idle);
-    Some(
-        iced::widget::stack(vec![
-            backdrop.into(),
-            container(sheet)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(theme::SPACING * 2.0)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center)
-                .into(),
-        ])
-        .into(),
-    )
+    let mut layers = vec![
+        backdrop.into(),
+        container(sheet)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(theme::SPACING * 2.0)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into(),
+    ];
+    // Install module…'s review sheet and Uninstall…'s confirmation are modal over the sheet.
+    if open == SettingsTab::Modules
+        && let Some(dialog) = model
+            .modules
+            .as_ref()
+            .and_then(super::module_settings::dialog)
+    {
+        layers.push(dialog);
+    }
+    Some(iced::widget::stack(layers).into())
 }
 
 fn tab_icon(tab: SettingsTab) -> Icon {

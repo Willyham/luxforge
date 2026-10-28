@@ -2344,6 +2344,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "wgpu",
+ "zip",
 ]
 
 [[package]]

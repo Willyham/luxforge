@@ -10,6 +10,15 @@
 //! layout drawn is the last answer with the writes still outstanding laid over it. Nothing here
 //! changes a recipe, so the tab needs no draft. Every derivation is `O(m²)` in the module count at
 //! most, and a closed tab derives nothing.
+//!
+//! External modules ([`super::external_modules`]) add `module.package.list` to the read: their
+//! origin and state badges, the rows of modules this launch did not register (installed since,
+//! or refused), Install module…'s review sheet, Uninstall…'s confirmation, Load from folder… and
+//! Remove in developer mode, and the Relaunch to apply line.
+use super::external_modules::{
+    self, ExternalDetail, PackageList, PackageRow, PackageWrite, Review, ReviewModel, RowBadge,
+    Uninstall, UninstallModel,
+};
 use luxforge_core::{
     EffectStage, ModuleDescriptor, SourceTag, Toolset,
     module_layout::{LayoutView, ListedModule, ModuleOrigin, ToolsetOrder},
@@ -40,16 +49,18 @@ const STAGES: [(EffectStage, &str); 7] = [
 ];
 
 /// One read of what the tab shows: `module.list`'s modules and the host's descriptors beside them,
-/// and `module.layout.read`.
+/// `module.layout.read`, and `module.package.list`'s external modules.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModulesRead {
     pub(crate) modules: Vec<ListedModule>,
     pub(crate) host: Vec<ModuleDescriptor>,
     pub(crate) layout: LayoutView,
+    pub(crate) packages: PackageList,
 }
 
 impl ModulesRead {
-    /// The read from the two answers as the owner gave them.
+    /// The read from the first two answers as the owner gave them, with no external module; the
+    /// tab's read adds `module.package.list`'s with [`Self::with_packages`].
     pub(crate) fn parse(mut listed: Value, layout: Value) -> Result<Self, String> {
         let unreadable = |error: serde_json::Error| format!("unreadable modules: {error}");
         Ok(Self {
@@ -57,6 +68,24 @@ impl ModulesRead {
             host: serde_json::from_value(listed["host"].take()).map_err(unreadable)?,
             layout: serde_json::from_value(layout)
                 .map_err(|error| format!("unreadable module layout: {error}"))?,
+            packages: PackageList::default(),
+        })
+    }
+
+    /// The read with `module.package.list`'s answer.
+    pub(crate) fn with_packages(mut self, packages: Value) -> Result<Self, String> {
+        self.packages = PackageList::parse(packages)?;
+        Ok(self)
+    }
+
+    /// The external module rows `module.list` does not list: installed since this launch, or read
+    /// and not registered. They join Adjustments, the only home open to an external module.
+    fn unregistered(&self) -> impl Iterator<Item = &PackageRow> {
+        self.packages.modules.iter().filter(|row| {
+            !self
+                .modules
+                .iter()
+                .any(|listed| listed.descriptor.id == row.module)
         })
     }
 
@@ -220,21 +249,61 @@ pub(crate) struct ModulesTab {
     pub(crate) toast: Option<UndoToast>,
     /// A change refused, by module when it named one, with its reason, shown in the detail pane.
     pub(crate) refusal: Option<(Option<String>, String)>,
+    /// This launch serves developer mode: Load from folder… and Remove are offered.
+    pub(crate) developer: bool,
+    /// The system file picker Install module… or Load from folder… opened is up.
+    pub(crate) picking: bool,
+    /// Install module…'s review sheet, from the package's inspection to its install.
+    pub(crate) review: Option<Review>,
+    /// Uninstall…'s confirmation.
+    pub(crate) uninstall: Option<Uninstall>,
+    /// The lifecycle write in flight. One goes at a time; a gesture while one is out sends
+    /// nothing.
+    pub(crate) package_write: Option<PackageWrite>,
+    /// The last lifecycle write and what it answered, for the captured frame.
+    pub(crate) answered: Option<Value>,
+    /// What Relaunch did: the command a relaunch starts once the catalog has closed, or in an
+    /// evidence run the command it would have started.
+    pub(crate) relaunch: Option<Value>,
 }
 
 impl ModulesTab {
-    /// The tab was left or the sheet closed: the toast goes, a held row is let go and a refusal
-    /// is no longer said. The writes made still land, and the selection is kept for the next
-    /// opening.
+    /// The tab was left or the sheet closed: the toast goes, a held row is let go, a refusal is no
+    /// longer said and the review sheet or confirmation is put away. The writes made still land,
+    /// pending changes stay pending, and the selection is kept for the next opening.
     pub(crate) fn leave(&mut self) {
         self.toast = None;
         self.drag = None;
         self.refusal = None;
+        self.review = None;
+        self.uninstall = None;
     }
 
-    /// No layout write is in flight or waiting.
+    /// No layout or lifecycle write is in flight or waiting.
     pub(crate) fn idle(&self) -> bool {
-        self.writing.is_none() && self.waiting.is_empty()
+        self.writing.is_none() && self.waiting.is_empty() && self.package_write.is_none()
+    }
+
+    /// The review sheet or the uninstall confirmation is over the tab: it takes Escape and
+    /// Return, and the list's keys wait.
+    pub(crate) fn dialog(&self) -> bool {
+        self.review.is_some() || self.uninstall.is_some()
+    }
+
+    /// Install module… can open its picker now: the store takes writes, nothing is in flight and
+    /// no dialog or picker is up.
+    pub(crate) fn can_install(&self) -> bool {
+        self.read
+            .as_ref()
+            .is_some_and(|read| read.packages.writable())
+            && self.package_write.is_none()
+            && !self.dialog()
+            && !self.picking
+    }
+
+    /// The external module row of `module`, as the last read listed it.
+    pub(crate) fn package(&self, module: &str) -> Option<&PackageRow> {
+        self.read.as_ref()?.packages.row(module)
     }
 
     /// The layout as drawn: the last answer with every outstanding write laid over it.
@@ -456,6 +525,8 @@ pub(crate) enum RowControl {
     Follows(bool),
     /// Always on, with the reason.
     Lock(String),
+    /// None: an external module this launch did not register has no switch until it does.
+    None,
 }
 
 /// Where the accent line marks the dragged row landing on this one.
@@ -485,6 +556,8 @@ pub(crate) struct ModuleRow {
     pub(crate) drop: Option<DropSide>,
     /// A drag of a row in this group is under way, so the pointer entering this row names it.
     pub(crate) drop_target: bool,
+    /// An external module's origin badge, then its state badge.
+    pub(crate) badges: Vec<RowBadge>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -519,6 +592,8 @@ pub(crate) struct ModuleDetail {
     pub(crate) api: Vec<String>,
     /// Why the last change to it was refused.
     pub(crate) refusal: Option<String>,
+    /// An external module's version, program, state, folder and actions.
+    pub(crate) external: Option<ExternalDetail>,
 }
 
 /// The tab as drawn.
@@ -535,6 +610,16 @@ pub(crate) struct ModulesModel {
     /// Stored choices for modules this run does not register, which are kept.
     pub(crate) unrecognized: Vec<String>,
     pub(crate) dragging: bool,
+    /// Install module… is enabled.
+    pub(crate) install: bool,
+    /// Load from folder… is drawn, in developer mode, and enabled when `install` is.
+    pub(crate) load_folder: bool,
+    /// The line under the header while changes wait for the next launch, with Relaunch.
+    pub(crate) pending: Option<String>,
+    /// Why nothing can be installed, or why the launch loaded no external module.
+    pub(crate) store_problem: Option<String>,
+    pub(crate) review: Option<ReviewModel>,
+    pub(crate) uninstall: Option<UninstallModel>,
 }
 
 /// The tab for `tab`.
@@ -549,10 +634,23 @@ pub(crate) fn derive(tab: &ModulesTab) -> ModulesModel {
             .filter(|(module, _)| module.is_none())
             .map(|(_, reason)| reason.clone()),
         dragging: tab.drag.is_some(),
+        review: tab.review.as_ref().map(external_modules::derive_review),
+        uninstall: tab
+            .uninstall
+            .as_ref()
+            .map(external_modules::derive_uninstall),
         ..ModulesModel::default()
     };
     let (Some(read), Some(layout)) = (tab.read.as_ref(), tab.layout()) else {
         return model;
+    };
+    model.install = tab.can_install();
+    model.load_folder = tab.developer;
+    model.store_problem = read.packages.problem();
+    model.pending = match read.packages.pending() {
+        0 => None,
+        1 => Some("1 change applies when Luxforge relaunches.".to_owned()),
+        count => Some(format!("{count} changes apply when Luxforge relaunches.")),
     };
     model.can_reset_all = tab.reset(None).is_some();
     model.unrecognized = layout.unrecognized.clone();
@@ -643,7 +741,17 @@ fn groups(read: &ModulesRead, layout: &LayoutView) -> Vec<ModuleGroup> {
             });
             for module in ordered.iter().copied().chain(homeless) {
                 let grip = order.is_some_and(|order| order.order.contains(&module.descriptor.id));
-                rows.push(module_row(module, toolset, layout, grip));
+                let mut row = module_row(module, toolset, layout, grip);
+                row.badges = external_modules::row_badges(
+                    module.origin,
+                    read.packages.row(&module.descriptor.id),
+                );
+                rows.push(row);
+            }
+            // An external module this launch did not register keeps its place at the group's end,
+            // with no switch or grip until a launch registers it.
+            if toolset == Toolset::Adjustments {
+                rows.extend(read.unregistered().map(unregistered_row));
             }
             let can_reset = order.is_some_and(|order| order.order != order.default);
             ModuleGroup {
@@ -681,6 +789,7 @@ fn host_row(host: &ModuleDescriptor, toolset: Toolset) -> ModuleRow {
         dragged: false,
         drop: None,
         drop_target: false,
+        badges: Vec::new(),
     }
 }
 
@@ -723,6 +832,29 @@ fn module_row(
         dragged: false,
         drop: None,
         drop_target: false,
+        badges: Vec::new(),
+    }
+}
+
+/// The row of an external module this launch did not register: installed or loaded since it
+/// started, or read and refused. Its title is the one the store or the launch knows.
+fn unregistered_row(row: &PackageRow) -> ModuleRow {
+    ModuleRow {
+        key: RowKey {
+            toolset: Toolset::Adjustments,
+            module: row.module.clone(),
+        },
+        title: row.title(),
+        qualifier: None,
+        letter: None,
+        control: RowControl::None,
+        grip: false,
+        selected: false,
+        off: false,
+        dragged: false,
+        drop: None,
+        drop_target: false,
+        badges: external_modules::row_badges(row.origin, Some(row)),
     }
 }
 
@@ -793,7 +925,28 @@ fn detail(
     layout: &LayoutView,
     selected: &RowKey,
 ) -> Option<ModuleDetail> {
-    let module = read.module(&selected.module)?;
+    let Some(module) = read.module(&selected.module) else {
+        // An external module this launch did not register: what the store and the launch say of
+        // it, with no placement, stages or methods until a launch registers it.
+        let row = read.packages.row(&selected.module)?;
+        return Some(ModuleDetail {
+            title: row.title(),
+            origin: external_modules::origin_badge(row.origin).unwrap_or("Built in"),
+            hint: None,
+            shown: None,
+            lives: Vec::new(),
+            stages: Vec::new(),
+            renders: String::new(),
+            photos: None,
+            api: Vec::new(),
+            refusal: tab
+                .refusal
+                .as_ref()
+                .filter(|(refused, _)| refused.as_deref() == Some(row.module.as_str()))
+                .map(|(_, reason)| reason.clone()),
+            external: Some(external_modules::external_detail(row, tab.developer)),
+        });
+    };
     let host = module.id == HOST_MASKS;
     // Where it lives: each group listing it, with its place in an ordered one.
     let lives = groups(read, layout)
@@ -886,6 +1039,10 @@ fn detail(
             .as_ref()
             .filter(|(refused, _)| refused.as_deref() == Some(module.id.as_str()))
             .map(|(_, reason)| reason.clone()),
+        external: read
+            .packages
+            .row(&module.id)
+            .map(|row| external_modules::external_detail(row, tab.developer)),
     })
 }
 

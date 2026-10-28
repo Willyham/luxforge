@@ -1564,6 +1564,12 @@ fn module_layout_steps_round_trip_and_refuse_what_they_do_not_take() {
         {"modules": {"customize": {"toolset": "tools"}}},
         {"modules": {"tab_move": {"toolset": "tools", "module": "luxforge.crop", "to": "up"}}},
         {"modules": "reset_all"},
+        {"modules": {"install": "/tmp/glow.lfmodule"}},
+        {"modules": "review_install"},
+        {"modules": {"uninstall": "org.example.glow"}},
+        {"modules": "confirm_uninstall"},
+        {"modules": "dismiss"},
+        {"modules": "relaunch"},
         {"settings": {"open": true, "tab": "modules"}},
     ]));
     refused(
@@ -1577,6 +1583,10 @@ fn module_layout_steps_round_trip_and_refuse_what_they_do_not_take() {
     refused(
         json!([{"modules": {"band_menu": ""}}]),
         "modules step module",
+    );
+    refused(
+        json!([{"modules": {"install": " "}}]),
+        "modules step install path",
     );
 }
 

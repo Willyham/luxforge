@@ -225,6 +225,9 @@ pub(crate) struct ModulesKeys {
     pub(crate) dragging: bool,
     /// The Undo toast shows, so Cmd+Z undoes the last change.
     pub(crate) undo: bool,
+    /// The review sheet or the uninstall confirmation is open: Escape dismisses it, Return
+    /// answers it, and the list takes no key.
+    pub(crate) dialog: bool,
 }
 
 /// A key the Modules tab takes ([`KeyContext::settings_modules`]): ↑ ↓ select, ⌥↑ ⌥↓ move the
@@ -238,6 +241,15 @@ fn modules_key(keyboard: &Keys, status: Status, keys: ModulesKeys) -> Option<Mes
     let Keys::KeyPressed { key, modifiers, .. } = keyboard else {
         return None;
     };
+    // The review sheet or the uninstall confirmation is modal over the list: Escape puts it away
+    // and Return answers the review's Install or Replace, never a destructive button.
+    if keys.dialog {
+        return match key {
+            Key::Named(Named::Escape) => modules(ModulesMessage::Dismiss),
+            Key::Named(Named::Enter) if plain(modifiers) => modules(ModulesMessage::Return),
+            _ => None,
+        };
+    }
     match key {
         Key::Named(Named::Escape) if keys.dragging => {
             modules(ModulesMessage::Drag(ModuleDragEdit::Cancel))

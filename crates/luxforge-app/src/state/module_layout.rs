@@ -25,7 +25,7 @@ use crate::state::{
 pub(crate) use luxforge_core::Toolset;
 use luxforge_core::{
     Control, LayerDescription, ModuleDescriptor, ParameterKind,
-    module_layout::{LayoutView, ListedModule, placed_in},
+    module_layout::{LayoutView, ListedModule, ModuleOrigin, placed_in},
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +57,13 @@ pub(crate) struct EffectiveLayout {
     letters: BTreeMap<String, LetterClaim>,
     /// Each locked module's reason.
     locked: BTreeMap<String, String>,
+    /// Each listed module that is not built in, with where it came from: its band carries the
+    /// origin badge.
+    origins: BTreeMap<String, ModuleOrigin>,
+    /// Each external module this launch read that did not load, with its title and the loader's
+    /// reason, as `module.package.list` answered at discovery: its band and the stale-preview
+    /// notice say *Didn't load* rather than *Not installed*.
+    failed: BTreeMap<String, (String, String)>,
     /// A layout write of this desktop's is in flight: the menus offer nothing until it answers.
     pub(crate) pending: bool,
 }
@@ -105,6 +112,11 @@ impl EffectiveLayout {
                         .collect(),
                 )
             })
+            .collect();
+        self.origins = listed
+            .iter()
+            .filter(|module| module.origin != ModuleOrigin::BuiltIn)
+            .map(|module| (module.descriptor.id.clone(), module.origin))
             .collect();
         // Until the layout itself is read, the listing's switches say what is off.
         if self.view.is_none() {
@@ -171,6 +183,32 @@ impl EffectiveLayout {
         // A locked module is always on, whatever an older read said.
         let locked = &self.locked;
         self.off.retain(|id| !locked.contains_key(id));
+    }
+
+    /// Adopt `module.package.list`'s answer at discovery: the external modules this launch read
+    /// and did not load.
+    pub(crate) fn adopt_packages(&mut self, packages: &super::external_modules::PackageList) {
+        self.failed = packages
+            .modules
+            .iter()
+            .filter(|row| row.state == super::external_modules::LoadState::Failed)
+            .map(|row| {
+                let reason = row.reason.clone().unwrap_or_default();
+                (row.module.clone(), (row.title(), reason))
+            })
+            .collect();
+    }
+
+    /// Where `module` came from: built in unless `module.list` said otherwise.
+    pub(crate) fn origin(&self, module: &str) -> ModuleOrigin {
+        self.origins.get(module).copied().unwrap_or_default()
+    }
+
+    /// The title and the loader's reason of an external module this launch read and did not load.
+    pub(crate) fn failure(&self, module: &str) -> Option<(&str, &str)> {
+        self.failed
+            .get(module)
+            .map(|(title, reason)| (title.as_str(), reason.as_str()))
     }
 
     /// The layout as the owner last answered it, or `None` before it has.

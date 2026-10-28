@@ -1,7 +1,9 @@
-//! The `modules` evidence step ([`ModulesStep`]): each gesture on the person's module layout sent
-//! through the message its control sends, captured once every layout write outstanding has
-//! answered and the owner's `module.layout.read` and `module.list` have been read beside the frame,
-//! and what a captured frame records of the layout the workspace draws by.
+//! The `modules` evidence step ([`ModulesStep`]): each gesture on the person's module layout, and
+//! each external-module gesture of Settings › Modules, sent through the message its control sends,
+//! captured once every layout and lifecycle write outstanding has answered, any package being read
+//! has been, and the owner's `module.layout.read`, `module.list` and `module.package.list` have
+//! been read beside the frame, and what a captured frame records of the layout the workspace draws
+//! by.
 use super::Settle;
 use crate::app::{
     Editor,
@@ -16,6 +18,7 @@ use crate::app::{
 };
 use crate::state::{
     MenuTarget,
+    external_modules::ReviewState,
     module_layout::Move,
     module_settings::{self, RowKey},
     settings::SettingsTab,
@@ -71,8 +74,11 @@ impl Editor {
                 | ModulesStep::Enabled(_)
                 | ModulesStep::TabMove(_)
                 | ModulesStep::ResetAll
+                | ModulesStep::ReviewInstall
+                | ModulesStep::ConfirmUninstall
         );
         let before = self.layout_writes();
+        let tab = |message: TabMessage| Message::Settings(SettingsMessage::Modules(message));
         let task = match step {
             ModulesStep::BandMenu(module) => {
                 if !self
@@ -148,9 +154,55 @@ impl Editor {
                 if self.settings.open != Some(SettingsTab::Modules) {
                     return self.fail_step("Settings › Modules is not open");
                 }
-                self.update(Message::Settings(SettingsMessage::Modules(
-                    TabMessage::ResetAll,
-                )))
+                self.update(tab(TabMessage::ResetAll))
+            }
+            // Install module… with the path picked: the tab opens as the gesture opens it, and the
+            // path goes where the system file picker's answer goes.
+            ModulesStep::Install(path) => {
+                let opened = if self.settings.open == Some(SettingsTab::Modules) {
+                    Task::none()
+                } else {
+                    self.update(Message::Settings(SettingsMessage::Open(
+                        SettingsTab::Modules,
+                    )))
+                };
+                let picked = self.update(tab(TabMessage::InstallPicked(Some(path.into()))));
+                if self.settings.modules.review.is_none() {
+                    return Task::batch([
+                        opened,
+                        picked,
+                        self.fail_step("Install module… opened no review sheet"),
+                    ]);
+                }
+                Task::batch([opened, picked])
+            }
+            ModulesStep::ReviewInstall => self.update(tab(TabMessage::ReviewInstall)),
+            ModulesStep::Uninstall(module) => {
+                if self.settings.open != Some(SettingsTab::Modules) {
+                    return self.fail_step("Settings › Modules is not open");
+                }
+                let task = self.update(tab(TabMessage::Uninstall(module.clone())));
+                if self.settings.modules.uninstall.is_none() {
+                    return Task::batch([
+                        task,
+                        self.fail_step(format!("{module} offers no Uninstall…")),
+                    ]);
+                }
+                task
+            }
+            ModulesStep::ConfirmUninstall => self.update(tab(TabMessage::UninstallConfirm)),
+            ModulesStep::Dismiss => {
+                if !self.settings.modules.dialog() {
+                    return self.fail_step("no review sheet or confirmation is open");
+                }
+                self.update(tab(TabMessage::Dismiss))
+            }
+            ModulesStep::Relaunch => {
+                let task = self.update(tab(TabMessage::Relaunch));
+                if self.settings.modules.relaunch.is_none() {
+                    return Task::batch([task, self.fail_step(self.status.text.clone())]);
+                }
+                task
             }
         };
         if writes && self.layout_writes() == before {
@@ -160,13 +212,14 @@ impl Editor {
         task
     }
 
-    /// The layout writes this desktop has sent, the workspace's and the Modules tab's, counted so a
-    /// step can tell whether its gesture sent one.
-    fn layout_writes(&self) -> (bool, usize) {
+    /// The layout and lifecycle writes this desktop has sent, the workspace's and the Modules
+    /// tab's, counted so a step can tell whether its gesture sent one.
+    fn layout_writes(&self) -> (bool, usize, bool) {
         let tab = &self.settings.modules;
         (
             self.layout.pending,
             usize::from(tab.writing.is_some()) + tab.waiting.len(),
+            tab.package_write.is_some(),
         )
     }
 
@@ -191,7 +244,17 @@ impl Editor {
         }
         let tab = &self.settings.modules;
         let opening = self.settings.open == Some(SettingsTab::Modules) && tab.read.is_none();
-        if self.layout.pending || !tab.idle() || tab.reading || opening || !self.modules_ready {
+        let inspecting = tab
+            .review
+            .as_ref()
+            .is_some_and(|review| review.state == ReviewState::Inspecting);
+        if self.layout.pending
+            || !tab.idle()
+            || tab.reading
+            || opening
+            || inspecting
+            || !self.modules_ready
+        {
             return Task::none();
         }
         if let Some(evidence) = &mut self.evidence {
@@ -202,7 +265,8 @@ impl Editor {
             move || {
                 let (layout, _) = call(&owner, client, "module.layout.read", json!({}))?;
                 let (listed, _) = call(&owner, client, "module.list", json!({}))?;
-                Ok(json!({"layout": layout, "modules": listed["modules"]}))
+                let (packages, _) = call(&owner, client, "module.package.list", json!({}))?;
+                Ok(json!({"layout": layout, "modules": listed["modules"], "packages": packages}))
             },
             |result| Message::Evidence(EvidenceMessage::ModulesRead(result)),
         )
@@ -235,7 +299,8 @@ impl Editor {
                     })
                     .collect();
                 self.note_step(json!({"owner": {"module_layout_read": read["layout"],
-                                                 "module_list": modules}}));
+                                                 "module_list": modules,
+                                                 "module_package_list": read["packages"]}}));
                 self.settle_step(Settle::Modules, "module_layout_read");
             }
             Err(reason) => {

@@ -7,9 +7,12 @@ use crate::{
         Message,
         settings::{ModuleDragEdit, ModulesMessage, SettingsMessage},
     },
-    state::module_settings::{
-        self as modules_state, DropSide, ModuleDetail, ModuleGroup, ModuleRow, ModulesModel,
-        RowControl,
+    state::{
+        external_modules::{ExternalDetail, ReviewModel, RowBadge, Tone, UninstallModel},
+        module_settings::{
+            self as modules_state, DropSide, ModuleDetail, ModuleGroup, ModuleRow, ModulesModel,
+            RowControl,
+        },
     },
 };
 use iced::{
@@ -24,13 +27,18 @@ use iced::{
     },
 };
 use luxforge_ui::{
-    BadgeModel, ButtonSize, ButtonTone, DropEdge, Element, Icon, IconButtonModel, ToggleModel,
-    Token, badge, caption, drop_feedback, error_caption, icon, icon_button, label, section_label,
-    switch, text_button, theme, title,
+    BadgeModel, BadgeTone, ButtonSize, ButtonTone, DropEdge, Element, Icon, IconButtonModel,
+    ToggleModel, Token, badge, caption, drop_feedback, error_caption, icon, icon_button, label,
+    section_label, switch, text_button, theme, title, toned_badge,
 };
 
 /// The detail pane's width beside the list.
 const DETAIL_WIDTH: f32 = 216.0;
+
+/// The review sheet's and the confirmation's width, their most height, and the width of a fact's name.
+const DIALOG_WIDTH: f32 = 460.0;
+const DIALOG_HEIGHT: f32 = 440.0;
+const FACT_WIDTH: f32 = 72.0;
 
 /// The list's scrollable, which a selection by keyboard or by Customize scrolls.
 fn list_id() -> Id {
@@ -55,22 +63,60 @@ pub(crate) fn modules_tab(model: Option<&ModulesModel>) -> Element<'_, Message> 
     let Some(tab) = model else {
         return content.push(title("Modules")).into();
     };
-    content = content
-        .push(
-            row![
-                title("Modules"),
-                Space::new().width(Length::Fill),
-                text_button(
-                    "Reset all",
-                    ButtonTone::Quiet,
-                    ButtonSize::Compact,
-                    tab.can_reset_all
-                        .then_some(modules(ModulesMessage::ResetAll)),
-                ),
-            ]
-            .align_y(Alignment::Center),
-        )
-        .push(caption(modules_state::INTRO));
+    let mut header = row![title("Modules"), Space::new().width(Length::Fill)]
+        .spacing(theme::SPACING / 2.0)
+        .align_y(Alignment::Center);
+    if tab.load_folder {
+        header = header.push(text_button(
+            "Load from folder\u{2026}",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            tab.install.then_some(modules(ModulesMessage::LoadFolder)),
+        ));
+    }
+    header = header
+        .push(text_button(
+            "Install module\u{2026}",
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            tab.install.then_some(modules(ModulesMessage::Install)),
+        ))
+        .push(text_button(
+            "Reset all",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            tab.can_reset_all
+                .then_some(modules(ModulesMessage::ResetAll)),
+        ));
+    content = content.push(header).push(caption(modules_state::INTRO));
+    // Installs, updates and uninstalls apply at the next launch: the line counts them and offers
+    // Relaunch, as Experiments' launch flags say Relaunch to apply.
+    if let Some(pending) = &tab.pending {
+        content = content.push(
+            container(
+                row![
+                    text(pending.clone())
+                        .size(theme::SIZE_CAPTION)
+                        .style(theme::ink(Token::Accent)),
+                    Space::new().width(Length::Fill),
+                    text_button(
+                        "Relaunch",
+                        ButtonTone::Primary,
+                        ButtonSize::Compact,
+                        Some(modules(ModulesMessage::Relaunch)),
+                    ),
+                ]
+                .spacing(theme::SPACING)
+                .align_y(Alignment::Center),
+            )
+            .padding([4.0, theme::SPACING])
+            .width(Length::Fill)
+            .style(theme::control_surface),
+        );
+    }
+    if let Some(problem) = &tab.store_problem {
+        content = content.push(error_caption(problem.clone()));
+    }
     if let Some(error) = &tab.error {
         content = content.push(error_caption(format!(
             "Could not read the modules: {error}"
@@ -206,6 +252,9 @@ fn row_view(module: &ModuleRow) -> Element<'_, Message> {
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
+    for badge in &module.badges {
+        body = body.push(row_badge(badge));
+    }
     if let Some(qualifier) = &module.qualifier {
         body = body.push(caption(qualifier.clone()));
     }
@@ -260,6 +309,10 @@ fn row_view(module: &ModuleRow) -> Element<'_, Message> {
             },
             Some(modules(ModulesMessage::Locked(module.key.clone()))),
         ),
+        // No switch until a launch registers it; the space keeps the titles in line.
+        RowControl::None => Space::new()
+            .width(Length::Fixed(theme::SWITCH_WIDTH))
+            .into(),
     };
     let line: Element<'_, Message> = row![grip, select, control]
         .spacing(theme::SPACING / 2.0)
@@ -310,23 +363,36 @@ fn detail_view(detail: &ModuleDetail) -> Element<'_, Message> {
     ]
     .spacing(theme::SPACING)
     .width(Length::Fill);
+    if let Some(external) = &detail.external
+        && let Some(state) = &external.state
+    {
+        pane = pane.push(row_badge(state));
+    }
     if let Some(hint) = &detail.hint {
         pane = pane.push(caption(hint.clone()));
     }
     if let Some(refusal) = &detail.refusal {
         pane = pane.push(error_caption(refusal.clone()));
     }
+    if let Some(external) = &detail.external {
+        pane = external_facts(pane, external);
+    }
     if let Some(shown) = &detail.shown {
         pane = pane.push(fact("Shown", vec![caption(shown.clone())]));
     }
-    pane = pane.push(fact(
-        "Lives in",
-        detail
-            .lives
-            .iter()
-            .map(|line| caption(line.clone()))
-            .collect(),
-    ));
+    if !detail.lives.is_empty() {
+        pane = pane.push(fact(
+            "Lives in",
+            detail
+                .lives
+                .iter()
+                .map(|line| caption(line.clone()))
+                .collect(),
+        ));
+    }
+    if detail.stages.is_empty() {
+        return pane.into();
+    }
     let stages =
         detail
             .stages
@@ -367,6 +433,247 @@ fn detail_view(detail: &ModuleDetail) -> Element<'_, Message> {
         ));
     }
     pane.into()
+}
+
+/// One state or origin badge, in its tone.
+fn row_badge<'a>(model: &RowBadge) -> Element<'a, Message> {
+    toned_badge(
+        &BadgeModel {
+            label: model.label.to_owned(),
+            tooltip: None,
+        },
+        match model.tone {
+            Tone::Neutral => BadgeTone::Neutral,
+            Tone::Accent => BadgeTone::Accent,
+            Tone::Error => BadgeTone::Error,
+        },
+    )
+}
+
+/// An external module's part of the detail pane: that Luxforge hasn't reviewed it, its version
+/// and program, its folder, what applies at relaunch, the loader's reason word for word with Copy
+/// error, and Install module…, Uninstall… and Remove where they apply.
+fn external_facts<'a>(
+    pane: iced::widget::Column<'a, Message, luxforge_ui::Theme>,
+    external: &'a ExternalDetail,
+) -> iced::widget::Column<'a, Message, luxforge_ui::Theme> {
+    let mut pane = pane.push(caption(external.trust));
+    if let Some(reason) = &external.reason {
+        pane = pane.push(fact(
+            "Didn't load",
+            vec![
+                error_caption(format!("\u{201c}{reason}\u{201d}")),
+                text_button(
+                    "Copy error",
+                    ButtonTone::Quiet,
+                    ButtonSize::Compact,
+                    Some(modules(ModulesMessage::CopyError(reason.clone()))),
+                ),
+            ],
+        ));
+    }
+    if let Some(pending) = &external.pending {
+        pane = pane.push(fact(
+            "Relaunch to apply",
+            vec![
+                text(pending.clone())
+                    .size(theme::SIZE_CAPTION)
+                    .style(theme::ink(Token::Accent))
+                    .into(),
+            ],
+        ));
+    }
+    let mut package = Vec::new();
+    if let Some(version) = &external.version {
+        package.push(caption(version.clone()));
+    }
+    package.push(caption(external.program.clone()));
+    if let Some(path) = &external.path {
+        package.push(caption(path.clone()));
+    }
+    pane = pane.push(fact("Package", package));
+    let mut actions = row![].spacing(theme::SPACING / 2.0);
+    if external.install {
+        actions = actions.push(text_button(
+            "Install module\u{2026}",
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            Some(modules(ModulesMessage::Install)),
+        ));
+    }
+    if external.uninstall {
+        actions = actions.push(text_button(
+            "Uninstall\u{2026}",
+            ButtonTone::Destructive,
+            ButtonSize::Compact,
+            Some(modules(ModulesMessage::Uninstall(external.module.clone()))),
+        ));
+    }
+    if external.remove {
+        actions = actions.push(text_button(
+            "Remove",
+            ButtonTone::Destructive,
+            ButtonSize::Compact,
+            Some(modules(ModulesMessage::RemoveFolder(
+                external.module.clone(),
+            ))),
+        ));
+    }
+    if external.install || external.uninstall || external.remove {
+        pane = pane.push(actions.wrap());
+    }
+    pane
+}
+
+/// The review sheet or the uninstall confirmation, over the whole Settings sheet: the one modal
+/// step of Install module…, and the destructive confirm of Uninstall…. `None` when neither is up.
+pub(crate) fn dialog(model: &ModulesModel) -> Option<Element<'_, Message>> {
+    let card = if let Some(review) = &model.review {
+        review_card(review)
+    } else {
+        uninstall_card(model.uninstall.as_ref()?)
+    };
+    let backdrop = mouse_area(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::scrim_surface),
+    )
+    .on_press(modules(ModulesMessage::Dismiss))
+    .interaction(iced::mouse::Interaction::Idle);
+    Some(
+        iced::widget::stack![
+            backdrop,
+            container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(theme::SPACING * 2.0)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        ]
+        .into(),
+    )
+}
+
+/// A dialog's card: its surface, width and padding.
+fn card<'a>(body: iced::widget::Column<'a, Message, luxforge_ui::Theme>) -> Element<'a, Message> {
+    container(scrollable(body.padding(theme::SPACING * 2.0)))
+        .width(Length::Fixed(DIALOG_WIDTH))
+        .max_height(DIALOG_HEIGHT)
+        .style(theme::sheet_surface)
+        .into()
+}
+
+/// The dialog's footer: the dismissing button, then the confirming one.
+fn footer<'a>(
+    dismiss: &str,
+    confirm: Option<(&str, bool, Option<Message>)>,
+) -> Element<'a, Message> {
+    let mut buttons = row![
+        Space::new().width(Length::Fill),
+        text_button(
+            dismiss,
+            ButtonTone::Control,
+            ButtonSize::Regular,
+            Some(modules(ModulesMessage::Dismiss)),
+        )
+    ]
+    .spacing(theme::SPACING)
+    .align_y(Alignment::Center);
+    if let Some((label, destructive, press)) = confirm {
+        buttons = buttons.push(text_button(
+            label,
+            if destructive {
+                ButtonTone::Destructive
+            } else {
+                ButtonTone::Primary
+            },
+            ButtonSize::Regular,
+            press,
+        ));
+    }
+    buttons.into()
+}
+
+/// The review sheet: the module and its version, that it comes from its author and Luxforge
+/// hasn't reviewed it, what it adds and where it renders, its program, Network and Files, the
+/// manifest's authors, licence, source, version and interface, the package hash and the file; a
+/// refusal or a format change in red; Install, Replace or Replace anyway.
+fn review_card(review: &ReviewModel) -> Element<'_, Message> {
+    let mut body = column![
+        row![
+            icon(Icon::Grid, theme::SHEET_ICON_SIZE, Token::TextBright),
+            title(review.title.clone()),
+        ]
+        .spacing(theme::SPACING)
+        .align_y(Alignment::Center)
+    ]
+    .spacing(theme::SPACING);
+    if let Some(lead) = &review.lead {
+        body = body.push(label(lead.clone()));
+    }
+    if let Some(warning) = &review.warning {
+        body = body.push(error_caption(warning.clone()));
+    }
+    for (name, value) in &review.facts {
+        body = body.push(
+            row![
+                container(caption(name.clone())).width(Length::Fixed(FACT_WIDTH)),
+                container(
+                    text(value.clone())
+                        .size(theme::SIZE_CAPTION)
+                        .style(theme::ink(Token::Text))
+                )
+                .width(Length::Fill),
+            ]
+            .spacing(theme::SPACING),
+        );
+    }
+    if let Some(note) = &review.note {
+        body = body.push(caption(note.clone()));
+    }
+    if let Some(busy) = review.busy {
+        body = body.push(caption(busy));
+    }
+    let confirm = review.confirm.as_ref().map(|confirm| {
+        (
+            confirm.label.as_str(),
+            confirm.destructive,
+            confirm
+                .enabled
+                .then_some(modules(ModulesMessage::ReviewInstall)),
+        )
+    });
+    card(body.push(footer(review.dismiss, confirm)))
+}
+
+/// Uninstall…'s confirmation: what happens to the photos that use the module, and Uninstall in
+/// red.
+fn uninstall_card(uninstall: &UninstallModel) -> Element<'_, Message> {
+    let mut body = column![
+        row![
+            icon(Icon::Trash, theme::SHEET_ICON_SIZE, Token::TextBright),
+            title(uninstall.title.clone()),
+        ]
+        .spacing(theme::SPACING)
+        .align_y(Alignment::Center),
+        label(uninstall.body.clone()),
+    ]
+    .spacing(theme::SPACING);
+    if let Some(failed) = &uninstall.failed {
+        body = body.push(error_caption(failed.clone()));
+    }
+    if uninstall.busy {
+        body = body.push(caption("Uninstalling\u{2026}"));
+    }
+    card(body.push(footer(
+        "Cancel",
+        Some((
+            "Uninstall",
+            true,
+            (!uninstall.busy).then_some(modules(ModulesMessage::UninstallConfirm)),
+        )),
+    )))
 }
 
 /// One labelled fact of the detail pane.

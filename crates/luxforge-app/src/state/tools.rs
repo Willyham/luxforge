@@ -317,6 +317,9 @@ pub(crate) struct SectionModel {
     pub(crate) kept: Option<Vec<(String, String)>>,
     /// The band's own menu, while it is the one open.
     pub(crate) menu: Option<module_layout::BandMenu>,
+    /// The origin badge after the title, for a module that is not built in: Community or From
+    /// folder.
+    pub(crate) badge: Option<String>,
 }
 
 impl SectionModel {
@@ -997,6 +1000,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         };
         target.push(drawn);
     }
+    // A layer whose provider is missing is never hidden either: its band is drawn red, after the
+    // registered modules', as Not installed or Didn't load.
+    if !correcting && !masking {
+        sections.extend(missing_sections(inputs));
+    }
     layout.sort(Toolset::Adjustments, &mut sections, |section| {
         &section.module_id
     });
@@ -1063,8 +1071,51 @@ fn kept_section(
         active: true,
         enabled: true,
         kept: Some(values),
+        badge: super::external_modules::origin_badge(inputs.layout.origin(&module.id))
+            .map(str::to_owned),
         ..SectionModel::default()
     }
+}
+
+/// The bands of the effects the displayed photo keeps a global layer of that no registered module
+/// provides: red, unable to expand, and reading *Not installed*, or *Didn't load* with the loader's
+/// reason for an external module this launch read and did not register. A registered module that
+/// is unavailable draws its own band, which says more. The photo keeps every layer; its preview is
+/// stale and its export refuses, which the notice over the canvas says.
+fn missing_sections(inputs: &Inputs<'_>) -> Vec<SectionModel> {
+    use super::external_modules::{DIDNT_LOAD, NOT_INSTALLED, missing_module};
+    let (Some(_), Some(recipe)) = (
+        inputs.document.state.as_ref(),
+        inputs.document.current_recipe.as_ref(),
+    ) else {
+        return Vec::new();
+    };
+    let mut sections: Vec<SectionModel> = Vec::new();
+    for row in &recipe.layers {
+        if row.module.is_some() || row.available || row.mask.is_some() {
+            continue;
+        }
+        let provided = inputs
+            .modules
+            .iter()
+            .any(|module| module.effects.iter().any(|effect| effect.id == row.effect));
+        let id = missing_module(&row.effect);
+        if provided || sections.iter().any(|section| section.module_id == id) {
+            continue;
+        }
+        let (title, unavailable) = match inputs.layout.failure(id) {
+            Some((title, reason)) => (title.to_owned(), format!("{DIDNT_LOAD}: {reason}")),
+            None => (id.to_owned(), NOT_INSTALLED.to_owned()),
+        };
+        sections.push(SectionModel {
+            module_id: id.to_owned(),
+            title,
+            active: true,
+            unavailable: Some(unavailable),
+            ..SectionModel::default()
+        });
+    }
+    sections
 }
 
 impl ToolsModel {
@@ -1118,8 +1169,15 @@ fn geometry_summary(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<St
 /// ([`SectionModel::shows_controls`]); see [`controls_of`] for a reader that needs the rest.
 fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let expanded = expanded(module, inputs);
+    let origin = inputs.layout.origin(&module.id);
     let unavailable = match &module.availability {
         luxforge_core::Availability::Available => None,
+        // An external module registered unavailable quotes the loader's reason.
+        luxforge_core::Availability::Unavailable { reason }
+            if origin != luxforge_core::module_layout::ModuleOrigin::BuiltIn =>
+        {
+            Some(format!("{}: {reason}", super::external_modules::DIDNT_LOAD))
+        }
         luxforge_core::Availability::Unavailable { reason } => Some(reason.clone()),
     };
     let disabled_reason = disabled_reason(unavailable.as_deref(), inputs);
@@ -1169,6 +1227,7 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
             }),
         kept: None,
         menu: None,
+        badge: super::external_modules::origin_badge(origin).map(str::to_owned),
     }
 }
 

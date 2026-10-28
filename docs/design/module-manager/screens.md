@@ -56,11 +56,11 @@ Phase 2 boards are drawn only to show that phase 1 leaves room for them. Every e
 
 ## Board F: installed module states (phase 2)
 
-- **Badges.** Origin badges are grey: *Community* (installed from a file) and *From folder* (developer, dashed). State badges are *Relaunch to apply* (accent) and *Didn't load* (red).
+- **Badges.** Origin badges are grey: *Community* (installed from a file) and *From folder* (developer). State badges are *Relaunch to apply* (accent) and *Didn't load* (red).
 - **Didn't load.** It quotes the loader's reason from `module.status` word for word and keeps the module's place and its photos' edits. It offers Install module… (a version built for this Luxforge), Copy error and Uninstall….
 - **From folder.** **Load from folder…** (`module.folder.load {path}`) appears only in developer mode. The row shows the path; changes load at the next launch, since a reload is a relaunch. **Remove** sends `module.folder.remove {module}`.
 - **Update.** Choosing a newer package file with the same id opens the review sheet as **Replace … with …?**. If the manifest says the new version can't read the formats existing edits use, the sheet says so in red. **Replace anyway** is then red and not the default, and the photos keep their edits. There are no automatic updates and no store of earlier versions.
-- **Uninstall…** counts the photos in the open catalog that use the module and says they keep their edits but can't be previewed with them or exported. Other catalogs aren't checked. `module.uninstall {module}` takes effect on relaunch.
+- **Uninstall…** says the photos that use the module keep their edits but can't be previewed with them or exported, without counting them. Other catalogs aren't checked. `module.uninstall {module}` takes effect on relaunch.
 - **After uninstalling.** The Preview is stale notice names the module and offers Install module…. Its band reads *Not installed*, and Export is refused with the reason in the status bar.
 
 ## Programmatic equivalents
@@ -87,7 +87,7 @@ Recorded in [module manager](../module-manager.md):
 - The words are **Off** and **Enable**.
 - Locked: Crop, transform, straighten; Basic; RAW development; and the host's Mask.
 - One switch per module, at its home placement. No drag in the tools panel itself. Masking is one locked summary row.
-- No photo count in phase 1. The phase 2 uninstall confirmation counts photos in the open catalog.
+- No photo count in phase 1, and none in the phase 2 uninstall confirmation, which states the consequence for every photo that uses the module.
 - Install, update, uninstall and folder load take effect on the next launch, with **Relaunch to apply** and **Relaunch**.
 - Phase 2 modules get no capabilities. The review lists Network none, Files none, the program, and the manifest's author, licence, source repository and version.
 - Trust marks are Built in, Community and From folder. Every external module says it is not reviewed by Luxforge.

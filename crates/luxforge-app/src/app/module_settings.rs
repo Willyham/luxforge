@@ -100,6 +100,20 @@ impl Editor {
             }
             ModulesMessage::Drag(edit) => return self.module_drag(edit),
             ModulesMessage::Written(result) => return self.layout_written(result),
+            external @ (ModulesMessage::Install
+            | ModulesMessage::InstallPicked(_)
+            | ModulesMessage::Inspected { .. }
+            | ModulesMessage::ReviewInstall
+            | ModulesMessage::Uninstall(_)
+            | ModulesMessage::UninstallConfirm
+            | ModulesMessage::Dismiss
+            | ModulesMessage::Return
+            | ModulesMessage::LoadFolder
+            | ModulesMessage::FolderPicked(_)
+            | ModulesMessage::RemoveFolder(_)
+            | ModulesMessage::PackageWritten(_)
+            | ModulesMessage::CopyError(_)
+            | ModulesMessage::Relaunch) => return self.external_modules_update(external),
         }
         Task::none()
     }
@@ -192,12 +206,16 @@ impl Editor {
             return Task::none();
         }
         tab.reading = true;
+        tab.developer = self.developer;
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
             move || {
                 let (listed, _) = call(&owner, client, "module.list", json!({}))?;
                 let (layout, _) = call(&owner, client, "module.layout.read", json!({}))?;
-                ModulesRead::parse(listed, layout).map(Box::new)
+                let (packages, _) = call(&owner, client, "module.package.list", json!({}))?;
+                ModulesRead::parse(listed, layout)?
+                    .with_packages(packages)
+                    .map(Box::new)
             },
             |result| Message::Settings(SettingsMessage::Modules(ModulesMessage::Read(result))),
         )
@@ -311,11 +329,14 @@ impl Editor {
                             RowControl::Switch(on) => json!({"switch": on}),
                             RowControl::Follows(on) => json!({"follows": on}),
                             RowControl::Lock(reason) => json!({"lock": reason}),
+                            RowControl::None => Value::Null,
                         };
+                        let badges: Vec<&str> =
+                            row.badges.iter().map(|badge| badge.label).collect();
                         json!({"module": row.key.module, "title": row.title,
                                "qualifier": row.qualifier, "letter": row.letter,
                                "control": control, "grip": row.grip, "off": row.off,
-                               "selected": row.selected})
+                               "selected": row.selected, "badges": badges})
                     })
                     .collect();
                 json!({"toolset": group.toolset.as_str(), "can_reset": group.can_reset,
@@ -327,7 +348,14 @@ impl Editor {
                    "shown": detail.shown, "lives": detail.lives,
                    "stages": detail.stages.iter().filter(|(_, own)| *own)
                        .map(|(name, _)| name).collect::<Vec<_>>(),
-                   "photos": detail.photos, "api": detail.api, "refusal": detail.refusal})
+                   "photos": detail.photos, "api": detail.api, "refusal": detail.refusal,
+                   "external": detail.external.as_ref().map(|external| json!({
+                       "state": external.state.as_ref().map(|badge| badge.label),
+                       "version": external.version, "program": external.program,
+                       "path": external.path, "pending": external.pending,
+                       "reason": external.reason, "trust": external.trust,
+                       "uninstall": external.uninstall, "remove": external.remove,
+                       "install": external.install}))})
         });
         json!({
             "groups": groups,
@@ -340,6 +368,7 @@ impl Editor {
             "dragging": model.dragging,
             "layout": tab.layout(),
             "writes_outstanding": usize::from(tab.writing.is_some()) + tab.waiting.len(),
+            "external": self.external_modules_summary(),
         })
     }
 }

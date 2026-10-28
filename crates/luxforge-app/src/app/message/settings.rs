@@ -1,6 +1,7 @@
 //! The Settings sheet.
 use crate::state::{
     agents::AgentsRead,
+    external_modules::Inspected,
     module_settings::{ModulesFocus, ModulesRead, Move, RowKey},
     preferences::{GeneralPreference, GeneralValue, Preferences},
     settings::SettingsTab,
@@ -81,6 +82,42 @@ pub(crate) enum ModulesMessage {
     /// The layout write in flight answered: the layout it left and the request id its event
     /// carries, which the event sync then skips.
     Written(Result<(LayoutView, String), String>),
+    /// Install module…, from the tab's header, a detail pane or the stale-preview notice: the
+    /// system file picker, over Settings › Modules.
+    Install,
+    /// The picker answered: the package chosen, or `None` when it was cancelled. An evidence run
+    /// hands its path in here, so no automated run opens the native picker.
+    InstallPicked(Option<std::path::PathBuf>),
+    /// `module.package.inspect` answered for the review sheet: the package's review, or the
+    /// owner's refusal with its `data.refusal` code.
+    Inspected {
+        path: std::path::PathBuf,
+        result: Result<Box<Inspected>, (String, Option<String>)>,
+    },
+    /// The review sheet's Install, Replace or Replace anyway: `module.install`.
+    ReviewInstall,
+    /// Uninstall… on an installed module's detail: the confirmation.
+    Uninstall(String),
+    /// The confirmation's Uninstall: `module.uninstall`.
+    UninstallConfirm,
+    /// Cancel, Close or Escape on the review sheet or the confirmation.
+    Dismiss,
+    /// Return on the review sheet: its confirming button, unless it is the destructive one.
+    Return,
+    /// Load from folder…, in developer mode: the system folder picker.
+    LoadFolder,
+    /// The folder picker answered: `module.folder.load` for the folder chosen.
+    FolderPicked(Option<std::path::PathBuf>),
+    /// Remove on a folder module's detail: `module.folder.remove`.
+    RemoveFolder(String),
+    /// The lifecycle write in flight answered: the owner's answer and the request id its
+    /// `module.installed` event carries, or the refusal's words.
+    PackageWritten(Result<(Value, String), String>),
+    /// Copy error on a module that didn't load: the loader's reason, to the clipboard.
+    CopyError(String),
+    /// Relaunch: quit through the ordinary close path and start this desktop again over the same
+    /// catalog, so the pending changes apply.
+    Relaunch,
 }
 
 /// A key the Modules tab takes.

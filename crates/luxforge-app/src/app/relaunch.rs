@@ -1,6 +1,9 @@
 //! Work that runs once the desktop's ordinary quit path has closed the catalog: a relaunch from a
-//! new place after a move into Applications, and the update port's install and relaunch
-//! ([design](../../../../docs/design/auto-update.md#commands-and-preferences), "Installing").
+//! new place after a move into Applications, the update port's install and relaunch
+//! ([design](../../../../docs/design/auto-update.md#commands-and-preferences), "Installing"), and
+//! Settings › Modules' Relaunch, which starts this desktop again with the same arguments so the
+//! installed modules' pending changes load ([`relaunch_same`],
+//! [design](../../../../docs/design/module-manager.md#lifecycle)).
 //!
 //! One action waits at a time, in a process-wide slot any thread may fill: the move question from
 //! the update loop, the update port from its own worker. [`request_quit`] then asks the window to
@@ -58,18 +61,93 @@ pub(crate) fn after_close(name: &'static str, action: AfterClose) -> bool {
 /// the Trash or eject its disk image as the move decided: the hook the move question takes, and
 /// the one the macOS update port takes for `update.move-to-applications`.
 pub(crate) fn relaunch(relaunch: luxforge_install::Relaunch) -> bool {
-    after_close(
-        "relaunch",
-        Box::new(move || match relaunch.start(&luxforge_install::System) {
-            Ok(started) => json!({
-                "app": relaunch.app,
-                "trashed": started.trashed,
-                "trash_failed": started.trash_failed,
-                "eject": started.eject,
-            }),
-            Err(error) => json!({"app": relaunch.app, "error": error.to_string()}),
+    after_close("relaunch", Box::new(move || relaunch_detail(&relaunch)))
+}
+
+/// What starts this desktop again over the same catalog: the same program with the same
+/// arguments, less the files `--open` named, so the new launch lands where Develop was left (the
+/// remembered folder and photograph) rather than importing them again. A `--catalog`, a
+/// `--data-root` and every other argument are kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SameLaunch {
+    pub(crate) program: std::path::PathBuf,
+    pub(crate) args: Vec<std::ffi::OsString>,
+}
+
+impl SameLaunch {
+    /// The launch `program` was started as with `args` (the arguments after the program's own).
+    pub(crate) fn of(
+        program: std::path::PathBuf,
+        args: impl IntoIterator<Item = std::ffi::OsString>,
+    ) -> Self {
+        let mut kept = Vec::new();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            if arg == "--open" {
+                args.next();
+                continue;
+            }
+            kept.push(arg);
+        }
+        Self {
+            program,
+            args: kept,
+        }
+    }
+
+    /// This process's own launch, or `None` when the running program cannot be found.
+    pub(crate) fn current() -> Option<Self> {
+        let program = std::env::current_exe().ok()?;
+        Some(Self::of(program, std::env::args_os().skip(1)))
+    }
+
+    /// What the log and a captured frame record of it.
+    pub(crate) fn record(&self) -> Value {
+        json!({
+            "program": self.program,
+            "args": self.args.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>(),
+        })
+    }
+
+    /// Start it, detached, once this process's catalog has closed. An app bundle started with no
+    /// arguments is opened again as an app, as a relaunch after a move is; anything else runs the
+    /// program again with its arguments.
+    fn start(&self) -> Value {
+        if self.args.is_empty()
+            && let Some(app) = luxforge_install::running_bundle()
+        {
+            return relaunch_detail(&luxforge_install::Relaunch::new(app));
+        }
+        let started = std::process::Command::new(&self.program)
+            .args(&self.args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match started {
+            Ok(child) => json!({"started": self.record(), "pid": child.id()}),
+            Err(error) => json!({"started": self.record(), "error": error.to_string()}),
+        }
+    }
+}
+
+fn relaunch_detail(relaunch: &luxforge_install::Relaunch) -> Value {
+    match relaunch.start(&luxforge_install::System) {
+        Ok(started) => json!({
+            "app": relaunch.app,
+            "trashed": started.trashed,
+            "trash_failed": started.trash_failed,
+            "eject": started.eject,
         }),
-    )
+        Err(error) => json!({"app": relaunch.app, "error": error.to_string()}),
+    }
+}
+
+/// Start `launch` again once the quit path has closed the catalog: Settings › Modules' Relaunch,
+/// which applies installed, updated and uninstalled modules. Answers `false` when another action
+/// already waits.
+pub(crate) fn relaunch_same(launch: SameLaunch) -> bool {
+    after_close("relaunch-modules", Box::new(move || launch.start()))
 }
 
 /// Ask the window to close through its ordinary quit path, from any thread. Never blocks.
@@ -109,5 +187,35 @@ mod tests {
         let taken = take().expect("the first waits");
         assert!(take().is_none(), "taken once");
         assert_eq!(run(taken), json!({"name": "first", "detail": {"ran": 1}}));
+    }
+
+    /// Relaunch starts the same program over the same catalog and data root, without importing
+    /// the files `--open` named again, and waits for the quit path like every other relaunch.
+    #[test]
+    fn external_module_relaunch_keeps_the_launch_but_its_files() {
+        let launch = SameLaunch::of(
+            "/apps/luxforge".into(),
+            [
+                "--open",
+                "/photos/a.jpg",
+                "--catalog",
+                "/c/catalog.sqlite",
+                "--data-root",
+                "/d",
+                "--open",
+                "/photos/b.nef",
+                "--developer",
+            ]
+            .map(std::ffi::OsString::from),
+        );
+        assert_eq!(
+            launch.record(),
+            json!({"program": "/apps/luxforge",
+                   "args": ["--catalog", "/c/catalog.sqlite", "--data-root", "/d", "--developer"]})
+        );
+        assert!(relaunch_same(launch.clone()));
+        assert!(!relaunch_same(launch), "one relaunch waits");
+        let (name, _) = take().expect("it waits for the quit path");
+        assert_eq!(name, "relaunch-modules");
     }
 }

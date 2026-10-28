@@ -1,5 +1,7 @@
 //! The person's module layout's script steps: the gestures the tools panel's band menus, the mode
-//! strip's ⋯ menu, the palette and Settings › Modules send, each through the desktop's own message.
+//! strip's ⋯ menu, the palette and Settings › Modules send, each through the desktop's own message,
+//! and Settings › Modules' external-module gestures: Install module…, the review sheet,
+//! Uninstall… and Relaunch.
 use serde::{Deserialize, Serialize};
 
 /// The toolsets a step may name: the two a person orders.
@@ -25,6 +27,17 @@ pub const MODULE_MOVES: [&str; 4] = ["up", "down", "top", "bottom"];
 /// - `{"tab_move": {"toolset": T, "module": M, "to": "up"}}` selects a row of the open Modules
 ///   tab and presses ⌥↑ (`up`), ⌥↓ (`down`), ⌥⇧↑ (`top`) or ⌥⇧↓ (`bottom`).
 /// - `"reset_all"` presses the open Modules tab's Reset all.
+/// - `{"install": PATH}` is Install module… with `PATH` picked: it opens Settings › Modules when
+///   it is not open and hands the path to the review sheet as the system file picker would, which
+///   an evidence run never opens. The frame is captured once `module.package.inspect` answered.
+/// - `"review_install"` presses the review sheet's Install (or Replace), which must send
+///   `module.install`.
+/// - `{"uninstall": M}` presses Uninstall… in the open Modules tab, which opens its confirmation.
+/// - `"confirm_uninstall"` presses the confirmation's Uninstall, which must send
+///   `module.uninstall`.
+/// - `"dismiss"` presses the open review sheet's or confirmation's Cancel or Close.
+/// - `"relaunch"` presses Relaunch: an evidence run records the command it would start and quits
+///   nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModulesStep {
@@ -36,6 +49,12 @@ pub enum ModulesStep {
     Customize(ModuleCustomize),
     TabMove(ModuleTabMove),
     ResetAll,
+    Install(String),
+    ReviewInstall,
+    Uninstall(String),
+    ConfirmUninstall,
+    Dismiss,
+    Relaunch,
 }
 
 /// A tools-panel band's move.
@@ -106,8 +125,15 @@ impl ModulesStep {
             }
         };
         match self {
-            Self::BandMenu(id) => module(id),
-            Self::StripMenu | Self::CloseMenu | Self::ResetAll => Ok(()),
+            Self::BandMenu(id) | Self::Uninstall(id) => module(id),
+            Self::Install(path) => super::text(path, "modules step install path"),
+            Self::StripMenu
+            | Self::CloseMenu
+            | Self::ResetAll
+            | Self::ReviewInstall
+            | Self::ConfirmUninstall
+            | Self::Dismiss
+            | Self::Relaunch => Ok(()),
             Self::Move(step) => {
                 module(&step.module)?;
                 to(&step.to)

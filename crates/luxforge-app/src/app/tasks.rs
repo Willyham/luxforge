@@ -201,8 +201,9 @@ pub(crate) struct SyncResult {
     /// A client connected, named itself or disconnected (`session.*`), which an open Agents tab
     /// reads the connected clients again for.
     pub(crate) sessions: bool,
-    /// Another client changed the person's module layout (`module.layout`), or events were
-    /// missed: the desktop reads the layout again, and so does an open Settings › Modules tab.
+    /// Another client changed the person's module layout (`module.layout`) or installed modules
+    /// (`module.installed`), or events were missed: the desktop reads the layout again, and so
+    /// does an open Settings › Modules tab.
     pub(crate) module_layout: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
@@ -890,9 +891,18 @@ pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message
             let (mut listed, _) = call(&owner, client, "module.list", json!({}))?;
             let modules = parse(listed["modules"].take())?;
             let (layout, _) = call(&owner, client, "module.layout.read", json!({}))?;
+            // Which external modules did not load, for their bands and the stale-preview notice:
+            // a launch's registry is fixed, so this is read once. Its failure costs only those
+            // words, never discovery.
+            let packages = call(&owner, client, "module.package.list", json!({}))
+                .ok()
+                .and_then(|(packages, _)| {
+                    crate::state::external_modules::PackageList::parse(packages).ok()
+                });
             Ok(Box::new(Discovery {
                 modules,
                 layout: parse(layout)?,
+                packages,
             }))
         },
         |value| Message::Modules(ModulesMessage::Discovered(value)),
@@ -2299,13 +2309,14 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("session."));
-    // A module layout change touches no asset: it alone reads the layout again, for the
-    // workspace and an open Settings › Modules tab.
+    // A module layout change, or another client's install, uninstall or folder load, touches no
+    // asset: it alone reads the layout again, for the workspace and an open Settings › Modules
+    // tab, whose rows show what is installed.
     let module_layout = events.gap
-        || events
-            .events
-            .iter()
-            .any(|event| event.method == luxforge_core::module_layout::LAYOUT_EVENT);
+        || events.events.iter().any(|event| {
+            event.method == luxforge_core::module_layout::LAYOUT_EVENT
+                || event.method == luxforge_core::module_store::INSTALLED_EVENT
+        });
     // An event that leaves an asset at a new revision moved its history; a version moves none.
     let mut moved = MovedPhotos {
         assets: Vec::new(),

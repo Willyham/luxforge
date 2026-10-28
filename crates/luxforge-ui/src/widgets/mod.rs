@@ -80,7 +80,7 @@ mod resolve;
 mod catalog;
 // -- end Select: the catalog.
 
-pub use badge::{BadgeModel, badge};
+pub use badge::{BadgeModel, BadgeTone, badge, toned_badge};
 pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, equal_button_row,
     icon_button_row, labelled_button, row_icon_button, text_button,

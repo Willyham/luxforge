@@ -28,6 +28,9 @@ pub enum ButtonTone {
     /// No surface until the pointer is over it: a text action in a bar or a list, such as Open
     /// image or Load older.
     Quiet,
+    /// The Control surface with its label in the error red: an action that loses something, such
+    /// as Uninstall or Replace anyway, which is never a sheet's default.
+    Destructive,
 }
 
 /// A labelled button with a label alone, as a bar or a list offers its text actions.
@@ -111,6 +114,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
         (ButtonTone::Primary, true) => Token::AccentInk,
         (ButtonTone::Selected, true) => Token::Accent,
         (ButtonTone::Control | ButtonTone::Quiet, true) => Token::Text,
+        (ButtonTone::Destructive, true) => Token::Error,
     };
     let hint_ink = Token::TextTertiary;
     let mut content = Row::new().align_y(Alignment::Center);
@@ -143,7 +147,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
             .push(container(hint).padding(Padding::default().left(theme::BUTTON_HINT_SPACING)));
     }
     let style = match model.tone {
-        ButtonTone::Control => theme::button_control,
+        ButtonTone::Control | ButtonTone::Destructive => theme::button_control,
         ButtonTone::Primary => theme::button_accent,
         ButtonTone::Selected => theme::button_selected,
         ButtonTone::Quiet => theme::button_plain,

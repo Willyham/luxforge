@@ -10,6 +10,7 @@ pub(crate) mod corrections;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod export_sheet;
+pub(crate) mod external_modules;
 pub(crate) mod fields;
 pub(crate) mod fill_setup;
 pub(crate) mod histogram;
@@ -4914,6 +4915,180 @@ mod tests {
                 .iter()
                 .any(|tool| tool.module_id.as_deref() == Some("luxforge.corrections") && !tool.on)
         );
+    }
+
+    /// A one-field external module's manifest, as a `.lfmodule` package carries it.
+    const GLOW_MANIFEST: &str = r#"
+api = "0.1"
+id = "org.example.glow"
+name = "glow"
+title = "Glow"
+hint = "Glow the picture"
+version = "1.0.0"
+authors = ["Example"]
+license = "MIT"
+repository = "https://example.org/glow"
+toolset = "adjustments"
+
+[effect]
+stage = "color"
+format = 1
+
+[[fields]]
+name = "amount"
+kind = "number"
+min = -100
+max = 100
+default = 0
+label = "Amount"
+
+[[groups]]
+label = "Glow"
+fields = ["amount"]
+"#;
+
+    /// The listing `module.list` gives `modules`, `external` among them from the community.
+    fn listing(
+        modules: &[ModuleDescriptor],
+        external: &str,
+    ) -> Vec<luxforge_core::module_layout::ListedModule> {
+        use luxforge_core::module_layout::{ListedModule, ModuleOrigin, placements};
+        modules
+            .iter()
+            .map(|module| ListedModule {
+                descriptor: module.clone(),
+                origin: if module.id == external {
+                    ModuleOrigin::Community
+                } else {
+                    ModuleOrigin::BuiltIn
+                },
+                placements: placements(module),
+                enabled: true,
+            })
+            .collect()
+    }
+
+    /// An installed external module's section is drawn from its descriptor as a built-in's is,
+    /// with no desktop change: its group and its slider, under the Community badge. A built-in's
+    /// band carries none.
+    #[test]
+    fn external_module_section_draws_from_its_descriptor_with_the_community_badge() {
+        let manifest =
+            luxforge_core::module_package::ModuleManifest::parse(GLOW_MANIFEST).expect("parses");
+        let mut modules = descriptors();
+        modules.push(manifest.descriptor().clone());
+        let mut scene = Scene::new(modules).opened(Vec::new());
+        let listed = listing(&scene.modules, "org.example.glow");
+        scene.layout.adopt_listing(&listed, &scene.modules);
+        scene.expanded.insert("org.example.glow".into(), true);
+        let workspace = scene.derive();
+        let glow = section(&workspace, "org.example.glow");
+        assert_eq!(glow.title, "Glow");
+        assert_eq!(glow.badge.as_deref(), Some("Community"));
+        assert!(glow.unavailable.is_none() && glow.enabled);
+        let sliders: Vec<&str> = control_tree::walk(&glow.controls)
+            .filter_map(|control| match control {
+                ControlModel::Slider(slider) => Some(slider.label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sliders, ["Amount"]);
+        assert_eq!(section(&workspace, "luxforge.basic").badge, None);
+    }
+
+    /// A photo keeping a layer of a module nothing provides draws a red *Not installed* band named
+    /// by the module's identity, which never expands; a module this launch read and did not load
+    /// reads *Didn't load* with the loader's reason under its own title. The stale-preview notice
+    /// says the photo keeps its edit and offers Install module….
+    #[test]
+    fn external_module_not_installed_and_didnt_load_bands_and_their_notice() {
+        let layer = luxforge_core::Layer::new("org.example.glow.adjust", json!({ "amount": 30 }));
+        let mut scene = Scene::new(descriptors()).opened(vec![layer]);
+        scene.expanded.insert("org.example.glow".into(), true);
+        let workspace = scene.derive();
+        let band = section(&workspace, "org.example.glow");
+        assert_eq!(band.title, "org.example.glow");
+        assert_eq!(
+            band.unavailable.as_deref(),
+            Some(external_modules::NOT_INSTALLED)
+        );
+        assert!(band.controls.is_empty() && !band.shows_controls());
+        assert!(band.active, "the layer it keeps is an edit");
+
+        scene.render_error = Some(luxforge_core::Error::unavailable_effect(
+            "org.example.glow.adjust",
+            &["l1"],
+        ));
+        let notice = &scene.derive().canvas.notices[0];
+        assert_eq!(notice.title, "Preview is stale");
+        assert!(
+            notice
+                .body
+                .starts_with("org.example.glow is not installed. This photo keeps its edit"),
+            "{}",
+            notice.body
+        );
+        assert_eq!(
+            notice.actions,
+            vec![(
+                "Install module\u{2026}".to_owned(),
+                canvas::NoticeAction::InstallModule
+            )]
+        );
+
+        let packages = external_modules::PackageList::parse(json!({
+            "modules": [{
+                "module": "org.example.glow", "origin": "community", "state": "failed",
+                "reason": "its component imports log",
+                "installed": {"title": "Glow", "version": "1.0.0"}, "running": null,
+                "program": {"state": "absent"},
+            }],
+            "pending_relaunch": false,
+            "store": {"state": "ready"},
+        }))
+        .unwrap();
+        scene.layout.adopt_packages(&packages);
+        let workspace = scene.derive();
+        let band = section(&workspace, "org.example.glow");
+        assert_eq!(band.title, "Glow");
+        assert_eq!(
+            band.unavailable.as_deref(),
+            Some("Didn't load: its component imports log")
+        );
+        let body = &workspace.canvas.notices[0].body;
+        assert!(
+            body.starts_with("Glow didn't load: its component imports log. This photo keeps"),
+            "{body}"
+        );
+    }
+
+    /// An external module registered unavailable draws its own band, quoting the loader.
+    #[test]
+    fn external_module_registered_unavailable_quotes_the_loader() {
+        let manifest =
+            luxforge_core::module_package::ModuleManifest::parse(GLOW_MANIFEST).expect("parses");
+        let mut glow = manifest.descriptor().clone();
+        glow.availability = Availability::Unavailable {
+            reason: "built for module interface 0.2".into(),
+        };
+        let mut modules = descriptors();
+        modules.push(glow);
+        let mut scene = Scene::new(modules).opened(Vec::new());
+        let listed = listing(&scene.modules, "org.example.glow");
+        scene.layout.adopt_listing(&listed, &scene.modules);
+        let workspace = scene.derive();
+        let band = section(&workspace, "org.example.glow");
+        assert_eq!(
+            band.unavailable.as_deref(),
+            Some("Didn't load: built for module interface 0.2")
+        );
+        assert_eq!(band.badge.as_deref(), Some("Community"));
+        let bands = workspace
+            .tools
+            .all()
+            .filter(|section| section.module_id == "org.example.glow")
+            .count();
+        assert_eq!(bands, 1, "a registered module draws one band");
     }
 }
 

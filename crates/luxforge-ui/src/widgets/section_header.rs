@@ -42,6 +42,9 @@ pub struct SectionHeaderModel {
     /// text, the hint shown expanded too, in the neutral grey, and no reset, status or scope. It
     /// expands like any band. It is not `unavailable`, which is red and does not expand.
     pub off: bool,
+    /// The module's origin badge after its title, for a module that is not built in:
+    /// *Community* or *From folder*, in the grey every origin badge uses.
+    pub badge: Option<String>,
 }
 
 /// The scope chip's label size: the small caption size, semibold.
@@ -106,8 +109,14 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
     if model.active {
         leading = leading.push(accent_dot());
     }
+    if let Some(origin) = &model.badge {
+        leading = leading.push(super::badge::badge(&super::badge::BadgeModel {
+            label: origin.clone(),
+            tooltip: None,
+        }));
+    }
 
-    // The chevron, the title and the dot keep their own width; the hint or the unavailable reason
+    // The chevron, the title, the dot and the badge keep their own width; the hint or the unavailable reason
     // takes whatever is left on one line, ending in an ellipsis when it does not fit, so a long
     // hint can never squeeze the title out or wrap out of the band.
     let mut header = row![container(leading).width(Length::Shrink)]
@@ -411,6 +420,7 @@ mod tests {
                     scope: Some("Face".into()),
                     enabled: true,
                     off: false,
+                    badge: None,
                 },
                 (),
                 (),

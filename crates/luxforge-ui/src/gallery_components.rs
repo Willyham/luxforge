@@ -382,6 +382,7 @@ pub(crate) fn gallery_labels() -> Vec<Element<'static, ()>> {
                 scope,
                 enabled: true,
                 off: false,
+                badge: None,
             },
             (),
             (),

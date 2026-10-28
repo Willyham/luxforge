@@ -11,6 +11,9 @@ use luxforge_core::{
 pub(crate) struct Discovery {
     pub(crate) modules: Vec<ListedModule>,
     pub(crate) layout: LayoutView,
+    /// `module.package.list`: which external modules this launch read and did not load, which
+    /// their bands and the stale-preview notice name. `None` when it could not be read.
+    pub(crate) packages: Option<crate::state::external_modules::PackageList>,
 }
 
 /// A layout write of this desktop's and what it answered.

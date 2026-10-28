@@ -33,7 +33,11 @@ fn discover(editor: &mut Editor) {
     let modules = serde_json::from_value(listed["modules"].take()).unwrap();
     let layout = read_layout(editor);
     let _ = editor.update(Message::Modules(ModulesMessage::Discovered(Ok(Box::new(
-        Discovery { modules, layout },
+        Discovery {
+            modules,
+            layout,
+            packages: None,
+        },
     )))));
 }
 

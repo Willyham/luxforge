@@ -45,6 +45,8 @@ luxforge-reference = { path = "../luxforge-reference" }
 luxforge-gpu = { path = "../luxforge-gpu", features = ["qualification"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
+# Writes the `.lfmodule` packages Settings › Modules' install tests hand the owner.
+zip = { version = "=9.0.4", default-features = false }
 # Seeds a catalog another version made, with an uncheckpointed write-ahead log, for the
 # unsupported-catalog launch's preservation tests.
 rusqlite.workspace = true

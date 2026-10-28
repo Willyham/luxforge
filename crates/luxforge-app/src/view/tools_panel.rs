@@ -448,6 +448,7 @@ fn section_view<'a>(
             scope: section.scope.clone(),
             enabled: section.enabled,
             off: section.kept.is_some(),
+            badge: section.badge.clone(),
         },
         Message::Control(ControlMessage::ToggleSection(section.module_id.clone())),
         Message::Control(ControlMessage::ResetModule(section.module_id.clone())),

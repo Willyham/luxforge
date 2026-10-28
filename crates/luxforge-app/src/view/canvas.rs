@@ -434,6 +434,11 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::RemovePainted => Message::ObjectPick(
                         crate::app::message::object_pick::ObjectPickMessage::Done,
                     ),
+                    NoticeAction::InstallModule => {
+                        Message::Settings(crate::app::message::settings::SettingsMessage::Modules(
+                            crate::app::message::settings::ModulesMessage::Install,
+                        ))
+                    }
                 },
             )
         })

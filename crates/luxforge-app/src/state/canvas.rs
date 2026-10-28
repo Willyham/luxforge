@@ -266,6 +266,9 @@ pub(crate) enum NoticeAction {
     DismissObjects,
     /// Corrections › Object's Nothing found: Remove the painted area, as Return does.
     RemovePainted,
+    /// Install module…: Settings › Modules' system file picker, for a missing or failed external
+    /// module the stale preview names.
+    InstallModule,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -497,7 +500,7 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
     if inputs.document.state.is_some()
         && let Some(error) = inputs.render_error
     {
-        let reason = render_notice(inputs.modules, error, true)
+        let reason = render_notice(inputs.modules, inputs.layout, error, true)
             .map(|notice| notice.body)
             .unwrap_or_else(|| error.detail.clone());
         return PhotoView::Empty(format!("Preview unavailable: {reason}"));
@@ -722,6 +725,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     if let Some(error) = inputs.render_error {
         notices.extend(render_notice(
             inputs.modules,
+            inputs.layout,
             error,
             inputs.document.state.is_some(),
         ));
@@ -828,18 +832,26 @@ pub(crate) fn stale_export_notice(stale: &[luxforge_core::StaleCorrection]) -> N
 /// original that is not there offers Locate original… while a photograph is `open`.
 fn render_notice(
     modules: &[ModuleDescriptor],
+    layout: &super::module_layout::EffectiveLayout,
     error: &luxforge_core::Error,
     open: bool,
 ) -> Option<Notice> {
     let detail = &error.detail;
-    // A stack whose provider is missing is reported, never rendered without the effect.
+    // A stack whose provider is missing is reported, never rendered without the effect. A missing
+    // or failed external module is named, and Install module… offered: installing a version that
+    // loads restores the preview without touching the photo.
     if let Some(effect) = error.unavailable_effect_id() {
+        let (body, external) = unavailable_body(modules, layout, effect);
         return Some(Notice {
             tone: NoticeTone::Neutral,
             icon: NoticeIcon::Triangle,
             title: "Preview is stale".into(),
-            body: unavailable_body(modules, effect),
-            actions: Vec::new(),
+            body,
+            actions: if external {
+                vec![("Install module\u{2026}".into(), NoticeAction::InstallModule)]
+            } else {
+                Vec::new()
+            },
         });
     }
     match error.kind {
@@ -870,20 +882,44 @@ fn render_notice(
     }
 }
 
-/// The module that provides the effect the failure names, reported by title and reason. The effect
-/// identity is the fallback, so a layer whose provider was never registered is still named.
-fn unavailable_body(modules: &[ModuleDescriptor], effect: &str) -> String {
+/// The module that provides the effect the failure names, reported by title and reason, and
+/// whether it is an external module, which Install module… can restore. The effect identity is the
+/// fallback, so a layer whose provider was never registered is still named: an external module's
+/// effect as its module, *not installed*, or *didn't load* when this launch read it and did not
+/// register it.
+fn unavailable_body(
+    modules: &[ModuleDescriptor],
+    layout: &super::module_layout::EffectiveLayout,
+    effect: &str,
+) -> (String, bool) {
+    use luxforge_core::module_layout::ModuleOrigin;
+    const KEPT: &str = "This photo keeps its edit, but can't be previewed or exported with it \
+         until a version that loads is installed.";
     let module = modules
         .iter()
         .find(|module| module.effects.iter().any(|known| known.id == effect));
     match module {
-        Some(module) => match &module.availability {
-            Availability::Unavailable { reason } => {
-                format!("{} is unavailable: {reason}", module.title)
+        Some(module) => {
+            let external = layout.origin(&module.id) != ModuleOrigin::BuiltIn;
+            let body = match &module.availability {
+                Availability::Unavailable { reason } if external => {
+                    format!("{} didn't load: {reason}. {KEPT}", module.title)
+                }
+                Availability::Unavailable { reason } => {
+                    format!("{} is unavailable: {reason}", module.title)
+                }
+                Availability::Available => format!("{} did not provide this layer", module.title),
+            };
+            (body, external)
+        }
+        None => {
+            let id = super::external_modules::missing_module(effect);
+            match layout.failure(id) {
+                Some((title, reason)) => (format!("{title} didn't load: {reason}. {KEPT}"), true),
+                None if id != effect => (format!("{id} is not installed. {KEPT}"), true),
+                None => (format!("No registered module provides {effect}"), false),
             }
-            Availability::Available => format!("{} did not provide this layer", module.title),
-        },
-        None => format!("No registered module provides {effect}"),
+        }
     }
 }
 

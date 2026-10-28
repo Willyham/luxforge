@@ -209,6 +209,9 @@ pub(crate) mod residency;
 #[cfg(test)]
 mod residency_tests;
 // Consumed by the usage statistics supervisor, which a later task adds.
+mod external_modules;
+#[cfg(test)]
+mod external_modules_tests;
 #[cfg(test)]
 mod models_tests;
 mod module_settings;
@@ -1609,6 +1612,7 @@ impl Editor {
                 .then(|| keymap::ModulesKeys {
                     dragging: self.settings.modules.drag.is_some(),
                     undo: self.settings.modules.toast.is_some(),
+                    dialog: self.settings.modules.dialog(),
                 }),
             setup_sheet: self
                 .workspace
