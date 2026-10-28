@@ -96,8 +96,9 @@ fn main_result() -> Result<ExitCode> {
         "update-feed" => xtask_cli::update::run_feed(&root, &mut a)?,
         "check" => {
             let quick = a.flag("--quick");
+            let lint = !a.flag("--no-lint");
             a.done()?;
-            check::check(&root, quick)?;
+            check::check(&root, quick, lint)?;
             println!("Headless checks passed. GUI and platform acceptance remain separate.");
         }
         "check-repository" => {

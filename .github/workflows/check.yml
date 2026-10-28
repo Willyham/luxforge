@@ -12,10 +12,10 @@ jobs:
   # What each lane proves, and what it never proves, is the development guide's CI section
   # (docs/engineering/development.md#ci). No lane here is native GPU evidence.
   native-build:
-    # Each platform runs two lanes side by side. `check` is Clippy, the test build and the tests,
-    # the longer one (about an hour on macOS); `release` is release acceptance, the optimized build
-    # and the package, with Linux's journeys on the packaged editor. Neither needs the other's
-    # outputs, so a platform's result waits on the longer lane rather than on both in turn.
+    # Each platform runs two lanes side by side. `check` is the test build and the tests, the
+    # longer one; `release` is Clippy, release acceptance, the optimized build and the package,
+    # with Linux's journeys on the packaged editor. Neither needs the other's outputs, so a
+    # platform's result waits on the longer lane rather than on both in turn.
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -61,22 +61,22 @@ jobs:
           # Keep branches' dependencies reusable; workspace outputs are rebuilt and checked.
           # The action keys by the compiler, manifests, lockfile and build environment and
           # removes incremental artifacts before saving. Each lane caches its own profile:
-          # debug for `check`, release for `release`.
+          # debug for `check`, release (and Clippy's) for `release`.
           key: native-${{ matrix.os }}-${{ matrix.lane }}-${{ steps.native-compiler.outputs.key }}
-      # The full check runs repository checks beside Clippy/tests. Gate them first so an
+      # The full check runs repository checks beside the tests. Gate them first so an
       # invalid link or task plan doesn't wait for the entire workspace to finish.
       - name: Repository gate
         if: matrix.lane == 'check'
         run: cargo xtask check-repository
-      - name: Headless checks, slow tests and doctests included (macOS, on the hosted VM's own adapter)
+      - name: Headless checks, slow tests and doctests included, Clippy in the release lane (macOS, on the hosted VM's own adapter)
         if: matrix.lane == 'check' && runner.os != 'Linux'
-        run: cargo xtask check
+        run: cargo xtask check --no-lint
       # The no-adapter lane: every Vulkan and EGL driver is hidden from the loaders, so the
       # reference renderer's tests and the owner journeys run with no graphics adapter at all and
       # the GPU tests skip, saying so. The lane's own record of having no adapter is below.
-      - name: Headless checks with no graphics adapter (Linux, every driver hidden), slow tests and doctests included
+      - name: Headless checks with no graphics adapter (Linux, every driver hidden), slow tests and doctests included, Clippy in the release lane
         if: matrix.lane == 'check' && runner.os == 'Linux'
-        run: cargo xtask check
+        run: cargo xtask check --no-lint
         env:
           VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
           VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
@@ -84,6 +84,11 @@ jobs:
       - name: Native watcher delivery and recovery gate
         if: matrix.lane == 'check'
         run: cargo xtask test --native-watchers
+      # Clippy runs here rather than before the check lane's test build, which it would delay
+      # and which bounds the platform's result.
+      - name: Clippy
+        if: matrix.lane == 'release'
+        run: cargo xtask lint
       # The release lane runs every photo tool through the one release `xtask` build that
       # editor acceptance needs, rather than building a debug one beside it.
       - name: Editor acceptance in release (macOS)

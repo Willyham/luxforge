@@ -50,7 +50,7 @@ The unit tests need no model. Three ignored tests need the pinned klein files fr
 | Purpose | Command |
 | --- | --- |
 | Environment report, with the graphics adapters a built release editor sees | `cargo xtask doctor` |
-| Ordinary local/CI checks: repository links and task plans, formatting, Clippy, slow tests and doctests; native watcher delivery is separate | `cargo xtask check` |
+| Ordinary local/CI checks: repository links and task plans, formatting, Clippy, slow tests and doctests; native watcher delivery is separate; `--no-lint` leaves Clippy out, as CI's check lanes do, whose release lanes run it | `cargo xtask check [--no-lint]` |
 | The same without slow tests, doctests or native watcher delivery, what the quick tier runs | `cargo xtask check --quick` |
 | The quick tier with its summary, with no release build | `cargo xtask verify --tier quick --output NEW_DIR` |
 | A whole verification tier with one summary | `cargo run --release --locked --package xtask -- verify --tier quick\|rendered\|timing\|full --output NEW_DIR [--jobs N] [--binary PATH] [--manifest FILE]` |
@@ -501,10 +501,14 @@ ends the check before the tests run; otherwise they are waited for after the tes
 each as its own process in its package's directory as Cargo runs it, and print one line per binary
 with its elapsed time and a failing binary's whole output after the rest. `cargo test` runs its
 binaries one after another, so a workspace run takes the sum of every binary's time; run at once,
-the slowest binary bounds it. Each binary runs half as many tests at once as the host has cores, unless
-`RUST_TEST_THREADS` says otherwise: with libtest's one per core, the two largest binaries alone
-have more threads than the host has cores, and spend as long in the kernel as in their own code.
-The doctests run last, through Cargo.
+the slowest binary bounds it. Each binary runs half as many tests at once as the host has cores,
+rounded up, unless `RUST_TEST_THREADS` says otherwise: with libtest's one per core, the two largest
+binaries alone have more threads than the host has cores, and spend as long in the kernel as in
+their own code; rounded down, a three-core host such as the hosted macOS runner would run each
+binary's tests one at a time.
+Outside a quick run the doctests run beside the test binaries, through Cargo, as one more line:
+rustdoc reads every library to find them, minutes on a small host, while the largest binaries leave
+cores idle.
 
 A test marked `#[slow]`, the attribute `luxforge-test-macros` exports, is a slow test: one that
 takes 100 ms or more in the dev profile, measured in its binary's ordinary run on the owner's M4, such as an exhaustive sweep, a
@@ -518,8 +522,9 @@ the attributes above that line. That listing is unstable, so `check` asks for it
 `macro_rules!` body, write the attribute's whole path, `#[luxforge_test_macros::slow]`, since a
 bare one resolves where the macro is used. `luxforge-test-macros` depends on no crate, which the
 repository check enforces, so every crate's tests may name it, even those of crates that may name
-no other workspace crate. The quick tier runs `check --quick`, and every other tier and CI the
-ordinary `check` plus the native watcher gate. The repository check refuses a function named `slow_…`, since `check` reads
+no other workspace crate. The quick tier runs `check --quick`, every other tier the ordinary
+`check`, and CI the ordinary `check` without Clippy, which its release lanes run; each plus the
+native watcher gate. The repository check refuses a function named `slow_…`, since `check` reads
 only the attribute as a mark. Mark a new test `#[slow]` when it reaches that bound, after making it as cheap as what it proves
 allows. To read every test's time in a binary, run it with libtest's unstable timing report, as a
 diagnostic: `RUSTC_BOOTSTRAP=1 BINARY -Z unstable-options --format json --report-time` in the
@@ -558,8 +563,11 @@ locks, still runs, and no test can observe a flush. With the flush, `luxforge-co
 take 3.8 s on their own while using about three cores, waiting on the drive; without it, 1.8 to
 2.0 s.
 
-Only `[dev-dependencies]` tables turn the feature on: every crate that depends on the core names it
-again there with the feature, the core itself included. Cargo turns on a dev-dependency's features
+Only `[dev-dependencies]` tables turn the feature on: every other crate that depends on the core
+names it again there with the feature. The core's own unit tests skip the flush as a test build
+(`cfg(test)`), not through a dev-dependency on the core itself, which would hold their compile, the
+longest of the test build, until the library's was done; its integration tests have the feature in
+a workspace run, where the other crates' dev-dependencies turn it on. Cargo turns on a dev-dependency's features
 only when it builds tests, so `cargo build`, `cargo xtask develop`, `build --release`, `package` and
 `verify`'s release build never have it, while `cargo test` and `clippy --all-targets` do, and so does
 anything they link in the same run: `target/debug/luxforge-json`, which the CLI's integration tests
@@ -1905,11 +1913,12 @@ Initial public [v0.1 preparation](../design/release-v0.1.md) is planned, with a 
 ## CI
 
 The main workflow's check lanes gate formatting and offline corpus tooling before native setup
-and compilation, then gate repository links and task plans before Clippy and tests. The full
-check still runs all of its checks, slow tests and doctests included.
+and compilation, then gate repository links and task plans before the tests. The check lanes run
+the full check without Clippy, slow tests and doctests included; the release lanes run Clippy, so
+it does not delay the test build, the longest step of a platform's result.
 
 The main and extended-corpus workflows use pinned `Swatinem/rust-cache` 2.8.2 for dependency artifacts
-(debug in the native check lanes, release in the native release lanes)
+(debug in the native check lanes, release and Clippy's in the native release lanes)
 and downloaded Cargo sources. Its keys include the compiler, manifests, lockfile and build
 environment, with native lanes separated by runner image and native compiler/SDK identity; it excludes workspace and incremental
 artifacts, so checks still build the current source. The dependency-policy lane separately caches
@@ -1920,13 +1929,13 @@ the extended corpus keep their own runs. Each native lane saves on success, so a
 freeze an incomplete dependency set under the action's immutable exact key. Hosted warm-cache hit
 rates and wall-time savings remain unmeasured.
 
-`.github/workflows/check.yml` runs two jobs per hosted platform, macOS arm64, Ubuntu x64 and Ubuntu arm64, side by side: a check lane (`cargo xtask check` and the native watcher gate) and a release lane (`editor-acceptance` in release, then `package`, whose release build is the optimized build, then the platform's packaged-editor checks), with seven-day retention of the release lane's artifacts, plus a separate dependency-policy job (`cargo xtask audit`). Windows CI is disabled; Windows support will come later. A hosted lane is compilation and functional evidence of what it ran and what it ran on, never native desktop or GPU acceptance, which only a native machine gives ([pillar 5](../../AGENTS.md#pillars), [GPU-first](../design/gpu-first.md#the-contract)). The release gate, `cargo xtask gpu-qualification`, needs a native GPU and runs on the owner's machines, never on a hosted lane. Each lane records the graphics adapters it had with the packaged editor's `--gpu-adapters` (`artifacts/gpu-adapters*.jsonl`), and every rendered run records the adapter that drew each launch in `result.json` (`launches[].adapter`, with its `device_type`).
+`.github/workflows/check.yml` runs two jobs per hosted platform, macOS arm64, Ubuntu x64 and Ubuntu arm64, side by side: a check lane (`cargo xtask check --no-lint` and the native watcher gate) and a release lane (Clippy through `cargo xtask lint`, `editor-acceptance` in release, then `package`, whose release build is the optimized build, then the platform's packaged-editor checks), with seven-day retention of the release lane's artifacts, plus a separate dependency-policy job (`cargo xtask audit`). Windows CI is disabled; Windows support will come later. A hosted lane is compilation and functional evidence of what it ran and what it ran on, never native desktop or GPU acceptance, which only a native machine gives ([pillar 5](../../AGENTS.md#pillars), [GPU-first](../design/gpu-first.md#the-contract)). The release gate, `cargo xtask gpu-qualification`, needs a native GPU and runs on the owner's machines, never on a hosted lane. Each lane records the graphics adapters it had with the packaged editor's `--gpu-adapters` (`artifacts/gpu-adapters*.jsonl`), and every rendered run records the adapter that drew each launch in `result.json` (`launches[].adapter`, with its `device_type`).
 
 | Lane or machine | What runs | What it proves | What it never proves |
 | --- | --- | --- | --- |
-| Linux CI, no adapter (`ubuntu-24.04` and `ubuntu-24.04-arm`) | In the check lane, `cargo xtask check` plus `cargo xtask test --native-watchers` (slow tests, doctests and the golden-fixture test included, `luxforge-cli`'s `json_cli` owner journeys among them); in the release lane, `editor-acceptance` in release; each with every Vulkan and EGL driver hidden from the loaders (`VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_FILENAMES`); then, with the same drivers hidden, `--gpu-adapters` must find no adapter, or the lane fails | The reference renderer's own tests, the catalog owner, the headless `luxforge-json` and the owner journeys, with no graphics adapter at all | Anything of the GPU: its tests skip, saying so, and a skip is not a pass |
+| Linux CI, no adapter (`ubuntu-24.04` and `ubuntu-24.04-arm`) | In the check lane, `cargo xtask check --no-lint` plus `cargo xtask test --native-watchers` (slow tests, doctests and the golden-fixture test included, `luxforge-cli`'s `json_cli` owner journeys among them); in the release lane, Clippy and `editor-acceptance` in release; each with every Vulkan and EGL driver hidden from the loaders (`VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_FILENAMES`); then, with the same drivers hidden, `--gpu-adapters` must find no adapter, or the lane fails | The reference renderer's own tests, the catalog owner, the headless `luxforge-json` and the owner journeys, with no graphics adapter at all | Anything of the GPU: its tests skip, saying so, and a skip is not a pass |
 | Linux CI, software adapter (the release lane, after packaging) | Mesa's lavapipe installed; with `WGPU_BACKEND=vulkan`, `--gpu-adapters` must find only `Cpu` adapters; then ten smoke scenarios against the packaged binary under Xvfb, the small renderer smoke (`empty`, `load`, `replacement`, `invalid`, `repeated`, `alternating`), `histogram`, `gpu-identity`, `gpu-preview` and `no-gpu-render`, each with `smoke --editor-software-adapter`, so every launch passes `--software-adapter` and draws through the GPU stage on lavapipe, which the editor otherwise refuses until the software adapter is adopted; every launch's recorded adapter must be `Cpu`; the runtime imports are recorded | The rendered journeys, the GPU stage's programs and the GPU-preview path, and the reference renderer as the no-GPU fallback, functionally, on a software Vulkan rasterizer | Native GPU behaviour, performance or tolerance: lavapipe runs on the CPU, so no figure or GPU-against-reference comparison from it is GPU evidence; nor what a software-only host draws by default, which the unit tests and the container run below prove |
-| macOS CI (`macos-14`, a hosted VM) | `cargo xtask check` and `cargo xtask test --native-watchers` in the check lane; `editor-acceptance` in release and packaging, with its optimized build, in the release lane; `--gpu-adapters` records whatever adapter the VM exposes | The reference renderer's tests, the owner thread and the build on macOS arm64 | Any GPU result: macOS has no software Metal, a VM's paravirtual Metal device is not native, and no rendered scenario runs |
+| macOS CI (`macos-14`, a hosted VM) | `cargo xtask check --no-lint` and `cargo xtask test --native-watchers` in the check lane; Clippy, `editor-acceptance` in release and packaging, with its optimized build, in the release lane; `--gpu-adapters` records whatever adapter the VM exposes | The reference renderer's tests, the owner thread and the build on macOS arm64 | Any GPU result: macOS has no software Metal, a VM's paravirtual Metal device is not native, and no rendered scenario runs |
 | Windows CI | Disabled | Nothing | Anything on Windows |
 | The owner's M4 Pro, native | Every tier on Metal, the rendered scenarios and the GPU tests on its own adapter, and timing on a quiet host | Native GPU evidence on Apple silicon with its driver, which each run's recorded adapter names | Windows or Linux GPU behaviour |
 | An arm64 Linux container on the M4 (Docker Desktop, Mesa lavapipe, no GPU passed through) | The drag-tick benchmark on lavapipe, its own release build in the container ([software adapters](../specs/performance.md#software-adapters)); and, under Xvfb, the `load` scenario as a launch starts by default and `gpu-preview`, `gpu-identity`, `histogram` and `no-gpu-render` with `--editor-software-adapter`, as the CI lane runs them, which pass there | What the GPU path costs on a software rasterizer running on the M4's cores, against the reference renderer's frame on the same cores: the measurement the software adapter's adoption is decided on. That a software-only host draws the reference by default (`launch_renderer` `software-adapter-not-adopted`, the status bar's "Reference renderer") and the GPU stage on lavapipe when asked (the session's GPU record with `software: true`, "Software GPU preview"), functionally | A typical PC's figures (the M4's cores are faster than most), Windows' WARP, or any GPU evidence |

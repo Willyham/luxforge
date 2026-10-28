@@ -199,13 +199,15 @@ fn command(binary: &Binary) -> Command {
 }
 
 /// How many tests each binary runs at once, unless `RUST_TEST_THREADS` says: half the host's
-/// cores. Every binary runs at the same time, and libtest's default of one thread per core gives
-/// the largest two alone more threads than the host has cores; contended, they spent as long in
-/// the kernel as in their own code. With half, the whole run took about a quarter less time.
+/// cores, rounded up. Every binary runs at the same time, and libtest's default of one thread per
+/// core gives the largest two alone more threads than the host has cores; contended, they spent as
+/// long in the kernel as in their own code. With half, the whole run took about a quarter less
+/// time. Rounded down, a three-core host such as the hosted macOS runner ran each binary's tests
+/// one at a time, and the whole run took a third longer than with two.
 fn test_threads() -> Option<usize> {
     std::env::var_os("RUST_TEST_THREADS")
         .is_none()
-        .then(|| thread::available_parallelism().map_or(1, |cores| (cores.get() / 2).max(1)))
+        .then(|| thread::available_parallelism().map_or(1, |cores| cores.get().div_ceil(2)))
 }
 
 /// Runs `command` to its end with its stdout and stderr in one anonymous file, and reads it back.
@@ -436,16 +438,46 @@ fn run_selected(root: &Path, binaries: &[Binary], selection: Selection) -> Resul
 
 /// Ordinary correctness tests, excluding native delivery; the non-quick run includes doctests.
 pub fn tests(root: &Path, quick: bool) -> Result {
-    let binaries = build(root)?;
-    run_selected(root, &binaries, Selection::Ordinary { quick })?;
-    if !quick {
-        let status = cargo_command()
-            .current_dir(root)
-            .args(["test", "--locked", "--workspace", "--doc"])
-            .status()?;
-        ensure(status.success(), "Doctests failed")?;
-    }
-    Ok(())
+    ordinary(root, &build(root)?, quick)
+}
+
+/// The ordinary tests of `binaries` and, outside a quick run, the doctests beside them. Rustdoc
+/// reads every library to find its doctests, minutes of work on a small host, which the cores the
+/// test binaries leave idle while the largest of them finish can do meanwhile.
+fn ordinary(root: &Path, binaries: &[Binary], quick: bool) -> Result {
+    let text = |result: Result| result.map_err(|e| e.to_string());
+    let (tests, doc) = thread::scope(|scope| {
+        let doc = (!quick).then(|| scope.spawn(|| text(doctests(root))));
+        let tests = text(run_selected(root, binaries, Selection::Ordinary { quick }));
+        (
+            tests,
+            doc.map(|handle| handle.join().unwrap_or(Err("panicked".into()))),
+        )
+    });
+    let failures: Vec<String> = [Some(tests), doc]
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::err)
+        .collect();
+    ensure(failures.is_empty(), failures.join("\n"))
+}
+
+/// The workspace's doctests through Cargo, as one line like a test binary's, and their whole
+/// output when they fail.
+fn doctests(root: &Path) -> Result {
+    let started = Instant::now();
+    let mut command = cargo_command();
+    command
+        .current_dir(root)
+        .args(["test", "--locked", "--workspace", "--doc"])
+        .stdin(Stdio::null());
+    let (status, output) = captured(command)?;
+    println!(
+        "{} {:>5.1} s  doctests",
+        if status.success() { "PASS" } else { "FAIL" },
+        started.elapsed().as_secs_f64()
+    );
+    ensure(status.success(), format!("Doctests failed:\n{output}"))
 }
 
 /// The required real-platform watcher gate. A successful ordinary run never implies this passed.
@@ -508,8 +540,9 @@ fn formatted(root: &Path) -> Result {
 /// build nothing and take a second or two, so they run beside Clippy and the test build. A
 /// failure among them that has already come when the tests are built ends the check before they
 /// run; otherwise they are waited for after the tests. `quick` leaves the slow tests and the
-/// doctests out ([`tests`]).
-pub fn check(root: &Path, quick: bool) -> Result {
+/// doctests out ([`tests`]); without `lint`, Clippy is left out, for a caller that runs it
+/// elsewhere.
+pub fn check(root: &Path, quick: bool, lint: bool) -> Result {
     let text = |result: Result| result.map_err(|e| e.to_string());
     let repository = OnceLock::new();
     let formatting = OnceLock::new();
@@ -521,10 +554,12 @@ pub fn check(root: &Path, quick: bool) -> Result {
         });
         scope.spawn(|| formatting.set(text(formatted(root))));
         let mut failures = Vec::new();
-        match cargo(root, "lint", false)
-            .and_then(|()| build(root))
-            .map_err(|e| e.to_string())
-        {
+        let linted = if lint {
+            cargo(root, "lint", false)
+        } else {
+            Ok(())
+        };
+        match linted.and_then(|()| build(root)).map_err(|e| e.to_string()) {
             Err(error) => failures.push(error),
             Ok(_)
                 if [&repository, &formatting]
@@ -533,8 +568,7 @@ pub fn check(root: &Path, quick: bool) -> Result {
             {
                 failures.push("The tests did not run.".into());
             }
-            Ok(binaries) => failures
-                .extend(text(run_selected(root, &binaries, Selection::Ordinary { quick })).err()),
+            Ok(binaries) => failures.extend(text(ordinary(root, &binaries, quick)).err()),
         }
         failures
     });

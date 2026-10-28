@@ -289,8 +289,9 @@ fn main_result() -> Result {
         }
         "check" => {
             let quick = a.flag("--quick");
+            let lint = !a.flag("--no-lint");
             a.done()?;
-            check::check(&root, quick)?;
+            check::check(&root, quick, lint)?;
             println!("Headless checks passed. GUI and platform acceptance remain separate.");
         }
         "check-repository" => {

@@ -185,7 +185,7 @@ pub fn run(root: &Path, args: &mut Args) -> Result {
     let tag = ReleaseTag::parse(args.0.remove(0).to_str().ok_or("Invalid tag encoding")?)?;
     args.done()?;
     release(root, &tag, dry_run, &mut || {
-        check::check(root, true)?;
+        check::check(root, true, true)?;
         check::native_watchers(root)
     })
 }

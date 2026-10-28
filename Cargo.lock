@@ -2106,7 +2106,6 @@ dependencies = [
  "image",
  "image-webp",
  "kamadak-exif",
- "luxforge-core",
  "luxforge-gpu-types",
  "luxforge-jpeg",
  "luxforge-process",
