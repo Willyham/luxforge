@@ -394,7 +394,7 @@ impl Editor {
             .flat_map(|packages| &packages.modules)
             .map(|row| {
                 json!({"module": row.module, "origin": row.origin, "state": format!("{:?}", row.state),
-                       "reason": row.reason, "program": row.program.state,
+                       "reason": row.reason, "program": {"state": row.program.state, "adapter": row.program.adapter, "reason": row.program.reason},
                        "installed": row.installed.as_ref().and_then(|side| side.version.clone()),
                        "running": row.running.as_ref().and_then(|side| side.version.clone())})
             })

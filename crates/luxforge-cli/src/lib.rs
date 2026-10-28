@@ -37,14 +37,26 @@ pub struct InstalledModules {
 /// unavailable with the reason; one without a readable manifest registers nothing. Without a data
 /// root there is no store and nothing is read. Loading compiles or reads code and creates no
 /// instance, and the packages' bytes are dropped once loaded.
-pub fn installed_modules(paths: Option<&Paths>, developer: bool) -> InstalledModules {
+///
+/// A host that draws on a GPU passes its `programs`, which register each loaded package's GPU
+/// program to be probed at its first use; without (`luxforge-json`), a program is left unchecked
+/// and its module renders through the reference. The store's install check never registers one.
+pub fn installed_modules(
+    paths: Option<&Paths>,
+    developer: bool,
+    programs: Option<Arc<luxforge_wasm::Programs>>,
+) -> InstalledModules {
     let engine = luxforge_wasm::WasmHost::new(paths.map(Paths::module_code_cache));
     let store = paths.map(|paths| ModuleStore::new(paths.module_store()));
     let launch = store
         .as_ref()
         .map(|store| store.launch(developer))
         .unwrap_or_default();
-    let external = external_modules(&engine, &launch);
+    let loader = match programs {
+        Some(programs) => engine.clone().with_programs(programs),
+        None => engine.clone(),
+    };
+    let external = external_modules(&loader, &launch);
     InstalledModules {
         external,
         host: ModuleHost {
@@ -74,7 +86,8 @@ fn external_modules(engine: &luxforge_wasm::WasmHost, launch: &StoreLaunch) -> V
 }
 
 /// The engine as the module store's check: a component loads as a launch would load it, or the
-/// package is refused with the engine's reason.
+/// package is refused with the engine's reason. It registers no GPU program: a program that would
+/// not validate refuses only itself, at the launch that loads it.
 struct Engine(luxforge_wasm::WasmHost);
 
 impl ModuleEngine for Engine {

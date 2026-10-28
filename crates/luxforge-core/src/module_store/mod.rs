@@ -31,6 +31,7 @@ use crate::{
     module_layout::ModuleOrigin,
     module_package::{
         MANIFEST_FILE, MAX_MANIFEST_BYTES, ModuleEngine, ModuleManifest, ModulePackage,
+        ProgramState,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -827,20 +828,6 @@ pub enum LoadState {
     Failed,
 }
 
-/// The state of a module's GPU program. Until the program loader exists (TASK-007's validation
-/// and first-use probe), this says only whether the package ships `program.wgsl`; every external
-/// unit renders through the reference renderer meanwhile.
-// Seam for the GPU program loader: replace `Present` with the program's own states (validated,
-// probed and enabled, or disabled with its reason) from the launch's program set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "state", rename_all = "kebab-case")]
-pub enum ProgramState {
-    /// The package ships a program.
-    Present,
-    /// The package ships none: the module renders through the reference renderer.
-    Absent,
-}
-
 /// One external module's load state, as `module.status` (`external`) and `module.package.list`
 /// answer it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -855,6 +842,9 @@ pub struct ExternalStatus {
     pub installed: Option<Side>,
     /// What this launch read; `null` for a module stored since it started.
     pub running: Option<Side>,
+    /// Its GPU program's state: this launch's own, which a probe changes while it runs, for a
+    /// module it registered; otherwise `none` or `unchecked`, from whether the package ships one
+    /// ([`program_state`]).
     pub program: ProgramState,
 }
 
@@ -927,7 +917,7 @@ pub fn statuses(host: &ModuleHost, registry: &ModuleRegistry) -> (Vec<ExternalSt
                 (LoadState::PendingRelaunch, None)
             };
             let installed = current.map(|(_, side)| side);
-            let program = program_state(Some(&then.side));
+            let program = program_state(Some(registry), &then.id, &then.side);
             ExternalStatus {
                 module: then.id.clone(),
                 origin: then.origin,
@@ -948,7 +938,7 @@ pub fn statuses(host: &ModuleHost, registry: &ModuleRegistry) -> (Vec<ExternalSt
             origin: *origin,
             state: LoadState::PendingRelaunch,
             reason: None,
-            program: program_state(Some(side)),
+            program: program_state(None, id, side),
             installed: Some(side.clone()),
             running: None,
         });
@@ -984,11 +974,15 @@ fn launch_state(registry: &ModuleRegistry, then: &Launched) -> (LoadState, Optio
     (LoadState::Failed, Some(reason))
 }
 
-/// The GPU program's state from what a side says the package ships.
-fn program_state(side: Option<&Side>) -> ProgramState {
-    match side.and_then(|side| side.program) {
-        Some(true) => ProgramState::Present,
-        _ => ProgramState::Absent,
+/// The GPU program's state for a row: the live state of the module `registry` registered as `id`
+/// in this launch (a module that did not load has none to report). Otherwise `unchecked` when
+/// `side` says the package ships a program, which no launch has validated or probed for this row,
+/// and `none` when it ships none: so `none` always means no program, as `absent` did.
+fn program_state(registry: Option<&ModuleRegistry>, id: &str, side: &Side) -> ProgramState {
+    match registry.and_then(|registry| registry.external_program(id)) {
+        Some(ProgramState::None) | None if side.program == Some(true) => ProgramState::Unchecked,
+        Some(state) => state,
+        None => ProgramState::None,
     }
 }
 

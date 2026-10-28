@@ -2338,12 +2338,17 @@ dependencies = [
  "luxforge-testkit",
  "luxforge-ui",
  "luxforge-update",
+ "luxforge-wasm",
  "rfd",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "wat",
  "wgpu",
+ "wit-component",
+ "wit-parser",
  "zip",
 ]
 
@@ -2491,6 +2496,7 @@ name = "luxforge-module-sdk"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-gpu-types",
  "luxforge-module-sdk",
  "luxforge-test-macros",
  "luxforge-wasm",
@@ -2644,6 +2650,8 @@ name = "luxforge-wasm"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-gpu",
+ "luxforge-gpu-types",
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
@@ -2651,6 +2659,7 @@ dependencies = [
  "sha2",
  "wasmtime",
  "wat",
+ "wgpu",
  "wit-component",
  "wit-parser",
 ]
@@ -6351,7 +6360,6 @@ dependencies = [
  "luxforge-core",
  "luxforge-evidence",
  "luxforge-gpu",
- "luxforge-gpu-types",
  "luxforge-module-sdk",
  "luxforge-raw",
  "luxforge-reference",
@@ -6360,7 +6368,6 @@ dependencies = [
  "luxforge-testkit",
  "luxforge-update",
  "lzma-rust2",
- "naga",
  "percent-encoding",
  "regex",
  "roxmltree",

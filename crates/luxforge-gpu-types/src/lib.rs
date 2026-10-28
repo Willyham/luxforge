@@ -3,6 +3,7 @@
 
 pub mod adapter_facts;
 pub mod layout;
+pub mod probe;
 
 /// How a boundary's texels are held: four little-endian half floats (`rgba16float`), or four
 /// little-endian `f32` (`rgba32float`), red, green, blue and an opaque alpha.

@@ -87,7 +87,7 @@ fn row(state: &str, installed: Option<Value>, running: Option<Value>) -> Package
         "reason": (state == "failed").then_some("its component imports log"),
         "installed": installed,
         "running": running,
-        "program": {"state": "present"},
+        "program": {"state": "pending"},
     }))
     .expect("a row")
 }
@@ -333,17 +333,34 @@ fn external_module_badges_pending_words_and_detail() {
     );
 }
 
-/// The program's words follow what the owner reports; a state it adds later is shown as it is,
-/// with its reason, with no change here.
+/// The program's words follow each state the owner reports, quoting a refused or disabled
+/// program's reason and naming the adapter; a state it adds later is shown by its word.
 #[test]
 fn external_module_program_words_follow_the_reported_state() {
     let words = |value: Value| ProgramView::of(&value).words();
     assert!(words(json!(true)).starts_with("GPU program, checked"));
     assert!(words(json!(false)).starts_with("CPU reference only"));
-    assert!(words(json!({"state": "present"})).starts_with("GPU program, checked"));
+    assert!(words(json!({"state": "none"})).starts_with("CPU reference only"));
+    for state in ["unchecked", "pending"] {
+        assert!(
+            words(json!({ "state": state })).starts_with("GPU program, checked"),
+            "{state}"
+        );
+    }
+    assert!(words(json!({"state": "probing"})).starts_with("GPU program, being checked"));
     assert_eq!(
-        words(json!({"state": "disqualified", "reason": "differs by 0.02 at pixel 4,7"})),
-        "GPU program disqualified: differs by 0.02 at pixel 4,7"
+        words(json!({"state": "enabled", "adapter": "AMD Radeon"})),
+        "GPU program, drawing on AMD Radeon"
+    );
+    assert_eq!(
+        words(json!({"state": "refused", "reason": "it declares `lf_bind`"})),
+        "GPU program refused, so the CPU reference renders it: it declares `lf_bind`"
+    );
+    assert_eq!(
+        words(json!({"state": "disabled", "adapter": "llvmpipe",
+                     "reason": "differs by 0.02 at pixel 4,7"})),
+        "GPU program disabled on llvmpipe, so the CPU reference renders it: differs by 0.02 at \
+         pixel 4,7"
     );
     assert_eq!(
         words(json!({"state": "qualified"})),
@@ -359,7 +376,7 @@ fn external_module_writes_name_one_method_and_say_the_answer() {
     assert_eq!(install.params(), json!({"path": "/photos/glow.lfmodule"}));
     let status = json!({"module": "org.example.glow", "origin": "community",
         "state": "pending-relaunch", "installed": {"title": "Glow", "version": "1.1.0"},
-        "running": null, "program": {"state": "present"}});
+        "running": null, "program": {"state": "pending"}});
     let answer = json!({"module": "org.example.glow", "outcome": "installed",
         "installed": {"version": "1.1.0"}, "status": status});
     assert_eq!(

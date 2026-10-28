@@ -80,46 +80,58 @@ pub(crate) enum LoadState {
     Failed,
 }
 
-/// The GPU program's state as the owner reports it: `present` or `absent` today. The program
-/// loader will add its own states (validated, probed, disabled with a reason); any word it reports
-/// is shown as it is, with its reason, so a richer state needs no change here.
+/// The GPU program's state as the owner reports it (`luxforge_core`'s `ProgramState`): `none`
+/// when the package ships no program, else `unchecked`, `refused` with its reason, `pending`,
+/// `probing`, `enabled` on an adapter or `disabled` on one with its reason. Only `enabled` draws
+/// on the GPU; every other state renders through the module's CPU reference. A state this desktop
+/// does not know is shown by its word, with its reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub(crate) struct ProgramView {
     pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) adapter: Option<String>,
     #[serde(default)]
     pub(crate) reason: Option<String>,
 }
 
 impl ProgramView {
-    /// `module.package.inspect`'s `program`: whether the package ships one, or the loader's own
-    /// state object once it reports one.
+    /// `module.package.inspect`'s `program`, whether the package ships one: one it ships is
+    /// unchecked until a launch registers and probes it.
     fn of(value: &Value) -> Self {
         match value {
             Value::Bool(true) => Self {
-                state: "present".into(),
-                reason: None,
+                state: "unchecked".into(),
+                ..Self::default()
             },
             Value::Bool(false) | Value::Null => Self {
-                state: "absent".into(),
-                reason: None,
+                state: "none".into(),
+                ..Self::default()
             },
             other => serde_json::from_value(other.clone()).unwrap_or_default(),
         }
     }
 
-    /// How the review sheet and the detail pane say it.
+    /// How the review sheet and the detail pane say it, with a refusal's or a disabled program's
+    /// reason word for word.
     pub(crate) fn words(&self) -> String {
-        let said = match self.state.as_str() {
-            "present" => "GPU program, checked against the module's CPU reference at first use",
-            "absent" => "CPU reference only: it renders correctly, but more slowly",
-            other => {
-                return match &self.reason {
-                    Some(reason) => format!("GPU program {other}: {reason}"),
-                    None => format!("GPU program {other}"),
-                };
+        let reason = self.reason.as_deref().unwrap_or("no reason given");
+        let adapter = self.adapter.as_deref().unwrap_or("this GPU");
+        match self.state.as_str() {
+            "none" => "CPU reference only: it renders correctly, but more slowly".to_owned(),
+            "unchecked" | "pending" => {
+                "GPU program, checked against the module's CPU reference at first use".to_owned()
             }
-        };
-        said.to_owned()
+            "probing" => "GPU program, being checked against the module's CPU reference".to_owned(),
+            "enabled" => format!("GPU program, drawing on {adapter}"),
+            "refused" => format!("GPU program refused, so the CPU reference renders it: {reason}"),
+            "disabled" => format!(
+                "GPU program disabled on {adapter}, so the CPU reference renders it: {reason}"
+            ),
+            other => match &self.reason {
+                Some(reason) => format!("GPU program {other}: {reason}"),
+                None => format!("GPU program {other}"),
+            },
+        }
     }
 }
 

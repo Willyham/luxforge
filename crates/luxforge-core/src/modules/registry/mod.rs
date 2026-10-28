@@ -202,9 +202,9 @@ pub struct ModuleRegistry {
     chords: HashMap<crate::Chord, usize>,
     /// The external modules the assembly was handed and could not register, in its order.
     refused: Vec<RefusedExternal>,
-    /// The external modules the assembly registered, loaded or unavailable, by identity, and where
-    /// each came from.
-    externals: HashMap<String, crate::module_layout::ModuleOrigin>,
+    /// The external modules the assembly registered, loaded or unavailable, by identity: where
+    /// each came from, and its engine's units, which report its GPU program's state.
+    externals: HashMap<String, super::ExternalModule>,
     /// Whether the assembly was a developer run's ([`RegistryOptions::developer`]), which serves
     /// the developer-only host methods, such as loading a module from a folder.
     developer: bool,
@@ -289,7 +289,7 @@ impl ModuleRegistry {
             };
             match registered {
                 Ok(()) => {
-                    registry.externals.insert(id, external.origin());
+                    registry.externals.insert(id, external.clone());
                 }
                 Err(error) => registry.refused.push(RefusedExternal {
                     id,
@@ -318,7 +318,16 @@ impl ModuleRegistry {
     /// Where the registered module `id` came from when it is an external one, `community` or
     /// `folder`; `None` for a module linked into this build or one not registered.
     pub fn external_origin(&self, id: &str) -> Option<crate::module_layout::ModuleOrigin> {
-        self.externals.get(id).copied()
+        self.externals.get(id).map(super::ExternalModule::origin)
+    }
+
+    /// What became of the registered external module `id`'s GPU program now
+    /// ([`super::ExternalModule::program_state`]), which a probe can change while the launch runs;
+    /// `None` for a module linked into this build or one not registered.
+    pub fn external_program(&self, id: &str) -> Option<super::ProgramState> {
+        self.externals
+            .get(id)
+            .map(super::ExternalModule::program_state)
     }
 
     /// Whether this is a developer run's registry, which serves the developer-only host methods.

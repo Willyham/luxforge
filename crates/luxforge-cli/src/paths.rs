@@ -71,6 +71,12 @@ impl Paths {
         self.data.join("modules")
     }
 
+    /// Where external modules' GPU program probe results are cached, by package hash and adapter:
+    /// disposable, each program probed again at its first use when removed.
+    pub fn module_probe_cache(&self) -> PathBuf {
+        self.data.join("modules").join("probes")
+    }
+
     /// Where the local model runtime keeps what it compiles, such as Core ML's compiled models.
     pub fn inference_cache(&self) -> PathBuf {
         self.data.join("inference")
@@ -104,6 +110,10 @@ mod tests {
             root.join("data").join("modules").join("compiled")
         );
         assert_eq!(paths.module_store(), root.join("data").join("modules"));
+        assert_eq!(
+            paths.module_probe_cache(),
+            root.join("data").join("modules").join("probes")
+        );
         assert_eq!(
             paths.module_resources(),
             root.join("data").join("modules").join("resources")

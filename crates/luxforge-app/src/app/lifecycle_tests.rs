@@ -78,7 +78,7 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
     );
     assert_eq!(host.secrets.name(), "in-memory secret store");
     // Its installed modules too: the store the launch reads is the evidence directory's own.
-    let installed = luxforge_cli::installed_modules(config.paths.as_ref(), false);
+    let installed = luxforge_cli::installed_modules(config.paths.as_ref(), false, None);
     assert_eq!(
         installed
             .host

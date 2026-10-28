@@ -12,6 +12,8 @@ publish.workspace = true
 # `luxforge_core::module_package::ExternalModule` per installed package; the core names no engine.
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
+# The fixed probe patches a module's GPU program is probed over (std-only shared data; no GPU).
+luxforge-gpu-types = { path = "../luxforge-gpu-types" }
 wasmtime.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -33,6 +35,10 @@ luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"]
 wat = "=1.258.3"
 wit-component = "=0.258.3"
 wit-parser = "=0.258.3"
+# The program tests register a package's GPU program as the desktop does and probe it on this
+# host's adapter: the GPU backend's checker and harness, and its headless device.
+luxforge-gpu = { path = "../luxforge-gpu", features = ["qualification"] }
+wgpu.workspace = true
 
 # `unsafe` is allowed by name on one function only, beside its `SAFETY:` comment: loading compiled
 # code from the cache (`cache.rs`), which Wasmtime can only do unsafely because the bytes become

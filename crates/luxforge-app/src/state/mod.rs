@@ -5041,7 +5041,7 @@ fields = ["amount"]
                 "module": "org.example.glow", "origin": "community", "state": "failed",
                 "reason": "its component imports log",
                 "installed": {"title": "Glow", "version": "1.0.0"}, "running": null,
-                "program": {"state": "absent"},
+                "program": {"state": "none"},
             }],
             "pending_relaunch": false,
             "store": {"state": "ready"},

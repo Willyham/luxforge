@@ -10,25 +10,33 @@ use crate::api::ApiFailure;
 use crate::export::settings::baseline_json;
 use crate::module_package::{
     AdjustmentUnits, ExternalModule, FieldEntry, ModuleEngine, ModulePackage, PackageRefusal,
+    ProgramState,
 };
 use crate::module_store::{ModuleHost, ModuleStore};
 use crate::modules::ColorOperation;
 use crate::{CompileStage, RegistryOptions};
 use luxforge_test_macros::slow;
 use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
-use std::fs;
+use std::{fs, sync::Mutex};
 
 const GLOW: &str = "org.example.glow";
 const GLOW_EFFECT: &str = "org.example.glow.adjust";
 /// An identity the stand-in engine refuses, as the real one refuses a component that imports.
 const IMPORTS: &str = "org.example.imports";
 
-/// The stand-in for the engine's units: every layer compiles to no colour unit.
-struct Units;
+/// The stand-in for the engine's units: every layer compiles to no colour unit, and a package's
+/// program has the launch's shared state, which a test moves as a probe would.
+struct Units(Option<Arc<Mutex<ProgramState>>>);
 
 impl AdjustmentUnits for Units {
     fn compile(&self, _: &[FieldEntry], _: CompileStage) -> Result<ColorOperation, Error> {
         Ok(ColorOperation::new(Vec::new()))
+    }
+
+    fn program_state(&self) -> ProgramState {
+        self.0
+            .as_ref()
+            .map_or(ProgramState::None, |state| state.lock().unwrap().clone())
     }
 }
 
@@ -55,6 +63,8 @@ struct Launch {
     dir: PathBuf,
     developer: bool,
     keep: bool,
+    /// The state of every program this launch registered, pending until a test moves it.
+    program: Arc<Mutex<ProgramState>>,
 }
 
 impl Launch {
@@ -69,12 +79,16 @@ impl Launch {
     fn start(dir: PathBuf, developer: bool) -> Self {
         let store = ModuleStore::new(dir.join("data").join("modules"));
         let read = store.launch(developer);
+        let program = Arc::new(Mutex::new(ProgramState::Pending));
         let external: Vec<ExternalModule> = read
             .modules
             .iter()
             .filter_map(|module| {
                 let external = match &module.read {
-                    Ok(package) => ExternalModule::loaded(&package.manifest, Arc::new(Units)),
+                    Ok(package) => ExternalModule::loaded(
+                        &package.manifest,
+                        Arc::new(Units(package.program.as_ref().map(|_| program.clone()))),
+                    ),
                     Err(unread) => {
                         ExternalModule::unavailable(unread.manifest.as_ref()?, &unread.reason)
                     }
@@ -109,6 +123,7 @@ impl Launch {
             dir,
             developer,
             keep: false,
+            program,
         }
     }
 
@@ -348,7 +363,15 @@ fn module_install_lifecycle_across_relaunches_keeps_every_layer() {
     assert_eq!(launch.listed(GLOW).as_deref(), Some("community"));
     let loaded = launch.external(GLOW);
     assert_eq!(loaded["state"], "loaded", "{loaded}");
-    assert_eq!(loaded["program"], json!({"state": "present"}));
+    assert_eq!(loaded["program"], json!({"state": "pending"}));
+    *launch.program.lock().unwrap() = ProgramState::Enabled {
+        adapter: "Test adapter".into(),
+    };
+    assert_eq!(
+        launch.external(GLOW)["program"],
+        json!({"state": "enabled", "adapter": "Test adapter"}),
+        "a running module's row reports its program's live state"
+    );
     assert_eq!(loaded["installed"], loaded["running"]);
     assert_eq!(
         launch.ok("packages", "module.package.list", json!({}))["pending_relaunch"],

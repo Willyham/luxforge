@@ -232,10 +232,11 @@ pub use previews::{DecodedPreview, decode_preview};
 /// through (`docs/design/module-manager.md#contract`). The core runs no WebAssembly.
 pub mod module_package {
     pub use crate::modules::{
-        AdjustmentUnits, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue, MANIFEST_FILE,
-        MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
-        ManifestEffect, ModuleEngine, ModuleManifest, ModulePackage, PACKAGE_EXTENSION,
-        PROGRAM_FILE, PackageRefusal, read_package_file,
+        AdjustmentUnits, COLOUR_LIMITS, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue,
+        MANIFEST_FILE, MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES,
+        MAX_PROGRAM_BYTES, MODULE_API, ManifestEffect, ModuleEngine, ModuleManifest, ModulePackage,
+        PACKAGE_EXTENSION, PROGRAM_FILE, PackageRefusal, ProbeDifference, ProbeLimits, ProbeValues,
+        ProgramState, probe_values, read_package_file,
     };
 }
 

@@ -66,12 +66,21 @@
 //!   everything it held for it, its tiles in flight unread. A tile
 //!   the GPU cannot draw ends the stream naming why ([`BandSender::fall_back`]): GPU and reference
 //!   tiles are never mixed in one export, and the export lane renders it again with the reference.
+//! - **External programs' probes.** A read or a stream whose plan falls back on an external
+//!   module's GPU program still waiting for its probe queues the probe ([`super::gpu_probe`]),
+//!   with that read's or stream's cancellation, once the launch has handed the worker its programs
+//!   ([`GpuTiles::set_programs`]). The worker steps it, a value set a step, when no call waits and
+//!   no stream has a step to take, and lets it go unfinished once its cancellation is set. The
+//!   window's view asks for one too, with its photograph's cancellation, and is answered the
+//!   program's state once a probe of it ends ([`GpuTiles::probe_for_view`]).
 //! - **Evidence.** [`GpuTiles::figures`]: the status, the adapter, the reads each renderer
 //!   answered, the streams and bands, the tiles drawn and in flight, the windows uploaded and the
 //!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
 //!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
+use super::gpu_probe::{self, ProbeJob};
 use crate::adapters::Adapter;
+use luxforge_core::module_package::ProgramState;
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuLightSweep, GpuPlan,
     GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreparedStream, PreviewSource, Region, RestTile,
@@ -189,6 +198,13 @@ struct State {
     /// The streams asked for, the one being drawn first; the worker takes it out while it draws a
     /// step of it.
     streams: VecDeque<Box<Stream>>,
+    /// The launch's external programs, which a read or a stream may ask the worker to probe.
+    programs: Option<Arc<luxforge_wasm::Programs>>,
+    /// The probes asked for, the one being run first; the worker takes it out while it steps it.
+    probes: VecDeque<Box<ProbeJob>>,
+    /// The window's view's wait for each program it asked to be probed, by entry, answered once a
+    /// probe of it ends: at most one a program while the view's answer is outstanding.
+    view_waits: Vec<(&'static str, ViewWait)>,
     stopping: bool,
     /// The client of the call being answered, and that call's cancellation.
     active: Option<(ClientId, Cancel)>,
@@ -392,6 +408,9 @@ impl GpuTiles {
                     adapter,
                     calls: VecDeque::new(),
                     streams: VecDeque::new(),
+                    programs: None,
+                    probes: VecDeque::new(),
+                    view_waits: Vec::new(),
                     stopping: false,
                     active: None,
                     unavailable,
@@ -427,6 +446,62 @@ impl GpuTiles {
         state.named = Some(naming);
         state.unavailable = None;
         true
+    }
+
+    /// Hand the worker the launch's external programs, which the reads and streams it is asked for
+    /// may need probed ([`super::gpu_probe`]).
+    pub(crate) fn set_programs(&self, programs: Arc<luxforge_wasm::Programs>) {
+        self.shared.lock().programs = Some(programs);
+    }
+
+    /// The window's view's first use of the external program `fallback` names
+    /// ([`GpuFallback::DisabledProgram`]), its plan falling back on it: the program's probe queued
+    /// as a read's is, carrying `cancel`, the photograph's, and the worker started for it, with the
+    /// state the program is left in once a probe of it ends (enabled, disabled, or pending again
+    /// when it was let go) for the view to plan again by. A program another's probe is running is
+    /// waited for without queueing another. [`ViewProbe::Later`] while the window's adapter is not
+    /// named yet, which the probe runs on. Never waits.
+    pub(crate) fn probe_for_view(&self, fallback: &GpuFallback, cancel: &Cancel) -> ViewProbe {
+        let fallback = TileFallback::Plan(fallback.clone());
+        let TileFallback::Plan(GpuFallback::DisabledProgram { program, .. }) = &fallback else {
+            return ViewProbe::Never;
+        };
+        let answer = {
+            let mut state = self.shared.lock();
+            if state.stopping {
+                return ViewProbe::Never;
+            }
+            let Some(probe) = state
+                .programs
+                .as_ref()
+                .and_then(|programs| programs.probe(program))
+            else {
+                return ViewProbe::Never;
+            };
+            let (wait, answer) = iced::futures::channel::oneshot::channel();
+            match (probe.state(), state.unavailable) {
+                (ProgramState::Pending, Some(TileUnavailable::Pending)) => return ViewProbe::Later,
+                (ProgramState::Pending | ProgramState::Probing, None) => {}
+                // Enabled since the view planned: answered at once, for it to plan again.
+                (enabled @ ProgramState::Enabled { .. }, _) => {
+                    let _ = wait.send(enabled);
+                    return ViewProbe::Asked(answer);
+                }
+                _ => return ViewProbe::Never,
+            }
+            state.view_waits.retain(|(_, wait)| !wait.is_canceled());
+            state.view_waits.push((probe.entry(), wait));
+            answer
+        };
+        self.want_probe(&fallback, cancel);
+        ViewProbe::Asked(answer)
+    }
+
+    /// Queue the probe `fallback` asks for, if any, and start the worker for it. Never waits.
+    fn want_probe(&self, fallback: &TileFallback, cancel: &Cancel) {
+        if queue_probe(&self.shared, fallback, cancel) && self.start().is_ok() {
+            self.shared.wake.notify_one();
+        }
     }
 
     /// The adapter the runner's device is on, once it is opened, and the backend and name of the
@@ -565,11 +640,12 @@ impl TileService for GpuTiles {
         if let TileStatus::Reference(Some(reason)) = self.status() {
             return Err(reason);
         }
-        let prepared = PreparedStream::of(evaluation)?;
+        let wanted = |fallback: &TileFallback| self.want_probe(fallback, cancel);
+        let prepared = PreparedStream::of(evaluation).inspect_err(wanted)?;
         // Every band of codes the stream sends within its cap: a wide output takes a shorter side.
         let sides = prepared.band_sides(&self.sides());
         let sweep_sides = self.sweep_sides();
-        let plan = prepared.stream(sides[0])?;
+        let plan = prepared.stream(sides[0]).inspect_err(wanted)?;
         let checked = output.check(plan.output.width, plan.output.height);
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
@@ -626,7 +702,7 @@ impl TileService for GpuTiles {
     }
 
     fn stop(&self) {
-        let (calls, streams) = {
+        let (calls, streams, probes, waits) = {
             let mut state = self.shared.lock();
             state.stopping = true;
             if let Some((_, cancel)) = &state.active {
@@ -635,11 +711,14 @@ impl TileService for GpuTiles {
             (
                 std::mem::take(&mut state.calls),
                 std::mem::take(&mut state.streams),
+                std::mem::take(&mut state.probes),
+                std::mem::take(&mut state.view_waits),
             )
         };
         // Their replies close unanswered and their encoders find their streams ended, outside the
-        // lock; the stream the worker holds goes with it.
-        drop((calls, streams));
+        // lock; the stream the worker holds goes with it, the probes go unfinished, and the view's
+        // waits close unanswered.
+        drop((calls, streams, probes, waits));
         self.shared.wake.notify_one();
         let thread = self.thread().take();
         if let Some(thread) = thread {
@@ -1048,6 +1127,76 @@ impl Stream {
 enum Job {
     Call(TileCall),
     Step(Box<Stream>),
+    Probe(Box<ProbeJob>),
+}
+
+/// Queue the probe of the external program `fallback` falls back on, when it is one of the
+/// launch's programs waiting for its probe and none is queued for it already: whether one was.
+fn queue_probe(shared: &Shared, fallback: &TileFallback, cancel: &Cancel) -> bool {
+    let mut state = shared.lock();
+    if state.stopping {
+        return false;
+    }
+    let Some(probe) = state
+        .programs
+        .as_ref()
+        .and_then(|programs| gpu_probe::wanted(programs, fallback))
+    else {
+        return false;
+    };
+    if state
+        .probes
+        .iter()
+        .any(|job| job.entry() == probe.entry() && !job.cancelled())
+    {
+        return false;
+    }
+    state
+        .probes
+        .push_back(Box::new(ProbeJob::new(probe, cancel.clone())));
+    true
+}
+
+/// The window's view's wait for a program's probe ([`GpuTiles::probe_for_view`]).
+type ViewWait = iced::futures::channel::oneshot::Sender<ProgramState>;
+
+/// What the window's view's first use of a program it falls back on asked of the worker.
+#[derive(Debug)]
+pub(crate) enum ViewProbe {
+    /// The program's probe is queued or running: answered with the program's state once a probe
+    /// of it ends.
+    Asked(iced::futures::channel::oneshot::Receiver<ProgramState>),
+    /// The window's adapter, which the probe runs on, is not named yet: ask again later.
+    Later,
+    /// Nothing to probe: not one of the launch's programs, not pending, or no GPU to probe on.
+    Never,
+}
+
+/// Answer the view's waits for the program `entry` with its state, once a probe of it has ended:
+/// unless another probe of it is running still, which answers them when it ends.
+fn answer_view(shared: &Shared, entry: &'static str) {
+    let answered = {
+        let mut state = shared.lock();
+        let now = state
+            .programs
+            .as_ref()
+            .and_then(|programs| programs.probe(entry))
+            .map(|probe| probe.state());
+        if now == Some(ProgramState::Probing) {
+            return;
+        }
+        let waits = std::mem::take(&mut state.view_waits);
+        let (answered, kept): (Vec<_>, Vec<_>) =
+            waits.into_iter().partition(|(waits, _)| *waits == entry);
+        state.view_waits = kept;
+        now.map(|now| (now, answered))
+    };
+    // Sent outside the lock; a wait whose photograph has gone is closed, and dropped.
+    if let Some((now, answered)) = answered {
+        for (_, wait) in answered {
+            let _ = wait.send(now.clone());
+        }
+    }
 }
 
 /// The worker: the oldest call first, else a step of the stream being drawn when it has one to
@@ -1074,6 +1223,9 @@ fn work(shared: &Arc<Shared>) {
                 }
                 if let Some(stream) = state.streams.pop_front_if(|stream| stream.ready()) {
                     break Job::Step(stream);
+                }
+                if let Some(probe) = state.probes.pop_front() {
+                    break Job::Probe(probe);
                 }
                 state = shared
                     .wake
@@ -1105,6 +1257,26 @@ fn work(shared: &Arc<Shared>) {
                 };
                 // Its evaluation and its sender go outside the lock.
                 drop(finished);
+            }
+            Job::Probe(mut probe) => {
+                let more = worker.probe(&mut probe);
+                let finished = {
+                    let mut state = shared.lock();
+                    worker.publish(&mut state);
+                    if more && !state.stopping {
+                        state.probes.push_front(probe);
+                        None
+                    } else {
+                        Some(probe)
+                    }
+                };
+                // An unfinished run leaves its program pending, outside the lock; then the view's
+                // waits for the program are answered where it now stands.
+                if let Some(finished) = finished {
+                    let entry = finished.entry();
+                    drop(finished);
+                    answer_view(shared, entry);
+                }
             }
         }
     }
@@ -1148,6 +1320,24 @@ impl Worker {
             *runner = None;
             self.runners.set(self.runners.get() + 1);
         }
+    }
+
+    /// One step of `job` on the runner, opened for it if no read or stream has opened it: whether
+    /// more remain. A job whose work was cancelled, or a runner that cannot draw, takes none.
+    fn probe(&self, job: &mut ProbeJob) -> bool {
+        if job.cancelled() {
+            return false;
+        }
+        #[cfg(test)]
+        self.shared
+            .lock()
+            .hooks
+            .probe_threads
+            .push(std::thread::current().name().unwrap_or_default().to_owned());
+        let Ok(runner) = self.runner() else {
+            return false;
+        };
+        job.step(&runner, self.runners.get())
     }
 
     /// Why the runner cannot draw, when it cannot.
@@ -2324,7 +2514,11 @@ impl Session<'_> {
         if let Some(reason) = self.worker.unavailable() {
             return Err(TileFallback::Unavailable(reason));
         }
-        let plan = plan_read(self.stack, stage, grown(rect))?;
+        let plan = plan_read(self.stack, stage, grown(rect)).inspect_err(|fallback| {
+            if queue_probe(&self.worker.shared, fallback, self.cancel) {
+                self.worker.shared.wake.notify_one();
+            }
+        })?;
         let read = clipped(rect, plan.size);
         if read.is_empty() {
             // The rectangle misses the stage: nothing is drawn, and the answer holds nothing.
@@ -2660,6 +2854,10 @@ struct Hooks {
     /// Every later stream fits within this in place of [`GPU_TILE_BUDGET`] less
     /// [`STREAM_READ_RESERVE`].
     budget: Option<u64>,
+    /// Passed before each step of a probe.
+    probes: Option<Arc<luxforge_testbase::Gate>>,
+    /// The thread each probe step ran on, in order.
+    probe_threads: Vec<String>,
 }
 
 #[cfg(test)]
@@ -2672,6 +2870,7 @@ impl Worker {
             match job {
                 Job::Call(_) => state.hooks.calls.clone(),
                 Job::Step(_) => state.hooks.steps.clone(),
+                Job::Probe(_) => state.hooks.probes.clone(),
             }
         };
         if let Some(gate) = gate {
@@ -2710,6 +2909,17 @@ impl GpuTiles {
     /// Have the worker pass `gate` before each step of a stream, or stop passing one.
     pub(crate) fn hold_steps(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
         self.shared.lock().hooks.steps = gate;
+    }
+
+    /// Have the worker pass `gate` before each step of a probe, or stop passing one.
+    pub(crate) fn hold_probes(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
+        self.shared.lock().hooks.probes = gate;
+    }
+
+    /// The thread each probe step ran on, and how many probes wait.
+    pub(crate) fn probes(&self) -> (Vec<String>, usize) {
+        let state = self.shared.lock();
+        (state.hooks.probe_threads.clone(), state.probes.len())
     }
 
     /// Start every later run's scratch planes from NaN, or stop.

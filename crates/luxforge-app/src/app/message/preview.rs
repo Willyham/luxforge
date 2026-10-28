@@ -26,6 +26,9 @@ pub(crate) enum PreviewMessage {
     /// A lens warp's coordinate grid for a GPU boundary key, computed on the runtime's blocking
     /// pool. Handled in `app/gpu_preview.rs`.
     GridReady(Box<crate::app::gpu_preview::GridAnswer>),
+    /// A probe the window's view asked for of an external module's GPU program ended, on the GPU
+    /// tile worker. Handled in `app/gpu_probe.rs`.
+    ProgramProbed(Box<crate::app::gpu_probe::ViewProbed>),
     /// A window of a paged source's level 0 read for the photo surface.
     WindowRead(Box<crate::app::gpu_paged::WindowAnswer>),
     /// The minimap overview's reference reduction, made on the runtime's blocking pool. Handled in

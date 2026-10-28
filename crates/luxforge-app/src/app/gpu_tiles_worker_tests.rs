@@ -64,10 +64,10 @@ use serde_json::{Value, json};
 use std::sync::{Arc, mpsc};
 
 /// One read: the stage, the rectangle and the values asked for.
-type Read = (ReadStage, Region, ReadValues);
+pub(super) type Read = (ReadStage, Region, ReadValues);
 
 /// Every pixel of a stage: a read or a plan of it is the whole stage, clipped.
-const WHOLE: Region = Region {
+pub(super) const WHOLE: Region = Region {
     x0: 0,
     y0: 0,
     width: u32::MAX,
@@ -93,7 +93,7 @@ fn point(stage: ReadStage, x: u32, y: u32, values: ReadValues) -> Read {
 
 /// `count` client identities, which only a catalog owner hands out: one started on a scratch
 /// catalog, asked, and stopped.
-fn clients(count: usize) -> Vec<ClientId> {
+pub(super) fn clients(count: usize) -> Vec<ClientId> {
     let catalog = paths::temp_catalog("gpu-tiles-clients");
     let (owner, join) = OwnerHandle::start(&catalog).expect("a catalog owner");
     let clients = (0..count).map(|_| owner.register()).collect();
@@ -135,7 +135,7 @@ fn mode(registry: &ModuleRegistry, recipe: &Recipe, layer: usize) -> MaskInputMo
 
 /// What one call on `service` over `stack` answers to `reads`, in order, and the thread that read
 /// them.
-fn call(
+pub(super) fn call(
     service: &dyn TileService,
     client: ClientId,
     stack: &Evaluation,
