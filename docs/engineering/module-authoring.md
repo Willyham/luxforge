@@ -14,6 +14,8 @@ A module is a directory holding three things:
 
 A crate outside the Luxforge workspace needs its own empty `[workspace]` table, as the example's has. Inside this repository the example is also listed in the root manifest's `exclude`.
 
+**Licence.** The SDK and the example are MIT OR Apache-2.0, unlike the GPL-3.0-or-later host, so a module built on the SDK, or copied from the example, takes whatever licence its author chooses, named in the manifest's `license`. The SDK's `host` feature links the GPL host crates (`luxforge-core`, `luxforge-wasm`) into native tooling and tests; a module's own WebAssembly build links none of them.
+
 ## The Rust side
 
 `Adjustment` has three functions, each pure:

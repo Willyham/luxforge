@@ -15,6 +15,7 @@ Boards: [module-manager/board.html](module-manager/board.html), with notes per b
 | The first external kind | An adjustment section: a processing module with its own controls in the tools panel. Canvas tools, mask kinds and correction kinds come later and are not planned |
 | How modules are published | No index yet. A module is installed from a package file the person chooses. In developer mode a module author can also load an unpacked folder |
 | Price | Free. There are no paid modules, accounts or ratings |
+| The SDK's licence | `luxforge-module-sdk` and the example module are MIT OR Apache-2.0, so a module built on the SDK chooses its own licence. The host crates stay GPL-3.0-or-later (decided 2026-10-28) |
 
 ## Terms
 
@@ -177,5 +178,4 @@ These are recorded defaults the owner can revise. The plan runs on them.
 - Install, update and uninstall take effect on the next launch, with no rollback store.
 - A failed program probe falls back to the reference rather than refusing the module.
 - The names `.lfmodule`, `luxforge-module.toml`, `luxforge-wasm`, `luxforge-module-sdk` and the example's Split toning.
-- The SDK and the example are GPL-3.0-or-later, as all project code is, so a module built on the SDK is under a GPL-compatible licence. A more permissive SDK licence would let modules choose theirs.
 - The example's identity is `org.example.splittoning`, outside Luxforge's reserved namespace, and its numerics are its own: a tonal position from the square root of Rec. 709 luminance, a smooth split around a pivot the balance moves by up to 0.45 each way, and tints that move white halfway toward the hue's pure colour at full saturation, normalized to unit luminance.

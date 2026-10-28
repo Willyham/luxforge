@@ -2,7 +2,7 @@
 name = "luxforge-module-sdk"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 rust-version.workspace = true
 publish.workspace = true
 
@@ -11,6 +11,9 @@ publish.workspace = true
 # values and coefficient words, and `export_adjustment!`. A module crate depends on it alone and is
 # built for `wasm32-unknown-unknown`; with no features the SDK has no dependency at all, so a
 # module's lockfile holds the SDK and the module.
+#
+# Unlike the host crates, the SDK is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), so a
+# module built on it chooses its own licence (docs/decisions.md#module-manager).
 #
 # The `host` feature is the authoring tooling, for a native build only: building a module crate
 # for wasm32 with the pinned toolchain and making its core module a component (`wit-component`),
