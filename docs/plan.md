@@ -41,7 +41,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 The [MCP adapter](../tasks/programmability/mcp.json) ([design](design/mcp.md)) is implemented and verified on Linux: the registry markers, client identity, `luxforge-mcp` with both profiles, headless mode and pictures, packaging and Settings › Agents. TASK-009's `mcp` journey passes under Xvfb on Linux; its M4 run remains. TASK-011, qualification with real clients on the owner's M4 against a packaged build, follows it and needs the owner's session.
 
-The [module manager](../tasks/programmability/modules.json) ([design](design/module-manager.md)) is implemented: phase 1's layout and phase 2's external adjustment modules, with the engine, GPU programs, the install store and lifecycle, the desktop and authoring. TASK-011's `external-module` journey passes in the background on Linux under Xvfb; its M4 run remains, then TASK-012, the M4 measurement.
+The [module manager](../tasks/programmability/modules.json) ([design](design/module-manager.md)) is implemented: phase 1's layout and phase 2's external adjustment modules, with the engine, GPU programs, the install store and lifecycle, the desktop and authoring. TASK-011's `external-module` journey passes in the background on Linux under Xvfb; its M4 run remains. TASK-012, the M4 measurement, has its workload, `xtask module-measure`, and needs only its M4 run.
 
 [Auto tone](../tasks/editing/auto-tone.json) is implemented and qualified on the owner's M4: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. TASK-008, the owner's Lightroom exports and review, remains.
 
@@ -200,7 +200,7 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 
 **Module manager** ([design](design/module-manager.md), [plan](../tasks/programmability/modules.json)). Phases 1 and 2 are implemented and verified on Linux under Xvfb; nothing has run on the M4.
 - Both phases on the M4: the `module-layout` and `external-module` scenarios have run only on Linux
-- The activation, idle, first-use and reference-cost measurements on the M4, after the M4 run
+- The activation, idle, first-use, reference-cost, size and build measurements on the M4: the `module-measure` workload is built and waits only for its M4 run
 - The deployed usage ingest taking the `external` tool before clients report it
 - Later, not planned: a community library to browse and publish, external canvas tools, mask and correction kinds, capabilities for external modules and live loading
 
