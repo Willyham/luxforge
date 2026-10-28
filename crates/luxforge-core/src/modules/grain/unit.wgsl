@@ -138,7 +138,9 @@ fn lf_grain_film(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3
     if l <= 0.0 || m >= 1.0 {
         return rgb;
     }
-    let g = lf_grain_film_field(vec2<u32>(u32(pos.x), u32(pos.y)), words);
+    // `pos` is an integer stage pixel held exactly in f32; rounding rather than truncating keeps
+    // the hash's integer position should a map ever hand it a value just below that integer.
+    let g = lf_grain_film_field(vec2<u32>(round(pos)), words);
     let e = lf_grain_film_encode(l);
     let e_top = lf_grain_film_encode(l / m);
     let t = e / e_top;
