@@ -202,6 +202,12 @@ pub struct ModuleRegistry {
     chords: HashMap<crate::Chord, usize>,
     /// The external modules the assembly was handed and could not register, in its order.
     refused: Vec<RefusedExternal>,
+    /// The external modules the assembly registered, loaded or unavailable, by identity, and where
+    /// each came from.
+    externals: HashMap<String, crate::module_layout::ModuleOrigin>,
+    /// Whether the assembly was a developer run's ([`RegistryOptions::developer`]), which serves
+    /// the developer-only host methods, such as loading a module from a folder.
+    developer: bool,
 }
 
 /// An external module the registry assembly could not register, and why: its identity, an action,
@@ -248,7 +254,10 @@ impl ModuleRegistry {
             modules.push(Arc::new(CapabilitiesProofModule::new(base)));
             modules.push(Arc::new(ModelsProofModule::new(base)));
         }
-        let mut registry = Self::new();
+        let mut registry = Self {
+            developer: options.developer,
+            ..Self::new()
+        };
         let mut unknown: Vec<&str> = options.disabled.iter().map(String::as_str).collect();
         for module in modules {
             let id = module.descriptor().id.clone();
@@ -278,11 +287,14 @@ impl ModuleRegistry {
                 Some(reason) => registry.register_unavailable(module, reason),
                 None => registry.register(module),
             };
-            if let Err(error) = registered {
-                registry.refused.push(RefusedExternal {
+            match registered {
+                Ok(()) => {
+                    registry.externals.insert(id, external.origin());
+                }
+                Err(error) => registry.refused.push(RefusedExternal {
                     id,
                     reason: error.detail,
-                });
+                }),
             }
         }
         if let Some(id) = unknown.first() {
@@ -301,6 +313,17 @@ impl ModuleRegistry {
     /// each was refused, in the order it was handed them.
     pub fn refused_externals(&self) -> &[RefusedExternal] {
         &self.refused
+    }
+
+    /// Where the registered module `id` came from when it is an external one, `community` or
+    /// `folder`; `None` for a module linked into this build or one not registered.
+    pub fn external_origin(&self, id: &str) -> Option<crate::module_layout::ModuleOrigin> {
+        self.externals.get(id).copied()
+    }
+
+    /// Whether this is a developer run's registry, which serves the developer-only host methods.
+    pub fn is_developer(&self) -> bool {
+        self.developer
     }
 
     /// The registry of an ordinary run: every product module, available, and no test module.

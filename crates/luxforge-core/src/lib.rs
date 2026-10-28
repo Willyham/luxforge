@@ -43,6 +43,9 @@ pub mod merge;
 mod model;
 /// The person's module layout: which modules the workspace offers and in what order.
 pub mod module_layout;
+/// Installed external modules: `modules.json`, the per-version package store and what a launch
+/// reads from it.
+pub mod module_store;
 mod modules;
 /// Events, days, cameras and moments, computed from header metadata.
 mod organize;
@@ -231,8 +234,8 @@ pub mod module_package {
     pub use crate::modules::{
         AdjustmentUnits, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue, MANIFEST_FILE,
         MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
-        ManifestEffect, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE,
-        PackageRefusal,
+        ManifestEffect, ModuleEngine, ModuleManifest, ModulePackage, PACKAGE_EXTENSION,
+        PROGRAM_FILE, PackageRefusal, read_package_file,
     };
 }
 

@@ -77,6 +77,17 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
         )
     );
     assert_eq!(host.secrets.name(), "in-memory secret store");
+    // Its installed modules too: the store the launch reads is the evidence directory's own.
+    let installed = luxforge_cli::installed_modules(config.paths.as_ref(), false);
+    assert_eq!(
+        installed
+            .host
+            .store
+            .as_ref()
+            .map(|store| store.root().to_path_buf()),
+        Some(evidence.join("host").join("data").join("modules"))
+    );
+    assert!(installed.external.is_empty());
     let root = std::env::temp_dir().join("luxforge-data-root");
     let mut config = Config {
         data_root: Some(root.clone()),

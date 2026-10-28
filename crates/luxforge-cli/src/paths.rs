@@ -65,6 +65,12 @@ impl Paths {
         self.data.join("modules").join("compiled")
     }
 
+    /// The installed external modules' store: `modules.json` and the installed packages under
+    /// `packages/` ([`luxforge_core::module_store`]).
+    pub fn module_store(&self) -> PathBuf {
+        self.data.join("modules")
+    }
+
     /// Where the local model runtime keeps what it compiles, such as Core ML's compiled models.
     pub fn inference_cache(&self) -> PathBuf {
         self.data.join("inference")
@@ -97,6 +103,7 @@ mod tests {
             paths.module_code_cache(),
             root.join("data").join("modules").join("compiled")
         );
+        assert_eq!(paths.module_store(), root.join("data").join("modules"));
         assert_eq!(
             paths.module_resources(),
             root.join("data").join("modules").join("resources")

@@ -2,7 +2,7 @@
 //! arithmetic, which a WebAssembly engine outside the core runs: [`AdjustmentUnits`].
 use crate::modules::field_patch::{FieldPatch, Spec, Values};
 use crate::modules::{ColorOperation, ParameterDescriptor, ParameterKind, Processing, ToolModule};
-use crate::{CompileStage, Error};
+use crate::{CompileStage, Error, module_layout::ModuleOrigin};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -45,6 +45,18 @@ pub trait AdjustmentUnits: Send + Sync + 'static {
 pub struct ExternalModule {
     module: Arc<dyn ToolModule>,
     unavailable: Option<String>,
+    origin: ModuleOrigin,
+}
+
+/// What checks a package's component the way a launch loads it, without registering anything:
+/// the WebAssembly engine, which the desktop and `luxforge-json` give the catalog owner so
+/// `module.package.inspect`, `module.install` and `module.folder.load` refuse a component that
+/// would not load (`PackageRefusal::Component`) before anything is stored. The core runs no
+/// WebAssembly itself; without an engine the store checks only what the core's reader checks.
+pub trait ModuleEngine: Send + Sync + 'static {
+    /// Load `package`'s component as a launch would, compiling it or reading its compiled code
+    /// from the cache, and answer why it would not load. Creates no instance.
+    fn check(&self, package: &super::ModulePackage) -> Result<(), Error>;
 }
 
 impl ExternalModule {
@@ -56,7 +68,20 @@ impl ExternalModule {
         Ok(Self {
             module: manifest.module(units)?,
             unavailable: None,
+            origin: ModuleOrigin::Community,
         })
+    }
+
+    /// The same module from `origin`: `community` (the default, a package installed from a file)
+    /// or `folder` (an unpacked folder a developer loaded). `module.list` reports it.
+    pub fn with_origin(mut self, origin: ModuleOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Where the module came from ([`Self::with_origin`]).
+    pub fn origin(&self) -> ModuleOrigin {
+        self.origin
     }
 
     /// `manifest`'s module, registered unavailable for `reason`: its descriptor, actions and effect
@@ -70,6 +95,7 @@ impl ExternalModule {
         Ok(Self {
             module: manifest.module(Arc::new(Unloaded(reason.clone())))?,
             unavailable: Some(reason),
+            origin: ModuleOrigin::Community,
         })
     }
 
@@ -93,6 +119,7 @@ impl std::fmt::Debug for ExternalModule {
         f.debug_struct("ExternalModule")
             .field("id", &self.id())
             .field("unavailable", &self.unavailable)
+            .field("origin", &self.origin)
             .finish()
     }
 }

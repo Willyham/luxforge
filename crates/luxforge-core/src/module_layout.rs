@@ -36,8 +36,8 @@ const PICK_OBJECT_QUERY: &str = "pick-object";
 /// The object selection task, the Masks panel's Object kind.
 const SELECT_OBJECT_TASK: &str = "select-object";
 
-/// Where a registered module came from. Every module this build registers is linked into it;
-/// installed packages and developer folders are the later origins.
+/// Where a registered module came from: linked into this build, installed from a package file, or
+/// loaded from a developer's folder ([`crate::module_store`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModuleOrigin {
@@ -333,16 +333,18 @@ impl<'a> Arrangement<'a> {
         module.locked.is_some() || stored.is_none_or(|stored| !stored.disabled.contains(&module.id))
     }
 
-    /// `module.list`'s modules: `modules`, each with its origin, placements and switch.
+    /// `module.list`'s modules: `modules`, each with its origin (`origin` answers it for an
+    /// external module and `None` for a linked one), placements and switch.
     pub(crate) fn listing<'m>(
         &self,
         stored: Option<&StoredLayout>,
         modules: impl IntoIterator<Item = &'m ModuleDescriptor>,
+        origin: impl Fn(&str) -> Option<ModuleOrigin>,
     ) -> Vec<Listing<'m>> {
         modules
             .into_iter()
             .map(|descriptor| Listing {
-                origin: ModuleOrigin::BuiltIn,
+                origin: origin(&descriptor.id).unwrap_or(ModuleOrigin::BuiltIn),
                 placements: placements(descriptor),
                 enabled: self.enabled(stored, descriptor),
                 descriptor,

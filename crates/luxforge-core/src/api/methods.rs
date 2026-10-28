@@ -170,6 +170,10 @@ pub(super) struct MethodSpec {
     /// The fields of the answer, as dotted paths, that hold the path of a JPEG the owner wrote
     /// for display, declared `.images(&[...])`: `schema.list` lists them as `images`.
     pub images: &'static [&'static str],
+    /// For a method only a developer run serves, declared `.developer()`: outside developer mode
+    /// it is absent, neither listed by `schema.list` nor found by dispatch, so calling it is an
+    /// unknown method, as for any method this host does not have.
+    pub developer_only: bool,
 }
 
 /// What a method changes ([`MethodSpec::effects`]).
@@ -262,6 +266,18 @@ impl MethodSpec {
         self.images = fields;
         self
     }
+
+    /// Only a developer run serves it ([`MethodSpec::developer_only`]).
+    const fn developer(mut self) -> Self {
+        self.developer_only = true;
+        self
+    }
+
+    /// Whether a host with `registry` serves it: every method, except a developer-only one
+    /// outside developer mode.
+    pub(super) fn served(&self, registry: &ModuleRegistry) -> bool {
+        !self.developer_only || registry.is_developer()
+    }
 }
 
 /// The fields of a ready job's `result` that hold the path of a JPEG the owner wrote for display,
@@ -328,6 +344,7 @@ macro_rules! service {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
     ($name:expr, $params:ty, $handler:path, $notes:expr $(,)?) => {
@@ -342,6 +359,7 @@ macro_rules! service {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
 }
@@ -361,6 +379,7 @@ macro_rules! mutating {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
 }
@@ -379,6 +398,7 @@ macro_rules! planned {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
 }
@@ -403,6 +423,7 @@ macro_rules! owner {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
     // A handler whose request `before` checks first, before the parse: a check that must answer
@@ -422,6 +443,7 @@ macro_rules! owner {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
     ($name:expr, $params:ty, $handler:path, $notes:expr $(, retries: $retries:ident)? $(,)?) => {
@@ -436,6 +458,7 @@ macro_rules! owner {
             effects: Effects::UNDECLARED,
             permission_only: None,
             images: &[],
+            developer_only: false,
         }
     };
 }
@@ -748,6 +771,53 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "restore one toolset's default order, or without toolset every order and every module's switch, through one locked write of the user preferences; what the stored layout names that this host does not register is kept; an ordinary write, which a client undoes by writing back what module.layout.read answered before it; answers as module.layout.read does; a change is announced as one module.layout event under the request; needs a configured application preference directory"
     )
     .reversible(),
+    // Installed external modules: `modules.json` and the package store under the data root,
+    // outside every catalog. Packages are read, checked and copied off the owner, and every write
+    // takes effect at the next launch.
+    owner!(
+        "module.package.inspect",
+        owner::module_install::PackagePath,
+        owner::module_install::inspect,
+        "read and check a .lfmodule package without installing it, for the review sheet: {path, bytes, hash (sha256:<hex> of the file), manifest {api, id, name, title, hint, version, authors, license, repository, toolset, effect {id, stage, order, format}}, program (whether it ships a GPU program; without one it renders through the reference renderer), descriptor (the module it registers, as module.list lists one), placements [{toolset}], methods (the edit methods it adds), access {network: none, files: none}, reviewed (false: Luxforge has not reviewed it), installed (null, or what the store holds for its id now: {origin, title?, version?, hash?, format?, program?, path?}), already_installed (the store holds exactly this package), format_change (null, or {installed, package, notice} when its payload format differs from the installed version's: existing edits are unavailable until a version that reads them is installed), status (its load state as module.status's external answers it, or null)}; a package the reader refuses is a validation error whose data.refusal is archive, too-large, entries, outside-root, unexpected-entry, missing-file, content, manifest, api, identity, reserved-identity, toolset, stage, maskable, sources, table or component (the module engine would not load its component), and an identity, action or effect another module provides is refused with data.refusal collision; reads the file off the catalog owner and writes nothing"
+    )
+    .read(),
+    owner!(
+        "module.install",
+        owner::module_install::PackagePath,
+        owner::module_install::install,
+        "install the .lfmodule package at path for the next launch, checked as module.package.inspect checks it: the exact bytes checked are copied into the module store under the data root and modules.json names them, replacing any installed package with the same id (the version it replaces is removed: there is no rollback store); answers {module, origin: community, outcome (installed, replaced, or unchanged when exactly this package is installed already), installed {title, version, hash, format, program}, previous (null, or the version replaced), format_change (null, or {installed, package, notice} when the payload formats differ: existing edits are unavailable until a version that reads them is installed), status (the load state: pending-relaunch until the next launch, as module.status's external answers it)}; the explicit call is the person's or agent's decision and needs no grant, since an adjustment module holds no capabilities; a module loaded from a folder is refused; a change is announced as one module.installed event under the request; refused not-ready without a module store"
+    )
+    .irreversible(),
+    owner!(
+        "module.uninstall",
+        owner::module_install::StoredModule,
+        owner::module_install::uninstall,
+        "uninstall the installed package module at the next launch: modules.json no longer names it and its stored package is removed, while this launch keeps running it; photos keep every layer of it, and from the next launch rendering, sampling, appending and export refuse them with the unavailable effect until a version that reads them is installed again; answers {module, removed {title, version, hash, format, program}, status (pending-relaunch while this launch still runs it, else null)}; an id the store does not hold, or a module loaded from a folder, is refused as validation by name; announced as one module.installed event under the request; refused not-ready without a module store"
+    )
+    .irreversible(),
+    owner!(
+        "module.package.list",
+        NoParams,
+        owner::module_install::list,
+        "{modules: [{module, origin (community or folder), state (loaded, pending-relaunch: the store names something other than what this launch read, or nothing, and the next launch applies it, or failed: this launch read it and it did not load, with reason), reason?, installed (what the next launch loads, {title?, version?, hash?, format?, program?, path?}, or null once uninstalled), running (what this launch read, or null for a module stored since it started), program {state: present or absent}}], pending_relaunch, store {state: ready, unreadable with reason (modules.json is kept unchanged and every write is refused), or unconfigured}, launch_problem (why this launch could not read modules.json, or null)}: every external module this launch read or the store holds now, folder modules only in developer mode; reads modules.json and nothing else"
+    )
+    .read(),
+    owner!(
+        "module.folder.load",
+        owner::module_install::FolderPath,
+        owner::module_install::folder_load,
+        "developer mode only: load the unpacked module in the folder at path at the next developer launch, checked as a package is; the store keeps the folder's canonical path, and every developer launch reads the folder again, so a rebuilt module loads at the next relaunch; answers {module, origin: folder, outcome (loaded, replaced: another folder of the same id, or unchanged), path, read {title, version, hash, format, program}, previous (the folder replaced, or null), status}; an installed package of the same id is refused; a change is announced as one module.installed event under the request; never writes in the folder"
+    )
+    .reversible()
+    .developer(),
+    owner!(
+        "module.folder.remove",
+        owner::module_install::StoredModule,
+        owner::module_install::folder_remove,
+        "developer mode only: stop loading a folder module at the next developer launch, leaving the folder untouched; answers {module, path, status}; an id not loaded from a folder is refused as validation by name; announced as one module.installed event under the request"
+    )
+    .reversible()
+    .developer(),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
     // never create history entries.
@@ -914,10 +984,8 @@ pub(super) const METHODS: &[MethodSpec] = &[
     owner!(
         host::STATUS,
         ModuleParams,
-        |owner, _, params| owner
-            .host
-            .status(&owner.jobs, owner.service.registry(), params),
-        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, setups?, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; setups, for a module that declares them, is [{id, state, missing_bytes, staged_bytes, minimum_memory?, fits?, parts: [{name, state, bytes, missing_bytes, staged_bytes, minimum_memory?, resources: [{id, state, bytes, staged_bytes?, job_id?}]}], jobs: [{resource_id, job_id, status}], error?, reason?}], state installed, missing, installing, failed (error the first failure), unavailable (reason no-runtime: this host's inference runtime offers none of a missing part's backends) or cannot-run (reason memory: this machine is below minimum_memory, the largest of its parts'); runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
+        owner::module_install::status,
+        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, setups?, runtime?, external?}; external, for an external module, is its load state as module.package.list lists it ({module, origin, state: loaded, pending-relaunch or failed, reason?, installed, running, program {state}}), and an id only the module store knows, such as a package installed since launch, answers {module_id, external} alone;permissions counts the module's grants and denials, whose records module.permission.list returns; setups, for a module that declares them, is [{id, state, missing_bytes, staged_bytes, minimum_memory?, fits?, parts: [{name, state, bytes, missing_bytes, staged_bytes, minimum_memory?, resources: [{id, state, bytes, staged_bytes?, job_id?}]}], jobs: [{resource_id, job_id, status}], error?, reason?}], state installed, missing, installing, failed (error the first failure), unavailable (reason no-runtime: this host's inference runtime offers none of a missing part's backends) or cannot-run (reason memory: this machine is below minimum_memory, the largest of its parts'); runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
     )
     .read(),
     owner!(
@@ -1224,6 +1292,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         },
         permission_only: None,
         images: &[],
+        developer_only: false,
     },
     service!(
         "draft.read",
@@ -2134,10 +2203,10 @@ pub(super) fn task_method(task_id: &str) -> String {
 }
 
 pub(super) fn find(service: &EditorService, name: &str) -> Option<Method> {
-    if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
-        return Some(Method::Host(spec));
-    }
     let registry = service.registry();
+    if let Some(spec) = METHODS.iter().find(|spec| spec.name == name) {
+        return spec.served(registry).then_some(Method::Host(spec));
+    }
     if let Some(task_id) = name.strip_prefix(TASK_PREFIX) {
         return registry
             .task(task_id)
@@ -2291,6 +2360,7 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
     // method's are: the envelope's `mutation` field is required and described once, below.
     let mut methods: Map<String, Value> = METHODS
         .iter()
+        .filter(|spec| spec.served(registry))
         .map(|spec| {
             let required = spec
                 .params
@@ -4235,7 +4305,7 @@ mod tests {
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
             listed.len(),
-            METHODS.len()
+            METHODS.iter().filter(|spec| spec.served(&registry)).count()
                 + crate::mask::commands::descriptor().actions.len()
                 + crate::mask::commands::descriptor().queries.len()
                 + count(|descriptor| descriptor.actions.len())

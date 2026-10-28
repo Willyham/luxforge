@@ -63,9 +63,9 @@ pub const MAX_COUNT: u32 = 10u32.pow(6);
 pub const SCHEMA: u32 = 1;
 
 wire_enum! {
-    /// A built-in adjustment tool a recipe transaction changed (`tool.commit`): one per shipped
-    /// product module that edits a photograph. A module's identity maps through
-    /// [`Tool::from_module_id`]; developer proofs, Presets (whose application commits each group it
+    /// An adjustment tool a recipe transaction changed (`tool.commit`): one per shipped product
+    /// module that edits a photograph, and `external` for every external module together. A
+    /// built-in module's identity maps through [`Tool::from_module_id`]; developer proofs, Presets (whose application commits each group it
     /// changes under that group's own tool) and host features (masks, history) are not tools.
     pub enum Tool {
         /// Basic: white balance, tone and colour. On a RAW photo's global target its white balance
@@ -80,6 +80,9 @@ wire_enum! {
         Curve => "curve",
         /// Sharpening and noise reduction.
         Detail => "detail",
+        /// Any external module, installed from a package or loaded from a folder, never named:
+        /// its identity is a community author's, which statistics do not carry.
+        External => "external",
         /// Lens correction.
         Lens => "lens",
         /// A RAW photo's Look.
@@ -429,7 +432,15 @@ mod tests {
         }
         mapped.sort();
         mapped.dedup();
-        assert_eq!(mapped, Tool::ALL, "every tool is a shipped module's");
+        let shipped: Vec<Tool> = Tool::ALL
+            .iter()
+            .copied()
+            .filter(|tool| *tool != Tool::External)
+            .collect();
+        assert_eq!(
+            mapped, shipped,
+            "every tool but external is a shipped module's"
+        );
         assert_eq!(Tool::from_module_id("example.external"), None);
     }
 }

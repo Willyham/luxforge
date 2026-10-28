@@ -127,6 +127,11 @@ pub struct HostConfig {
     /// `luxforge-json`, reports `unavailable` with the reason `headless`. Nothing is checked unless
     /// a port is given.
     pub updates: Option<Arc<dyn crate::update::UpdatePort>>,
+    /// The installed external modules' store, the engine that checks a package's component, and
+    /// what this launch read from the store ([`crate::module_store`]): the desktop and
+    /// `luxforge-json` give theirs under the data root. The default has no store, so every
+    /// lifecycle write is refused `not-ready`.
+    pub modules: crate::module_store::ModuleHost,
 }
 
 impl HostConfig {
@@ -153,6 +158,7 @@ impl HostConfig {
             usage: Arc::new(crate::usage::Collector::new()),
             usage_consent: Arc::new(crate::usage::consent::Usage::headless()),
             updates: None,
+            modules: crate::module_store::ModuleHost::default(),
         }
     }
 }
@@ -186,6 +192,7 @@ impl std::fmt::Debug for HostConfig {
                 "updates",
                 &self.updates.as_ref().map(|port| port.status().updater),
             )
+            .field("modules", &self.modules)
             .finish()
     }
 }
@@ -441,6 +448,11 @@ impl CapabilityHost {
     /// What the desktop's launch resolved for each launch flag.
     pub(crate) fn launch_flags(&self) -> &crate::flags::LaunchFlags {
         &self.config.launch_flags
+    }
+
+    /// The installed external modules' store, engine and launch record ([`HostConfig::modules`]).
+    pub(crate) fn modules(&self) -> &crate::module_store::ModuleHost {
+        &self.config.modules
     }
 
     /// The process-wide usage statistics consent runtime ([`HostConfig::usage_consent`]).

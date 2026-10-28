@@ -20,7 +20,7 @@ mod manifest;
 #[cfg(test)]
 mod tests;
 
-pub use external::{AdjustmentUnits, ExternalModule, FieldEntry, FieldValue};
+pub use external::{AdjustmentUnits, ExternalModule, FieldEntry, FieldValue, ModuleEngine};
 pub use manifest::{ManifestEffect, ModuleManifest};
 
 use crate::Error;
@@ -85,6 +85,9 @@ pub enum PackageRefusal {
     Sources,
     /// The field table is one the host could not draw.
     Table,
+    /// The module engine refused the component: it imports something, or does not export the
+    /// `adjust` interface with its three functions' types.
+    Component,
 }
 
 impl PackageRefusal {
@@ -107,6 +110,7 @@ impl PackageRefusal {
             Self::Maskable => "maskable",
             Self::Sources => "sources",
             Self::Table => "table",
+            Self::Component => "component",
         }
     }
 
@@ -117,12 +121,12 @@ impl PackageRefusal {
     }
 
     /// This refusal as a validation error saying `detail`.
-    fn error(self, detail: impl Into<String>) -> Error {
+    pub fn error(self, detail: impl Into<String>) -> Error {
         Error::validation(detail).with_data(serde_json::json!({ "refusal": self.code() }))
     }
 }
 
-const ALL: [PackageRefusal; 16] = [
+const ALL: [PackageRefusal; 17] = [
     PackageRefusal::Archive,
     PackageRefusal::TooLarge,
     PackageRefusal::Entries,
@@ -139,6 +143,7 @@ const ALL: [PackageRefusal; 16] = [
     PackageRefusal::Maskable,
     PackageRefusal::Sources,
     PackageRefusal::Table,
+    PackageRefusal::Component,
 ];
 
 /// A package that read and validated: its manifest (with the descriptor its table builds), the
@@ -183,24 +188,127 @@ impl ModulePackage {
     /// The package in the file at `path`: a regular file of at most [`MAX_PACKAGE_BYTES`], read
     /// whole and then as [`Self::read`] reads bytes. Nothing is written.
     pub fn read_file(path: &Path) -> Result<Self, Error> {
-        let shown = path.display();
-        let file = std::fs::File::open(path)
-            .map_err(|error| Error::file_access(format!("cannot open {shown}: {error}")))?;
-        let metadata = file
-            .metadata()
-            .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
-        if !metadata.is_file() {
-            return Err(Error::file_access(format!("{shown} is not a file")));
-        }
-        if metadata.len() > MAX_PACKAGE_BYTES {
-            return Err(too_large_package(metadata.len()));
-        }
-        let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
-        file.take(MAX_PACKAGE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
-        Self::read(&bytes)
+        Self::read(&read_package_file(path)?)
     }
+
+    /// The module in the unpacked folder at `path`, as a developer loads one: the package's three
+    /// files at the folder's root, each a regular file within its limit, read and checked as a
+    /// package's entries are. Anything else in the folder, such as the module's sources, is not
+    /// read. Its hash is `sha256:` and the hex SHA-256 of each file present, in the package's
+    /// order, as its name, a NUL, its length as eight little-endian bytes and its bytes: what keys
+    /// the compiled-code cache, so a rebuilt component compiles again. Nothing is written.
+    pub fn read_folder(path: &Path) -> Result<Self, Error> {
+        let shown = path.display();
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
+        if !metadata.is_dir() {
+            return Err(Error::file_access(format!("{shown} is not a folder")));
+        }
+        let manifest = folder_file(path, MANIFEST_FILE, MAX_MANIFEST_BYTES)?.ok_or_else(|| {
+            PackageRefusal::MissingFile.error(format!("the folder holds no {MANIFEST_FILE}"))
+        })?;
+        let component =
+            folder_file(path, COMPONENT_FILE, MAX_COMPONENT_BYTES)?.ok_or_else(|| {
+                PackageRefusal::MissingFile.error(format!("the folder holds no {COMPONENT_FILE}"))
+            })?;
+        let program = folder_file(path, PROGRAM_FILE, MAX_PROGRAM_BYTES)?;
+        let mut digest = Sha256::new();
+        for (name, bytes) in [
+            (MANIFEST_FILE, Some(&manifest)),
+            (COMPONENT_FILE, Some(&component)),
+            (PROGRAM_FILE, program.as_ref()),
+        ] {
+            if let Some(bytes) = bytes {
+                digest.update(name.as_bytes());
+                digest.update([0]);
+                digest.update((bytes.len() as u64).to_le_bytes());
+                digest.update(bytes);
+            }
+        }
+        let text = std::str::from_utf8(&manifest).map_err(|_| {
+            PackageRefusal::Manifest.error(format!("{MANIFEST_FILE} is not UTF-8 text"))
+        })?;
+        let manifest = ModuleManifest::parse(text)?;
+        check_component(&component)?;
+        let program = program
+            .map(|program| {
+                String::from_utf8(program).map_err(|_| {
+                    PackageRefusal::Content.error(format!("{PROGRAM_FILE} is not UTF-8 text"))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            manifest,
+            component,
+            program,
+            hash: format!("sha256:{:x}", digest.finalize()),
+        })
+    }
+}
+
+/// The manifest's text in the package these bytes hold, read as [`ModulePackage::read`] reads it:
+/// what the module store keeps beside an installed package, so a package that no longer reads
+/// still names its module.
+pub(crate) fn manifest_text(bytes: &[u8]) -> Result<String, Error> {
+    String::from_utf8(archive::read(bytes)?.manifest)
+        .map_err(|_| PackageRefusal::Manifest.error(format!("{MANIFEST_FILE} is not UTF-8 text")))
+}
+
+/// The bytes of the package file at `path`:a regular file of at most [`MAX_PACKAGE_BYTES`], read
+/// whole, for a caller that keeps the bytes beside the package they hold ([`ModulePackage::read`]),
+/// as an install copies exactly the bytes it validated. Nothing is written.
+pub fn read_package_file(path: &Path) -> Result<Vec<u8>, Error> {
+    let shown = path.display();
+    let file = std::fs::File::open(path)
+        .map_err(|error| Error::file_access(format!("cannot open {shown}: {error}")))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
+    if !metadata.is_file() {
+        return Err(Error::file_access(format!("{shown} is not a file")));
+    }
+    if metadata.len() > MAX_PACKAGE_BYTES {
+        return Err(too_large_package(metadata.len()));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(MAX_PACKAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
+    Ok(bytes)
+}
+
+/// The file `name` at the root of the folder `folder`, or `None` when there is none: a regular
+/// file, not a link, of at most `limit` bytes, refused as too large past it.
+fn folder_file(folder: &Path, name: &str, limit: u64) -> Result<Option<Vec<u8>>, Error> {
+    let path = folder.join(name);
+    let shown = path.display();
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::file_access(format!("cannot read {shown}: {error}"))),
+    };
+    if !metadata.is_file() {
+        return Err(PackageRefusal::UnexpectedEntry
+            .error(format!("{name} in the folder is not a regular file")));
+    }
+    let too_large = |bytes: u64| {
+        PackageRefusal::TooLarge.error(format!(
+            "{name} is {bytes} bytes, more than the {limit} it may hold"
+        ))
+    };
+    if metadata.len() > limit {
+        return Err(too_large(metadata.len()));
+    }
+    let file = std::fs::File::open(&path)
+        .map_err(|error| Error::file_access(format!("cannot open {shown}: {error}")))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::file_access(format!("cannot read {shown}: {error}")))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large(bytes.len() as u64));
+    }
+    Ok(Some(bytes))
 }
 
 fn too_large_package(bytes: u64) -> Error {

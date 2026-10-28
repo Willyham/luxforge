@@ -75,7 +75,9 @@ pub(in crate::api) fn listing(
         .map(|state| state.asset.source.tag());
     let registry = service.registry();
     let arrangement = Arrangement::new(registry.descriptors());
-    let modules = arrangement.listing(stored, methods::listed_modules(registry, kind));
+    let modules = arrangement.listing(stored, methods::listed_modules(registry, kind), |id| {
+        registry.external_origin(id)
+    });
     // The host's own descriptors beside them, in the same shape, so an agent discovers a `mask.*`
     // command, its parameters and its controls exactly as it discovers a module action.
     Ok(json!({"modules": modules, "host": registry.host_descriptors()}))
