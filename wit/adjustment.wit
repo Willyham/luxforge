@@ -1,0 +1,55 @@
+// The interface of an external Luxforge adjustment module: the component inside a `.lfmodule`
+// package's `module.wasm` (docs/design/module-manager.md#contract).
+//
+// The host reads the package's manifest, owns the module's field table and does everything a
+// field-patch module needs from it: actions, validation, history, presets, copy settings and the
+// recipe row. The component supplies only what is the module's own: the colour unit's words from
+// the canonical field values, its CPU reference over one row, and an optional history summary.
+//
+// The world exports one interface and declares no imports. A component that imports anything, WASI
+// included, does not load. The types live in the exported interface rather than in the world,
+// because a type declared in a world is encoded as a type import of the component. The host crate
+// (`luxforge-wasm`) and the guest SDK (`luxforge-module-sdk`) both generate their bindings from
+// this file; the manifest's `api` field names this package's version as `0.1`.
+package luxforge:module@0.1.0;
+
+/// What an adjustment module computes.
+interface adjust {
+    /// One field's canonical value, of the kind its manifest declares. A number is the finite
+    /// value the host stores, whatever spelling it was sent in; a choice is the enum option's
+    /// name; a colour is three 8-bit sRGB channels.
+    variant value {
+        number(f64),
+        integer(s64),
+        boolean(bool),
+        choice(string),
+        color(tuple<u8, u8, u8>),
+    }
+
+    /// One field of the table, by its manifest name.
+    record field {
+        name: string,
+        value: value,
+    }
+
+    /// The colour unit's words for these values: every field of the table, in the manifest's
+    /// order, with each field the stored payload leaves out at its default. The words are the
+    /// unit's identity, so equal values must give equal words. An error refuses the layer with
+    /// the module named and the text given.
+    coefficients: func(values: list<field>) -> result<list<u32>, string>;
+
+    /// The CPU reference: one contiguous run of row `y`, starting at column `x0`, in the
+    /// coordinates of the stage the layer's segment produces, as linear-sRGB (D65) triplets
+    /// `[r0, g0, b0, r1, g1, b1, ...]`. It answers the run transformed, the same length, and may
+    /// hold values outside 0..1, which later units see unclamped. It depends on nothing but the
+    /// words, the position and the pixels it is given.
+    apply-row: func(words: list<u32>, y: u32, x0: u32, rgb: list<f32>) -> list<f32>;
+
+    /// An optional summary of these values for a history entry; none leaves the host's own.
+    label: func(values: list<field>) -> option<string>;
+}
+
+/// An adjustment module's component: it exports `adjust` and imports nothing.
+world adjustment {
+    export adjust;
+}

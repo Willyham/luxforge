@@ -224,6 +224,18 @@ pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, in
 /// The desktop's Select grid decodes the cached previews `preview.read` names (the preview cache).
 pub use previews::{DecodedPreview, decode_preview};
 
+/// External adjustment modules: the `.lfmodule` package and its reader, the
+/// `luxforge-module.toml` manifest, and the seam an engine supplies a module's colour arithmetic
+/// through (`docs/design/module-manager.md#contract`). The core runs no WebAssembly.
+pub mod module_package {
+    pub use crate::modules::{
+        AdjustmentUnits, COMPONENT_FILE, FieldEntry, FieldValue, MANIFEST_FILE,
+        MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
+        ManifestEffect, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE,
+        PackageRefusal,
+    };
+}
+
 /// Qualification only: CPU filters the desktop's GPU readback tests hold each GPU kernel to. Built
 /// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
 #[cfg(feature = "qualification")]

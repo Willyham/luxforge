@@ -38,6 +38,11 @@ use super::{
 };
 use crate::{Error, Orientation, SourceTag};
 use serde_json::{Map, Number, Value};
+use std::borrow::Cow;
+
+/// A name or a label a spec holds: a built-in's static text, or the owned text of a table read at
+/// run time, such as an external module's manifest.
+pub(crate) type Text = Cow<'static, str>;
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
 /// reached in practice and never panics if it is.
@@ -377,11 +382,11 @@ impl Field {
 /// the view's own style; a group without views draws it in place of its fields' own controls, at
 /// the position of its hue field.
 pub(crate) struct Group {
-    label: &'static str,
+    label: Text,
     /// What a session selects this group's tab row, or this group as a tab, by
     /// ([`GroupControl::id`]): required on a group with views or tabs and on each of its tabs.
-    id: Option<&'static str>,
-    fields: Vec<&'static str>,
+    id: Option<Text>,
+    fields: Vec<Text>,
     /// The group's values usually belong to one photograph ([`GroupControl::per_photo`]).
     per_photo: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
@@ -402,11 +407,14 @@ pub(crate) struct Group {
 
 impl Group {
     /// An expanded group of these fields, by name, with no extra controls or reset variants.
-    pub(crate) fn new(label: &'static str, fields: impl IntoIterator<Item = &'static str>) -> Self {
+    pub(crate) fn new(
+        label: impl Into<Text>,
+        fields: impl IntoIterator<Item = &'static str>,
+    ) -> Self {
         Self {
-            label,
+            label: label.into(),
             id: None,
-            fields: fields.into_iter().collect(),
+            fields: fields.into_iter().map(Text::from).collect(),
             per_photo: false,
             extra: Vec::new(),
             reset_variants: Vec::new(),
@@ -417,9 +425,16 @@ impl Group {
         }
     }
 
+    /// One more field of the group, by name, after those it already lists: how a table read at run
+    /// time lists its fields.
+    pub(crate) fn field(mut self, name: impl Into<Text>) -> Self {
+        self.fields.push(name.into());
+        self
+    }
+
     /// The group's identity, which a group with tabs and every tab declares.
-    pub(crate) fn id(mut self, id: &'static str) -> Self {
-        self.id = Some(id);
+    pub(crate) fn id(mut self, id: impl Into<Text>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
@@ -461,8 +476,8 @@ impl Group {
     }
 
     /// Every field of this group and of its subgroups, depth first in declared order.
-    fn members(&self) -> Vec<&'static str> {
-        let mut members = self.fields.clone();
+    fn members(&self) -> Vec<&str> {
+        let mut members: Vec<&str> = self.fields.iter().map(|name| &**name).collect();
         for subgroup in &self.subgroups {
             members.extend(subgroup.members());
         }
@@ -499,82 +514,91 @@ impl Group {
 /// entry rather than two — reads `<label> tint`, and one of all its fields reads as the wheel,
 /// `<label>`.
 pub(crate) struct Wheel {
-    label: &'static str,
-    hue: &'static str,
-    saturation: &'static str,
-    luminance: Option<&'static str>,
+    label: Text,
+    hue: Text,
+    saturation: Text,
+    luminance: Option<Text>,
 }
 
 impl Wheel {
     /// A wheel labelled `label` over the `hue` and `saturation` fields.
-    pub(crate) fn new(label: &'static str, hue: &'static str, saturation: &'static str) -> Self {
+    pub(crate) fn new(
+        label: impl Into<Text>,
+        hue: impl Into<Text>,
+        saturation: impl Into<Text>,
+    ) -> Self {
         Self {
-            label,
-            hue,
-            saturation,
+            label: label.into(),
+            hue: hue.into(),
+            saturation: saturation.into(),
             luminance: None,
         }
     }
 
     /// The field drawn as the wheel's luminance rail.
-    pub(crate) fn luminance(mut self, luminance: &'static str) -> Self {
-        self.luminance = Some(luminance);
+    pub(crate) fn luminance(mut self, luminance: impl Into<Text>) -> Self {
+        self.luminance = Some(luminance.into());
         self
     }
 
     /// The bound fields: hue, saturation and, when declared, luminance.
-    fn fields(&self) -> Vec<&'static str> {
-        [Some(self.hue), Some(self.saturation), self.luminance]
-            .into_iter()
-            .flatten()
-            .collect()
+    fn fields(&self) -> Vec<&str> {
+        [
+            Some(&self.hue),
+            Some(&self.saturation),
+            self.luminance.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|name| &**name)
+        .collect()
     }
 }
 
 /// One entry of a [`View`], drawn in its order: a field's own control, or the group's wheel of
 /// that label in this style.
 pub(crate) enum ViewEntry {
-    Field(&'static str),
-    Wheel(&'static str, WheelStyle),
+    Field(Text),
+    Wheel(Text, WheelStyle),
 }
 
 /// A presentation-only tab of a group that declares views: what one view shows of the group's
 /// member fields. A field may be shown by several views and is still captured and reset by its
 /// group alone; a view has no reset and adds no history label.
 pub(crate) struct View {
-    id: &'static str,
-    label: &'static str,
+    id: Text,
+    label: Text,
     entries: Vec<ViewEntry>,
 }
 
 impl View {
     /// A view a session selects by `id`, titled `label`.
-    pub(crate) fn new(id: &'static str, label: &'static str) -> Self {
+    pub(crate) fn new(id: impl Into<Text>, label: impl Into<Text>) -> Self {
         Self {
-            id,
-            label,
+            id: id.into(),
+            label: label.into(),
             entries: Vec::new(),
         }
     }
 
     /// A member field's own control.
-    pub(crate) fn field(mut self, name: &'static str) -> Self {
-        self.entries.push(ViewEntry::Field(name));
+    pub(crate) fn field(mut self, name: impl Into<Text>) -> Self {
+        self.entries.push(ViewEntry::Field(name.into()));
         self
     }
 
     /// The group's wheel labelled `label`, drawn in `style`.
-    pub(crate) fn wheel(mut self, label: &'static str, style: WheelStyle) -> Self {
-        self.entries.push(ViewEntry::Wheel(label, style));
+    pub(crate) fn wheel(mut self, label: impl Into<Text>, style: WheelStyle) -> Self {
+        self.entries.push(ViewEntry::Wheel(label.into(), style));
         self
     }
 
     /// Every field this view draws of `group`, through a field entry or one of its wheels.
-    fn shown(&self, group: &Group) -> Vec<&'static str> {
+    fn shown<'g>(&'g self, group: &'g Group) -> Vec<&'g str> {
         self.entries
             .iter()
             .flat_map(|entry| match entry {
-                ViewEntry::Field(name) => vec![*name],
+                ViewEntry::Field(name) => vec![&**name],
                 ViewEntry::Wheel(label, _) => group
                     .declared_wheel(label)
                     .map(Wheel::fields)
@@ -600,11 +624,12 @@ struct ActionText {
 /// [`crate::EFFECT_FORMAT`]; a module whose payload changed meaning declares its own current
 /// marker with [`Spec::format`], and a stored layer at any other format is refused.
 pub(crate) struct Spec {
-    id: &'static str,
-    title: &'static str,
-    hint: &'static str,
-    /// The word payload errors use, `unknown basic field exposure`: the last segment of the id.
-    noun: &'static str,
+    id: Text,
+    title: Text,
+    hint: Text,
+    /// The word the actions' identities and payload errors use, `set-basic` and `unknown basic
+    /// field exposure`: the last segment of the id unless the spec names it ([`Spec::named`]).
+    noun: String,
     effect: EffectDescriptor,
     /// The field patch, `set-<noun>`.
     set: ActionText,
@@ -635,18 +660,30 @@ impl Spec {
     /// takes order 0, is not maskable, and holds the forced fields; the module adds its fields,
     /// groups and everything else through the methods below.
     pub(crate) fn new(
-        id: &'static str,
-        title: &'static str,
-        hint: &'static str,
+        id: impl Into<Text>,
+        title: impl Into<Text>,
+        hint: impl Into<Text>,
         effect_id: &str,
         stage: EffectStage,
     ) -> Self {
-        let noun = id.rsplit('.').next().unwrap_or(id);
+        let id = id.into();
+        let noun = id.rsplit('.').next().unwrap_or(&id).to_owned();
+        Self::named(id, noun, title, hint, effect_id, stage)
+    }
+
+    /// [`Spec::new`] with the actions' noun given rather than derived from the id: `set-<noun>`
+    /// and `reset-<noun>`. A built-in's noun is its id's last segment; an external module's
+    /// manifest may name one with hyphens (`split-toning`), which an identity segment cannot hold.
+    pub(crate) fn named(
+        id: impl Into<Text>,
+        noun: impl Into<String>,
+        title: impl Into<Text>,
+        hint: impl Into<Text>,
+        effect_id: &str,
+        stage: EffectStage,
+    ) -> Self {
+        let (id, noun, title, hint) = (id.into(), noun.into(), title.into(), hint.into());
         Self {
-            id,
-            title,
-            hint,
-            noun,
             effect: EffectDescriptor {
                 single: true,
                 ..EffectDescriptor::new(effect_id, stage)
@@ -669,6 +706,10 @@ impl Spec {
                      identity and position; a no-op without one and when it is already neutral"
                 ),
             },
+            id,
+            title,
+            hint,
+            noun,
             fields: Vec::new(),
             groups: Vec::new(),
             queries: Vec::new(),
@@ -845,7 +886,7 @@ impl Spec {
                     ));
                 }
                 for name in wheel.fields() {
-                    if !group.fields.contains(&name) {
+                    if !group.fields.iter().any(|field| field == name) {
                         return not_a_field(format!("wheel {}", wheel.label), name);
                     }
                     if earlier.iter().any(|other| other.fields().contains(&name)) {
@@ -860,7 +901,7 @@ impl Spec {
             for view in &group.views {
                 for entry in &view.entries {
                     match entry {
-                        ViewEntry::Field(name) if !members.contains(name) => {
+                        ViewEntry::Field(name) if !members.contains(&&**name) => {
                             return not_a_field(format!("view {}", view.label), name);
                         }
                         ViewEntry::Wheel(label, _) if group.declared_wheel(label).is_none() => {
@@ -877,12 +918,12 @@ impl Spec {
             if group.views.is_empty() {
                 continue;
             }
-            let shown: Vec<&'static str> = group
+            let shown: Vec<&str> = group
                 .views
                 .iter()
                 .flat_map(|view| view.shown(group))
                 .collect();
-            if let Some(name) = group.fields.iter().find(|name| !shown.contains(name)) {
+            if let Some(name) = group.fields.iter().find(|name| !shown.contains(&&***name)) {
                 return Err(format!(
                     "field {name} of group {} is shown by none of its views",
                     group.label
@@ -914,7 +955,7 @@ impl Spec {
                 match group
                     .wheels
                     .iter()
-                    .find(|wheel| wheel.fields().contains(name))
+                    .find(|wheel| wheel.fields().contains(&&**name))
                 {
                     Some(wheel) if wheel.hue == *name => {
                         controls.push(self.wheel_control(wheel, WheelStyle::Compact))
@@ -939,7 +980,7 @@ impl Spec {
                             .map(|wheel| self.wheel_control(wheel, *style)),
                     })
                     .collect();
-                controls.push(Control::view(view.id, view.label, entries).into());
+                controls.push(Control::view(&*view.id, &*view.label, entries).into());
             }
         }
         controls.extend(
@@ -949,12 +990,12 @@ impl Spec {
                 .map(|subgroup| self.group_control(subgroup)),
         );
         controls.extend(group.extra.iter().cloned());
-        let control = Control::group(group.label, controls)
+        let control = Control::group(&*group.label, controls)
             .reset(self.defaults_of(&group.members()))
             .group_layout(group.layout)
             .per_photo(group.per_photo);
-        let control = match group.id {
-            Some(id) => control.id(id),
+        let control = match &group.id {
+            Some(id) => control.id(&**id),
             None => control,
         };
         group
@@ -968,10 +1009,10 @@ impl Spec {
     /// A wheel's control in `style`. Its reset is its fields' declared defaults, which the
     /// descriptor already holds, so no copy of the wheel repeats it.
     fn wheel_control(&self, wheel: &Wheel, style: WheelStyle) -> Control {
-        let control = Control::wheel(&self.set.id, wheel.hue, wheel.saturation, wheel.label)
+        let control = Control::wheel(&self.set.id, &*wheel.hue, &*wheel.saturation, &*wheel.label)
             .wheel_style(style);
-        match wheel.luminance {
-            Some(luminance) => control.luminance(luminance),
+        match &wheel.luminance {
+            Some(luminance) => control.luminance(&**luminance),
             None => control,
         }
         .into()
@@ -994,7 +1035,7 @@ impl Spec {
     /// the first field [`Field::check`] refuses, or of groups that do not list every field exactly
     /// once.
     fn build(mut self) -> Result<(Self, ModuleDescriptor, Shape), Error> {
-        let id = self.id;
+        let id = self.id.clone();
         let refused =
             |reason: String| Error::validation(format!("field-patch module {id}: {reason}"));
         let stage = self.effect.stage;
@@ -1018,6 +1059,12 @@ impl Spec {
         Ok((self, descriptor, shape))
     }
 
+    /// The descriptor this spec builds, or the refusal [`Self::build`] gives: how a table read at
+    /// run time is checked before any module is made of it.
+    pub(crate) fn check(self) -> Result<ModuleDescriptor, Error> {
+        self.build().map(|(_, descriptor, _)| descriptor)
+    }
+
     /// The descriptor of a checked spec: each group draws its fields' own controls then its extra
     /// controls, its reset is the patch of its fields to their defaults, and every variant a field
     /// or group declares is folded onto its control. A checked group names only declared fields.
@@ -1028,9 +1075,9 @@ impl Spec {
             .map(|group| self.group_control(group))
             .collect();
         ModuleDescriptor {
-            id: self.id.into(),
-            title: self.title.into(),
-            hint: Some(self.hint.into()),
+            id: self.id.to_string(),
+            title: self.title.to_string(),
+            hint: Some(self.hint.to_string()),
             effects: vec![self.effect.clone()],
             actions: vec![
                 ActionDescriptor {
@@ -1154,6 +1201,15 @@ impl Values<'_> {
             .collect()
     }
 
+    /// Every field's declared parameter and canonical value, in the table's order: what a module
+    /// whose arithmetic runs outside the core is handed whole.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&ParameterDescriptor, &Value)> {
+        self.fields
+            .iter()
+            .map(|field| &field.parameter)
+            .zip(&self.values)
+    }
+
     /// Whether every field holds its default, by value.
     pub(crate) fn is_default(&self) -> bool {
         self.fields
@@ -1248,6 +1304,21 @@ impl<M: FieldPatch + Default> FieldPatchModule<M> {
     }
 }
 
+impl<M: FieldPatch> FieldPatchModule<M> {
+    /// The module of a table read at run time, such as an external module's manifest: built and
+    /// checked exactly as a built-in's static spec is, with a table the build refuses answered as
+    /// that refusal rather than as a defect.
+    pub(crate) fn from_spec(module: M, spec: Spec) -> Result<Self, Error> {
+        let (spec, descriptor, shape) = spec.build()?;
+        Ok(Self {
+            module,
+            spec,
+            descriptor,
+            shape,
+        })
+    }
+}
+
 impl<M: FieldPatch + Default> Default for FieldPatchModule<M> {
     fn default() -> Self {
         Self::new()
@@ -1275,7 +1346,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
     /// declared field whose value the generic parameter check accepts.
     fn read(&self, effect_id: &str, format: u32, payload: &Value) -> Result<Values<'_>, Error> {
         let spec = &self.spec;
-        let noun = spec.noun;
+        let noun = &spec.noun;
         if effect_id != spec.effect.id {
             return Err(Error::unavailable_effect(effect_id, &[]));
         }
@@ -1330,8 +1401,8 @@ impl<M: FieldPatch> FieldPatchModule<M> {
     /// group's fields resets that group and reads as it, whichever control sent the patch (the
     /// controls proof's `Reset Colour wheel`). [`Self::whole_group`] and [`Self::whole_wheel`]
     /// keep the same order.
-    fn reset_group(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
-        let at_defaults = |fields: &[&'static str]| {
+    fn reset_group(&self, sent: &[(&String, Value)]) -> Option<&str> {
+        let at_defaults = |fields: &[&str]| {
             sent.len() == fields.len()
                 && sent.iter().all(|(name, value)| {
                     fields.contains(&name.as_str())
@@ -1345,13 +1416,13 @@ impl<M: FieldPatch> FieldPatchModule<M> {
             .all_groups()
             .into_iter()
             .find(|group| at_defaults(&group.members()))
-            .map(|group| group.label)
+            .map(|group| &*group.label)
             .or_else(|| {
                 self.spec
                     .wheels()
                     .into_iter()
                     .find(|wheel| at_defaults(&wheel.fields()))
-                    .map(|wheel| wheel.label)
+                    .map(|wheel| &*wheel.label)
             })
     }
 
@@ -1359,22 +1430,22 @@ impl<M: FieldPatch> FieldPatchModule<M> {
     /// on it, reads `Shadows tint`; exactly all its fields, luminance too, reads as the wheel,
     /// `Shadows`. Asked after [`Self::whole_group`].
     fn whole_wheel(&self, sent: &[(&String, Value)]) -> Option<String> {
-        let names = |fields: &[&'static str]| {
+        let names = |fields: &[&str]| {
             sent.len() == fields.len()
                 && sent.iter().all(|(name, _)| fields.contains(&name.as_str()))
         };
         self.spec.wheels().into_iter().find_map(|wheel| {
-            if names(&[wheel.hue, wheel.saturation]) {
+            if names(&[&wheel.hue, &wheel.saturation]) {
                 Some(format!("{} tint", wheel.label))
             } else {
-                names(&wheel.fields()).then(|| wheel.label.to_owned())
+                names(&wheel.fields()).then(|| wheel.label.to_string())
             }
         })
     }
 
     /// The group a patch sets entirely, when it is one: a patch holding exactly one group's fields
     /// reads as that group, such as a neutral pick's temperature and tint as `White balance`.
-    fn whole_group(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
+    fn whole_group(&self, sent: &[(&String, Value)]) -> Option<&str> {
         self.spec
             .all_groups()
             .into_iter()
@@ -1385,7 +1456,7 @@ impl<M: FieldPatch> FieldPatchModule<M> {
                         .iter()
                         .all(|(name, _)| members.contains(&name.as_str()))
             })
-            .map(|group| group.label)
+            .map(|group| &*group.label)
     }
 
     /// What the module reset runs on the global target of a photo of `kind` whose controls have
@@ -2080,7 +2151,7 @@ mod tests {
         .reset_notes("its own reset");
         assert_eq!(
             (
-                spec.noun,
+                spec.noun.as_str(),
                 spec.effect.order,
                 spec.effect.format,
                 spec.effect.maskable
@@ -2188,7 +2259,7 @@ mod tests {
                 "field mode's default is invalid: parameter mode must be one of one, two",
             ),
             (
-                |spec| spec.groups[0].fields[1] = "midpiont",
+                |spec| spec.groups[0].fields[1] = "midpiont".into(),
                 "group Level lists midpiont, which is not a declared field",
             ),
             (
@@ -2196,11 +2267,11 @@ mod tests {
                 "field tint is in no group",
             ),
             (
-                |spec| spec.groups[1].fields.push("level"),
+                |spec| spec.groups[1].fields.push("level".into()),
                 "field level is listed 2 times in the groups, not once",
             ),
             (
-                |spec| spec.groups[0].fields.push("level"),
+                |spec| spec.groups[0].fields.push("level".into()),
                 "field level is listed 2 times in the groups, not once",
             ),
             (
@@ -2322,7 +2393,7 @@ mod tests {
         group.wheels[0].luminance = None;
         group.views[0]
             .entries
-            .push(ViewEntry::Field(WHEEL_LUMINANCE));
+            .push(ViewEntry::Field(WHEEL_LUMINANCE.into()));
         let module = controls_module(spec);
         assert_eq!(
             label(&module, json!({WHEEL_HUE: 0, WHEEL_SATURATION: 0})),
@@ -2342,7 +2413,11 @@ mod tests {
         type Change = fn(&mut Group);
         let cases: [(Change, &str); 9] = [
             (
-                |group| group.views[0].entries.push(ViewEntry::Field("amount")),
+                |group| {
+                    group.views[0]
+                        .entries
+                        .push(ViewEntry::Field("amount".into()))
+                },
                 "view Compact of group Colour wheel draws amount, which is not a field of the group",
             ),
             (
@@ -2373,7 +2448,7 @@ mod tests {
                 |group| {
                     group.views[0]
                         .entries
-                        .push(ViewEntry::Wheel("Missing", WheelStyle::Compact))
+                        .push(ViewEntry::Wheel("Missing".into(), WheelStyle::Compact))
                 },
                 "view Compact of group Colour wheel draws wheel Missing, which the group does not \
                  declare",
@@ -2386,7 +2461,7 @@ mod tests {
                 |group| {
                     for view in &mut group.views {
                         view.entries = [WHEEL_HUE, WHEEL_SATURATION, WHEEL_LUMINANCE]
-                            .map(ViewEntry::Field)
+                            .map(|name| ViewEntry::Field(name.into()))
                             .into();
                     }
                 },
