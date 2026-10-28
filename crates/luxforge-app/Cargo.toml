@@ -24,6 +24,8 @@ luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
 luxforge-install = { path = "../luxforge-install" }
 luxforge-process = { path = "../luxforge-process" }
+# External modules' GPU programs: the launch's registry, and the probe the GPU tile worker runs.
+luxforge-wasm = { path = "../luxforge-wasm" }
 iced.workspace = true
 wgpu.workspace = true
 image.workspace = true
@@ -48,6 +50,12 @@ luxforge-testkit = { path = "../luxforge-testkit" }
 # Seeds a catalog another version made, with an uncheckpointed write-ahead log, for the
 # unsupported-catalog launch's preservation tests.
 rusqlite.workspace = true
+# The module engine's test components, built in the test from WAT, for the probe tests
+# (`app::gpu_probe_tests`): the wasm-tools release Wasmtime 49 reads, as the engine's own tests.
+wat = "=1.258.3"
+wit-component = "=0.258.3"
+wit-parser = "=0.258.3"
+sha2.workspace = true
 # Fake payloads, signed archives, feeds and an in-memory fetch for the update port's tests.
 luxforge-update = { path = "../luxforge-update", features = ["testing"] }
 # The core with the disk flush skipped, its index listings held at a test's gate and its Presence

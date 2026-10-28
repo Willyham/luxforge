@@ -171,8 +171,18 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         .ok_or("no usable application data directory; pass --data-root")?
         .path
         .clone();
+    // External modules' GPU programs, registered for a launch that may draw on the GPU and probed
+    // by its tile worker at first use; a launch that refused the GPU stage checks none.
+    let programs = (!launch.refused()).then(|| {
+        super::gpu_probe::programs(
+            config
+                .paths
+                .as_ref()
+                .map(luxforge_cli::Paths::module_probe_cache),
+        )
+    });
     // Installed packages are not read yet: the module store passes them here.
-    let external = luxforge_cli::external_modules(config.paths.as_ref(), &[]);
+    let external = luxforge_cli::external_modules(config.paths.as_ref(), &[], programs.clone());
     let registry = Arc::new(ModuleRegistry::assemble(&luxforge_core::RegistryOptions {
         external: &external,
         ..config.registry_options()
@@ -180,6 +190,9 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     // The launch's one GPU tile worker, refused with the GPU stage: the owner's export lane
     // streams through it, and the renderer report names it the window's adapter once known.
     let tiles = super::gpu_tiles::launch(launch);
+    if let Some(programs) = programs {
+        tiles.set_programs(programs);
+    }
     let host = host_config(&config, tiles);
     // An evidence launch's scripted update port, in place of the platform's (`--update-fixture`).
     let host = super::update_fixture::installed(config.update_fixture.as_ref(), host);

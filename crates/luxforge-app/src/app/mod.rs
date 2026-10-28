@@ -79,6 +79,9 @@ mod gpu_notice_tests;
 pub(crate) mod gpu_paged;
 #[cfg(test)]
 mod gpu_presence_tests;
+pub(crate) mod gpu_probe;
+#[cfg(test)]
+mod gpu_probe_tests;
 pub(crate) mod gpu_preview;
 #[cfg(test)]
 mod gpu_preview_tests;

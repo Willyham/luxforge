@@ -19,12 +19,20 @@ pub const VERSION: &str = luxforge_core::APPLICATION_VERSION;
 /// ([`luxforge_core::RegistryOptions::external`]), for the desktop and `luxforge-json` alike: each
 /// package's module, loaded by the WebAssembly engine with its compiled code cached under
 /// [`Paths::module_code_cache`] (with no data root, compiled every launch), or unavailable with
-/// the reason it did not load. Loading compiles or reads code and creates no instance.
+/// the reason it did not load. Loading compiles or reads code and creates no instance. A host that
+/// draws on a GPU passes its `programs`, which register each package's GPU program; without, a
+/// program is left unchecked and the module renders through the reference.
 pub fn external_modules(
     paths: Option<&Paths>,
     packages: &[luxforge_core::module_package::ModulePackage],
+    programs: Option<std::sync::Arc<luxforge_wasm::Programs>>,
 ) -> Vec<luxforge_core::module_package::ExternalModule> {
-    luxforge_wasm::WasmHost::new(paths.map(Paths::module_code_cache)).externals(packages)
+    let host = luxforge_wasm::WasmHost::new(paths.map(Paths::module_code_cache));
+    match programs {
+        Some(programs) => host.with_programs(programs),
+        None => host,
+    }
+    .externals(packages)
 }
 
 /// A standalone version request has no catalog, network, Keychain or desktop side effects.

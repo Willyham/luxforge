@@ -2338,12 +2338,17 @@ dependencies = [
  "luxforge-testkit",
  "luxforge-ui",
  "luxforge-update",
+ "luxforge-wasm",
  "rfd",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "wat",
  "wgpu",
+ "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
