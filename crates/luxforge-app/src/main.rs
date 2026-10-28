@@ -151,12 +151,14 @@ impl Config {
         })
     }
 
-    /// What this run's registry serves, for the one assembly `luxforge-json` shares.
+    /// What this run's registry serves from its command line, for the one assembly
+    /// `luxforge-json` shares; the launch adds the external modules it loaded.
     fn registry_options(&self) -> luxforge_core::RegistryOptions<'_> {
         luxforge_core::RegistryOptions {
             disabled: &self.disabled,
             developer: self.developer,
             proof_endpoint: self.proof_endpoint.as_deref(),
+            external: &[],
         }
     }
 

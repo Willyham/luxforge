@@ -175,6 +175,17 @@ pub trait PointwiseColor: Send + Sync {
     /// rasterizing pass and every point query address the same coordinates, so a sample equals the
     /// rendered byte for a position-dependent unit too.
     fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]);
+    /// [`Self::apply_row`] for a unit whose arithmetic can fail: an external module's, which runs
+    /// in a sandbox that may trap, overrun its deadline or answer the wrong length. The host's
+    /// colour runs call this, so such a failure fails the render, sample or export with the
+    /// unit's own error, which names the module, and no frame is produced. The default runs
+    /// `apply_row` and never fails, which is every linked module's unit. A unit that overrides
+    /// this still fills the run with non-finite values from `apply_row` when it fails there, so a
+    /// caller of `apply_row` refuses its result too.
+    fn try_apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) -> Result<(), crate::Error> {
+        self.apply_row(y, x0, rgb);
+        Ok(())
+    }
     /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no,
     /// so a non-finite parameter fails before a frame is touched.
     fn is_finite(&self) -> bool;

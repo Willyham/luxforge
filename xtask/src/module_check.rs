@@ -7,12 +7,13 @@
 //!
 //! 1. **Package**: the core's reader, so a package refused here is refused on install, by the
 //!    same code and words.
-//! 2. **Component**: compiled by Wasmtime with the module engine's configuration, refused if it
-//!    imports anything, and instantiated.
+//! 2. **Component**: loaded by the module engine, `luxforge-wasm`, as the host loads it: refused
+//!    if it imports anything or does not export the `adjust` interface.
 //! 3. **Reference**: `coefficients` for fixed value sets the manifest's table gives (the defaults,
 //!    the minimum, middle and maximum, each field at each end with the rest at their defaults, and
 //!    three mixed sets), and `apply-row` over the SDK's fixed patches for each: every answer
-//!    accepted, the right length and finite, and the same from a second instance.
+//!    accepted, the right length and finite, and the same from a second instance. The engine
+//!    instantiates the component on the first call, under the host's memory limit and deadline.
 //! 4. **Program**: `program.wgsl` validated by `naga` under the surface's prelude, declaring only
 //!    functions and constants named `lf_module…` and the entry `lf_module` of the colour
 //!    signature, called by a harness.
@@ -369,11 +370,8 @@ pub fn run(package_path: &Path, json_path: Option<&Path>) -> Result {
     report["manifest"] = serde_json::to_value(manifest)?;
     report["hash"] = json!(package.hash);
 
-    let runner = Runner::new(&package.component).map_err(|error| format!("component: {error}"))?;
-    runner
-        .instance()
-        .map_err(|error| format!("component: {error}"))?;
-    println!("PASS component: a component that imports nothing and instantiates");
+    let runner = Runner::package(&package).map_err(|error| format!("component: {error}"))?;
+    println!("PASS component: a component of the adjustment interface that imports nothing");
 
     let sets = value_sets(&parameters)?;
     let patches = fixtures::patches();

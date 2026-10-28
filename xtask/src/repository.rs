@@ -321,6 +321,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-webp/src",
     "crates/luxforge-install/src",
     "crates/luxforge-sparkle/src",
+    "crates/luxforge-wasm/src",
 ];
 
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
@@ -343,6 +344,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-webp",
     "crates/luxforge-install",
     "crates/luxforge-sparkle",
+    "crates/luxforge-wasm",
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
@@ -1005,6 +1007,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The developer models' paced download, which stands in for a network's transfer time
             // in developer runs, so evidence can capture a setup while it downloads.
             "crates/luxforge-core/src/modules/ai/models.rs",
+            // The WebAssembly engine's epoch ticker, which sleeps one tick between epochs while an
+            // external module's call runs: the resolution of every call's deadline.
+            "crates/luxforge-wasm/src/engine.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1043,6 +1048,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-cli/src/mcp/serve.rs",
             // A typed MCP profile's event watch, asleep until a listener and a session to watch.
             "crates/luxforge-cli/src/mcp/changes.rs",
+            // The WebAssembly engine's epoch ticker, asleep while no external module's call runs.
+            "crates/luxforge-wasm/src/engine.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1172,6 +1179,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-cli/src/mcp/changes.rs",
             // The lens profile index's one parse, once a process, ending when it has parsed.
             "crates/luxforge-core/src/modules/lens/index.rs",
+            // The WebAssembly engine's one epoch ticker, started at the first call into an
+            // external module and waiting without ticking while no call runs.
+            "crates/luxforge-wasm/src/engine.rs",
             // The backend's one retirement lane and the current preview pipeline compiler.
             "crates/luxforge-gpu/src/retirement.rs",
             "crates/luxforge-gpu/src/execution/compile.rs",
@@ -1655,6 +1665,25 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-core links no model runtime (ort, ort-sys, tract, candle, burn, \
                  luxforge-onnx or luxforge-diffusion); the runtimes belong to luxforge-onnx and \
                  luxforge-diffusion, injected through HostConfig::inference",
+    },
+    // The core runs no WebAssembly: Wasmtime lives in `luxforge-wasm`, which hands the registry
+    // assembly each external module's units, so neither the core nor its tests build an engine.
+    DependencyRule {
+        name: "core-links-no-wasm-engine",
+        refuses: Depends::Any(&["luxforge-wasm"]),
+        manifests: &["crates/luxforge-core"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-core links no WebAssembly engine; Wasmtime belongs to luxforge-wasm, \
+                 whose external modules reach the core through RegistryOptions::external",
+    },
+    DependencyRule {
+        name: "wasm-engine-home",
+        refuses: Depends::Prefixed("wasmtime"),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-wasm"],
+        reason: "only luxforge-wasm may depend on Wasmtime; run a component through its WasmHost",
     },
     // One home for ONNX Runtime: only `luxforge-onnx` names the binding.
     DependencyRule {

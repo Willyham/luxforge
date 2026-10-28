@@ -2360,6 +2360,7 @@ dependencies = [
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
+ "luxforge-wasm",
  "rmcp",
  "serde",
  "serde_json",
@@ -2483,10 +2484,11 @@ dependencies = [
 name = "luxforge-module-sdk"
 version = "0.0.0"
 dependencies = [
+ "luxforge-core",
  "luxforge-module-sdk",
  "luxforge-test-macros",
+ "luxforge-wasm",
  "serde_json",
- "wasmtime",
  "wit-component",
  "wit-parser",
 ]
@@ -2629,6 +2631,22 @@ dependencies = [
  "tar",
  "tempfile",
  "zeroize",
+]
+
+[[package]]
+name = "luxforge-wasm"
+version = "0.0.0"
+dependencies = [
+ "luxforge-core",
+ "luxforge-test-macros",
+ "luxforge-testbase",
+ "luxforge-testkit",
+ "serde_json",
+ "sha2",
+ "wasmtime",
+ "wat",
+ "wit-component",
+ "wit-parser",
 ]
 
 [[package]]
@@ -5438,6 +5456,28 @@ dependencies = [
  "pin-utils",
  "slab",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "wast"
+version = "252.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "942a3449d6a593fccc111a6241c8df52bda168af30e40bf9580d4394d7374c65"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width",
+ "wasm-encoder",
+]
+
+[[package]]
+name = "wat"
+version = "1.252.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c72a4ba7088f7bac94cf516e49882bdf97068904a563768cf249efc839ec42cb"
+dependencies = [
+ "wast",
 ]
 
 [[package]]

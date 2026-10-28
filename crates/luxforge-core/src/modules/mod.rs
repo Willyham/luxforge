@@ -176,9 +176,9 @@ pub use models_proof::{
     PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF, proof_model_files,
 };
 pub use module_package::{
-    AdjustmentUnits, COMPONENT_FILE, FieldEntry, FieldValue, MANIFEST_FILE, MAX_COMPONENT_BYTES,
-    MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API, ManifestEffect,
-    ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE, PackageRefusal,
+    AdjustmentUnits, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue, MANIFEST_FILE,
+    MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
+    ManifestEffect, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE, PackageRefusal,
 };
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
@@ -210,7 +210,9 @@ pub(crate) use registry::tests::{
     REPAIR_STAGE_EFFECT, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
-pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
+pub use registry::{
+    ModuleRegistry, Provider, RefusedExternal, RegistryOptions, insertion_index_among,
+};
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
 pub(crate) use repair::{RepairKind, RepairOperation};

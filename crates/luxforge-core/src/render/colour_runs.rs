@@ -264,7 +264,7 @@ fn apply_operation(
     pixels: &mut [[f32; 3]],
 ) -> Result<(), Error> {
     for unit in operation.units() {
-        unit.apply_row(y + origin.1, x0 + origin.0, pixels);
+        unit.try_apply_row(y + origin.1, x0 + origin.0, pixels)?;
         // The conjunction over every channel, without the short circuit `all` would take: the
         // answer is the same, and a scan that never exits early vectorises.
         let finite = pixels
