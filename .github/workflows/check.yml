@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Pinned toolchain
-        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.96.0 --profile minimal --target wasm32-unknown-unknown --component rustfmt --component clippy
       # Fail cheap checks before dependency installation, cache transfer or compilation.
       - name: Formatting gate
         run: cargo fmt --all -- --check
@@ -164,7 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Pinned toolchain
-        run: rustup toolchain install 1.96.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal --target wasm32-unknown-unknown
       - name: Native compiler cache identity
         id: native-compiler
         run: |
