@@ -7459,7 +7459,8 @@ mod tests {
     fn every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
         let catalog = temp("declared.sqlite");
         let _ = std::fs::remove_file(&catalog);
-        let mut registry = ModuleRegistry::builtin();
+        // A developer run's registry serves every host method, the developer-only ones included.
+        let mut registry = ModuleRegistry::developer();
         registry
             .register(Arc::new(crate::CapabilitiesProofModule::new(
                 "http://127.0.0.1:9",
