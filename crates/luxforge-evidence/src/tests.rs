@@ -1570,6 +1570,7 @@ fn module_layout_steps_round_trip_and_refuse_what_they_do_not_take() {
         {"modules": "confirm_uninstall"},
         {"modules": "dismiss"},
         {"modules": "relaunch"},
+        {"modules": {"probed": "org.example.glow"}},
         {"settings": {"open": true, "tab": "modules"}},
     ]));
     refused(

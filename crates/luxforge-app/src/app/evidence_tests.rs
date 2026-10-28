@@ -652,3 +652,41 @@ fn an_edited_await_needs_no_statistics_eligibility() {
     assert_eq!(record["status"], json!("failed"), "{record}");
     finish(editor, catalog);
 }
+
+/// A `probed` step reads the owner's listing until the module's program has left pending and
+/// probing: a read that finds it still waiting leaves the step uncaptured until the next evidence
+/// tick reads again, and a read that finds it probed captures the frame with the reads.
+#[test]
+fn a_probed_step_reads_again_until_the_program_is_probed() {
+    use crate::app::evidence::modules::ModulesWait;
+    let (mut editor, catalog, _, _) =
+        crate::app::testing::scripted(r#"[{"modules":{"probed":"org.example.glow"}}]"#);
+    let _ = editor.next_step();
+    let listing = |state: &str| {
+        Ok(
+            json!({"layout": {}, "modules": [], "packages": {"modules": [
+            {"module": "org.example.glow", "program": {"state": state}}]}}),
+        )
+    };
+    let waiting = |editor: &Editor| {
+        let evidence = crate::app::testing::evidence(editor);
+        (evidence.modules_wait, evidence.capture_pending)
+    };
+    // The owner's reads were taken once nothing was in flight.
+    editor.evidence.as_mut().unwrap().modules_wait = Some(ModulesWait::Reading);
+    editor.modules_read(listing("probing"));
+    assert_eq!(waiting(&editor), (Some(ModulesWait::Probing), false));
+    editor.modules_probe_tick();
+    assert_eq!(waiting(&editor), (Some(ModulesWait::Writes), false));
+    editor.evidence.as_mut().unwrap().modules_wait = Some(ModulesWait::Reading);
+    editor.modules_read(listing("enabled"));
+    assert_eq!(waiting(&editor), (None, true));
+    let evidence = crate::app::testing::evidence(&editor);
+    assert_eq!(evidence.modules_probe, None);
+    let record = evidence.current.as_ref().expect("the running step");
+    assert_eq!(
+        record["owner"]["module_package_list"]["modules"][0]["program"]["state"],
+        json!("enabled")
+    );
+    finish(editor, catalog);
+}

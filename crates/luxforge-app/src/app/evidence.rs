@@ -10,7 +10,7 @@ mod long_work;
 mod loupe;
 mod mask_object;
 mod minimap;
-mod modules;
+pub(crate) mod modules;
 mod select;
 mod select_catalog;
 mod select_merge;
@@ -169,6 +169,8 @@ pub(crate) struct Evidence {
     pub(crate) agent_host: Option<AgentHostWait>,
     /// What a running `modules` step still waits for.
     pub(crate) modules_wait: Option<modules::ModulesWait>,
+    /// The external module a running `modules` `probed` step waits for the program probe of.
+    pub(crate) modules_probe: Option<String>,
     /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
     /// A `sheet` step sent while a request was in flight opens the sheet once none is: whether it
@@ -288,6 +290,7 @@ impl Evidence {
             agent_wait: None,
             agent_host: None,
             modules_wait: None,
+            modules_probe: None,
             long_work_wait: None,
             sheet_when_quiet: None,
             merge_wait: None,
@@ -1202,6 +1205,7 @@ impl Editor {
                     std::process::exit(3);
                 }
                 self.wait_elapsed();
+                self.modules_probe_tick();
                 return self.usage_await_tick();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
@@ -7188,6 +7192,7 @@ mod tests {
             agent_wait: None,
             agent_host: None,
             modules_wait: None,
+            modules_probe: None,
             long_work_wait: None,
             sheet_when_quiet: None,
             merge_wait: None,

@@ -494,6 +494,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         agent_wait: None,
         agent_host: None,
         modules_wait: None,
+        modules_probe: None,
         long_work_wait: None,
         sheet_when_quiet: None,
         merge_wait: None,

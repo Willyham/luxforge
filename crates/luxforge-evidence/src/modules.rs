@@ -38,6 +38,11 @@ pub const MODULE_MOVES: [&str; 4] = ["up", "down", "top", "bottom"];
 /// - `"dismiss"` presses the open review sheet's or confirmation's Cancel or Close.
 /// - `"relaunch"` presses Relaunch: an evidence run records the command it would start and quits
 ///   nothing.
+/// - `{"probed": M}` presses nothing: it waits until the GPU program of the external module `M`,
+///   which this launch registered, has been probed, so its state is neither pending nor probing,
+///   reading `module.package.list` again every evidence tick. Something must have asked for the
+///   probe, such as the view drawing a stack that uses the module; the step otherwise waits until
+///   the script's deadline.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModulesStep {
@@ -55,6 +60,7 @@ pub enum ModulesStep {
     ConfirmUninstall,
     Dismiss,
     Relaunch,
+    Probed(String),
 }
 
 /// A tools-panel band's move.
@@ -125,7 +131,7 @@ impl ModulesStep {
             }
         };
         match self {
-            Self::BandMenu(id) | Self::Uninstall(id) => module(id),
+            Self::BandMenu(id) | Self::Uninstall(id) | Self::Probed(id) => module(id),
             Self::Install(path) => super::text(path, "modules step install path"),
             Self::StripMenu
             | Self::CloseMenu

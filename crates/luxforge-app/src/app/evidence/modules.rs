@@ -29,12 +29,17 @@ use luxforge_evidence::ModulesStep;
 use serde_json::{Value, json};
 
 /// What a running `modules` step waits for: the layout writes and reads it started to answer, then
-/// the owner's reads it is correlated with.
+/// the owner's reads it is correlated with. A `probed` step whose program the reads find still
+/// pending or probing waits for the next evidence tick to read again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModulesWait {
     Writes,
     Reading,
+    Probing,
 }
+
+/// The states a `probed` step waits through: the program's probe not yet run, or running.
+const UNPROBED: [&str; 2] = ["pending", "probing"];
 
 fn toolset(name: &str) -> Option<Toolset> {
     match name {
@@ -204,6 +209,13 @@ impl Editor {
                 }
                 task
             }
+            // Nothing is pressed: the step's reads are taken until the program has been probed.
+            ModulesStep::Probed(module) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.modules_probe = Some(module);
+                }
+                Task::none()
+            }
         };
         if writes && self.layout_writes() == before {
             return Task::batch([task, self.fail_step(self.status.text.clone())]);
@@ -272,9 +284,19 @@ impl Editor {
         )
     }
 
+    /// An evidence tick: a `probed` step whose program was still waiting for its probe reads the
+    /// owner's listing again.
+    pub(crate) fn modules_probe_tick(&mut self) {
+        if let Some(evidence) = &mut self.evidence
+            && evidence.modules_wait == Some(ModulesWait::Probing)
+        {
+            evidence.modules_wait = Some(ModulesWait::Writes);
+        }
+    }
+
     /// The owner's reads answered: the step's record keeps them, each module as its id, home,
     /// switch and placements, and the frame is captured.
-    pub(super) fn modules_read(&mut self, result: Result<Value, String>) {
+    pub(crate) fn modules_read(&mut self, result: Result<Value, String>) {
         if self
             .evidence
             .as_ref()
@@ -285,6 +307,33 @@ impl Editor {
         }
         if let Some(evidence) = &mut self.evidence {
             evidence.modules_wait = None;
+        }
+        let probe = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.modules_probe.clone());
+        if let (Some(module), Ok(read)) = (probe, &result) {
+            let row = read["packages"]["modules"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|row| row["module"] == module.as_str());
+            let Some(state) = row.map(|row| row["program"]["state"].clone()) else {
+                let _ = self.fail_step(format!("module.package.list lists no {module}"));
+                return;
+            };
+            if state
+                .as_str()
+                .is_some_and(|state| UNPROBED.contains(&state))
+            {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.modules_wait = Some(ModulesWait::Probing);
+                }
+                return;
+            }
+            if let Some(evidence) = &mut self.evidence {
+                evidence.modules_probe = None;
+            }
         }
         match result {
             Ok(read) => {
