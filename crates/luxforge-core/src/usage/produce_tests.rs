@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     Layer, ModuleRegistry,
-    modules::{BASIC_EFFECT, CROP_EFFECT, VIGNETTE_EFFECT},
+    modules::{BASIC_EFFECT, CROP_EFFECT, GRAIN_EFFECT, VIGNETTE_EFFECT},
     usage::{ImageKey, SessionClock, SessionStart, Trigger},
 };
 use serde_json::json;
@@ -36,6 +36,15 @@ fn usage_changed_tools_names_each_group_whose_layers_differ_and_ignores_identity
     ]);
     let changed = changed_tools(&registry, &before, &exposed);
     assert_eq!(changed.iter().collect::<Vec<_>>(), [Tool::Basic]);
+
+    // Grain is its own group.
+    let grained = recipe(vec![
+        basic.clone(),
+        crop.clone(),
+        Layer::new(GRAIN_EFFECT, json!({"amount": 25})),
+    ]);
+    let changed = changed_tools(&registry, &before, &grained);
+    assert_eq!(changed.iter().collect::<Vec<_>>(), [Tool::Grain]);
 
     // A layer added and one removed, in one transaction: two groups, in the registry's order.
     let both = recipe(vec![

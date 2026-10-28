@@ -1208,6 +1208,7 @@ mod tests {
                 json!({"mask": first.id, "transform": "rotate-left"}),
             ),
             ("set-vignette", json!({"mask": first.id, "amount": -40.0})),
+            ("set-grain", json!({"mask": first.id, "amount": 25.0})),
         ] {
             let error = service
                 .apply_action(
