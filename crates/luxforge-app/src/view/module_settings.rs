@@ -620,9 +620,12 @@ fn review_card(review: &ReviewModel) -> Element<'_, Message> {
             row![
                 container(caption(name.clone())).width(Length::Fixed(FACT_WIDTH)),
                 container(
+                    // A hash, a path or a URL has no spaces to break at: it wraps at a glyph.
                     text(value.clone())
                         .size(theme::SIZE_CAPTION)
                         .style(theme::ink(Token::Text))
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill)
                 )
                 .width(Length::Fill),
             ]
