@@ -352,6 +352,32 @@ fn black_white_headroom_and_amount_zero_are_bit_identical() {
     assert_eq!(row, before);
 }
 
+/// A non-finite input fails as colour runs do: grain never hands back a finite pixel for one, so the
+/// host's finite check after the unit (`render::colour_runs`) refuses the run, as it does a
+/// vignette's, whose gain keeps a non-finite channel non-finite. A NaN channel, which `f32::max`
+/// drops from the white test and which makes the luminance NaN, and each infinity, in each
+/// channel, at full resolution and at a reduced stage.
+#[test]
+fn a_non_finite_input_stays_non_finite() {
+    for footprint in [Footprint::FULL, Footprint { x: 4.0, y: 4.0 }] {
+        let unit = Grain::new(100.0, 25.0, 50.0, footprint);
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for channel in 0..3 {
+                let mut pixel = [0.3f32, 0.4, 0.2];
+                pixel[channel] = value;
+                let mut row = [pixel; 16];
+                unit.apply_row(7, 100, &mut row);
+                for (x, out) in row.iter().enumerate() {
+                    assert!(
+                        out.iter().any(|c| !c.is_finite()),
+                        "{pixel:?} at column {x} became {out:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The grain is a function of position alone: a row rendered in pieces from any starting column,
 /// with pixels skipped between them, equals the same row rendered whole, bit for bit, and a single
 /// pixel evaluated alone equals its place in the row.
