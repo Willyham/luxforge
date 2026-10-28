@@ -1,0 +1,95 @@
+# Split toning: tint the highlights and the shadows with a hue each, and move the point between
+# them. The example external adjustment module (docs/engineering/module-authoring.md).
+api = "0.1"
+id = "org.example.splittoning"
+name = "split-toning"
+title = "Split toning"
+hint = "Tint the highlights and the shadows"
+version = "0.1.0"
+authors = ["The Luxforge authors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Willyham/luxforge/tree/main/examples/modules/split-toning"
+toolset = "adjustments"
+
+# After the colour mixer (order 10) on the colour stage.
+[effect]
+stage = "color"
+order = 20
+format = 1
+
+[[fields]]
+name = "highlight-hue"
+kind = "number"
+min = 0
+max = 360
+default = 45
+step = 1
+precision = 0
+unit = "°"
+rail = "hue"
+label = "Hue"
+history = "Highlight hue"
+notes = "the highlights' tint, in degrees: 0 red, 120 green, 240 blue"
+
+[[fields]]
+name = "highlight-saturation"
+kind = "number"
+min = 0
+max = 100
+default = 0
+step = 1
+precision = 0
+label = "Saturation"
+history = "Highlight saturation"
+notes = "how strongly the highlights take their hue; 0 leaves them neutral"
+
+[[fields]]
+name = "balance"
+kind = "number"
+min = -100
+max = 100
+default = 0
+step = 1
+precision = 0
+zero = 0
+label = "Balance"
+history = "Split toning balance"
+notes = "where the highlights' tint gives way to the shadows': positive favours the highlights"
+
+[[fields]]
+name = "shadow-hue"
+kind = "number"
+min = 0
+max = 360
+default = 220
+step = 1
+precision = 0
+unit = "°"
+rail = "hue"
+label = "Hue"
+history = "Shadow hue"
+notes = "the shadows' tint, in degrees: 0 red, 120 green, 240 blue"
+
+[[fields]]
+name = "shadow-saturation"
+kind = "number"
+min = 0
+max = 100
+default = 0
+step = 1
+precision = 0
+label = "Saturation"
+history = "Shadow saturation"
+notes = "how strongly the shadows take their hue; 0 leaves them neutral"
+
+[[groups]]
+label = "Highlights"
+fields = ["highlight-hue", "highlight-saturation"]
+
+[[groups]]
+label = "Balance"
+fields = ["balance"]
+
+[[groups]]
+label = "Shadows"
+fields = ["shadow-hue", "shadow-saturation"]

@@ -1,0 +1,46 @@
+[package]
+name = "luxforge-module-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The guest SDK of an external adjustment module (docs/design/module-manager.md#authoring): the
+# component interface of `wit/adjustment.wit` written against the canonical ABI by hand, typed field
+# values and coefficient words, and `export_adjustment!`. A module crate depends on it alone and is
+# built for `wasm32-unknown-unknown`; with no features the SDK has no dependency at all, so a
+# module's lockfile holds the SDK and the module.
+#
+# The `host` feature is the authoring tooling, for a native build only: building a module crate
+# for wasm32 with the pinned toolchain and making its core module a component (`wit-component`),
+# running a component through Wasmtime with the module engine's configuration, and the harness that
+# holds a module's native `apply_row` to its component's. `cargo xtask module-package` and
+# `module-check` use it, and this crate's own tests turn it on.
+[features]
+host = ["dep:wasmtime", "dep:wit-component", "dep:wit-parser", "dep:serde_json"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Wasmtime as the module engine configures it: the component model through Cranelift, no WASI, no
+# threads, no parallel compilation, no cache and no text format. TASK-006's `luxforge-wasm` owns the
+# engine the host runs modules on; this pin matches it, and the harness and `module-check` move to
+# that crate's engine once it lands.
+wasmtime = { version = "=47.0.4", default-features = false, features = ["std", "runtime", "cranelift", "component-model"], optional = true }
+# The core module to component step, from the wasm-tools release Wasmtime 47 reads (0.252), so the
+# parser and encoder are the ones Wasmtime already builds.
+wit-component = { version = "=0.252.0", optional = true }
+wit-parser = { version = "=0.252.0", optional = true }
+# Cargo's JSON build messages, to find the module's `.wasm` artifact.
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+luxforge-test-macros = { path = "../luxforge-test-macros" }
+# This crate's own tests run the host tooling.
+luxforge-module-sdk = { path = ".", features = ["host"] }
+
+# A module's ABI glue is `unsafe` by nature: it reads the canonical ABI's lists and strings from
+# linear memory. It is denied everywhere and allowed by name only in `abi.rs` and on the exports
+# `export_adjustment!` writes.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

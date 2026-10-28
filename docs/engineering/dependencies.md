@@ -123,6 +123,12 @@ Every one is under a licence `deny.toml` allows, though as development-only pack
 
 As with every other dependency, passing the automated checks is not the deferred manual review.
 
+## Module authoring dependencies
+
+The [module authoring](module-authoring.md) tooling, `luxforge-module-sdk`'s `host` feature, runs a module's component through Wasmtime 47.0.4 (Apache-2.0 with the LLVM exception, which `deny.toml` allows), pinned exactly with only `std`, `runtime`, `cranelift` and `component-model`, and makes a core module a component with `wit-component` 0.252.0 (Apache-2.0 with the LLVM exception, Apache-2.0 or MIT) and `wit-parser` 0.252.0 (Apache-2.0 with the LLVM exception), the wasm-tools release Wasmtime 47 reads, so the parser and encoder are the ones Wasmtime builds. Only the SDK's own tests and `xtask` (`module-package`, `module-check`) turn the feature on; no shipped binary links any of it, and with no features the SDK, which a module crate builds for WebAssembly, depends on no crate. Together they add 57 packages to the lockfile, among them Cranelift 0.134.4, `regalloc2`, `gimli`, `object` and the wasm-tools crates.
+
+`cargo xtask audit` fails on Wasmtime 47.0.4: the advisory database lists advisories against it (RUSTSEC-2026-0315 to 0316, 0325 to 0327, 0353 to 0359, 0361 to 0364, 0378 and 0379) fixed in 48.0.7 and 49.0.4, which need Rust 1.95 and 1.96, and for some of them in 36.0.19. The pin is the module engine's; moving it, raising the toolchain or recording reviewed exceptions is the owner's decision, and it applies to the engine crate as well.
+
 ## Usage statistics dependencies
 
 The [usage statistics](../design/usage-statistics.md) consent record's image key is 32 bytes of the operating system's cryptographic randomness from `getrandom` 0.4.3 (MIT or Apache-2.0), a direct dependency of `luxforge-core` with no features. It is the version `uuid` already draws its v4 IDs from, so it adds no package to the lockfile.
