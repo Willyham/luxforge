@@ -8,7 +8,7 @@ A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory
 
 - **Authoritative boundaries.** A command's event is recorded by the core where the command's outcome stands: the editor service when a recipe transaction commits, the catalog owner when a host method's answer stands, the job table when a job reaches its terminal outcome. Nothing reads the event log, a click handler or a request's arguments to decide.
 - **Once per operation.** A retried mutation (the same `request_id`) is answered from the owner's request table or the catalog's request log and records nothing. A no-op, a refusal and a call parked for a pixel read or deferred for the index lane record nothing until their final answer. A job a retry answers from its first attempt records no outcome.
-- **Commits.** `tool.commit` is one event per built-in tool group whose layers a committed transaction changed (a layer added, removed, reordered or with another payload, format, mask or artifacts; a layer's identity alone is not a change), in the registry's tool order, with the photograph's image ID. History navigation, a Restore, a no-op and a first-open entry by the `system` actor record none.
+- **Commits.** `tool.commit` is one event per tool group whose layers a committed transaction changed (a layer added, removed, reordered or with another payload, format, mask or artifacts; a layer's identity alone is not a change), in the registry's tool order, with the photograph's image ID. History navigation, a Restore, a no-op and a first-open entry by the `system` actor record none.
 - **Continuous gestures.** A drag, a drawn mask or a painted correction is one draft: its ticks (`draft.set`) record nothing, `draft.commit` records its commits once, and a cancelled draft records nothing.
 - **Automatic work.** The histogram analysis, maintenance, restoring the remembered workspace at launch and a desktop storing its remembered panels, brush, window or Performance state record nothing.
 - **Images.** The keyed image ID is computed when a photograph is adopted as a client's open photograph (`job.adopt`), from the catalog fingerprint the adoption already holds, and kept beside the photograph; a commit to a photograph no client has open computes it from the fingerprint its state holds. The session remembers the last fingerprint and the ID it gave (one entry, in memory, ended with the session, so a new key never reuses it), so one open's preparation outcome, adoption and the desktop's GUI-local producers cost one HMAC between them. An `interaction` carries the image only when it acts on a photograph a client has open. A multi-photograph export, a scan and an add carry none.
@@ -25,7 +25,7 @@ A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory
 | `workspace.enter` | desktop | a deliberate switch between Select and Develop; the launch's first workspace is not one |
 | `image.open` | core, `job.adopt` | every adoption, so a reopen records it again |
 | `interaction` | core (commands) and desktop (GUI-local gestures) | the tables below |
-| `tool.commit` | core, the editor service's commit | one per changed built-in group per committed transaction |
+| `tool.commit` | core, the editor service's commit | one per changed group per committed transaction: a built-in group, or `external` for every external module together, never named |
 | `images.added` | core, the `develop-picks` job's terminal outcome | the photographs its committed batches created, when there is one, whether it completed, was cancelled or failed; linked, relinked, failed and skipped files and a retry's answer add nothing |
 | `operation.end` | core: the `prepare`, `export`, `batch-export` and `index-refresh` jobs; the Auto tone solve | the terminal outcome and duration from the start; an export's `count` is the files written, only when it completes |
 | `preview.settled` | desktop | the open photograph's committed picture is first on screen at rest: the GPU's picture at rest drawn in tiles (`gpu`), timed as the status bar's "GPU render" figure, or the reference renderer's whole frame when it is the picture (`reference`), timed as its render; a drag's frames, a zoom's hand-over and a frame under the GPU's picture are not. A photograph the GPU draws whole rather than in tiles, such as a small JPEG, records none (open) |
@@ -220,10 +220,13 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `module.disable` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
 | `module.enable` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
+| `module.install` | Exempt (privacy) | Installs a community module from a package file: names a module that is not a shipped tool; its edits commit as the `external` tool. The developer-only `module.folder.load` and `module.folder.remove`, absent from a release registry, are exempt for the same reason. |
 | `module.layout.read` | Exempt (read) | Reads the module layout. |
 | `module.layout.reset` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
 | `module.list` | Exempt (read) | Discovery. |
 | `module.order.set` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
+| `module.package.inspect` | Exempt (read) | Reads a package file for the review sheet. |
+| `module.package.list` | Exempt (read) | Reads the installed modules' load states. |
 | `module.permission.deny` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.permission.grant` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.permission.list` | Exempt (read) | Lists grants. |
@@ -242,6 +245,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `module.settings.set-secret` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.setup.install` | Exempt (privacy) | Module capability administration: names a module, a setup and its resources, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.status` | Exempt (read) | Reads module status. |
+| `module.uninstall` | Exempt (privacy) | Uninstalls a community module: names a module that is not a shipped tool. |
 | `pick.develop` | `interaction` `develop-picks`; `images.added` | The interaction when accepted (opening a file is a Develop of it); the job's count of newly created photographs, when there is one, however it ended. Linked and relinked files, failures and a retry's answer add nothing. |
 | `pick.list` | Exempt (read) | Lists picks. |
 | `pick.plan` | Exempt (read) | Plans a Develop of picks; its `pick.develop` is the operation. |

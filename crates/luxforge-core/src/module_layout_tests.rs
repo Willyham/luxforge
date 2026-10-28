@@ -387,7 +387,8 @@ fn module_layout_listed_modules_read_back_with_their_descriptors() {
         ..StoredLayout::default()
     };
     let written =
-        serde_json::to_value(arrangement.listing(Some(&stored), registry.descriptors())).unwrap();
+        serde_json::to_value(arrangement.listing(Some(&stored), registry.descriptors(), |_| None))
+            .unwrap();
     let read: Vec<ListedModule> = serde_json::from_value(written).unwrap();
     assert_eq!(read.len(), registry.descriptors().len());
     for (listed, descriptor) in read.iter().zip(registry.descriptors()) {

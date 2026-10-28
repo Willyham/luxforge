@@ -165,11 +165,14 @@ impl ToolSet {
     }
 }
 
-/// The built-in tool group of a layer's effect, through the module that provides it.
+/// The tool group of a layer's effect, through the module that provides it: a built-in group, or
+/// `external` for any external module, whose identity is never reported.
 fn tool_of(registry: &ModuleRegistry, effect_id: &str) -> Option<Tool> {
-    registry
-        .effect_module(effect_id)
-        .and_then(Tool::from_module_id)
+    let module = registry.effect_module(effect_id)?;
+    if registry.external_origin(module).is_some() {
+        return Some(Tool::External);
+    }
+    Tool::from_module_id(module)
 }
 
 /// What a recipe's layers of one tool group are, layer identity aside.

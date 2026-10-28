@@ -318,6 +318,11 @@ fn schema_list_names_developer_only_methods_only_in_developer_mode() {
         "task.analyse-scene".to_owned(),
         "task.analyse-depth".to_owned(),
     ]);
+    // The host's developer-only methods: loading an external module from a folder.
+    generated.extend([
+        "module.folder.load".to_owned(),
+        "module.folder.remove".to_owned(),
+    ]);
     for method in &generated {
         assert!(
             !ordinary.contains_key(method),

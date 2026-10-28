@@ -53,6 +53,32 @@ fn usage_changed_tools_names_each_group_whose_layers_differ_and_ignores_identity
     assert!(changed_tools(&registry, &recipe(vec![]), &unprovided).is_empty());
 }
 
+/// An external module's change is the `external` tool's, whatever its identity, so statistics
+/// never carry a community module's id.
+#[test]
+fn usage_changed_tools_reports_an_external_module_as_external() {
+    use crate::module_package::{ExternalModule, ModuleManifest};
+    let manifest = ModuleManifest::parse(&crate::module_store::module_install_tests::manifest(
+        "org.example.glow",
+        "glow",
+        "1.0.0",
+        1,
+    ))
+    .unwrap();
+    let external = [ExternalModule::unavailable(&manifest, "not loaded in this test").unwrap()];
+    let registry = ModuleRegistry::assemble(&crate::RegistryOptions {
+        external: &external,
+        ..crate::RegistryOptions::default()
+    })
+    .unwrap();
+    let glowing = recipe(vec![Layer::new(
+        "org.example.glow.adjust",
+        json!({"amount": 10}),
+    )]);
+    let changed = changed_tools(&registry, &recipe(vec![]), &glowing);
+    assert_eq!(changed.iter().collect::<Vec<_>>(), [Tool::External]);
+}
+
 #[test]
 fn usage_a_mask_command_maps_to_its_interaction_and_nothing_else_does() {
     for (action, feature) in [

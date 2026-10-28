@@ -43,6 +43,14 @@ luxforge-test-macros = { path = "../luxforge-test-macros" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
+# The installed-module tests' packages (`tests/json_cli/modules.rs`): `luxforge-wasm`'s test
+# component, assembled from WAT and wrapped by `wit-component` at the versions that crate pins, and
+# zipped as a `.lfmodule`.
+sha2.workspace = true
+wat = "=1.258.3"
+wit-component = "=0.258.3"
+wit-parser = "=0.258.3"
+zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 # The core with the disk flush skipped and its source worker holdable, for this crate's tests only
 # (luxforge-core's `test-skip-disk-flush` and `test-holds`).
 luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds"] }

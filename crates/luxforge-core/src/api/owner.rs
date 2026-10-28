@@ -79,6 +79,9 @@ pub(super) mod library;
 pub(super) mod merge;
 #[cfg(any(test, feature = "test-holds"))]
 pub use merge::SyntheticFrame;
+pub(super) mod module_install;
+#[cfg(test)]
+mod module_install_tests;
 pub(super) mod module_layout;
 #[cfg(test)]
 mod module_layout_tests;

@@ -2364,8 +2364,13 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
+ "wat",
+ "wit-component",
+ "wit-parser",
+ "zip",
 ]
 
 [[package]]

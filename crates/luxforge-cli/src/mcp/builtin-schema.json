@@ -10499,6 +10499,29 @@
       ],
       "reversible": true
     },
+    "module.install": {
+      "mutates": false,
+      "notes": "install the .lfmodule package at path for the next launch, checked as module.package.inspect checks it: the exact bytes checked are copied into the module store under the data root and modules.json names them, replacing any installed package with the same id (the version it replaces is removed: there is no rollback store); answers {module, origin: community, outcome (installed, replaced, or unchanged when exactly this package is installed already), installed {title, version, hash, format, program}, previous (null, or the version replaced), format_change (null, or {installed, package, notice} when the payload formats differ: existing edits are unavailable until a version that reads them is installed), status (the load state: pending-relaunch until the next launch, as module.status's external answers it)}; the explicit call is the person's or agent's decision and needs no grant, since an adjustment module holds no capabilities; a module loaded from a folder is refused; a change is announced as one module.installed event under the request; refused not-ready without a module store",
+      "optional": {},
+      "parameters": [
+        {
+          "default": null,
+          "kind": "text",
+          "max_bytes": 4096,
+          "name": "path",
+          "notes": "an absolute path to a .lfmodule package file",
+          "precision": null,
+          "required": true,
+          "step": null,
+          "unit": null
+        }
+      ],
+      "read_only": false,
+      "required": [
+        "path"
+      ],
+      "reversible": false
+    },
     "module.layout.read": {
       "mutates": false,
       "notes": "{toolsets: [{toolset, order, default}], disabled, unrecognized}: the person's module layout; toolsets holds the orderable toolsets, adjustments (the tools panel's sections) and tools (the mode strip's canvas takeovers, after the host's pointer and Mask, which are not part of the order), each with its placements in the person's order and in the default order (registry order, except that the strip's brush workspaces come before its crop frames); a toolset nobody reordered follows its default, and a module registered since an order was stored takes its default place, after the neighbour that precedes it in the default order; disabled lists the registered modules the person turned off, in registry order; unrecognized lists the ids the stored layout names that this host does not register, sorted, which every write keeps; an off module stays registered, so its photos render, sample and export as before and its methods answer; reads no catalog and creates no file; malformed or unsupported preferences are refused without rewriting them",
@@ -10591,6 +10614,36 @@
         "order"
       ],
       "reversible": true
+    },
+    "module.package.inspect": {
+      "mutates": false,
+      "notes": "read and check a .lfmodule package without installing it, for the review sheet: {path, bytes, hash (sha256:<hex> of the file), manifest {api, id, name, title, hint, version, authors, license, repository, toolset, effect {id, stage, order, format}}, program (whether it ships a GPU program; without one it renders through the reference renderer), descriptor (the module it registers, as module.list lists one), placements [{toolset}], methods (the edit methods it adds), access {network: none, files: none}, reviewed (false: Luxforge has not reviewed it), installed (null, or what the store holds for its id now: {origin, title?, version?, hash?, format?, program?, path?}), already_installed (the store holds exactly this package), format_change (null, or {installed, package, notice} when its payload format differs from the installed version's: existing edits are unavailable until a version that reads them is installed), status (its load state as module.status's external answers it, or null)}; a package the reader refuses is a validation error whose data.refusal is archive, too-large, entries, outside-root, unexpected-entry, missing-file, content, manifest, api, identity, reserved-identity, toolset, stage, maskable, sources, table or component (the module engine would not load its component), and an identity, action or effect another module provides is refused with data.refusal collision; reads the file off the catalog owner and writes nothing",
+      "optional": {},
+      "parameters": [
+        {
+          "default": null,
+          "kind": "text",
+          "max_bytes": 4096,
+          "name": "path",
+          "notes": "an absolute path to a .lfmodule package file",
+          "precision": null,
+          "required": true,
+          "step": null,
+          "unit": null
+        }
+      ],
+      "read_only": true,
+      "required": [
+        "path"
+      ]
+    },
+    "module.package.list": {
+      "mutates": false,
+      "notes": "{modules: [{module, origin (community or folder), state (loaded, pending-relaunch: the store names something other than what this launch read, or nothing, and the next launch applies it, or failed: this launch read it and it did not load, with reason), reason?, installed (what the next launch loads, {title?, version?, hash?, format?, program?, path?}, or null once uninstalled), running (what this launch read, or null for a module stored since it started), program {state: present or absent}}], pending_relaunch, store {state: ready, unreadable with reason (modules.json is kept unchanged and every write is refused), or unconfigured}, launch_problem (why this launch could not read modules.json, or null)}: every external module this launch read or the store holds now, folder modules only in developer mode; reads modules.json and nothing else",
+      "optional": {},
+      "parameters": [],
+      "read_only": true,
+      "required": []
     },
     "module.permission.deny": {
       "mutates": true,
@@ -11269,7 +11322,7 @@
     },
     "module.status": {
       "mutates": false,
-      "notes": "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, setups?, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; setups, for a module that declares them, is [{id, state, missing_bytes, staged_bytes, minimum_memory?, fits?, parts: [{name, state, bytes, missing_bytes, staged_bytes, minimum_memory?, resources: [{id, state, bytes, staged_bytes?, job_id?}]}], jobs: [{resource_id, job_id, status}], error?, reason?}], state installed, missing, installing, failed (error the first failure), unavailable (reason no-runtime: this host's inference runtime offers none of a missing part's backends) or cannot-run (reason memory: this machine is below minimum_memory, the largest of its parts'); runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing",
+      "notes": "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, setups?, runtime?, external?}; external, for an external module, is its load state as module.package.list lists it ({module, origin, state: loaded, pending-relaunch or failed, reason?, installed, running, program {state}}), and an id only the module store knows, such as a package installed since launch, answers {module_id, external} alone;permissions counts the module's grants and denials, whose records module.permission.list returns; setups, for a module that declares them, is [{id, state, missing_bytes, staged_bytes, minimum_memory?, fits?, parts: [{name, state, bytes, missing_bytes, staged_bytes, minimum_memory?, resources: [{id, state, bytes, staged_bytes?, job_id?}]}], jobs: [{resource_id, job_id, status}], error?, reason?}], state installed, missing, installing, failed (error the first failure), unavailable (reason no-runtime: this host's inference runtime offers none of a missing part's backends) or cannot-run (reason memory: this machine is below minimum_memory, the largest of its parts'); runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing",
       "optional": {},
       "parameters": [
         {
@@ -11288,6 +11341,29 @@
       "required": [
         "module_id"
       ]
+    },
+    "module.uninstall": {
+      "mutates": false,
+      "notes": "uninstall the installed package module at the next launch: modules.json no longer names it and its stored package is removed, while this launch keeps running it; photos keep every layer of it, and from the next launch rendering, sampling, appending and export refuse them with the unavailable effect until a version that reads them is installed again; answers {module, removed {title, version, hash, format, program}, status (pending-relaunch while this launch still runs it, else null)}; an id the store does not hold, or a module loaded from a folder, is refused as validation by name; announced as one module.installed event under the request; refused not-ready without a module store",
+      "optional": {},
+      "parameters": [
+        {
+          "default": null,
+          "kind": "string",
+          "max_length": 128,
+          "name": "module",
+          "notes": "the module's id, as module.package.list answers it",
+          "precision": null,
+          "required": true,
+          "step": null,
+          "unit": null
+        }
+      ],
+      "read_only": false,
+      "required": [
+        "module"
+      ],
+      "reversible": false
     },
     "pick.develop": {
       "mutates": true,

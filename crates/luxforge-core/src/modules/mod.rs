@@ -175,10 +175,12 @@ pub use models_proof::{
     MODELS_PROOF_MODULE, PROOF_DECODER_PATH, PROOF_ENCODER_PATH, PROOF_MODEL_RESOURCE,
     PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF, proof_model_files,
 };
+pub(crate) use module_package::manifest_text;
 pub use module_package::{
     AdjustmentUnits, COMPONENT_FILE, ExternalModule, FieldEntry, FieldValue, MANIFEST_FILE,
     MAX_COMPONENT_BYTES, MAX_MANIFEST_BYTES, MAX_PACKAGE_BYTES, MAX_PROGRAM_BYTES, MODULE_API,
-    ManifestEffect, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE, PackageRefusal,
+    ManifestEffect, ModuleEngine, ModuleManifest, ModulePackage, PACKAGE_EXTENSION, PROGRAM_FILE,
+    PackageRefusal, read_package_file,
 };
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;

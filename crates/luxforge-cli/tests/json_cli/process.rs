@@ -196,9 +196,10 @@ fn the_headless_owner_reports_the_reference_renderer() {
 
 /// `luxforge-json` serves the test modules only with `--developer`, whatever its build profile:
 /// without it `schema.list` names no method a developer-only module generates and `module.list` no
-/// such module; with it the list gains exactly those, and the AI module's analyses that only a
-/// developer run's fake models make available (`task.analyse-scene`, `task.analyse-depth`). A proof endpoint without it is refused
-/// before anything starts, in the desktop's words.
+/// such module; with it the list gains exactly those, the AI module's analyses that only a
+/// developer run's fake models make available (`task.analyse-scene`, `task.analyse-depth`), and
+/// the host's folder methods (`module.folder.load`, `module.folder.remove`). A proof endpoint
+/// without it is refused before anything starts, in the desktop's words.
 #[test]
 fn test_modules_are_served_only_with_developer() {
     let data_root = paths::temp_path("json-cli-developer");
@@ -236,6 +237,9 @@ fn test_modules_are_served_only_with_developer() {
             generated.extend([
                 "task.analyse-scene".to_owned(),
                 "task.analyse-depth".to_owned(),
+                // The host's developer-only methods: loading an external module from a folder.
+                "module.folder.load".to_owned(),
+                "module.folder.remove".to_owned(),
             ]);
         }
         generated.sort();

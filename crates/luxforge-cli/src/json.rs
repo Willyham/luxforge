@@ -10,8 +10,9 @@ use std::{path::PathBuf, sync::Arc};
 const HELP: &str = "luxforge-json --catalog CATALOG [--data-root DIRECTORY] [--secret-store keychain|memory] [--permission-authority] [--developer] [--proof-endpoint URL] < requests.jsonl
 
 Serves one JSON-lines client on standard input and output.
---data-root DIRECTORY    keep module settings, grants and resources under DIRECTORY, as the desktop
-                         does; without it the platform's application directories are used.
+--data-root DIRECTORY    keep module settings, grants, resources and installed modules under
+                         DIRECTORY, as the desktop does; without it the platform's application
+                         directories are used. Installed modules are read once, at launch.
 --secret-store STORE     keychain (the default) keeps module secrets in the platform's secure store;
                          memory keeps them for this process only, for tests and scripts.
 --permission-authority   let this client grant module permissions. It is an explicit local setup
@@ -92,13 +93,13 @@ fn run() -> Result<(), (String, String)> {
     }
     let catalog = catalog.ok_or_else(|| startup("--catalog is required"))?;
     let paths = Paths::resolve(data_root.as_ref());
-    // Installed packages are not read yet: the module store passes them here.
-    let external = luxforge_cli::external_modules(paths.as_ref(), &[]);
+    // The installed external modules under the data root, as the desktop reads them.
+    let installed = luxforge_cli::installed_modules(paths.as_ref(), developer);
     let registry = ModuleRegistry::assemble(&RegistryOptions {
         disabled: &[],
         developer,
         proof_endpoint: proof_endpoint.as_deref(),
-        external: &external,
+        external: &installed.external,
     })
     .map_err(|error| startup(&error))?;
     let secrets: Arc<dyn SecretStore> = if memory_secrets {
@@ -127,6 +128,7 @@ fn run() -> Result<(), (String, String)> {
             std::time::Duration::ZERO,
             vec![luxforge_diffusion::DiffusionRuntime::shared()],
         )),
+        modules: installed.host,
         ..HostConfig::unconfigured()
     };
     let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)
