@@ -12,13 +12,17 @@ jobs:
   # What each lane proves, and what it never proves, is the development guide's CI section
   # (docs/engineering/development.md#ci). No lane here is native GPU evidence.
   native-build:
-    # The macOS lane takes 80 to 90 minutes; the limit leaves it room on a slow runner.
+    # Each platform runs two lanes side by side. `check` is Clippy, the test build and the tests,
+    # the longer one (about an hour on macOS); `release` is release acceptance, the optimized build
+    # and the package, with Linux's journeys on the packaged editor. Neither needs the other's
+    # outputs, so a platform's result waits on the longer lane rather than on both in turn.
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         # Windows CI is disabled for now; Windows support will come later.
         os: [macos-14, ubuntu-24.04, ubuntu-24.04-arm]
+        lane: [check, release]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -26,10 +30,13 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
       # Fail cheap checks before dependency installation, cache transfer or compilation.
       - name: Formatting gate
+        if: matrix.lane == 'check'
         run: cargo fmt --all -- --check
       - name: Offline sample corpus tooling
+        if: matrix.lane == 'check'
         run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
       - name: Build volume and build slot wrapper
+        if: matrix.lane == 'check'
         run: python3 -m unittest discover -s tools -p 'test_build_slots.py' -v
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
@@ -53,53 +60,59 @@ jobs:
         with:
           # Keep branches' dependencies reusable; workspace outputs are rebuilt and checked.
           # The action keys by the compiler, manifests, lockfile and build environment and
-          # removes incremental artifacts before saving. Debug and release are both cached.
-          key: native-${{ matrix.os }}-${{ steps.native-compiler.outputs.key }}
+          # removes incremental artifacts before saving. Each lane caches its own profile:
+          # debug for `check`, release for `release`.
+          key: native-${{ matrix.os }}-${{ matrix.lane }}-${{ steps.native-compiler.outputs.key }}
       # The full check runs repository checks beside Clippy/tests. Gate them first so an
       # invalid link or task plan doesn't wait for the entire workspace to finish.
       - name: Repository gate
+        if: matrix.lane == 'check'
         run: cargo xtask check-repository
       - name: Headless checks, slow tests and doctests included (macOS, on the hosted VM's own adapter)
-        if: runner.os != 'Linux'
+        if: matrix.lane == 'check' && runner.os != 'Linux'
         run: cargo xtask check
       # The no-adapter lane: every Vulkan and EGL driver is hidden from the loaders, so the
       # reference renderer's tests and the owner journeys run with no graphics adapter at all and
       # the GPU tests skip, saying so. The lane's own record of having no adapter is below.
       - name: Headless checks with no graphics adapter (Linux, every driver hidden), slow tests and doctests included
-        if: runner.os == 'Linux'
+        if: matrix.lane == 'check' && runner.os == 'Linux'
         run: cargo xtask check
         env:
           VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
           VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
           __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
       - name: Native watcher delivery and recovery gate
+        if: matrix.lane == 'check'
         run: cargo xtask test --native-watchers
+      # The release lane runs every photo tool through the one release `xtask` build that
+      # editor acceptance needs, rather than building a debug one beside it.
       - name: Editor acceptance in release (macOS)
-        if: runner.os != 'Linux'
+        if: matrix.lane == 'release' && runner.os != 'Linux'
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
       - name: Editor acceptance in release with no graphics adapter (Linux, every driver hidden)
-        if: runner.os == 'Linux'
+        if: matrix.lane == 'release' && runner.os == 'Linux'
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
         env:
           VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
           VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
           __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
-      - name: Optimized native build
-        run: cargo xtask build --release
-      - name: Local development artifact and notices
-        run: cargo xtask package --output artifacts/package
+      # Packaging is the optimized native build: it builds the editor and CLI in release with the
+      # commit's source revision embedded, which a separate build without it would only repeat.
+      - name: Optimized native build, local development artifact and notices
+        if: matrix.lane == 'release'
+        run: cargo run --release --locked --package xtask -- package --output artifacts/package
       - name: Linux runtime imports
-        if: runner.os == 'Linux'
+        if: matrix.lane == 'release' && runner.os == 'Linux'
         run: ldd artifacts/package/Luxforge/luxforge | tee artifacts/package/runtime-imports.txt
       - name: Graphics adapters the hosted VM exposes (macOS, recorded; not native GPU evidence)
-        if: runner.os != 'Linux'
+        if: matrix.lane == 'release' && runner.os != 'Linux'
         run: |
           target/release/luxforge --gpu-adapters > artifacts/gpu-adapters.jsonl
           cat artifacts/gpu-adapters.jsonl
       # The no-adapter lane's record: the editor's own enumeration, with the same drivers hidden,
       # finds no adapter. A runner that offers one fails here rather than passing as no-adapter.
       - name: No graphics adapter with every driver hidden (Linux)
-        if: runner.os == 'Linux'
+        if: matrix.lane == 'release' && runner.os == 'Linux'
         run: |
           artifacts/package/Luxforge/luxforge --gpu-adapters > artifacts/gpu-adapters-none.jsonl
           cat artifacts/gpu-adapters-none.jsonl
@@ -111,14 +124,14 @@ jobs:
       # The software-adapter lane: rendered journeys under Xvfb through Mesa's lavapipe, a Vulkan
       # rasterizer on the CPU. Functional evidence only, never native GPU evidence.
       - name: Linux rendered journeys through the software Vulkan adapter (lavapipe), each run's adapter recorded and checked
-        if: runner.os == 'Linux'
+        if: matrix.lane == 'release' && runner.os == 'Linux'
         run: |
           sudo apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0
           # The adapters the editor's renderer chooses among on this lane: lavapipe alone, a CPU one.
           artifacts/package/Luxforge/luxforge --gpu-adapters > artifacts/gpu-adapters-lavapipe.jsonl
           cat artifacts/gpu-adapters-lavapipe.jsonl
           jq -e -s 'length > 0 and all(.[]; .device_type == "Cpu")' artifacts/gpu-adapters-lavapipe.jsonl
-          cargo xtask generate-fixtures
+          cargo run --release --locked --package xtask -- generate-fixtures
           # Kept explicit: `smoke --list` marks what needs a supplied RAW ("not in rendered") but not
           # what runs on software Vulkan, and only these are run here: the original renderer smoke,
           # the histogram, the GPU stage's identity frame, gestures drawn on the GPU stage, and a
@@ -131,7 +144,7 @@ jobs:
           # Run every retained scenario even after a failure, then fail the lane in aggregate.
           status=0
           for scenario in empty load replacement invalid repeated alternating histogram gpu-identity gpu-preview no-gpu-render; do
-            if xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario" --editor-software-adapter; then
+            if xvfb-run -a cargo run --release --locked --package xtask -- smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario" --editor-software-adapter; then
               # Every successful launch must record the software adapter that drew it.
               if ! jq -e '(.launches | length) > 0 and all(.launches[]; .adapter.device_type == "Cpu")' "artifacts/headless-$scenario/result.json"; then
                 echo "::error::Scenario $scenario did not record only CPU adapters"
@@ -150,7 +163,7 @@ jobs:
           # script deadlines in LLVM optimization of lavapipe's cold shaders.
           GALLIVM_PERF: nopt
       - name: Retain development artifact
-        if: always()
+        if: always() && matrix.lane == 'release'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: luxforge-${{ matrix.os }}-development
