@@ -2365,6 +2365,9 @@
         "hint": "Selections the adjustments of Basic, Presence and the colour mixer apply through",
         "id": "luxforge.masks",
         "layout": "stacked",
+        "locked": {
+          "reason": "Masks belong to the host"
+        },
         "queries": [
           {
             "id": "mask.list",
@@ -2497,7 +2500,8 @@
           }
         ],
         "reset": null,
-        "title": "Masks"
+        "title": "Masks",
+        "toolset": "masking"
       }
     ],
     "modules": [
@@ -2772,15 +2776,29 @@
             "stage": "geometry"
           }
         ],
+        "enabled": true,
         "hint": "Frame, rotate, mirror and angle",
         "id": "luxforge.crop",
         "layout": "stacked",
+        "locked": {
+          "reason": "Every photo's geometry"
+        },
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          },
+          {
+            "toolset": "tools"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "crop-reset",
           "preset": {}
         },
-        "title": "Crop, transform, straighten"
+        "title": "Crop, transform, straighten",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -2838,12 +2856,20 @@
         ],
         "developer": false,
         "effects": [],
+        "enabled": true,
         "hint": "Saved and imported settings",
         "id": "luxforge.presets",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": null,
-        "title": "Presets"
+        "title": "Presets",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -3210,9 +3236,16 @@
             "stage": "repair"
           }
         ],
+        "enabled": true,
         "hint": "Clone and Heal",
         "id": "luxforge.corrections",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "tools"
+          }
+        ],
         "queries": [
           {
             "id": "corrections",
@@ -3281,7 +3314,8 @@
           "action": "reset-corrections",
           "preset": {}
         },
-        "title": "Corrections"
+        "title": "Corrections",
+        "toolset": "tools"
       },
       {
         "actions": [
@@ -3430,12 +3464,19 @@
             "stage": "source"
           }
         ],
+        "enabled": true,
         "hint": "Source development",
         "id": "luxforge.raw",
         "layout": "stacked",
+        "locked": {
+          "reason": "Develops every RAW photo"
+        },
+        "origin": "built-in",
+        "placements": [],
         "queries": [],
         "reset": null,
-        "title": "RAW"
+        "title": "RAW",
+        "toolset": "processing"
       },
       {
         "actions": [
@@ -3525,9 +3566,16 @@
             "stage": "color"
           }
         ],
+        "enabled": true,
         "hint": "The RAW photo's starting rendition",
         "id": "luxforge.look",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [
           {
             "id": "sample-look",
@@ -3542,7 +3590,8 @@
           "action": "reset-look",
           "preset": {}
         },
-        "title": "Look"
+        "title": "Look",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -3933,9 +3982,19 @@
             "stage": "color"
           }
         ],
+        "enabled": true,
         "hint": "Exposure, tone, white balance and colour",
         "id": "luxforge.basic",
         "layout": "stacked",
+        "locked": {
+          "reason": "Carries the RAW development's white balance and exposure"
+        },
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [
           {
             "id": "auto-tone",
@@ -3981,7 +4040,8 @@
           "action": "reset-basic",
           "preset": {}
         },
-        "title": "Basic"
+        "title": "Basic",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -4090,15 +4150,23 @@
             "stage": "spatial"
           }
         ],
+        "enabled": true,
         "hint": "Texture, clarity and dehaze",
         "id": "luxforge.presence",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "reset-presence",
           "preset": {}
         },
-        "title": "Presence"
+        "title": "Presence",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -4192,9 +4260,16 @@
             "stage": "color"
           }
         ],
+        "enabled": true,
         "hint": "A point curve over the photograph's tones",
         "id": "luxforge.curve",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [
           {
             "id": "sample-curve",
@@ -4222,7 +4297,8 @@
           "action": "reset-curve",
           "preset": {}
         },
-        "title": "Tone curve"
+        "title": "Tone curve",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -4441,15 +4517,23 @@
             "stage": "restoration"
           }
         ],
+        "enabled": true,
         "hint": "Judge fine detail at 100%",
         "id": "luxforge.detail",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "reset-detail",
           "preset": {}
         },
-        "title": "Detail"
+        "title": "Detail",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -5903,15 +5987,23 @@
             "stage": "color"
           }
         ],
+        "enabled": true,
         "hint": "Hue, saturation and luminance by range, and colour grading",
         "id": "luxforge.mixer",
         "layout": "tabs",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "reset-mixer",
           "preset": {}
         },
-        "title": "Colour mixer"
+        "title": "Colour mixer",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -5995,9 +6087,16 @@
             "stage": "geometry"
           }
         ],
+        "enabled": true,
         "hint": "Profile distortion correction",
         "id": "luxforge.lens",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [
           {
             "id": "lens-profiles",
@@ -6058,7 +6157,8 @@
           "action": "reset-lens-profile",
           "preset": {}
         },
-        "title": "Lens correction"
+        "title": "Lens correction",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -6145,15 +6245,23 @@
             "stage": "geometry"
           }
         ],
+        "enabled": true,
         "hint": "Keystone correction",
         "id": "luxforge.perspective",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "reset-perspective",
           "preset": {}
         },
-        "title": "Perspective"
+        "title": "Perspective",
+        "toolset": "adjustments"
       },
       {
         "actions": [
@@ -6279,15 +6387,23 @@
             "stage": "finish"
           }
         ],
+        "enabled": true,
         "hint": "Darken or lighten the corners after the crop",
         "id": "luxforge.vignette",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": {
           "action": "reset-vignette",
           "preset": {}
         },
-        "title": "Vignette"
+        "title": "Vignette",
+        "toolset": "adjustments"
       },
       {
         "actions": [],
@@ -6382,9 +6498,19 @@
         "controls": [],
         "developer": false,
         "effects": [],
+        "enabled": true,
         "hint": "Generative fill over the Corrections band's brush, and picking objects",
         "id": "luxforge.ai",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "corrections"
+          },
+          {
+            "toolset": "masking"
+          }
+        ],
         "queries": [
           {
             "id": "pick-object",
@@ -6967,7 +7093,8 @@
             ]
           }
         ],
-        "title": "AI editing"
+        "title": "AI editing",
+        "toolset": "corrections"
       }
     ]
   },

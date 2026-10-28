@@ -1147,11 +1147,12 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         let asked = fixture.secrets.calls().total();
         let owner = fixture.start();
         let listed = owner.ok("module.list", json!({}));
-        assert_eq!(
-            find(&listed["modules"]),
-            declared,
-            "exactly the declarations"
-        );
+        let mut listed = find(&listed["modules"]);
+        // `module.list` adds the module's origin, placements and switch to its declarations.
+        for added in ["origin", "placements", "enabled"] {
+            listed.as_object_mut().unwrap().remove(added);
+        }
+        assert_eq!(listed, declared, "exactly the declarations");
         let schema = owner.ok("schema.list", json!({}));
         assert_eq!(find(&schema["modules"]), declared);
         for method in [

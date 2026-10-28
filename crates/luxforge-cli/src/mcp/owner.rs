@@ -58,8 +58,9 @@ pub struct Attached {
 }
 
 /// The methods whose success can change the owner's registry, and so the tools generated from it
-/// ([list changes](../../../../docs/design/mcp.md#the-typed-profiles)). The registry has no
-/// module-enablement method today.
+/// ([list changes](../../../../docs/design/mcp.md#the-typed-profiles)). The module layout
+/// methods (`module.enable`, `module.disable`, `module.order.set`, `module.layout.reset`) are not
+/// among them: an off module stays registered, and `schema.list` never follows the layout.
 pub const REGISTRY_CHANGES: &[&str] = &["flags.set"];
 
 /// How the adapter learns that the owner's registry changed.

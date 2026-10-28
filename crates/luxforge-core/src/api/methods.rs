@@ -452,14 +452,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
-        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_last ({settings, preset_id} of the last export the person started that succeeded: ExportSettings as schema.list's export_settings describes and the preset they came from or null; or null before any; Export again exports with it), hdr_merge ({alignment, deghost} of the last HDR merge, which the desktop's option-click merges with, or null for the defaults), panorama_merge ({projection, boundary_warp} of the last panorama merge, which the desktop's option-click merges with, or null for the defaults), theme (the active theme's id, default luxforge.dark, which theme.list answers as active), theme_follows_omarchy (default true: where Omarchy runs, the desktop makes Omarchy's current theme the active one when the library holds it), update_checks (default true), update_install_automatically (default false), update_ask_to_move (default true), select_introduction_seen (default false: the desktop shows the Select introduction the first time Select is shown), develop_last ({catalog_id, folder_id, asset_id} of where the desktop left Develop: the catalog folder it held and the photograph open there, either null, with catalog_id as catalog.info answers it; or null before any; a desktop launched with no file to open over that catalog opens Develop again on the photograph with the folder in its filmstrip while the catalog holds them), update_skipped_version (the version update.skip stored, or null; preferences.set cannot change or reset it), usage_statistics (the protected usage statistics consent record, {prompt_shown, enabled, disclosure_version?, installation_id?}, {prompt_shown: false, enabled: false} when absent; never its image key; preferences.set cannot change or reset it, only usage.set and usage.prompt.claim write it)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), raw_look (standard or neutral, default standard), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_last ({settings, preset_id} of the last export the person started that succeeded: ExportSettings as schema.list's export_settings describes and the preset they came from or null; or null before any; Export again exports with it), hdr_merge ({alignment, deghost} of the last HDR merge, which the desktop's option-click merges with, or null for the defaults), panorama_merge ({projection, boundary_warp} of the last panorama merge, which the desktop's option-click merges with, or null for the defaults), theme (the active theme's id, default luxforge.dark, which theme.list answers as active), theme_follows_omarchy (default true: where Omarchy runs, the desktop makes Omarchy's current theme the active one when the library holds it), update_checks (default true), update_install_automatically (default false), update_ask_to_move (default true), select_introduction_seen (default false: the desktop shows the Select introduction the first time Select is shown), develop_last ({catalog_id, folder_id, asset_id} of where the desktop left Develop: the catalog folder it held and the photograph open there, either null, with catalog_id as catalog.info answers it; or null before any; a desktop launched with no file to open over that catalog opens Develop again on the photograph with the folder in its filmstrip while the catalog holds them), update_skipped_version (the version update.skip stored, or null; preferences.set cannot change or reset it), usage_statistics (the protected usage statistics consent record, {prompt_shown, enabled, disclosure_version?, installation_id?}, {prompt_shown: false, enabled: false} when absent; never its image key; preferences.set cannot change or reset it, only usage.set and usage.prompt.claim write it), module_layout ({disabled?, order?: {adjustments?, tools?}}, the person's module layout exactly as stored, or null when nothing is chosen; module.layout.read answers it against the registered modules; preferences.set cannot change or reset it, only module.enable, module.disable, module.order.set and module.layout.reset write it)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     )
     .read(),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
-        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_last, the remembered {settings, preset_id} of the last export the person started that succeeded, settings checked as export.write checks them and preset_id 1..=64 printable characters or null; hdr_merge, the remembered {alignment, deghost} of the last HDR merge, each auto or off; panorama_merge, the remembered {projection, boundary_warp} of the last panorama merge, projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); theme_follows_omarchy, whether the desktop, where Omarchy runs, makes Omarchy's current theme the active one at launch, when its window gains focus and when this turns on, if the library holds a theme imported from or bundled as that Omarchy folder, so a client choosing a theme should turn it off as the desktop's own choice does; update_checks, whether a release build checks for updates at launch and then daily; update_install_automatically, whether an update downloads in the background and installs at the next ordinary quit, which applies only while update_checks is on and never to an update that changes the catalog format; a change to either reaches the update port at once; update_ask_to_move, whether a macOS release build launched outside Applications asks to move itself there, false being the question's Don't ask again; select_introduction_seen, whether the person closed the Select introduction, null or false showing it again at the desktop's next launch and true skipping it; develop_last, the remembered {catalog_id, folder_id, asset_id} of where the desktop left Develop, catalog_id 1..=64 printable characters and folder_id and asset_id identities or null, not both null, which need not exist; a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog, theme, theme_follows_omarchy, update_checks, update_install_automatically or update_ask_to_move is announced; no preference changes a rendered or exported byte; the protected usage_statistics record and update_skipped_version are not parameters: no value, null or reset here changes them, and only usage.set and usage.prompt.claim, and update.skip, write them; returns every preference as preferences.read does; needs a configured application preference directory"
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether a photograph's first preparation commits a new RAW photo's detected lens profile as its first-open entry, applying to first preparations from now on and never changing a photograph whose head has moved; raw_look, standard or neutral, the look a new RAW photograph's Original starts from, applying to photographs created from now on and changing no saved recipe; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_last, the remembered {settings, preset_id} of the last export the person started that succeeded, settings checked as export.write checks them and preset_id 1..=64 printable characters or null; hdr_merge, the remembered {alignment, deghost} of the last HDR merge, each auto or off; panorama_merge, the remembered {projection, boundary_warp} of the last panorama merge, projection auto, perspective, cylindrical or spherical and boundary_warp within 0..=100; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); theme_follows_omarchy, whether the desktop, where Omarchy runs, makes Omarchy's current theme the active one at launch, when its window gains focus and when this turns on, if the library holds a theme imported from or bundled as that Omarchy folder, so a client choosing a theme should turn it off as the desktop's own choice does; update_checks, whether a release build checks for updates at launch and then daily; update_install_automatically, whether an update downloads in the background and installs at the next ordinary quit, which applies only while update_checks is on and never to an update that changes the catalog format; a change to either reaches the update port at once; update_ask_to_move, whether a macOS release build launched outside Applications asks to move itself there, false being the question's Don't ask again; select_introduction_seen, whether the person closed the Select introduction, null or false showing it again at the desktop's next launch and true skipping it; develop_last, the remembered {catalog_id, folder_id, asset_id} of where the desktop left Develop, catalog_id 1..=64 printable characters and folder_id and asset_id identities or null, not both null, which need not exist; a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, raw_look, mask_overlay_colour, canvas_background, interface_size, catalog, theme, theme_follows_omarchy, update_checks, update_install_automatically or update_ask_to_move is announced; no preference changes a rendered or exported byte; the protected usage_statistics record, update_skipped_version and module_layout are not parameters: no value, null or reset here changes them, and only usage.set and usage.prompt.claim, update.skip, and the module layout methods write them; returns every preference as preferences.read does; needs a configured application preference directory"
     )
     .reversible(),
     owner!(
@@ -704,13 +704,50 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "an entry's stored layers in order with their module, title, summary, values, availability, whether each is neutral (changes nothing, by its module's own rule), input_stage, the {width, height} the layer receives from the layers before it (null after a layer whose output cannot be known), and input_orientation, the {mirror, turns} the orientation layers before it gave that stage (null with input_stage); then output_stage and output_orientation, what a layer appended to the stack would receive; reads and compiles payloads only and renders nothing"
     )
     .read(),
-    service!(
+    owner!(
         "module.list",
-        ModuleList,
-        module_list,
-        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An action may declare a shortcut, the chord a client binds to running it with no parameters, written Command+U, Command+Shift+C or Command+Option+V (Command is ⌘ on macOS and Control elsewhere). An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
+        owner::module_layout::ModuleList,
+        owner::module_layout::list,
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An action may declare a shortcut, the chord a client binds to running it with no parameters, written Command+U, Command+Shift+C or Command+Option+V (Command is ⌘ on macOS and Control elsewhere). An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved; each module also lists origin (built-in for a module linked into this build), placements [{toolset}] (where its interface appears, derived from what its descriptor declares: adjustments, a tools panel section; corrections, a Corrections band kind; masking, a mask kind; tools, a mode strip canvas takeover; none for a processing-only module) and enabled, the person's switch module.layout.read reads (true for a locked module, and for every module when the preferences cannot be read); a descriptor's toolset is the module's home, where Settings lists its switch, and locked {reason} marks a module that is always on; the layout never changes a descriptor, a method or a render, and schema.list lists the same descriptors without origin, placements or enabled"
     )
     .read(),
+    // The person's module layout, `module_layout` in `preferences.json` outside every catalog:
+    // presentation only, never read by planning, rendering, presets or `schema.list`.
+    owner!(
+        "module.layout.read",
+        NoParams,
+        owner::module_layout::read,
+        "{toolsets: [{toolset, order, default}], disabled, unrecognized}: the person's module layout; toolsets holds the orderable toolsets, adjustments (the tools panel's sections) and tools (the mode strip's canvas takeovers, after the host's pointer and Mask, which are not part of the order), each with its placements in the person's order and in the default order (registry order, except that the strip's brush workspaces come before its crop frames); a toolset nobody reordered follows its default, and a module registered since an order was stored takes its default place, after the neighbour that precedes it in the default order; disabled lists the registered modules the person turned off, in registry order; unrecognized lists the ids the stored layout names that this host does not register, sorted, which every write keeps; an off module stays registered, so its photos render, sample and export as before and its methods answer; reads no catalog and creates no file; malformed or unsupported preferences are refused without rewriting them"
+    )
+    .read(),
+    owner!(
+        "module.enable",
+        owner::module_layout::LayoutModule,
+        owner::module_layout::enable,
+        "turn a registered module on in the person's layout through one locked write of the user preferences, removing its stored entry; answers as module.layout.read does; a locked module is refused as validation with its reason, and an id this host does not register by name; a change is announced as one module.layout event under the request; changes no recipe, history or render; needs a configured application preference directory"
+    )
+    .reversible(),
+    owner!(
+        "module.disable",
+        owner::module_layout::LayoutModule,
+        owner::module_layout::disable,
+        "turn a registered module off in the person's layout through one locked write of the user preferences: a client offers no section, strip entry, kind, palette entry, letter or chord for it, while the module stays registered, so every photo that uses it renders, samples and exports as before and its methods still answer; answers as module.layout.read does; a locked module is refused as validation with its reason, and an id this host does not register by name; at most 64 modules are stored off; a change is announced as one module.layout event under the request; changes no recipe, history or render; needs a configured application preference directory"
+    )
+    .reversible(),
+    owner!(
+        "module.order.set",
+        owner::module_layout::LayoutOrder,
+        owner::module_layout::order_set,
+        "store the person's order of one orderable toolset, adjustments or tools, through one locked write of the user preferences; order must name every module module.layout.read lists in that toolset exactly once, and anything else is refused as validation by name; a move up, down, to the top or to the bottom is computed by the client and sent as the whole order; the default order stores no choice; unrecognized ids stored in that toolset keep their stored positions; answers as module.layout.read does; a change is announced as one module.layout event under the request; never changes the registry's order, a processing order or a render; needs a configured application preference directory"
+    )
+    .reversible(),
+    owner!(
+        "module.layout.reset",
+        owner::module_layout::LayoutReset,
+        owner::module_layout::reset,
+        "restore one toolset's default order, or without toolset every order and every module's switch, through one locked write of the user preferences; what the stored layout names that this host does not register is kept; an ordinary write, which a client undoes by writing back what module.layout.read answered before it; answers as module.layout.read does; a change is announced as one module.layout event under the request; needs a configured application preference directory"
+    )
+    .reversible(),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
     // never create history entries.
@@ -2515,12 +2552,6 @@ host_params! {
 }
 
 host_params! {
-    pub(super) struct ModuleList {
-        asset_id: Option<AssetId> = asset().notes("keep only the modules that apply to this asset's source kind; default every module"),
-    }
-}
-
-host_params! {
     pub(super) struct Navigate {
         asset_id: AssetId = asset(),
         mutation: Mutation,
@@ -2650,6 +2681,7 @@ pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -
         "select_introduction_seen": preferences.select_introduction_seen(),
         "develop_last": preferences.develop_last,
         "update_skipped_version": preferences.update_skipped_version,
+        "module_layout": preferences.module_layout,
         "usage_statistics": crate::usage::consent::public_record(preferences.usage_statistics.as_ref()),
     })
 }
@@ -2741,7 +2773,7 @@ host_params! {
 /// when no photo is named. Every module describes the source kinds its effects may exist on, so a
 /// caller holding the whole list and filtering it with [`crate::ModuleDescriptor::applies_to`]
 /// for a photo's kind holds exactly what naming that photo returns.
-fn listed_modules(
+pub(super) fn listed_modules(
     registry: &crate::ModuleRegistry,
     kind: Option<crate::SourceTag>,
 ) -> Vec<&crate::ModuleDescriptor> {
@@ -2750,23 +2782,6 @@ fn listed_modules(
         .into_iter()
         .filter(|module| kind.is_none_or(|kind| module.applies_to(kind)))
         .collect()
-}
-
-fn module_list(
-    service: &mut EditorService,
-    _: &mut ClientSession,
-    p: ModuleList,
-) -> Result<Value, Error> {
-    let kind = p
-        .asset_id
-        .as_ref()
-        .map(|id| service.state(id))
-        .transpose()?
-        .map(|state| state.asset.source.tag());
-    let modules = listed_modules(service.registry(), kind);
-    // The host's own descriptors beside them, in the same shape, so an agent discovers a `mask.*`
-    // command, its parameters and its controls exactly as it discovers a module action.
-    Ok(json!({"modules": modules, "host": service.registry().host_descriptors()}))
 }
 
 /// Every generated action method, a module's `edit.<id>` and a host `mask.*` command alike:
@@ -5309,10 +5324,21 @@ mod tests {
         );
         assert_eq!(reported["asset"]["source"]["kind"], json!(SourceTag::Jpeg));
 
-        let parse = |listed: &Value| -> Vec<ModuleDescriptor> {
-            serde_json::from_value(listed["modules"].clone()).expect("module descriptors")
+        // `module.list` is the owner's, which answers it from this listing and the person's layout.
+        let list = |service: &EditorService, asset: Option<&Value>| -> Value {
+            let asset = asset.map(|asset| serde_json::from_value(asset.clone()).unwrap());
+            owner::module_layout::listing(service, None, asset.as_ref()).expect("module.list")
         };
-        let every = ok(&mut service, &mut session, "module.list", json!({}));
+        let parse = |listed: &Value| -> Vec<ModuleDescriptor> {
+            serde_json::from_value::<Vec<crate::module_layout::ListedModule>>(
+                listed["modules"].clone(),
+            )
+            .expect("module descriptors")
+            .into_iter()
+            .map(|listed| listed.descriptor)
+            .collect()
+        };
+        let every = list(&service, None);
         let modules = parse(&every);
         assert_eq!(
             modules.len(),
@@ -5352,12 +5378,7 @@ mod tests {
         }));
 
         // The same filtered result whether or not the photo is named.
-        let named = parse(&ok(
-            &mut service,
-            &mut session,
-            "module.list",
-            json!({"asset_id": asset}),
-        ));
+        let named = parse(&list(&service, Some(&asset)));
         let filtered: Vec<ModuleDescriptor> = modules
             .iter()
             .filter(|module| module.applies_to(SourceTag::Jpeg))

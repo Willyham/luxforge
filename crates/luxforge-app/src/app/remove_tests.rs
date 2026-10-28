@@ -143,7 +143,8 @@ impl Filling {
                 let (mut listed, _) =
                     call(&editor.owner, editor.client, "module.list", json!({})).unwrap();
                 let modules: Vec<ModuleDescriptor> =
-                    serde_json::from_value(listed["modules"].take()).unwrap();
+                    luxforge_core::module_layout::listed_descriptors(listed["modules"].take())
+                        .unwrap();
                 let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(modules))));
             },
         );

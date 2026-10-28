@@ -817,7 +817,7 @@ mod tests {
         // and the chooser's rows are exactly an independent client's answer for that entry.
         let (listed, _) = call(&owner, client, "module.list", json!({})).unwrap();
         let listed: Vec<luxforge_core::ModuleDescriptor> =
-            serde_json::from_value(listed["modules"].clone()).unwrap();
+            luxforge_core::module_layout::listed_descriptors(listed["modules"].clone()).unwrap();
         let (answer, _) = call(&owner, client, "preset.groups", json!({})).unwrap();
         assert_eq!(
             serde_json::to_value(settings_groups(&listed, false)).unwrap(),

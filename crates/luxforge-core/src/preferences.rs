@@ -283,6 +283,12 @@ pub(crate) struct Preferences {
     /// `preferences.set`, its `null` and every reset keep it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) update_skipped_version: Option<String>,
+    /// The person's module layout: the modules they turned off and the orders they chose
+    /// ([`crate::module_layout`]). Only the `module.*` layout methods write it, through
+    /// [`PreferenceStore::update_module_layout_published`]: no [`PreferenceChange`] names it, so
+    /// `preferences.set`, its `null` and every reset keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) module_layout: Option<crate::module_layout::StoredLayout>,
 }
 
 /// What the Settings sheet's General rows show, compared before and after a write to decide
@@ -442,6 +448,9 @@ impl Preferences {
             if last.folder_id.is_none() && last.asset_id.is_none() {
                 return Err("develop_last must name a folder_id, an asset_id or both".into());
             }
+        }
+        if let Some(layout) = &self.module_layout {
+            layout.check()?;
         }
         if let Some(version) = &self.update_skipped_version {
             crate::update::check_version(version)
@@ -638,6 +647,26 @@ impl PreferenceStore {
             .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
             .transact_published(|preferences| {
                 let answer = apply(&mut preferences.usage_statistics)?;
+                preferences.check().map_err(Error::validation)?;
+                Ok(answer)
+            })
+    }
+
+    /// One locked read-modify-write of the module layout alone, leaving every preference as it was.
+    /// `apply` sees the layout as stored, empty when absent, and an empty layout is stored as
+    /// absent; a file that cannot be read, an `apply` that fails, or a result that breaks a rule
+    /// writes nothing.
+    pub(crate) fn update_module_layout_published<R>(
+        &self,
+        apply: impl FnOnce(&mut crate::module_layout::StoredLayout) -> Result<R, Error>,
+    ) -> Result<crate::atomic_file::Publication<R>, Error> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
+            .transact_published(|preferences| {
+                let mut layout = preferences.module_layout.take().unwrap_or_default();
+                let answer = apply(&mut layout)?;
+                preferences.module_layout = crate::module_layout::normalized(layout);
                 preferences.check().map_err(Error::validation)?;
                 Ok(answer)
             })

@@ -140,6 +140,7 @@ impl FieldPatch for Basic {
             BASIC_EFFECT,
             EffectStage::Color,
         )
+        .locked("Carries the RAW development's white balance and exposure")
         .format(BASIC_EFFECT_FORMAT)
         .maskable()
         .set_notes("merges the named Basic fields into the stack's one Basic layer, which the host places before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")

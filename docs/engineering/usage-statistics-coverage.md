@@ -55,7 +55,7 @@ Recorded by the desktop when the gesture completes, because no command records t
 | A correction placed, moved, resized or given another source; a row's setting, reorder or delete; `/`, `⌫`, `⌥↑`/`⌥↓`, the band's reset | Corrections mode's canvas, band, row menu and keys | the core's `draft.commit` or Corrections command (below): one `tool.commit` `corrections` |
 | Corrections mode entered or left; a correction selected; a source set or cleared; the New correction settings; pins and outlines hidden (`H`) | Corrections mode | none: desktop view state, as mask selection and the remembered brush are; what is done with them is the commit |
 | Slider, curve or wheel drag released | Develop's panels | the core's `draft.commit` (below): one `tool.commit` per changed group |
-| Settings sheet change | Settings | the core's `preferences.set` or `flags.set` (below) |
+| Settings sheet change | Settings | the core's `preferences.set`, `flags.set` or a module layout write (below) |
 | Theme chosen, imported, exported or deleted | Settings › Appearance | `preferences.set`, `theme.import`, `theme.export`, `theme.delete` (below) |
 
 Shortcuts and palette entries for a command (`⌘Z`, the palette's Undo, a module action's chord) raise exactly the message the command's button raises, so the command's boundary records it once and the desktop records nothing of its own.
@@ -218,7 +218,12 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `merge.rerun` | `interaction` `hdr-merge` | When an HDR merge's rerun is accepted, as `merge.create`; a panorama merge is exempt, including a rerun that names no kind, by its merge's recorded kind. The job's terminal outcome records no `operation.end` (open). |
 | `merge.restore` | `interaction` merge-restore | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `module.disable` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
+| `module.enable` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
+| `module.layout.read` | Exempt (read) | Reads the module layout. |
+| `module.layout.reset` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
 | `module.list` | Exempt (read) | Discovery. |
+| `module.order.set` | `interaction` preferences-change | A Settings change to the module layout, when it changed something (announced in the event log as `module.layout`): never for a no-op, a refusal or a retry. Names no module. |
 | `module.permission.deny` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.permission.grant` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.permission.list` | Exempt (read) | Lists grants. |

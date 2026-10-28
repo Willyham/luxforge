@@ -67,8 +67,14 @@ pub(crate) fn host_feature(method: &str, params: &Value) -> Option<(Feature, Emi
         "version.create" => (F::VersionCreate, OnChange),
         "version.delete" => (F::VersionDelete, OnChange),
         // Only a deliberate preference is announced; the remembered workspace, brush, window and
-        // Performance section state a desktop stores as it goes are not.
-        "preferences.set" | "flags.set" => (F::PreferencesChange, OnChange),
+        // Performance section state a desktop stores as it goes are not. A module layout write is a
+        // Settings change too, and names no module.
+        "preferences.set"
+        | "flags.set"
+        | "module.enable"
+        | "module.disable"
+        | "module.order.set"
+        | "module.layout.reset" => (F::PreferencesChange, OnChange),
         // A single photograph's settings: one interaction beside its tool commits.
         "edit.apply-settings" => (settings_feature(params), OnChange),
         // Jobs, recorded when accepted; their outcomes are the job's own events.

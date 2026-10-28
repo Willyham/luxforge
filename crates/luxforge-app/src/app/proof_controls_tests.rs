@@ -60,7 +60,7 @@ impl Proof {
         });
         let listed = call(&owner, json_client, "module.list", json!({})).0;
         let modules: Vec<ModuleDescriptor> =
-            serde_json::from_value(listed["modules"].clone()).unwrap();
+            luxforge_core::module_layout::listed_descriptors(listed["modules"].clone()).unwrap();
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].id, MODULE);
         assert!(modules[0].developer);

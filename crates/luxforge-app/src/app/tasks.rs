@@ -19,9 +19,9 @@ use iced::Task;
 use luxforge_core::{
     ActionResult, ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId,
     DraftTarget, EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow,
-    HistorySelection, JobId, Lineage, MAX_PRESET_BYTES, MappingDescriptor, ModuleDescriptor,
-    Mutation, MutationOutcome, MutationRequest, OwnerHandle, PresetSummary, PreviewJob,
-    PreviewRequest, ProxyBounds, RecipeDescription, Version,
+    HistorySelection, JobId, Lineage, MAX_PRESET_BYTES, MappingDescriptor, Mutation,
+    MutationOutcome, MutationRequest, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest,
+    ProxyBounds, RecipeDescription, Version,
     jobs::{JOB_CANCEL, JOB_READ},
     mask::commands::MaskListing,
 };
@@ -874,7 +874,8 @@ pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message
     owner_task(
         move || {
             let (mut listed, _) = call(&owner, client, "module.list", json!({}))?;
-            parse::<Vec<ModuleDescriptor>>(listed["modules"].take())
+            luxforge_core::module_layout::listed_descriptors(listed["modules"].take())
+                .map_err(|error| error.to_string())
         },
         |value| Message::Sync(SyncMessage::ModulesLoaded(value)),
     )

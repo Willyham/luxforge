@@ -518,9 +518,16 @@
             "stage": "color"
           }
         ],
+        "enabled": true,
         "hint": "Developer control vocabulary",
         "id": "luxforge.controls",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [
           {
             "id": "sample-controls-curve",
@@ -602,7 +609,8 @@
           "action": "reset-controls",
           "preset": {}
         },
-        "title": "Controls"
+        "title": "Controls",
+        "toolset": "adjustments"
       },
       {
         "actions": [],
@@ -614,9 +622,16 @@
         "controls": [],
         "developer": true,
         "effects": [],
+        "enabled": true,
         "hint": "Deterministic candidate patches for the candidate seam",
         "id": "luxforge.candidates",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": null,
         "tasks": [
@@ -717,7 +732,8 @@
             "uses": []
           }
         ],
-        "title": "Candidates proof"
+        "title": "Candidates proof",
+        "toolset": "adjustments"
       },
       {
         "actions": [],
@@ -729,9 +745,16 @@
         "controls": [],
         "developer": true,
         "effects": [],
+        "enabled": true,
         "hint": "A fixed model-selection raster for the model mask kind",
         "id": "luxforge.selections",
         "layout": "stacked",
+        "origin": "built-in",
+        "placements": [
+          {
+            "toolset": "adjustments"
+          }
+        ],
         "queries": [],
         "reset": null,
         "tasks": [
@@ -745,7 +768,8 @@
             "uses": []
           }
         ],
-        "title": "Selections proof"
+        "title": "Selections proof",
+        "toolset": "adjustments"
       }
     ]
   },

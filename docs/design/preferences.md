@@ -40,6 +40,15 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `select_introduction_seen` | boolean, or `null` | `null`: not seen | remembered: closing the [Select introduction](select-introduction.md) sets it | next launch |
 | `develop_last` | `{catalog_id, folder_id, asset_id}`: `catalog.info`'s identity of their catalog, 1 to 64 printable characters, a catalog folder identity or `null` and a photograph identity or `null`, not both `null`; or `null` | `null`: nothing chosen | remembered: the [Develop folder and photograph](develop-from-folders.md#develops-folder) | next launch over that catalog |
 
+### Module layout
+
+`module_layout` is the person's [module layout](module-manager.md#phase-1-arranging-the-built-in-modules): `{disabled?, order?: {adjustments?, tools?}}`, the module ids they turned off and the orders they chose, each list at most 64 distinct module identities of at most 128 bytes. It is a preference but not a `preferences.set` parameter: only `module.enable`, `module.disable`, `module.order.set` and `module.layout.reset` write it, each through one locked read-modify-write of it alone, and they announce `module.layout`, not `preferences.set`. `preferences.read` answers it exactly as stored, or `null`, and `module.layout.read` answers it against the registered modules.
+
+- Only explicit choices are stored: a module never turned off has no entry, an order that is the default stores no order, and a layout holding no choice is not stored.
+- An id this run does not register is kept through every write, a full reset included, and listed as unrecognized.
+- A stored layout this build cannot read, such as an id that is not a module identity, a repeated id, an unknown key or an orderable toolset other than `adjustments` and `tools`, makes the file unreadable, so it is refused unchanged as any other bad value is. `module.list` still lists every module, on.
+- No layout changes a rendered or exported byte, the registry's order or `schema.list`.
+
 ### Protected usage statistics record
 
 `usage_statistics` is `{prompt_shown, enabled, disclosure_version, installation_id?, image_key?}`. An absent record means the notice was never shown and sharing is off. An enabled record holds a random UUIDv4 `installation_id` and a 64-hex-character `image_key` (32 random bytes); a disabled one holds neither, and any other combination, a non-canonical ID or key, an unknown key or a disclosure version of 0 makes the file unreadable, so it is refused unchanged as any other bad value is and statistics stay off.

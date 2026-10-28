@@ -378,11 +378,19 @@ pub fn journey(
             .find(|served| served["id"] == json!(module.id))
             .cloned()
             .ok_or("module.list does not list the module")?;
-        let declared = serde_json::to_value(&module.descriptor)
-            .map_err(|error| format!("the descriptor does not serialize: {error}"))?;
+        let listed: luxforge_core::module_layout::ListedModule =
+            serde_json::from_value(served.clone())
+                .map_err(|error| format!("module.list serves no listed module: {error}"))?;
         ensure(
-            served == declared,
-            format!("module.list serves {served} while the registry holds {declared}"),
+            listed.descriptor == module.descriptor,
+            format!(
+                "module.list serves {served} while the registry holds {:?}",
+                module.descriptor
+            ),
+        )?;
+        ensure(
+            listed.enabled,
+            "module.list does not list the module turned on",
         )?;
         ensure(
             served["availability"]["kind"] == json!("available"),

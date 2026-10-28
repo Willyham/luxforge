@@ -148,6 +148,7 @@ pub use descriptor::{
     WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
+pub use descriptor::{MAX_LOCK_REASON, ModuleLock, Toolset};
 pub(crate) use descriptor::{
     MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,
 };
