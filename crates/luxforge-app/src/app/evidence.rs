@@ -10,6 +10,7 @@ mod long_work;
 mod loupe;
 mod mask_object;
 mod minimap;
+mod modules;
 mod select;
 mod select_catalog;
 mod select_merge;
@@ -166,6 +167,8 @@ pub(crate) struct Evidence {
     pub(crate) agent_wait: Option<AgentWait>,
     /// What a running `agent` step that sent a host method still waits for.
     pub(crate) agent_host: Option<AgentHostWait>,
+    /// What a running `modules` step still waits for.
+    pub(crate) modules_wait: Option<modules::ModulesWait>,
     /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
     /// A `sheet` step sent while a request was in flight opens the sheet once none is: whether it
@@ -284,6 +287,7 @@ impl Evidence {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            modules_wait: None,
             long_work_wait: None,
             sheet_when_quiet: None,
             merge_wait: None,
@@ -650,6 +654,9 @@ pub(crate) enum Settle {
     /// Masks › Object has finished what a step started: no pick, analysis, load, selection,
     /// commit or capability round trip in flight, and the newest frame on screen.
     MaskObject,
+    /// A `modules` step's layout writes and reads have answered, and so have the owner's
+    /// `module.layout.read` and `module.list` read for its record.
+    Modules,
 }
 
 impl Settle {
@@ -699,6 +706,7 @@ impl Settle {
             Self::Minimap => "minimap",
             Self::Window => "window",
             Self::MaskObject => "mask_object",
+            Self::Modules => "modules",
         }
     }
 
@@ -1431,6 +1439,7 @@ impl Editor {
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
             EvidenceMessage::AgentHostAnswered(result) => self.agent_host_answered(result),
+            EvidenceMessage::ModulesRead(result) => self.modules_read(result),
             EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
             EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
             EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
@@ -1659,6 +1668,7 @@ impl Editor {
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Minimap(step) => self.minimap_step(step),
+            Step::Modules(step) => self.modules_step(step),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Correction(step) => self.correction_step(step),
@@ -5391,6 +5401,13 @@ impl Editor {
             self.await_capability(&module, true);
             return self.update(Message::Settings(SettingsMessage::Open(tab)));
         }
+        if tab == SettingsTab::Modules {
+            // The tab lists what opening it reads: the frame waits for that read, and records the
+            // owner's beside it.
+            let opened = self.update(Message::Settings(SettingsMessage::Open(tab)));
+            self.await_modules();
+            return opened;
+        }
         self.arm_settings_settle();
         self.update(Message::Settings(SettingsMessage::Open(tab)))
     }
@@ -6588,6 +6605,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_mask_object();
     editor.settle_capability();
     editor.settle_agent_host();
+    let modules = editor.settle_modules();
     let arrows = editor.loupe_arrows_when_warm();
     let sheet = editor.export_sheet_when_quiet();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
@@ -6604,7 +6622,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         Some(hook) if fit => hook.follow(photo),
         _ => Task::none(),
     };
-    Task::batch([minimap, arrows, sheet, identity])
+    Task::batch([minimap, modules, arrows, sheet, identity])
 }
 
 #[cfg(test)]
@@ -7169,6 +7187,7 @@ mod tests {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            modules_wait: None,
             long_work_wait: None,
             sheet_when_quiet: None,
             merge_wait: None,

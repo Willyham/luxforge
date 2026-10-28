@@ -69,7 +69,9 @@ impl Editor {
                     .as_ref()
                     .filter(|row| tab.movable(row))
                     .and_then(|row| tab.moved(row, how));
-                return self.layout_gesture(Ok(change), None);
+                // The moved row stays in view, as ⌥⇧↑ and ⌥⇧↓ can carry it past the list's edge.
+                let moved = self.layout_gesture(Ok(change), None);
+                return Task::batch([moved, crate::view::module_settings::scroll_to_selected()]);
             }
             ModulesMessage::Key(ModulesKey::Toggle) => {
                 let Some(module) = tab.selected.as_ref().map(|row| row.module.clone()) else {

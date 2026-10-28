@@ -43,6 +43,8 @@ pub(crate) enum EvidenceMessage {
     /// The host method an `agent` step sent through the run's second client answered, with the
     /// event sequence it was answered at.
     AgentHostAnswered(Result<(Value, u64), String>),
+    /// The owner's `module.layout.read` and `module.list`, read for a `modules` step's record.
+    ModulesRead(Result<Value, String>),
     /// The `pick.set` a Select `agent_pick` step sent through the run's second client answered.
     SelectAgentAnswered(Result<Value, String>),
     /// One press of a loupe `arrows` step: the first once the look-ahead is warm, the rest one per

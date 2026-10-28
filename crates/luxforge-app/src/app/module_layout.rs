@@ -28,7 +28,7 @@ use luxforge_core::{
     ModuleDescriptor, POINTER_MODE, Toolset,
     module_layout::{LAYOUT_EVENT, LayoutView},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 impl Editor {
@@ -258,5 +258,63 @@ impl Editor {
             .iter()
             .map(|section| section.module_id.clone())
             .collect()
+    }
+}
+
+impl Editor {
+    /// What a captured frame records of the layout the workspace draws by: the layout adopted,
+    /// the panel's bands in drawn order with a kept band's values, the footer, the strip's tools
+    /// in drawn order, and the menu open.
+    pub(crate) fn module_layout_summary(&self) -> Value {
+        let tools = &self.workspace.tools;
+        let bands: Vec<Value> = tools
+            .sections
+            .iter()
+            .chain(&tools.developer)
+            .map(|section| {
+                json!({"module": section.module_id, "kept": section.kept,
+                       "expanded": section.expanded,
+                       "unavailable": section.unavailable.is_some()})
+            })
+            .collect();
+        let band_menu = tools
+            .sections
+            .iter()
+            .chain(&tools.developer)
+            .find_map(|section| section.menu.as_ref())
+            .map(|menu| {
+                json!({"module": menu.module_id,
+                       "moves": menu.moves.iter().map(|(how, changes)| json!([how.label(), changes]))
+                           .collect::<Vec<_>>(),
+                       "turn_off": menu.turn_off, "enable": menu.enable, "enabled": menu.enabled})
+            });
+        let canvas = &self.workspace.canvas;
+        let strip_menu = canvas.strip_menu.open.then(|| {
+            canvas
+                .strip_menu
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({"module": tool.module_id, "title": tool.title, "letter": tool.letter,
+                           "on": tool.on, "locked": tool.locked})
+                })
+                .collect::<Vec<_>>()
+        });
+        let menu = match &self.view_state.menu {
+            Some(MenuTarget::Band(module)) => json!({"band": module}),
+            Some(MenuTarget::Strip) => json!("strip"),
+            Some(_) => json!("other"),
+            None => Value::Null,
+        };
+        json!({
+            "layout": self.layout.view(),
+            "pending": self.layout.pending,
+            "bands": bands,
+            "off_footer": tools.off_footer,
+            "strip": canvas.modes.iter().map(|mode| mode.id.clone()).collect::<Vec<_>>(),
+            "band_menu": band_menu,
+            "strip_menu": strip_menu,
+            "menu": menu,
+        })
     }
 }

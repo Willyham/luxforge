@@ -443,7 +443,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (json!({"settings":{}}), "missing field `open`"),
         (
             json!({"settings":{"open":true,"tab":"colours"}}),
-            "settings tab must be one of general, appearance, models, agents, experiments, privacy, not \"colours\"",
+            "settings tab must be one of general, appearance, modules, models, agents, experiments, privacy, not \"colours\"",
         ),
         (
             json!({"settings":{"open":false,"tab":"general"}}),
@@ -1553,6 +1553,34 @@ fn the_minimap_ready_step_is_a_bare_word() {
 }
 
 #[test]
+fn module_layout_steps_round_trip_and_refuse_what_they_do_not_take() {
+    round_trip(json!([
+        {"modules": {"band_menu": "luxforge.vignette"}},
+        {"modules": "strip_menu"},
+        {"modules": "close_menu"},
+        {"modules": {"move": {"module": "luxforge.vignette", "to": "top"}}},
+        {"modules": {"enabled": {"module": "luxforge.vignette", "on": false}}},
+        {"modules": {"customize": {"toolset": "adjustments", "module": "luxforge.vignette"}}},
+        {"modules": {"customize": {"toolset": "tools"}}},
+        {"modules": {"tab_move": {"toolset": "tools", "module": "luxforge.crop", "to": "up"}}},
+        {"modules": "reset_all"},
+        {"settings": {"open": true, "tab": "modules"}},
+    ]));
+    refused(
+        json!([{"modules": {"move": {"module": "luxforge.vignette", "to": "left"}}}]),
+        "a modules move goes to one of up, down, top, bottom",
+    );
+    refused(
+        json!([{"modules": {"customize": {"toolset": "masking"}}}]),
+        "toolset is one of adjustments, tools",
+    );
+    refused(
+        json!([{"modules": {"band_menu": ""}}]),
+        "modules step module",
+    );
+}
+
+#[test]
 fn presentation_observation_has_a_bounded_measurement_window() {
     let steps = parse(r#"[{"observe":{"settle_ms":1000,"ms":30000}}]"#).unwrap();
     assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
@@ -1687,7 +1715,7 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         (json!({"open": {"path": ""}}), "open path"),
         (
             json!({"settings": {"open": true, "tab": "telemetry"}}),
-            "settings tab must be one of general, appearance, models, agents, experiments, privacy",
+            "settings tab must be one of general, appearance, modules, models, agents, experiments, privacy",
         ),
     ] {
         refused(json!([script]), expected);
