@@ -19,6 +19,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod masks;
 pub(crate) mod models;
+pub(crate) mod module_layout;
 pub(crate) mod move_to_applications;
 pub(crate) mod number;
 pub(crate) mod palette;
@@ -116,6 +117,12 @@ pub(crate) enum MenuTarget {
     /// A theme's row in the Settings sheet's Appearance tab, by its id: Export…, Copy import
     /// report and, for a stored theme, Delete.
     Theme(String),
+    /// A module section's band, by its module: Move up, Move down, Move to top, Move to bottom,
+    /// Turn off *Title* (Enable *Title* on a kept band), Customize panel… and Copy as JSON request.
+    Band(String),
+    /// The mode strip's ⋯ menu: every strip tool with its check or lock and letter, then Customize
+    /// tools….
+    Strip,
     /// A model's row in the Settings sheet's Models tab: Copy as JSON request for its Remove.
     Model {
         module_id: String,
@@ -345,6 +352,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) document: &'a document::Document,
     pub(crate) modules: &'a [ModuleDescriptor],
     pub(crate) modules_ready: bool,
+    /// The person's module layout and what every region derives from it: which modules are on, the
+    /// panel's and the strip's orders, and who holds each letter.
+    pub(crate) layout: &'a module_layout::EffectiveLayout,
     pub(crate) fields: &'a Fields,
     /// Local presentation state for generated controls; it never enters the recipe.
     pub(crate) control_ui: &'a tools::ControlsUi,
@@ -790,6 +800,7 @@ mod tests {
         /// The whole entries behind the page's rows, where the displayed entry's layers are read.
         stacks: Vec<luxforge_core::HistoryEntry>,
         modules: Vec<ModuleDescriptor>,
+        layout: module_layout::EffectiveLayout,
         fields: Fields,
         control_ui: tools::ControlsUi,
         editing: Option<(String, String)>,
@@ -837,10 +848,13 @@ mod tests {
     impl Scene {
         fn new(modules: Vec<ModuleDescriptor>) -> Self {
             let fields = Fields::seeded(&modules);
+            let mut layout = module_layout::EffectiveLayout::default();
+            layout.adopt_descriptors(&modules);
             Self {
                 document: document::Document::default(),
                 stacks: Vec::new(),
                 modules,
+                layout,
                 fields,
                 control_ui: tools::ControlsUi::default(),
                 editing: None,
@@ -928,6 +942,7 @@ mod tests {
                 document: &self.document,
                 modules: &self.modules,
                 modules_ready: true,
+                layout: &self.layout,
                 fields: &self.fields,
                 control_ui: &self.control_ui,
                 editing: self.editing.as_ref(),
@@ -2402,7 +2417,8 @@ mod tests {
             modules
                 .iter()
                 .filter(|module| module.applies_to(luxforge_core::SourceTag::Raw))
-                .filter(|module| !module.developer && tools::draws_section(module, None))
+                .filter(|module| !module.developer
+                    && tools::draws_section(module, None, &Default::default()))
                 .count(),
             "a module with nothing of its own to draw has no section"
         );
@@ -2482,6 +2498,7 @@ mod tests {
                 &scene.modules,
                 scene.document.state.as_ref(),
                 target.as_ref(),
+                &scene.layout,
             );
             let section = section(&workspace, &basic.id).clone();
             derived.push((*name, *kind, target.clone(), section, shortcuts));
@@ -4271,8 +4288,12 @@ mod tests {
                 .iter()
                 .filter_map(|entry| owner(&entry.action))
                 .collect();
-            let shortcuts =
-                tools::mode_shortcuts(&scene.modules, scene.document.state.as_ref(), None);
+            let shortcuts = tools::mode_shortcuts(
+                &scene.modules,
+                scene.document.state.as_ref(),
+                None,
+                &scene.layout,
+            );
             let picks = tools::pick_modes(&scene.modules, scene.document.state.as_ref(), None);
             for module in &modules {
                 let applies = module.applies_to(kind);
@@ -4281,7 +4302,12 @@ mod tests {
                 // development's controls are Basic's variants.
                 assert_eq!(
                     sections.contains(&id.as_str()),
-                    applies && tools::draws_section(module, scene.settings.flags.as_ref()),
+                    applies
+                        && tools::draws_section(
+                            module,
+                            scene.settings.flags.as_ref(),
+                            &scene.layout
+                        ),
                     "{id} has a section on a {label} photo exactly when it applies and declares \
                      controls"
                 );
@@ -4399,7 +4425,12 @@ mod tests {
                 .collect();
             let shortcuts = format!(
                 "{:?}",
-                tools::mode_shortcuts(&scene.modules, scene.document.state.as_ref(), None)
+                tools::mode_shortcuts(
+                    &scene.modules,
+                    scene.document.state.as_ref(),
+                    None,
+                    &scene.layout
+                )
             );
             (sections, palette, modes, shortcuts)
         };
@@ -4606,7 +4637,13 @@ mod tests {
             )
         }
         fn palette_offers_auto(scene: &Scene, target: Option<&MaskId>) -> bool {
-            tools::palette_entries(&scene.modules, false, scene.document.state.as_ref(), target)
+            tools::palette_entries(
+                &scene.modules,
+                false,
+                scene.document.state.as_ref(),
+                target,
+                &scene.layout,
+            )
                 .iter()
                 .any(|(_, _, action)| {
                     matches!(action, palette::PaletteAction::Run { action, .. } if action == "auto-tone")
@@ -4635,6 +4672,246 @@ mod tests {
             tools::analysis_refusal(&scene.inputs())
                 .expect("the chord is refused")
                 .contains("global Basic")
+        );
+    }
+
+    /// A layout as `module.layout.read` answers it: these orders, and `disabled` off.
+    fn layout_view(
+        adjustments: &[&str],
+        tools: &[&str],
+        disabled: &[&str],
+    ) -> luxforge_core::module_layout::LayoutView {
+        use luxforge_core::{Toolset, module_layout::ToolsetOrder};
+        let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        luxforge_core::module_layout::LayoutView {
+            toolsets: vec![
+                ToolsetOrder {
+                    toolset: Toolset::Adjustments,
+                    order: ids(adjustments),
+                    default: ids(adjustments),
+                },
+                ToolsetOrder {
+                    toolset: Toolset::Tools,
+                    order: ids(tools),
+                    default: ids(tools),
+                },
+            ],
+            disabled: ids(disabled),
+            unrecognized: Vec::new(),
+        }
+    }
+
+    /// A Vignette layer of `amount`.
+    fn vignette_layer(amount: f64) -> luxforge_core::Layer {
+        luxforge_core::Layer::new(
+            luxforge_core::VIGNETTE_EFFECT,
+            serde_json::json!({ "amount": amount }),
+        )
+    }
+
+    /// The person's order of the panel's sections, with every built-in section in it.
+    fn panel_order(scene: &Scene, first: &[&'static str]) -> Vec<String> {
+        let mut order: Vec<String> = first.iter().map(|id| (*id).to_owned()).collect();
+        for module in &scene.modules {
+            if scene
+                .layout
+                .placed(module, luxforge_core::Toolset::Adjustments)
+                && !order.contains(&module.id)
+            {
+                order.push(module.id.clone());
+            }
+        }
+        order
+    }
+
+    #[test]
+    fn module_layout_sections_follow_the_persons_order_and_an_off_module_draws_none() {
+        let mut scene = Scene::new(descriptors());
+        let order = panel_order(&scene, &["luxforge.vignette", "luxforge.basic"]);
+        let order: Vec<&str> = order.iter().map(String::as_str).collect();
+        scene.layout.adopt_view(
+            layout_view(&order, &[], &["luxforge.perspective"]),
+            &scene.modules,
+        );
+        scene.palette.open = true;
+        let workspace = scene.derive();
+        let drawn: Vec<&str> = workspace
+            .tools
+            .sections
+            .iter()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        assert_eq!(drawn[..2], ["luxforge.vignette", "luxforge.basic"]);
+        assert!(!drawn.contains(&"luxforge.perspective"), "{drawn:?}");
+        // Drawn sections keep the person's relative order.
+        let positions: Vec<usize> = drawn
+            .iter()
+            .map(|id| order.iter().position(|placed| placed == id).unwrap())
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{drawn:?}"
+        );
+        assert_eq!(
+            workspace.tools.off_footer.as_deref(),
+            Some("1 module off: Perspective")
+        );
+        // The palette offers Enable for the module that is off and Turn off for each other one
+        // that is not locked, and none of the off module's own entries.
+        let labels: Vec<&str> = workspace
+            .palette
+            .entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect();
+        assert!(labels.contains(&"Enable Perspective"), "{labels:?}");
+        assert!(labels.contains(&"Turn off Vignette"), "{labels:?}");
+        assert!(labels.contains(&"Customize panel\u{2026}"), "{labels:?}");
+        assert!(!labels.contains(&"Turn off Basic"), "Basic is locked");
+        assert!(
+            labels
+                .iter()
+                .all(|label| !label.starts_with("Perspective \u{b7}")),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn module_layout_an_off_module_with_an_edit_draws_its_kept_band() {
+        let mut scene = Scene::new(descriptors()).opened(vec![vignette_layer(-35.0)]);
+        let order = panel_order(&scene, &[]);
+        let order: Vec<&str> = order.iter().map(String::as_str).collect();
+        scene.layout.adopt_view(
+            layout_view(&order, &[], &["luxforge.vignette", "luxforge.perspective"]),
+            &scene.modules,
+        );
+        let workspace = scene.derive();
+        let vignette = section(&workspace, "luxforge.vignette");
+        let values = vignette.kept.as_ref().expect("the kept band");
+        assert!(
+            values
+                .iter()
+                .any(|(label, value)| label == "Amount" && value.starts_with("-35")),
+            "{values:?}"
+        );
+        assert_eq!(
+            vignette.hint.as_deref(),
+            Some(crate::state::module_layout::KEPT_HINT)
+        );
+        assert!(vignette.active && !vignette.expanded && vignette.unavailable.is_none());
+        assert!(vignette.controls.is_empty() && vignette.reset.is_none());
+        // The footer names only the module that draws nothing.
+        assert_eq!(
+            workspace.tools.off_footer.as_deref(),
+            Some("1 module off: Perspective")
+        );
+        // At its place in the order, between the sections around it.
+        let drawn: Vec<&str> = workspace
+            .tools
+            .sections
+            .iter()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        let at = |id: &str| order.iter().position(|placed| *placed == id).unwrap();
+        let positions: Vec<usize> = drawn.iter().map(|id| at(id)).collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{drawn:?}"
+        );
+        // Expanded, it still offers no controls, and the palette reveals none of it.
+        scene.expanded.insert("luxforge.vignette".into(), true);
+        scene.palette.open = true;
+        let expanded = scene.derive();
+        let vignette = section(&expanded, "luxforge.vignette");
+        assert!(vignette.expanded && vignette.controls.is_empty());
+        assert!(
+            expanded.palette.entries.iter().all(|entry| !matches!(
+                &entry.action,
+                palette::PaletteAction::Reveal(target) if target.module_id == "luxforge.vignette"
+            )),
+            "a kept band has nothing to reveal"
+        );
+        // Its menu offers Enable, not Turn off.
+        scene.view_state.menu = Some(MenuTarget::Band("luxforge.vignette".into()));
+        let menu = scene.derive();
+        let menu = section(&menu, "luxforge.vignette")
+            .menu
+            .clone()
+            .expect("the band's open menu");
+        assert_eq!(menu.enable.as_deref(), Some("Enable Vignette"));
+        assert_eq!(menu.turn_off, None);
+    }
+
+    #[test]
+    fn module_layout_a_neutral_layer_of_an_off_module_brings_no_band_back() {
+        let mut scene = Scene::new(descriptors()).opened(vec![vignette_layer(0.0)]);
+        let order = panel_order(&scene, &[]);
+        let order: Vec<&str> = order.iter().map(String::as_str).collect();
+        scene.layout.adopt_view(
+            layout_view(&order, &[], &["luxforge.vignette"]),
+            &scene.modules,
+        );
+        let workspace = scene.derive();
+        assert!(
+            workspace
+                .tools
+                .all()
+                .all(|section| section.module_id != "luxforge.vignette")
+        );
+        assert_eq!(
+            workspace.tools.off_footer.as_deref(),
+            Some("1 module off: Vignette")
+        );
+    }
+
+    #[test]
+    fn module_layout_the_strip_follows_the_persons_order_and_drops_an_off_tool() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let strip = |workspace: &Workspace| -> Vec<String> {
+            workspace
+                .canvas
+                .modes
+                .iter()
+                .map(|mode| mode.id.clone())
+                .collect()
+        };
+        let default = strip(&scene.derive());
+        assert_eq!(
+            default,
+            [
+                luxforge_core::POINTER_MODE,
+                luxforge_core::MASK_MODE,
+                "luxforge.corrections",
+                "luxforge.crop"
+            ]
+        );
+        scene.layout.adopt_view(
+            layout_view(&[], &["luxforge.crop", "luxforge.corrections"], &[]),
+            &scene.modules,
+        );
+        assert_eq!(
+            strip(&scene.derive())[2..],
+            ["luxforge.crop", "luxforge.corrections"]
+        );
+        scene.layout.adopt_view(
+            layout_view(
+                &[],
+                &["luxforge.crop", "luxforge.corrections"],
+                &["luxforge.corrections"],
+            ),
+            &scene.modules,
+        );
+        scene.view_state.menu = Some(MenuTarget::Strip);
+        let workspace = scene.derive();
+        assert_eq!(strip(&workspace)[2..], ["luxforge.crop"]);
+        assert!(workspace.canvas.strip_menu.open);
+        assert!(
+            workspace
+                .canvas
+                .strip_menu
+                .tools
+                .iter()
+                .any(|tool| tool.module_id.as_deref() == Some("luxforge.corrections") && !tool.on)
         );
     }
 }

@@ -20,6 +20,7 @@ pub(crate) mod history;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod mask;
+pub(crate) mod modules;
 pub(crate) mod move_to_applications;
 pub(crate) mod object_pick;
 pub(crate) mod overlay;
@@ -110,6 +111,9 @@ pub(crate) enum Message {
     UnsupportedCatalog(unsupported_catalog::UnsupportedCatalogMessage),
     /// The question a macOS release build asks when it runs outside Applications.
     MoveToApplications(move_to_applications::MoveMessage),
+    /// The person's module layout: a band's or the strip's menu, the palette's entries, and the
+    /// owner's answers to the layout's reads and writes.
+    Modules(modules::ModulesMessage),
     Close,
 }
 

@@ -14,6 +14,7 @@ use crate::app::message::{
     mask::MaskKey,
     mask::MaskMessage,
     mask::TypingEdit,
+    modules::ModulesMessage,
     overlay::OverlayMessage,
     palette::PaletteMessage,
     preset::PresetMessage,
@@ -30,6 +31,7 @@ use crate::app::message::{
     select_merge::MergeMessage,
 };
 use crate::state::host_commands::HostCommand;
+use crate::state::module_layout::Move;
 use crate::state::palette::Panel;
 use crate::state::select::{SelectPanel, Shown};
 use crate::state::select_catalog::CatalogAction;
@@ -163,8 +165,12 @@ pub(crate) struct KeyContext {
     /// Where Escape leaves a pick mode for: Mask for a pick taken on a mask, which returns to the
     /// Masks panel it was entered from, and the pointer otherwise (`None`).
     pub(crate) leave_to: Option<String>,
-    /// The declared canvas-mode shortcut letters and the module each one selects.
+    /// The declared canvas-mode shortcut letters and the module each one selects: only the letters
+    /// each module holds and only of modules the person has on
+    /// ([`crate::state::tools::mode_shortcuts`]).
     pub(crate) modes: Vec<(char, String)>,
+    /// A section band's menu is open, on this module: Escape closes it and ⌥↑ and ⌥↓ move the band.
+    pub(crate) band_menu: Option<String>,
     /// The Masks panel's text field is open, so Escape closes it without sending anything,
     /// whichever widget last saw the key.
     pub(crate) mask_typing: bool,
@@ -581,6 +587,21 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
     // or the mode.
     if context.mask_menu_open && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::View(ViewMessage::CloseMenu));
+    }
+    // A section band's open menu stands in for the band's focus: Escape puts it away, and ⌥↑ and
+    // ⌥↓ move the band, as the menu's Move up and Move down do, leaving the menu open.
+    if context.band_menu.is_some() {
+        if matches!(key, Key::Named(Named::Escape)) {
+            return Some(Message::View(ViewMessage::CloseMenu));
+        }
+        let to = match key {
+            Key::Named(Named::ArrowUp) => Some(Move::Up),
+            Key::Named(Named::ArrowDown) => Some(Move::Down),
+            _ => None,
+        };
+        if let Some(to) = to.filter(|_| modifiers.alt() && !modifiers.logo()) {
+            return Some(Message::Modules(ModulesMessage::MoveOpenBand(to)));
+        }
     }
     // Tab walks the generated fields; shift is the only modifier it tolerates.
     if matches!(key, Key::Named(Named::Tab))
@@ -1303,6 +1324,7 @@ mod tests {
         let context = KeyContext {
             actions: crate::state::host_commands::action_shortcuts(
                 &crate::state::testing::descriptors(),
+                &Default::default(),
             ),
             ..KeyContext::default()
         };
@@ -1513,6 +1535,7 @@ mod tests {
             mode_active: false,
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
+            band_menu: None,
             mask_typing: false,
             preset_typing: false,
             correction_typing: false,

@@ -109,6 +109,13 @@ pub(crate) enum PaletteAction {
     Theme(String),
     /// Check for updates now, as the Updates group's Check now does.
     CheckForUpdates,
+    /// Open where the person arranges a toolset's modules, as Customize panel… does.
+    Customize(luxforge_core::Toolset),
+    /// Turn a module on or off, as a band's Turn off and a kept band's Enable do.
+    SetEnabled {
+        module: String,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,10 +171,12 @@ pub(crate) fn derive(
         inputs.developer,
         inputs.document.state.as_ref(),
         inputs.target,
+        inputs.layout,
     ));
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
-    let chords = action_shortcuts(inputs.modules);
+    raw.extend(crate::state::module_layout::palette_entries(inputs));
+    let chords = action_shortcuts(inputs.modules, inputs.layout);
     let entries: Vec<PaletteEntry> = filter(raw, &inputs.palette.query)
         .into_iter()
         .map(|(label, detail, action)| PaletteEntry {
@@ -525,7 +534,7 @@ mod tests {
     #[test]
     fn every_module_offers_its_actions_its_own_reset_and_its_canvas_mode_in_registry_order() {
         let modules = descriptors();
-        let entries = palette_entries(&modules, false, None, None);
+        let entries = palette_entries(&modules, false, None, None, &Default::default());
         let rotate = entries
             .iter()
             .find(|(label, ..)| label == "Crop, transform, straighten · Rotate 90° right")

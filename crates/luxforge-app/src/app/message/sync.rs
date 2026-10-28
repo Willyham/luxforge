@@ -1,6 +1,8 @@
 //! The event sync's and the owner's answers about the open photograph.
 use crate::app::tasks::{RecipeRead, Refresh, SyncResult};
-use luxforge_core::{EntryId, ModuleDescriptor};
+use luxforge_core::EntryId;
+#[cfg(test)]
+use luxforge_core::ModuleDescriptor;
 use std::path::PathBuf;
 
 /// Opening a photograph and the owner's answers the editor adopts as authoritative: a command's
@@ -18,7 +20,9 @@ pub(crate) enum SyncMessage {
     ImportRefreshed(u64, Result<Box<Refresh>, String>),
     /// The displayed entry's layers and masks as the panels read them.
     RecipeDescribed(EntryId, Result<Box<RecipeRead>, String>),
-    /// Every tool control is generated from these; the desktop knows no tool by name.
+    /// Descriptors handed in without a listing, every module on and placed by the core's rule: the
+    /// tests' seam. The desktop's own discovery answers `ModulesMessage::Discovered`.
+    #[cfg(test)]
     ModulesLoaded(Result<Vec<ModuleDescriptor>, String>),
     /// Another client's change reached the owner's event log, so the event sync reads it: the
     /// owner's wake, carried in while an asset is open. Nothing produces it on a timer.

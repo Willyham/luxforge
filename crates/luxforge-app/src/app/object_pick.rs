@@ -260,7 +260,7 @@ impl Editor {
 
     /// The module whose `task.select-object` the run offers now, with the picker beside it.
     pub(crate) fn object_select_module(&self) -> Option<&luxforge_core::ModuleDescriptor> {
-        pick::select_module(&self.modules, self.settings.flags.as_ref())
+        pick::select_module(&self.modules, self.settings.flags.as_ref(), &self.layout)
     }
 
     /// The photograph on screen and its revision.

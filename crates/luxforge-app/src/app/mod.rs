@@ -149,6 +149,9 @@ pub(crate) mod masks;
 #[cfg(test)]
 mod masks_tests;
 pub(crate) mod message;
+pub(crate) mod module_layout;
+#[cfg(test)]
+mod module_layout_tests;
 pub(crate) mod motion;
 #[cfg(test)]
 mod motion_tests;
@@ -463,6 +466,9 @@ pub(crate) struct Editor {
     pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
     pub(crate) modules_ready: bool,
+    /// The person's module layout as `module.list` and `module.layout.read` last answered it, and
+    /// what the panel, the strip, the palette and the keyboard derive from it.
+    pub(crate) layout: state::module_layout::EffectiveLayout,
     /// Proof and diagnostic modules are listed only when the run asked for them.
     pub(crate) developer: bool,
     /// The generated controls' local state; authoritative values stay in the recipe.
@@ -536,6 +542,10 @@ pub(crate) struct Editor {
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
+    /// Every layout write the update function started, with its method, parameters and status, in
+    /// order, so a test can send exactly those to the owner and hand the answers back.
+    #[cfg(test)]
+    pub(crate) layout_started: Vec<(String, serde_json::Value, String)>,
     /// How many updates ran the whole route, hooks, derive and all, rather than a fast path, so a
     /// test or evidence observation can tell that a message skipped it.
     pub(crate) full_updates: u64,
@@ -784,6 +794,7 @@ impl Editor {
             sync: Default::default(),
             modules: Default::default(),
             modules_ready: false,
+            layout: Default::default(),
             developer: config.developer,
             controls: Default::default(),
             curve_sampling: Default::default(),
@@ -814,6 +825,8 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
+            #[cfg(test)]
+            layout_started: Vec::new(),
             full_updates: 0,
             performance: performance::Sampler::new(expanded),
             residency: residency::Residency::default(),
@@ -1194,6 +1207,7 @@ impl Editor {
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
+            layout: &self.layout,
             fields: &self.controls.fields,
             control_ui: &self.controls.ui,
             editing: self.controls.editing.as_ref(),
@@ -1348,6 +1362,7 @@ impl Editor {
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
             Message::MoveToApplications(message) => self.move_update(message),
+            Message::Modules(message) => self.modules_update(message),
             // An answer the sheet asked for before this catalog opened, such as the releases
             // page's opener, arriving after it did.
             Message::UnsupportedCatalog(_) => Task::none(),
@@ -1601,7 +1616,12 @@ impl Editor {
                 &self.modules,
                 self.document.state.as_ref(),
                 self.section_target(),
+                &self.layout,
             ),
+            band_menu: match &self.view_state.menu {
+                Some(MenuTarget::Band(module)) => Some(module.clone()),
+                _ => None,
+            },
             mask_typing: self.mask_panel.typing.is_some(),
             preset_typing: matches!(
                 self.presets.library.interaction.editing,
@@ -1645,7 +1665,7 @@ impl Editor {
             } else {
                 None
             },
-            actions: state::host_commands::action_shortcuts(&self.modules),
+            actions: state::host_commands::action_shortcuts(&self.modules, &self.layout),
             corrections: self
                 .corrections_active()
                 .then(|| self.session.workspace.mode.clone()),

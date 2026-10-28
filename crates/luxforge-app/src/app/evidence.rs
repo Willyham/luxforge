@@ -3397,6 +3397,7 @@ impl Editor {
             && !self.busy
             && !self.view_state.copy_settings.pending
             && !self.view_state.copy_settings.batch_pending
+            && !self.layout.pending
             && self.sync.poll.idle()
             && self.select.state.catalog.running().is_none()
             && (!self.select_shown() || self.catalog_quiet())
@@ -5121,6 +5122,9 @@ impl Editor {
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
             PaletteAction::CheckForUpdates => self.await_step(Settle::Update),
             PaletteAction::Host(_) => self.await_step(Settle::Quiet),
+            // A layout write settles once its answer is adopted; Customize opens the sheet.
+            PaletteAction::SetEnabled { .. } => self.await_step(Settle::Quiet),
+            PaletteAction::Customize(_) => self.arm_settings_settle(),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
                 self.await_step(Settle::Session)

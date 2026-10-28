@@ -132,7 +132,7 @@ pub use mask_row::{
 pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
 pub use mode_control::{CombineMode, ModeControlModel, mode_control, mode_menu};
-pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
+pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip, mode_strip_with_menu};
 pub use notched_slider::{NotchedSliderModel, StepKeys, arrow_step, notched_panel, notched_slider};
 pub use notice_card::{NoticeCardModel, Tone, notice_card, notice_card_with};
 pub use number_field::{
@@ -143,10 +143,12 @@ pub use overlay_control::{OverlayControlModel, OverlayMode, OverlayTint, overlay
 pub use pick_bar::{
     PickBarModel, PickButtonModel, PickLineModel, pick_bar, pick_button, pick_line,
 };
-pub use popover::popover;
+pub use popover::{popover, popover_above};
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_rail, range_slider};
 pub use readout_card::readout_card;
-pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
+pub use section_header::{
+    SectionHeaderModel, band_header, band_header_with_reset, module_section, section_body,
+};
 pub use segmented::{
     SegmentedModel, chevron_segment, segment, segment_track, segmented, segmented_fill,
     segmented_fill_marked,

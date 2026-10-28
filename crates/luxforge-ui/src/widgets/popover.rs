@@ -22,6 +22,25 @@ pub fn popover<'a, M: Clone + 'a>(
     menu: Option<Element<'a, M>>,
     on_dismiss: M,
 ) -> Element<'a, M> {
+    anchored(anchor, menu, on_dismiss, false)
+}
+
+/// [`popover`] opening upward: the menu's bottom edge sits [`POPOVER_GAP`] above the anchor's top,
+/// for an anchor at the bottom of the window such as the mode strip.
+pub fn popover_above<'a, M: Clone + 'a>(
+    anchor: impl Into<Element<'a, M>>,
+    menu: Option<Element<'a, M>>,
+    on_dismiss: M,
+) -> Element<'a, M> {
+    anchored(anchor, menu, on_dismiss, true)
+}
+
+fn anchored<'a, M: Clone + 'a>(
+    anchor: impl Into<Element<'a, M>>,
+    menu: Option<Element<'a, M>>,
+    on_dismiss: M,
+    above: bool,
+) -> Element<'a, M> {
     let open = menu.is_some();
     decorate(
         anchor,
@@ -29,6 +48,7 @@ pub fn popover<'a, M: Clone + 'a>(
             menu: menu.unwrap_or_else(|| iced::widget::Space::new().into()),
             open,
             on_dismiss,
+            above,
         },
     )
 }
@@ -40,6 +60,8 @@ struct Popover<'a, M> {
     menu: Element<'a, M>,
     open: bool,
     on_dismiss: M,
+    /// The menu opens above the anchor rather than under it.
+    above: bool,
 }
 
 impl<'a, M: Clone> Decoration<'a, M, Theme, iced::Renderer> for Popover<'a, M> {
@@ -75,6 +97,7 @@ impl<'a, M: Clone> Decoration<'a, M, Theme, iced::Renderer> for Popover<'a, M> {
                 tree: menu_tree,
                 anchor: layout.bounds() + translation,
                 on_dismiss: self.on_dismiss.clone(),
+                above: self.above,
             }))
         });
         match (anchor, menu) {
@@ -94,6 +117,7 @@ struct Menu<'a, 'b, M> {
     /// The anchor's bounds in window coordinates.
     anchor: Rectangle,
     on_dismiss: M,
+    above: bool,
 }
 
 /// Where a menu of `size` goes under `anchor` in a window of `bounds`: its left edge on the
@@ -101,6 +125,16 @@ struct Menu<'a, 'b, M> {
 fn place(anchor: Rectangle, size: Size, bounds: Size) -> Point {
     let x = anchor.x.min(bounds.width - size.width).max(0.0);
     let y = (anchor.y + anchor.height + POPOVER_GAP)
+        .min(bounds.height - size.height)
+        .max(0.0);
+    Point::new(x, y)
+}
+
+/// Where a menu of `size` goes above `anchor`: its left edge on the anchor's, its bottom edge
+/// `POPOVER_GAP` above the anchor's top, then moved back inside the window on either axis.
+fn place_above(anchor: Rectangle, size: Size, bounds: Size) -> Point {
+    let x = anchor.x.min(bounds.width - size.width).max(0.0);
+    let y = (anchor.y - POPOVER_GAP - size.height)
         .min(bounds.height - size.height)
         .max(0.0);
     Point::new(x, y)
@@ -114,7 +148,12 @@ impl<M: Clone> overlay::Overlay<M, Theme, iced::Renderer> for Menu<'_, '_, M> {
             &layout::Limits::new(Size::ZERO, bounds),
         );
         let size = node.size();
-        layout::Node::with_children(size, vec![node]).move_to(place(self.anchor, size, bounds))
+        let at = if self.above {
+            place_above(self.anchor, size, bounds)
+        } else {
+            place(self.anchor, size, bounds)
+        };
+        layout::Node::with_children(size, vec![node]).move_to(at)
     }
 
     fn draw(
@@ -215,5 +254,18 @@ mod tests {
         assert_eq!(place(right, menu, window).x, 600.0);
         let bottom = Rectangle::new(Point::new(100.0, 580.0), Size::new(28.0, 28.0));
         assert_eq!(place(bottom, menu, window).y, 540.0);
+    }
+
+    #[test]
+    fn a_menu_above_ends_over_the_anchor_and_stays_inside_the_window() {
+        let window = Size::new(800.0, 600.0);
+        let menu = Size::new(200.0, 60.0);
+        let strip = Rectangle::new(Point::new(300.0, 550.0), Size::new(120.0, 36.0));
+        assert_eq!(
+            place_above(strip, menu, window),
+            Point::new(300.0, 550.0 - POPOVER_GAP - 60.0)
+        );
+        let top = Rectangle::new(Point::new(300.0, 20.0), Size::new(120.0, 36.0));
+        assert_eq!(place_above(top, menu, window).y, 0.0);
     }
 }

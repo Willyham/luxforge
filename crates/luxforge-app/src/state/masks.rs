@@ -1186,7 +1186,13 @@ pub(crate) const OBJECT_ENTRY: &str = "Object\u{2026}";
 /// The kind menus' Select group: Object… while the run offers `task.select-object` and the
 /// experiment is on, marked when its setup is not installed.
 fn select_options(inputs: &Inputs<'_>) -> Vec<SelectOption> {
-    if crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_none() {
+    if crate::object_pick::select_module(
+        inputs.modules,
+        inputs.settings.flags.as_ref(),
+        inputs.layout,
+    )
+    .is_none()
+    {
         return Vec::new();
     }
     let line = crate::object_pick::setup_line(
@@ -1255,8 +1261,12 @@ fn model_row(
         .first()
         .filter(|_| !kept)
         .map(|reason| format!("Needs recompute \u{b7} {}", stale_words(*reason)));
-    let offered =
-        crate::object_pick::select_module(inputs.modules, inputs.settings.flags.as_ref()).is_some();
+    let offered = crate::object_pick::select_module(
+        inputs.modules,
+        inputs.settings.flags.as_ref(),
+        inputs.layout,
+    )
+    .is_some();
     let recompute_reason = if !offered {
         Some("Turn on AI object picking to recompute".to_owned())
     } else if model.prompt.is_none() {

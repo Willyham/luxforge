@@ -14,6 +14,9 @@ pub struct ModeEntry {
     pub icon: Option<Icon>,
     /// A single-letter keyboard shortcut, shown in the entry's tooltip.
     pub shortcut: Option<String>,
+    /// A note the tooltip adds after the name, such as whose the letter the mode declares is when
+    /// another holds it (`R is Mask's`).
+    pub note: Option<String>,
     pub selected: bool,
     pub enabled: bool,
 }
@@ -29,7 +32,7 @@ pub struct ToggleEntry {
     pub on: bool,
 }
 
-/// Renders the mode strip: `modes` in registry order, then a rule, then `toggles`. Each entry is an
+/// Renders the mode strip: `modes` in the order given, then a rule, then `toggles`. Each entry is an
 /// icon-only [`theme::STRIP_TOOL_WIDTH`] × [`theme::STRIP_TOOL_HEIGHT`] tool whose tooltip names it
 /// and its letter; a selected mode and an overlay that is on take the accent.
 pub fn mode_strip<'a, M: Clone + 'a>(
@@ -37,6 +40,34 @@ pub fn mode_strip<'a, M: Clone + 'a>(
     on_select: impl Fn(usize) -> M + 'a,
     toggles: &[ToggleEntry],
     on_toggle: impl Fn(usize) -> M + 'a,
+) -> Element<'a, M> {
+    strip(modes, on_select, toggles, on_toggle, None)
+}
+
+/// [`mode_strip`] with a ⋯ tool at its end, after a rule, that publishes `more`: the menu that
+/// says the strip is configurable. `open` draws it selected while its menu is open.
+pub fn mode_strip_with_menu<'a, M: Clone + 'a>(
+    modes: &[ModeEntry],
+    on_select: impl Fn(usize) -> M + 'a,
+    more: M,
+    open: bool,
+) -> Element<'a, M> {
+    let toggle = more.clone();
+    strip(
+        modes,
+        on_select,
+        &[],
+        move |_| toggle.clone(),
+        Some((more, open)),
+    )
+}
+
+fn strip<'a, M: Clone + 'a>(
+    modes: &[ModeEntry],
+    on_select: impl Fn(usize) -> M + 'a,
+    toggles: &[ToggleEntry],
+    on_toggle: impl Fn(usize) -> M + 'a,
+    more: Option<(M, bool)>,
 ) -> Element<'a, M> {
     let mut content = Row::new()
         .spacing(theme::STRIP_SPACING)
@@ -47,6 +78,7 @@ pub fn mode_strip<'a, M: Clone + 'a>(
             &mode.label,
             mode.icon,
             &mode.shortcut,
+            mode.note.as_deref(),
             mode.selected,
             mode.enabled.then(|| on_select(index)),
         ));
@@ -61,8 +93,23 @@ pub fn mode_strip<'a, M: Clone + 'a>(
             &toggle.label,
             toggle.icon,
             &toggle.shortcut,
+            None,
             toggle.on,
             Some(on_toggle(index)),
+        ));
+    }
+
+    if let Some((more, open)) = more {
+        if !modes.is_empty() {
+            content = content.push(rule());
+        }
+        content = content.push(tool(
+            "Strip tools",
+            Some(Icon::More),
+            &None,
+            None,
+            open,
+            Some(more),
         ));
     }
 
@@ -82,6 +129,7 @@ fn tool<'a, M: Clone + 'a>(
     label: &str,
     glyph: Option<Icon>,
     shortcut: &Option<String>,
+    note: Option<&str>,
     selected: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
@@ -119,9 +167,12 @@ fn tool<'a, M: Clone + 'a>(
     tooltip(
         control,
         container(
-            text(tooltip_text(label, shortcut))
-                .size(theme::SIZE_CAPTION)
-                .style(theme::ink(Token::Text)),
+            text(match note {
+                Some(note) => format!("{} \u{b7} {note}", tooltip_text(label, shortcut)),
+                None => tooltip_text(label, shortcut),
+            })
+            .size(theme::SIZE_CAPTION)
+            .style(theme::ink(Token::Text)),
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
@@ -167,6 +218,7 @@ mod tests {
                 label: "Pointer".into(),
                 icon: Some(Icon::Pointer),
                 shortcut: Some("V".into()),
+                note: None,
                 selected: true,
                 enabled: true,
             },
@@ -174,6 +226,7 @@ mod tests {
                 label: "Frame".into(),
                 icon: None,
                 shortcut: None,
+                note: Some("F is Mask's".into()),
                 selected: false,
                 enabled: false,
             },
@@ -185,5 +238,6 @@ mod tests {
             on: true,
         }];
         let _: Element<'_, ()> = mode_strip(&modes, |_| (), &toggles, |_| ());
+        let _: Element<'_, ()> = mode_strip_with_menu(&modes, |_| (), (), true);
     }
 }

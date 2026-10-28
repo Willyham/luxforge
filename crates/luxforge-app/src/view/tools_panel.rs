@@ -6,12 +6,13 @@ use crate::state::MenuTarget;
 use crate::{
     app::message::{
         Message, action::ActionMessage, control::ControlMessage, crop::CropMessage,
-        draft::DraftMessage, overlay::ClipEndpoint, overlay::OverlayMessage, preset::PresetMessage,
-        view::ViewMessage,
+        draft::DraftMessage, modules::ModulesMessage, overlay::ClipEndpoint,
+        overlay::OverlayMessage, preset::PresetMessage, view::ViewMessage,
     },
     state::{
         fields,
         histogram::HistogramModel,
+        module_layout::{BandMenu, Toolset},
         presets::{PresetFormModel, PresetRow, PresetsModel},
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
@@ -44,11 +45,12 @@ use luxforge_ui::{
     boxed_input, button_row, caption, channel_row, chip, chip_row, chip_wrap, color_picker,
     color_swatch, curve_editor, equal_button_row, error_caption, focus_control,
     histogram_inspector, icon_button, icon_button_row, inline_menu, inline_notice, inline_value,
-    label_line, labelled_button, list_heading, menu_choice, module_section, number_field,
-    range_rail, readout_card, row_icon_button, section_label, segmented, slider, steady_bottom,
-    stepper, sub_group_header, sub_group_header_with_actions, sub_group_header_with_controls,
-    tab_row, text_button, theme, toggle, values_line,
+    label_line, labelled_button, list_heading, menu_choice, menu_list, module_section,
+    number_field, popover, range_rail, readout_card, row_icon_button, section_body, section_label,
+    segmented, slider, steady_bottom, stepper, sub_group_header, sub_group_header_with_actions,
+    sub_group_header_with_controls, tab_row, text_button, theme, toggle, values_line,
 };
+use luxforge_ui::{MenuEntry, MenuItem, Token};
 use serde_json::{Map, Value};
 
 /// Stable identity for evidence scripts that scroll the actual generated tools panel.
@@ -263,6 +265,9 @@ fn panel_body<'a>(
             panel = panel.push(section_view(section, menu, plot));
         }
     }
+    if let Some(footer) = &model.off_footer {
+        panel = panel.push(off_footer(footer));
+    }
     // A body that shrinks while the panel is scrolled near its end (a tab with fewer rows, a
     // section closing) would otherwise clamp the scroll and slide everything above it down.
     scrollable(steady_bottom(panel))
@@ -387,7 +392,11 @@ fn section_view<'a>(
     };
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
+    // A kept band of a module that is off lists its values read-only and Enable.
     let body = (section.expanded && section.unavailable.is_none()).then(|| {
+        if let Some(values) = &section.kept {
+            return kept_rows(section, values);
+        }
         // A capability module's block sits above its controls.
         let mut rows = Vec::new();
         if let Some(capability) = &section.capability {
@@ -427,7 +436,7 @@ fn section_view<'a>(
         }
         finish_rows(rows, menu)
     });
-    let band = module_section(
+    let header = module_section(
         &SectionHeaderModel {
             title: section.title.clone(),
             expanded: section.expanded,
@@ -438,11 +447,26 @@ fn section_view<'a>(
             status: section.status.clone(),
             scope: section.scope.clone(),
             enabled: section.enabled,
+            off: section.kept.is_some(),
         },
         Message::Control(ControlMessage::ToggleSection(section.module_id.clone())),
         Message::Control(ControlMessage::ResetModule(section.module_id.clone())),
-        body,
+        None,
     );
+    // A secondary click on the band opens its menu, dropped under the band. A band press still
+    // expands or collapses it: the panel takes no drags.
+    let header = mouse_area(header).on_right_press(Message::View(ViewMessage::OpenMenu(
+        MenuTarget::Band(section.module_id.clone()),
+    )));
+    let header = popover(
+        header,
+        section.menu.as_ref().map(|menu| band_menu(section, menu)),
+        Message::View(ViewMessage::CloseMenu),
+    );
+    let band: Element<'a, Message> = match body {
+        Some(rows) if section.unavailable.is_none() => column![header, section_body(rows)].into(),
+        _ => header,
+    };
     // A revealed section is the scroll target but carries no tint: the open band is the mark.
     let wrapped = container(band);
     if section.mark == Some(SectionMark::Section) {
@@ -450,6 +474,128 @@ fn section_view<'a>(
     } else {
         wrapped.into()
     }
+}
+
+/// A band's menu: the moves, Turn off *Title* (Enable *Title* on a kept band), Customize panel… and
+/// Copy as JSON request ([`BandMenu`]).
+fn band_menu<'a>(section: &SectionModel, menu: &BandMenu) -> Element<'a, Message> {
+    let module = &section.module_id;
+    let item = |label: String, trailing: Option<&str>, on_press: Option<Message>| {
+        MenuEntry::Item(MenuItem {
+            icon: None,
+            label,
+            trailing: trailing.map(str::to_owned),
+            on_press,
+            reason: None,
+        })
+    };
+    let mut entries: Vec<MenuEntry<Message>> = menu
+        .moves
+        .iter()
+        .map(|(to, possible)| {
+            item(
+                to.label().to_owned(),
+                to.key(),
+                (*possible && menu.enabled).then(|| {
+                    Message::Modules(ModulesMessage::Move {
+                        toolset: Toolset::Adjustments,
+                        module: module.clone(),
+                        to: *to,
+                    })
+                }),
+            )
+        })
+        .collect();
+    entries.push(MenuEntry::Separator);
+    for (label, enabled) in [(&menu.turn_off, false), (&menu.enable, true)] {
+        if let Some(label) = label {
+            entries.push(item(
+                label.clone(),
+                None,
+                menu.enabled.then(|| {
+                    Message::Modules(ModulesMessage::SetEnabled {
+                        module: module.clone(),
+                        enabled,
+                    })
+                }),
+            ));
+        }
+    }
+    entries.push(item(
+        "Customize panel\u{2026}".to_owned(),
+        None,
+        Some(Message::Modules(ModulesMessage::Customize {
+            toolset: Toolset::Adjustments,
+            module: Some(module.clone()),
+        })),
+    ));
+    entries.push(item(
+        "Copy as JSON request".to_owned(),
+        None,
+        Some(Message::Modules(ModulesMessage::CopyBand(module.clone()))),
+    ));
+    menu_list(entries)
+}
+
+/// A kept band's body: that the edit is kept and renders, its values read-only, and Enable
+/// *Title*, which turns the module on for every photo. No control, reset or palette action.
+fn kept_rows<'a>(
+    section: &'a SectionModel,
+    values: &'a [(String, String)],
+) -> Vec<Element<'a, Message>> {
+    let title = &section.title;
+    let mut rows: Vec<Element<'a, Message>> = vec![caption(format!(
+        "You turned {title} off. This photo's {title} edit is kept, and it renders and exports \
+         as before."
+    ))];
+    for (label, value) in values {
+        rows.push(
+            row![
+                iced::widget::text(label.clone())
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(Token::TextLabel)),
+                Space::new().width(Length::Fill),
+                iced::widget::text(value.clone())
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(Token::TextSecondary)),
+            ]
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    rows.push(text_button(
+        &format!("Enable {title}"),
+        ButtonTone::Control,
+        ButtonSize::Regular,
+        Some(Message::Modules(ModulesMessage::SetEnabled {
+            module: section.module_id.clone(),
+            enabled: true,
+        })),
+    ));
+    rows
+}
+
+/// The quiet line after the last section naming the modules that are off, with Customize….
+fn off_footer(footer: &str) -> Element<'_, Message> {
+    container(
+        row![
+            container(caption(footer.to_owned())).width(Length::Fill),
+            text_button(
+                "Customize\u{2026}",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(Message::Modules(ModulesMessage::Customize {
+                    toolset: Toolset::Adjustments,
+                    module: None,
+                })),
+            ),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(theme::SPACING),
+    )
+    .width(Length::Fill)
+    .padding([theme::SPACING, theme::SECTION_PADDING.left])
+    .into()
 }
 
 /// The rows of a section or group that declares `layout: tabs`, over its `controls`: a segmented

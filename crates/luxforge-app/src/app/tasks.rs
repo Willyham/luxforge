@@ -10,9 +10,18 @@ use crate::app::{
     crop::StagePlan,
     draft::GestureId,
     message::{
-        Message, draft::DraftMessage, evidence::EvidenceMessage, history::HistoryMessage,
-        mask::MaskMessage, performance::PerformanceMessage, pointer::PointerMessage,
-        preset::PresetMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
+        Message,
+        draft::DraftMessage,
+        evidence::EvidenceMessage,
+        history::HistoryMessage,
+        mask::MaskMessage,
+        modules::{Discovery, ModulesMessage, Written},
+        performance::PerformanceMessage,
+        pointer::PointerMessage,
+        preset::PresetMessage,
+        preview::PreviewMessage,
+        sync::SyncMessage,
+        view::ViewMessage,
     },
 };
 use iced::Task;
@@ -192,6 +201,8 @@ pub(crate) struct SyncResult {
     /// A client connected, named itself or disconnected (`session.*`), which an open Agents tab
     /// reads the connected clients again for.
     pub(crate) sessions: bool,
+    /// Another client changed the module layout (`module.layout`), which the desktop reads again.
+    pub(crate) layout: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -225,6 +236,7 @@ impl SyncResult {
             usage: false,
             updates: false,
             sessions: false,
+            layout: false,
             own: Vec::new(),
             moved: MovedPhotos::default(),
         }
@@ -869,15 +881,53 @@ fn collapsed(answer: &Value) -> Option<EntryId> {
     serde_json::from_value(answer.get("collapsed_entry_id")?.clone()).ok()
 }
 
-/// Discovery runs once: the controls on screen are whatever the registered modules declare.
+/// Discovery runs once: the controls on screen are whatever the registered modules declare, and
+/// where they are drawn is the person's layout, read with them.
 pub(crate) fn modules_task(owner: OwnerHandle, client: ClientId) -> Task<Message> {
     owner_task(
         move || {
             let (mut listed, _) = call(&owner, client, "module.list", json!({}))?;
-            luxforge_core::module_layout::listed_descriptors(listed["modules"].take())
-                .map_err(|error| error.to_string())
+            let modules = parse(listed["modules"].take())?;
+            let (layout, _) = call(&owner, client, "module.layout.read", json!({}))?;
+            Ok(Box::new(Discovery {
+                modules,
+                layout: parse(layout)?,
+            }))
         },
-        |value| Message::Sync(SyncMessage::ModulesLoaded(value)),
+        |value| Message::Modules(ModulesMessage::Discovered(value)),
+    )
+}
+
+/// `module.layout.read`, after another client changed the layout.
+pub(crate) fn layout_read_task(owner: OwnerHandle, client: ClientId) -> Task<Message> {
+    owner_task(
+        move || {
+            let (layout, _) = call(&owner, client, "module.layout.read", json!({}))?;
+            parse(layout)
+        },
+        |value| Message::Modules(ModulesMessage::Read(value)),
+    )
+}
+
+/// One layout write of this desktop's — `module.enable`, `module.disable` or `module.order.set` —
+/// and the layout it answers, with the request its event carries and what the status bar says.
+pub(crate) fn layout_write_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    method: &'static str,
+    params: Value,
+    status: String,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let (layout, request) = call_own(&owner, client, method, params)?;
+            Ok(Box::new(Written {
+                layout: parse(layout)?,
+                request,
+                status,
+            }))
+        },
+        |value| Message::Modules(ModulesMessage::Written(value)),
     )
 }
 
@@ -2248,6 +2298,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("session."));
+    // A layout change touches no asset: it alone reads the layout again.
+    let layout = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method == luxforge_core::module_layout::LAYOUT_EVENT);
     // An event that leaves an asset at a new revision moved its history; a version moves none.
     let mut moved = MovedPhotos {
         assets: Vec::new(),
@@ -2294,6 +2350,7 @@ pub(crate) fn sync_now(
         usage,
         updates,
         sessions,
+        layout,
         own: read.into_iter().map(|event| event.request_id).collect(),
         moved,
     })
@@ -3043,6 +3100,7 @@ mod tests {
             usage: false,
             updates: false,
             sessions: false,
+            layout: false,
             own: Vec::new(),
             moved: Default::default(),
         };

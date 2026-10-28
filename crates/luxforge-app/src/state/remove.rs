@@ -12,6 +12,7 @@ use crate::{
     state::{
         Inputs,
         fill_setup::{self, SetupLine, SetupModel},
+        module_layout::EffectiveLayout,
         settings,
     },
 };
@@ -29,17 +30,19 @@ const PROMPT_FALLBACK: usize = 256;
 /// The most candidates the strip lists: the newest, across the selection's jobs.
 pub(crate) const STRIP_MAX: usize = 12;
 
-/// The first available module that declares a fill task the desktop offers, the one the Remove
-/// mode drives. A fill task behind an experiment flag that is off is not offered
+/// The first available module the person has on that declares a fill task the desktop offers, the
+/// one the Remove mode drives. A fill task behind an experiment flag that is off is not offered
 /// ([`TaskDescriptor::flags`](luxforge_core::capabilities::descriptor::TaskDescriptor::flags)), so
-/// with every fill task's flag off there is no Remove at all: no segment, no gestures.
+/// with every fill task's flag off, or its module off, there is no Remove at all: no segment, no
+/// gestures.
 pub(crate) fn fill_module<'a>(
     modules: &'a [ModuleDescriptor],
     flags: Option<&FlagList>,
+    layout: &EffectiveLayout,
 ) -> Option<&'a ModuleDescriptor> {
     modules
         .iter()
-        .filter(|module| module.is_available())
+        .filter(|module| module.is_available() && layout.enabled(&module.id))
         .find(|module| {
             module.tasks.iter().any(|task| {
                 task.id.starts_with(FILL_TASK_PREFIX) && settings::task_offered(flags, task)
@@ -543,7 +546,7 @@ fn running_sentence(job: &FillJob) -> String {
 /// The Remove model for these inputs, or `None` when no module fills.
 pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> {
     let flags = inputs.settings.flags.as_ref();
-    let module = fill_module(inputs.modules, flags)?;
+    let module = fill_module(inputs.modules, flags, inputs.layout)?;
     let panel = inputs.remove;
     let read = tiers_of(inputs, &module.id);
     let reading = read.is_none();
@@ -580,7 +583,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>, enabled: bool) -> Option<RemoveModel> 
         sentence: running_sentence(job),
         cancelling: job.cancelling,
     });
-    let object_offered = object_pick::select_module(inputs.modules, flags).is_some();
+    let object_offered = object_pick::select_module(inputs.modules, flags, inputs.layout).is_some();
     let held = asset.and_then(|asset| panel.filled_on(asset));
     let selection = held.is_some();
     let object = (panel.object && object_offered).then(|| object_model(inputs, module, held));

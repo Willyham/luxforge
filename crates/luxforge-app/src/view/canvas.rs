@@ -10,12 +10,19 @@ use crate::app::message::{history::HistoryMessage, pointer::PointerMessage, view
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{Message, capability::CapabilityMessage, crop::CropMessage, draft::DraftMessage},
+        message::{
+            Message, capability::CapabilityMessage, crop::CropMessage, draft::DraftMessage,
+            modules::ModulesMessage,
+        },
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
-    state::canvas::{
-        CanvasFill, CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
-        SurfaceMode, ZoomView,
+    state::{
+        MenuTarget,
+        canvas::{
+            CanvasFill, CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone,
+            PhotoView, SurfaceMode, ZoomView,
+        },
+        module_layout::{StripMenu, Toolset},
     },
     view::{
         Surfaces,
@@ -35,8 +42,8 @@ use iced::{
 };
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
-    ModeEntry, NoticeCardModel, Tone, chip, draft_bar_with_controls, focus_control, mode_strip,
-    notice_card, theme,
+    MenuEntry, MenuItem, ModeEntry, NoticeCardModel, Tone, chip, draft_bar_with_controls,
+    focus_control, menu_list, mode_strip_with_menu, notice_card, popover_above, theme,
 };
 use luxforge_ui::{Element, Theme, Token};
 use std::time::{Duration, Instant};
@@ -160,8 +167,9 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     }
 }
 
-/// The mode strip: the pointer and every declared canvas mode. The view overlays' toggles are in
-/// the title bar, beside Clipping.
+/// The mode strip: the pointer and every declared canvas mode the person has on, in their order,
+/// then the ⋯ that opens the strip's menu upward. A secondary click anywhere on the strip opens the
+/// same menu. The view overlays' toggles are in the title bar, beside Clipping.
 fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     let modes: Vec<ModeEntry> = model
         .modes
@@ -171,17 +179,30 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
             // A name the desktop has no drawing for falls back to the label, as no name does.
             icon: mode.icon.as_deref().and_then(Icon::from_name),
             shortcut: mode.shortcut.clone(),
+            note: mode.letter_note.clone(),
             selected: mode.selected,
             enabled: mode.enabled,
         })
         .collect();
     let ids: Vec<String> = model.modes.iter().map(|mode| mode.id.clone()).collect();
-    let bar = mode_strip(
+    let open = model.strip_menu.open;
+    let toggle_menu = if open {
+        Message::View(ViewMessage::CloseMenu)
+    } else {
+        Message::View(ViewMessage::OpenMenu(MenuTarget::Strip))
+    };
+    let bar = mode_strip_with_menu(
         &modes,
         move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
-        // No toggle group: Thirds and Information live in the title bar.
-        &[],
-        |_| Message::View(ViewMessage::ToggleThirds),
+        toggle_menu,
+        open,
+    );
+    let bar =
+        mouse_area(bar).on_right_press(Message::View(ViewMessage::OpenMenu(MenuTarget::Strip)));
+    let bar = popover_above(
+        bar,
+        open.then(|| strip_menu(&model.strip_menu)),
+        Message::View(ViewMessage::CloseMenu),
     );
     container(bar)
         .width(Length::Fill)
@@ -190,6 +211,55 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom)
         .into()
+}
+
+/// The strip's ⋯ menu: every strip tool with its check, or its lock when it is always on, and its
+/// letter, off tools unchecked and still listed; then Customize tools….
+fn strip_menu<'a>(menu: &StripMenu) -> Element<'a, Message> {
+    let mut entries: Vec<MenuEntry<Message>> = vec![MenuEntry::Heading("Mode strip".to_owned())];
+    for tool in &menu.tools {
+        let letter = tool.letter.map(|letter| letter.to_string());
+        let trailing = match (letter, tool.on) {
+            (Some(letter), true) => Some(letter),
+            (Some(letter), false) => Some(format!("{letter} \u{b7} off")),
+            (None, true) => None,
+            (None, false) => Some("off".to_owned()),
+        };
+        let on_press = match &tool.module_id {
+            Some(module) if !tool.locked && menu.enabled => {
+                Some(Message::Modules(ModulesMessage::SetEnabled {
+                    module: module.clone(),
+                    enabled: !tool.on,
+                }))
+            }
+            _ => None,
+        };
+        entries.push(MenuEntry::Item(MenuItem {
+            icon: if tool.locked {
+                Some(Icon::Lock)
+            } else if tool.on {
+                Some(Icon::Check)
+            } else {
+                None
+            },
+            label: tool.title.clone(),
+            trailing,
+            on_press,
+            reason: tool.locked.then(|| format!("{} is always on", tool.title)),
+        }));
+    }
+    entries.push(MenuEntry::Separator);
+    entries.push(MenuEntry::Item(MenuItem {
+        icon: None,
+        label: "Customize tools\u{2026}".to_owned(),
+        trailing: None,
+        on_press: Some(Message::Modules(ModulesMessage::Customize {
+            toolset: Toolset::Tools,
+            module: None,
+        })),
+        reason: None,
+    }));
+    menu_list(entries)
 }
 
 /// The readout floats over the photograph, independent of zoom and the side panels. Text receives

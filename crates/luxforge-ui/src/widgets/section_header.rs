@@ -38,6 +38,10 @@ pub struct SectionHeaderModel {
     /// before the reset. `None` for a section bound to the global layer.
     pub scope: Option<String>,
     pub enabled: bool,
+    /// The person turned the module off but the photo keeps its edit: the title in the secondary
+    /// text, the hint shown expanded too, in the neutral grey, and no reset, status or scope. It
+    /// expands like any band. It is not `unavailable`, which is red and does not expand.
+    pub off: bool,
 }
 
 /// The scope chip's label size: the small caption size, semibold.
@@ -86,7 +90,7 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
     } else {
         Icon::ChevronRight
     };
-    let title_color = if model.unavailable.is_some() {
+    let title_color = if model.unavailable.is_some() || model.off {
         Token::TextSecondary
     } else {
         Token::TextBright
@@ -121,7 +125,7 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
     };
     let trailing: Element<'a, M> = if let Some(reason) = &model.unavailable {
         one_line(reason, Token::Error).into()
-    } else if !model.expanded
+    } else if (!model.expanded || model.off)
         && let Some(hint) = &model.hint
     {
         one_line(hint, Token::TextTertiary).into()
@@ -132,6 +136,7 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
 
     if model.expanded
         && model.unavailable.is_none()
+        && !model.off
         && let Some(status) = &model.status
     {
         header = header.push(
@@ -143,12 +148,13 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
     }
 
     if model.unavailable.is_none()
+        && !model.off
         && let Some(scope) = &model.scope
     {
         header = header.push(scope_chip(scope));
     }
 
-    if model.reset && model.expanded && model.unavailable.is_none() {
+    if model.reset && model.expanded && model.unavailable.is_none() && !model.off {
         header = header.push(header_icon_button(
             &IconButtonModel {
                 icon: Icon::Reset,
@@ -313,8 +319,10 @@ pub fn module_section<'a, M: Clone + 'a>(
     }
 }
 
-/// A section body: rows flush at the section padding, separated only by the row spacing.
-pub(crate) fn section_body<'a, M: 'a>(rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+/// A section body: rows flush at the section padding, separated only by the row spacing. A caller
+/// that draws a band of its own under [`module_section`] (one with a context menu) puts its body
+/// here.
+pub fn section_body<'a, M: 'a>(rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     Column::with_children(rows)
         .spacing(theme::ROW_SPACING)
         .padding(theme::SECTION_PADDING)
@@ -402,6 +410,7 @@ mod tests {
                     status: None,
                     scope: Some("Face".into()),
                     enabled: true,
+                    off: false,
                 },
                 (),
                 (),
