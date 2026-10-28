@@ -168,7 +168,7 @@ fn json_installs_a_module_for_the_next_launch_and_keeps_its_layers_when_it_is_re
     assert_eq!(origin(&mut client).as_deref(), Some("community"));
     let loaded = external(&mut client);
     assert_eq!(loaded["state"], "loaded", "{loaded}");
-    assert_eq!(loaded["program"], json!({"state": "absent"}));
+    assert_eq!(loaded["program"], json!({"state": "none"}));
     let schema = client.call("schema.list", json!({}));
     assert!(schema["methods"]["edit.set-gainlift"].is_object());
     let current = revision(&mut client, &asset);

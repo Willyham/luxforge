@@ -22,12 +22,15 @@ publish.workspace = true
 # `module-check` use it, and this crate's own tests turn it on. It links the host crates
 # `luxforge-wasm` and `luxforge-core`; a module's own build, with no features, links neither.
 [features]
-host = ["dep:luxforge-wasm", "dep:luxforge-core", "dep:wit-component", "dep:wit-parser", "dep:serde_json"]
+host = ["dep:luxforge-wasm", "dep:luxforge-core", "dep:luxforge-gpu-types", "dep:wit-component", "dep:wit-parser", "dep:serde_json"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The engine the host renders with, so the harness and `module-check` run exactly what it runs.
 luxforge-wasm = { path = "../luxforge-wasm", optional = true }
 luxforge-core = { path = "../luxforge-core", optional = true }
+# The host's probe patches, so the harness and `module-check` run a module over the pixels the
+# host probes its GPU program on.
+luxforge-gpu-types = { path = "../luxforge-gpu-types", optional = true }
 # The core module to component step, from the wasm-tools release Wasmtime 49 reads (0.258), so the
 # parser and encoder are the ones Wasmtime already builds.
 wit-component = { version = "=0.258.3", optional = true }

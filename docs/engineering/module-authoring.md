@@ -59,11 +59,7 @@ tools/cargo-cached xtask module-check target/evidence/split-toning.lfmodule [--j
 1. **Package**: the core's reader, with the refusal's code (`content`, `manifest`, `reserved-identity` and the rest).
 2. **Component**: loaded by the module engine as the host loads it, refused if it imports anything or does not export the `adjust` interface. The engine instantiates it on the reference's first call.
 3. **Reference**: `coefficients` for value sets the table gives (the defaults; every field at its least, middle and greatest; each field at each end with the rest at their defaults; three mixed sets), and `apply_row` over the fixed patches for each: every answer accepted, the right length and finite, and the same from a second instance. A failure names the value set and the patch, such as ``value set `defaults`: coefficients refused: the values hold no field `highlight-hue` ``.
-4. **Program**: validated by `naga` under the prelude with a harness that calls `lf_module`, and refused for any name or declaration the contract does not allow.
-5. **GPU**: the program alone, in a compute harness on the local adapter (the first hardware adapter of Vulkan, Metal or DirectX 12), over the same patches and value sets, against the reference by the pointwise class's limits. It is reported, not gated: outside the limits, the command names the cells and says that the host would render through the reference. Without an adapter it says it did not measure.
+4. **Program**: checked by the host's own registration: validated by `naga` under the prelude with a harness that calls `lf_module`, and refused for any name or declaration the contract does not allow.
+5. **GPU**: the program alone, in the host's probe harness on the local adapter (the first hardware adapter of Vulkan, Metal or DirectX 12), over the same patches and value sets, against the reference by the pointwise class's limits. It is reported, not gated: outside the limits, the command names the cells and says that the host would render through the reference. Without an adapter it says it did not measure.
 
-`module-check` reports; it does not qualify a module. The host checks a package again when it is installed and probes its program at first use, on the person's adapter, inside the real renderer.
-
-## Outstanding
-
-`module-check`'s GPU step runs the program alone; the host's probe runs it in the renderer once runtime programs are loaded.
+`module-check` reports; it does not qualify a module. The host checks a package again when it is installed and probes its program at first use on the person's adapter, as this step runs it, keeping the module on its reference until the probe passes.

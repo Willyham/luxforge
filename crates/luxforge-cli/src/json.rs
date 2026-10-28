@@ -93,8 +93,9 @@ fn run() -> Result<(), (String, String)> {
     }
     let catalog = catalog.ok_or_else(|| startup("--catalog is required"))?;
     let paths = Paths::resolve(data_root.as_ref());
-    // The installed external modules under the data root, as the desktop reads them.
-    let installed = luxforge_cli::installed_modules(paths.as_ref(), developer);
+    // The installed external modules under the data root, as the desktop reads them. It draws
+    // nothing on a GPU, so their programs are left unchecked and render through the reference.
+    let installed = luxforge_cli::installed_modules(paths.as_ref(), developer, None);
     let registry = ModuleRegistry::assemble(&RegistryOptions {
         disabled: &[],
         developer,

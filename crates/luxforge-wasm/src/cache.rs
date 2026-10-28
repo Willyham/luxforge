@@ -115,7 +115,7 @@ fn write(component: &Component, path: &Path) -> std::io::Result<()> {
 }
 
 /// A temporary name beside `path`, unique to this process and moment.
-fn temporary(path: &Path) -> PathBuf {
+pub(crate) fn temporary(path: &Path) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
