@@ -27,7 +27,7 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Validate and normalize tag
         id: tag
         env:
@@ -57,7 +57,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
@@ -96,7 +96,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
@@ -173,7 +173,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Linux build prerequisites
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
       - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
@@ -206,7 +206,7 @@ jobs:
           ref: ${{ needs.identity.outputs.revision }}
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts/downloads

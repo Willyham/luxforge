@@ -21,7 +21,7 @@ for photo, evidence and verification changes. Ordinary workspace tests include b
 Install Git and Rust through rustup plus the platform prerequisites in [platforms](platforms.md). Nothing here installs system tools silently.
 
 ```sh
-rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
 cargo xtask doctor
 cargo xtask check
 cargo xtask build --release

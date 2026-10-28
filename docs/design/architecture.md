@@ -6,7 +6,7 @@ One application service, used by the desktop UI and by external clients alike, o
 
 ## Workspace
 
-A Rust 1.94 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries when there is real code to own them; crates and dynamically loaded binaries are separate choices.
+A Rust 1.96 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries when there is real code to own them; crates and dynamically loaded binaries are separate choices.
 
 | Dependency | Used for |
 | --- | --- |
@@ -30,7 +30,7 @@ A Rust 1.94 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries
 | `objc2-core-services` (FSEvents) with `objc2-core-foundation` and `dispatch2`; `rustix`; `windows-sys` | Folder and volume notifications, in `luxforge-watch` |
 | `ring` (Ed25519), `base64`, `memmap2` and `roxmltree` | Update records, signatures and appcasts, in `luxforge-update` |
 | `flate2`, `tar` and `rustix` | The Linux payload updater's archive extraction, writability check and atomic directory exchange, in `luxforge-update` |
-| Wasmtime 47.0.4 with Cranelift and the component model | External adjustment modules' WebAssembly components, behind `luxforge-wasm`, the only crate that names it *(enforced)* |
+| Wasmtime 49.0.4 with Cranelift and the component model | External adjustment modules' WebAssembly components, behind `luxforge-wasm`, the only crate that names it *(enforced)* |
 
 ### Crates
 

@@ -770,7 +770,7 @@ fn private_paths_coordinates_photos_and_secrets_stay_out_of_public_text() {
         "m4-full-2026-10-20/summary.json",
         "https://github.com/luxforge/luxforge/actions/runs/123456789",
         "macOS 14.7.6 (23H626) on Apple M4, full corpus of 24 RAW and JPEG sources",
-        "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+        "rustc 1.96.0 (ac68faa20 2026-05-25)",
         "Apple clang version 15.0.0 (clang-1500.3.9.4)",
         "luxforge-0.1.0-linux-x86_64.tar.gz",
         hex.as_str(),

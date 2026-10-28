@@ -25,10 +25,10 @@ host = ["dep:luxforge-wasm", "dep:luxforge-core", "dep:wit-component", "dep:wit-
 # The engine the host renders with, so the harness and `module-check` run exactly what it runs.
 luxforge-wasm = { path = "../luxforge-wasm", optional = true }
 luxforge-core = { path = "../luxforge-core", optional = true }
-# The core module to component step, from the wasm-tools release Wasmtime 47 reads (0.252), so the
+# The core module to component step, from the wasm-tools release Wasmtime 49 reads (0.258), so the
 # parser and encoder are the ones Wasmtime already builds.
-wit-component = { version = "=0.252.0", optional = true }
-wit-parser = { version = "=0.252.0", optional = true }
+wit-component = { version = "=0.258.3", optional = true }
+wit-parser = { version = "=0.258.3", optional = true }
 # Cargo's JSON build messages, to find the module's `.wasm` artifact.
 serde_json = { workspace = true, optional = true }
 

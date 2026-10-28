@@ -2209,7 +2209,7 @@ fn prune_markers(root: &Path, live: &HashMap<JobId, Live>) {
     if folders.len() <= MAX_MARKERS {
         return;
     }
-    folders.sort_by(|a, b| b.0.cmp(&a.0));
+    folders.sort_by_key(|folder| std::cmp::Reverse(folder.0));
     for (_, folder) in folders.into_iter().skip(MAX_MARKERS) {
         let _ = fs::remove_dir_all(folder);
     }

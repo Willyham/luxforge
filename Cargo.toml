@@ -9,7 +9,7 @@ resolver = "3"
 version = "0.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-rust-version = "1.94"
+rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
@@ -153,12 +153,13 @@ iced_wgpu = { version = "=0.14.0", default-features = false }
 # f16 tensors. No `ndarray`, `tracing` or `copy-dylibs`. Each platform's provider (`coreml`,
 # `directml`) is a feature `luxforge-onnx` adds under its own target.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24", "half"] }
-# The WebAssembly engine external adjustment modules run in, named only by `luxforge-wasm`: 47.0.4,
-# the newest release whose MSRV is the workspace's 1.94. Only what the host uses: Cranelift, the
+# The WebAssembly engine external adjustment modules run in, named only by `luxforge-wasm`: 49.0.4,
+# whose MSRV is the workspace's 1.96 and which carries the fixes for every advisory against earlier
+# releases. Only what the host uses: Cranelift, the
 # runtime and the component model with its bindings macro. No async, fibers, GC, threads, pooling
 # allocator, profiling, debug information, WAT text, parallel compilation or Wasmtime's own code
 # cache: `luxforge-wasm` caches compiled code itself.
-wasmtime = { version = "=47.0.4", default-features = false, features = ["cranelift", "runtime", "component-model", "std"] }
+wasmtime = { version = "=49.0.4", default-features = false, features = ["cranelift", "runtime", "component-model", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

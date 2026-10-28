@@ -41,7 +41,7 @@ Write ordinary unit tests in the module crate against `Adjustment` natively. The
 
 `tools/cargo-cached test -p luxforge-module-sdk` holds the example this way: its source is compiled into the SDK's test natively and its crate built and run as a component.
 
-The pinned toolchain needs the WebAssembly target: `rustup target add wasm32-unknown-unknown --toolchain 1.94.0`.
+The pinned toolchain needs the WebAssembly target: `rustup target add wasm32-unknown-unknown --toolchain 1.96.0`.
 
 ## Packaging and checking
 

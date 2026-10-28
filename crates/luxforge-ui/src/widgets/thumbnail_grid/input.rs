@@ -200,11 +200,11 @@ impl<M> ThumbnailGrid<'_, M> {
                     response.redraw = true;
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if input.drag.take().is_some() {
-                    response.capture = true;
-                    response.redraw = true;
-                }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if input.drag.take().is_some() =>
+            {
+                response.capture = true;
+                response.redraw = true;
             }
             _ => {}
         }

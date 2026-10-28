@@ -337,10 +337,7 @@ pub(crate) fn normalize(report: &Report) -> ([[f32; 256]; 3], u64) {
         return (plotted, 0);
     }
     let scale = max as f64;
-    for (target, source) in plotted
-        .iter_mut()
-        .zip([&report.r, &report.g, &report.b].into_iter())
-    {
+    for (target, source) in plotted.iter_mut().zip([&report.r, &report.g, &report.b]) {
         for (bin, count) in target.iter_mut().zip(source.iter()) {
             *bin = (*count as f64 / scale) as f32;
         }

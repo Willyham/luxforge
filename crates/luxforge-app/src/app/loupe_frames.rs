@@ -953,7 +953,7 @@ impl LoupeFrames {
             })
             .filter_map(|(held, entry)| Some((entry.wanted_at, held, entry.held.as_ref()?.bytes)))
             .collect();
-        candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        candidates.sort_unstable_by_key(|candidate| candidate.0);
         let Some(evicted) = self.usage.evictions(
             incoming,
             replaced,

@@ -29,10 +29,10 @@ luxforge-testkit = { path = "../luxforge-testkit" }
 luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"] }
 # The tests' components: hand-written core modules in WAT, wrapped into components of
 # `wit/adjustment.wit` (and of worlds that break it) by `wit-component`, from the wasm-tools
-# release Wasmtime 47 is built on (0.252), so the tests add no second parser or encoder family.
-wat = "=1.252.0"
-wit-component = "=0.252.0"
-wit-parser = "=0.252.0"
+# release Wasmtime 49 is built on (0.258), so the tests add no second parser or encoder family.
+wat = "=1.258.3"
+wit-component = "=0.258.3"
+wit-parser = "=0.258.3"
 
 # `unsafe` is allowed by name on one function only, beside its `SAFETY:` comment: loading compiled
 # code from the cache (`cache.rs`), which Wasmtime can only do unsafely because the bytes become
