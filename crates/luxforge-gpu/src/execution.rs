@@ -2340,7 +2340,7 @@ fn validate_program(role: mask::Role, program: &GpuProgram) -> Result<(), String
 }
 
 /// Take a future's answer if it is already there; never wait for one.
-fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
+pub(crate) fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
     let mut future = std::pin::pin!(future);
     match future
         .as_mut()
@@ -4069,6 +4069,7 @@ pub use rest::{
 pub use rest::{RestCounts, RestSlot, TickCounted};
 pub mod staged;
 
+pub mod external_program;
 pub mod resample;
 pub mod tiles;
 

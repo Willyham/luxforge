@@ -1,8 +1,10 @@
 //! A layer's compiled unit: the words a module's `coefficients` gave for the layer's values, and
 //! the module whose `apply-row` runs them.
 use crate::Adjustment;
-use luxforge_core::module_package::{AdjustmentUnits, FieldEntry};
-use luxforge_core::{ColorOperation, CompileStage, Error, OperationIdentity, PointwiseColor};
+use luxforge_core::module_package::{AdjustmentUnits, FieldEntry, ProgramState};
+use luxforge_core::{
+    ColorOperation, CompileStage, Error, GpuDescription, OperationIdentity, PointwiseColor,
+};
 use std::sync::Arc;
 
 /// The kind every external unit's identity names; the package hash and the words tell them apart.
@@ -20,6 +22,10 @@ impl AdjustmentUnits for Units {
             module: self.0.clone(),
             words: words.into(),
         })]))
+    }
+
+    fn program_state(&self) -> ProgramState {
+        self.0.program_state()
     }
 }
 
@@ -67,7 +73,24 @@ impl PointwiseColor for Unit {
         )
     }
 
+    /// The module's registered program over the words: enabled once its probe enabled it for
+    /// this many words, and disabled until then, so a plan falls back naming it. None without a
+    /// registered program, so a plan falls back naming the unit ([`Self::describe`]).
+    fn gpu(&self) -> Option<GpuDescription> {
+        let program = self.module.registered()?;
+        Some(GpuDescription::new(
+            program.described(self.words.len()),
+            self.words.to_vec(),
+        ))
+    }
+
+    /// The module and its word count, and that its program was refused when it was.
     fn describe(&self) -> String {
-        format!("{} ({} words)", self.module.id(), self.words.len())
+        let refused = if self.module.program_refused() {
+            "; its program.wgsl was refused at load"
+        } else {
+            ""
+        };
+        format!("{} ({} words{refused})", self.module.id(), self.words.len())
     }
 }

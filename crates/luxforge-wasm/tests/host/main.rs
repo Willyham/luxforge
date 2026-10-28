@@ -2,6 +2,7 @@
 //! imports, traps, overruns its deadline, answers the wrong length or outgrows its memory, and
 //! determinism across runs and compiled-code caches.
 mod components;
+mod program;
 
 use components::{EFFECT, MANIFEST, Variant, native, package, values};
 use luxforge_core::module_package::{ExternalModule, ModuleManifest};

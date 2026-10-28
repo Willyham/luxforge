@@ -2485,6 +2485,7 @@ name = "luxforge-module-sdk"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-gpu-types",
  "luxforge-module-sdk",
  "luxforge-test-macros",
  "luxforge-wasm",
@@ -2638,6 +2639,8 @@ name = "luxforge-wasm"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-gpu",
+ "luxforge-gpu-types",
  "luxforge-test-macros",
  "luxforge-testbase",
  "luxforge-testkit",
@@ -2645,6 +2648,7 @@ dependencies = [
  "sha2",
  "wasmtime",
  "wat",
+ "wgpu",
  "wit-component",
  "wit-parser",
 ]

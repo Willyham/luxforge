@@ -767,6 +767,32 @@ impl TileRunner {
         self.lost.load(Ordering::Acquire)
     }
 
+    /// An external module's registered program compiled over `patches` on the runner's device, for
+    /// its first-use probe ([`super::external_program`]): a few hundred kilobytes, held by the
+    /// probe while it runs and charged to no budget.
+    pub fn program_harness(
+        &self,
+        program: &super::external_program::Registered,
+        patches: &[luxforge_gpu_types::probe::Patch],
+    ) -> Result<super::external_program::Harness, String> {
+        if self.lost() {
+            return Err("the runner's device was lost".into());
+        }
+        super::external_program::Harness::new(&self.device, program, patches)
+    }
+
+    /// `harness`'s program over its patches with `words`, read back. Waits for the device.
+    pub fn run_program(
+        &self,
+        harness: &super::external_program::Harness,
+        words: &[u32],
+    ) -> Result<Vec<Vec<[f32; 3]>>, String> {
+        if self.lost() {
+            return Err("the runner's device was lost".into());
+        }
+        harness.run(&self.device, &self.queue, words)
+    }
+
     pub fn figures(&self) -> TileFigures {
         self.figures
     }

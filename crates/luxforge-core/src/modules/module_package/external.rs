@@ -34,6 +34,11 @@ pub trait AdjustmentUnits: Send + Sync + 'static {
     /// The colour operation these values compile to at the layer's input stage: every field of the
     /// table in the manifest's order. An error refuses the layer and names the module.
     fn compile(&self, values: &[FieldEntry], at: CompileStage) -> Result<ColorOperation, Error>;
+
+    /// What became of the module's GPU program, for `module.status`: none, by default.
+    fn program_state(&self) -> super::ProgramState {
+        super::ProgramState::None
+    }
 }
 
 /// One installed package's module as an engine hands it to the registry assembly
@@ -44,6 +49,8 @@ pub trait AdjustmentUnits: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct ExternalModule {
     module: Arc<dyn ToolModule>,
+    /// The engine's units, when the module loaded: what its program's state is read from.
+    units: Option<Arc<dyn AdjustmentUnits>>,
     unavailable: Option<String>,
 }
 
@@ -54,7 +61,8 @@ impl ExternalModule {
         units: Arc<dyn AdjustmentUnits>,
     ) -> Result<Self, Error> {
         Ok(Self {
-            module: manifest.module(units)?,
+            module: manifest.module(units.clone())?,
+            units: Some(units),
             unavailable: None,
         })
     }
@@ -69,6 +77,7 @@ impl ExternalModule {
         let reason = reason.into();
         Ok(Self {
             module: manifest.module(Arc::new(Unloaded(reason.clone())))?,
+            units: None,
             unavailable: Some(reason),
         })
     }
@@ -81,6 +90,14 @@ impl ExternalModule {
     /// Why the module is registered unavailable, or `None` when it loaded.
     pub fn unavailable_reason(&self) -> Option<&str> {
         self.unavailable.as_deref()
+    }
+
+    /// What became of its GPU program now ([`AdjustmentUnits::program_state`]): none for a module
+    /// that did not load.
+    pub fn program_state(&self) -> super::ProgramState {
+        self.units
+            .as_ref()
+            .map_or(super::ProgramState::None, |units| units.program_state())
     }
 
     pub(crate) fn module(&self) -> &Arc<dyn ToolModule> {

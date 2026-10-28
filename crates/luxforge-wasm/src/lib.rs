@@ -19,19 +19,29 @@
 //! - **A layer** compiles to one unit whose words are the component's `coefficients` for the
 //!   layer's values; the words, with the package hash, are the unit's identity. Its rows call
 //!   `apply-row`, at most [`MAX_ROW_PIXELS`] pixels a call.
+//! - **A GPU program**, when the package carries one and the host draws on a GPU, is registered
+//!   with the host's [`Programs`] and enabled only once a probe at its first use holds it within
+//!   the colour class's limits of the reference ([`program`](mod@program)). Until then, and
+//!   without one, a stack holding the module renders through the reference with the program or
+//!   the unit named.
 //! - **A failure** fails the render, sample or export that met it, with an error naming the module
 //!   and saying what failed (a trap, the deadline, a wrong-length answer), whose `data` holds
 //!   `{"module", "failure"}`; no frame is produced.
 mod cache;
 mod engine;
+pub mod program;
 mod unit;
 
+pub use program::{
+    PROGRAM_ENTRY, Probe, ProbeRun, ProgramLoader, ProgramPixels, Programs, entry_of,
+};
 pub use unit::Unit;
 
 use luxforge_core::Error;
 use luxforge_core::module_package::{
-    AdjustmentUnits, ExternalModule, FieldEntry, FieldValue, ModulePackage,
+    AdjustmentUnits, ExternalModule, FieldEntry, FieldValue, ModulePackage, ProgramState,
 };
+use program::{Program, Registration};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -101,6 +111,7 @@ pub enum Compiled {
 pub struct WasmHost {
     cache: Option<PathBuf>,
     limits: Limits,
+    programs: Option<Arc<Programs>>,
 }
 
 impl WasmHost {
@@ -110,7 +121,15 @@ impl WasmHost {
         Self {
             cache,
             limits: Limits::DEFAULT,
+            programs: None,
         }
+    }
+
+    /// The same host registering each package's GPU program with `programs`, for a host that
+    /// draws on a GPU. Without, a package's program is left unchecked and never drawn.
+    pub fn with_programs(mut self, programs: Arc<Programs>) -> Self {
+        self.programs = Some(programs);
+        self
     }
 
     /// The same host with these limits.
@@ -132,9 +151,7 @@ impl WasmHost {
     /// which a package that read cannot hold, is an error.
     pub fn external(&self, package: &ModulePackage) -> Result<ExternalModule, Error> {
         match self.loaded(package) {
-            Ok(adjustment) => {
-                ExternalModule::loaded(&package.manifest, Arc::new(adjustment).units())
-            }
+            Ok(adjustment) => ExternalModule::loaded(&package.manifest, adjustment.units()),
             Err(reason) => ExternalModule::unavailable(&package.manifest, reason),
         }
     }
@@ -143,7 +160,8 @@ impl WasmHost {
     /// load. The returned module runs its functions directly, as the registry's units do, for a
     /// harness that holds a module to a native implementation.
     pub fn load(&self, package: &ModulePackage) -> Result<Arc<Adjustment>, Error> {
-        self.load_as(&package.manifest.id, &package.hash, &package.component)
+        let id = &package.manifest.id;
+        self.loaded(package).map_err(|reason| refused(id, reason))
     }
 
     /// A component outside a package, loaded as [`load`](Self::load) loads a package's, under the
@@ -151,23 +169,41 @@ impl WasmHost {
     /// tooling, which holds a module crate's component to its native build before packaging it.
     pub fn load_component(&self, id: &str, component: &[u8]) -> Result<Arc<Adjustment>, Error> {
         let hash = format!("sha256:{:x}", Sha256::digest(component));
-        self.load_as(id, &hash, component)
-    }
-
-    fn load_as(&self, id: &str, hash: &str, component: &[u8]) -> Result<Arc<Adjustment>, Error> {
-        self.compile(id, hash, component)
+        self.compile(id, &hash, component, Registration::None)
             .map(Arc::new)
-            .map_err(|reason| {
-                Error::validation(format!("module {id} did not load: {reason}"))
-                    .with_data(serde_json::json!({"module": id, "failure": "load"}))
-            })
+            .map_err(|reason| refused(id, reason))
     }
 
-    fn loaded(&self, package: &ModulePackage) -> Result<Adjustment, String> {
-        self.compile(&package.manifest.id, &package.hash, &package.component)
+    /// `package`'s component loaded and its program registered, or why the component did not
+    /// load. A program the loader refuses does not refuse the module, which renders through the
+    /// reference ([`ProgramState::Refused`]).
+    fn loaded(&self, package: &ModulePackage) -> Result<Arc<Adjustment>, String> {
+        let program = match (&package.program, &self.programs) {
+            (None, _) => Registration::None,
+            (Some(_), None) => Registration::Unchecked,
+            (Some(source), Some(programs)) => {
+                programs.register(&package.hash, &package.manifest, source)
+            }
+        };
+        let adjustment = Arc::new(self.compile(
+            &package.manifest.id,
+            &package.hash,
+            &package.component,
+            program,
+        )?);
+        if let Some(programs) = &self.programs {
+            programs.add(&adjustment);
+        }
+        Ok(adjustment)
     }
 
-    fn compile(&self, id: &str, hash: &str, bytes: &[u8]) -> Result<Adjustment, String> {
+    fn compile(
+        &self,
+        id: &str,
+        hash: &str,
+        bytes: &[u8],
+        program: Registration,
+    ) -> Result<Adjustment, String> {
         let engine = engine::engine()?;
         let (component, compiled) = cache::component(engine, self.cache.as_deref(), hash, bytes)?;
         let imports: Vec<String> = component
@@ -201,8 +237,15 @@ impl WasmHost {
             engine,
             pre,
             idle: Mutex::new(Vec::new()),
+            program,
         })
     }
+}
+
+/// The validation error of a module whose component did not load, for `reason`.
+fn refused(id: &str, reason: String) -> Error {
+    Error::validation(format!("module {id} did not load: {reason}"))
+        .with_data(serde_json::json!({"module": id, "failure": "load"}))
 }
 
 /// A store's own state: its memory and instance limits.
@@ -227,6 +270,8 @@ pub struct Adjustment {
     engine: &'static Engine,
     pre: bindings::AdjustmentPre<State>,
     idle: Mutex<Vec<Worker>>,
+    /// Its GPU program, as the host registered it.
+    program: Registration,
 }
 
 impl std::fmt::Debug for Adjustment {
@@ -248,6 +293,24 @@ impl Adjustment {
     /// Where its compiled code came from.
     pub fn compiled(&self) -> Compiled {
         self.compiled
+    }
+
+    /// What became of its GPU program now.
+    pub fn program_state(&self) -> ProgramState {
+        self.program.state()
+    }
+
+    /// Its registered GPU program, when it has one.
+    pub(crate) fn registered(&self) -> Option<&Program> {
+        match &self.program {
+            Registration::Registered(program) => Some(program),
+            _ => None,
+        }
+    }
+
+    /// Whether its package's program was refused at load.
+    pub(crate) fn program_refused(&self) -> bool {
+        matches!(self.program, Registration::Refused(_))
     }
 
     /// This module as the units of its manifest's module

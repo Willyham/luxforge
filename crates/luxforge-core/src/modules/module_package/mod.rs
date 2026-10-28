@@ -17,11 +17,15 @@
 mod archive;
 mod external;
 mod manifest;
+mod program;
 #[cfg(test)]
 mod tests;
 
 pub use external::{AdjustmentUnits, ExternalModule, FieldEntry, FieldValue};
 pub use manifest::{ManifestEffect, ModuleManifest};
+pub use program::{
+    COLOUR_LIMITS, ProbeDifference, ProbeLimits, ProbeValues, ProgramState, probe_values,
+};
 
 use crate::Error;
 use sha2::{Digest, Sha256};

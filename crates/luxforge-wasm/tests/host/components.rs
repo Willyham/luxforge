@@ -240,6 +240,39 @@ pub fn package(variant: Variant) -> ModulePackage {
     }
 }
 
+/// The valid component's package carrying `program` as its `program.wgsl`. The program is part of
+/// the package, so the hash covers it too: a package of another program is another package.
+pub fn package_with_program(program: &str) -> ModulePackage {
+    let mut package = package(Variant::Valid);
+    package.hash = format!(
+        "sha256:{:x}",
+        Sha256::digest([package.component.as_slice(), program.as_bytes()].concat())
+    );
+    package.program = Some(program.to_owned());
+    package
+}
+
+/// The valid component's arithmetic as a GPU program of the colour convention, the words
+/// `[gain, lift]`.
+pub const PROGRAM: &str = "\
+const lf_module_ramp: f32 = 0.0001;
+
+fn lf_module(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
+    let gain = lf_f32(words);
+    let lift = lf_f32(words + 1u);
+    return vec3<f32>(
+        rgb.x * gain + lift + pos.x * lf_module_ramp,
+        rgb.y * gain + lift,
+        rgb.z * gain + lift + pos.y * 0.0005,
+    );
+}
+";
+
+/// [`PROGRAM`] with a deliberate error: green lifted by a further 0.05.
+pub fn wrong_program() -> String {
+    PROGRAM.replace("rgb.y * gain + lift,", "rgb.y * gain + lift + 0.05,")
+}
+
 /// Every field at these values, in the manifest's order.
 pub fn values(gain: f64, lift: f64) -> Vec<FieldEntry> {
     vec![
