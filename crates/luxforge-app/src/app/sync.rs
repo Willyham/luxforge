@@ -295,7 +295,8 @@ impl Editor {
                             Task::none()
                         };
                         let agents = self.agents_followed(sync.sessions);
-                        // Settings › Modules follows another client's layout change.
+                        // Another client's layout change, or a gap, reads the layout again: the
+                        // workspace's, and an open Settings › Modules tab's.
                         let layout = self.module_layout_changed_elsewhere(sync.module_layout);
                         let flags = Task::batch([flags, updates, agents, layout]);
                         self.develop_photos_moved(&sync.moved);
@@ -311,22 +312,14 @@ impl Editor {
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }
             }
+            #[cfg(test)]
             SyncMessage::ModulesLoaded(result) => {
-                self.modules_ready = true;
-                match result {
-                    Ok(modules) => {
-                        self.controls.fields = Fields::seeded(&modules);
-                        self.event("modules_loaded", || module_summary(&modules));
-                        self.modules = modules;
-                        // A photograph that opened before discovery answered already has its
-                        // recipe rows: seed the new fields from them.
-                        self.seed_values();
-                    }
-                    Err(error) => {
-                        self.status.text = format!("Tool discovery failed: {error}");
-                        self.event("modules_failed", || json!({ "message": self.status.text }));
-                    }
+                // Descriptors handed in without a listing: every module on, placed by the core's
+                // rule, in registry order.
+                if let Ok(modules) = &result {
+                    self.layout.adopt_descriptors(modules);
                 }
+                self.modules_loaded(result);
             }
         }
         Task::none()
@@ -493,6 +486,26 @@ impl Editor {
     /// events, so the sync is asked for once: the poll reads that event like another client's.
     pub(crate) fn resync(&mut self) {
         self.sync.poll.offer(());
+    }
+
+    /// Discovery answered: the descriptors every tool control is generated from, or why there are
+    /// none. The layout they are drawn in is adopted before this, by the caller.
+    pub(crate) fn modules_loaded(&mut self, result: Result<Vec<ModuleDescriptor>, String>) {
+        self.modules_ready = true;
+        match result {
+            Ok(modules) => {
+                self.controls.fields = Fields::seeded(&modules);
+                self.event("modules_loaded", || module_summary(&modules));
+                self.modules = modules;
+                // A photograph that opened before discovery answered already has its recipe rows:
+                // seed the new fields from them.
+                self.seed_values();
+            }
+            Err(error) => {
+                self.status.text = format!("Tool discovery failed: {error}");
+                self.event("modules_failed", || json!({ "message": self.status.text }));
+            }
+        }
     }
 
     /// This desktop's own request has read its change back onto the screen: the next poll reads

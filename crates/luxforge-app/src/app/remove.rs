@@ -328,7 +328,7 @@ impl Editor {
     /// The fill module's tiers as its status last listed them, those the desktop offers.
     fn fill_tiers(&self) -> Option<(String, Vec<FillTier>)> {
         let flags = self.settings.flags.as_ref();
-        let module = fill_module(&self.modules, flags)?;
+        let module = fill_module(&self.modules, flags, &self.layout)?;
         let tiers = self
             .capabilities
             .module(&module.id)
@@ -347,7 +347,8 @@ impl Editor {
             self.remove.object = false;
             self.clear_other_kind();
         }
-        if self.remove.chosen && fill_module(&self.modules, self.settings.flags.as_ref()).is_none()
+        if self.remove.chosen
+            && fill_module(&self.modules, self.settings.flags.as_ref(), &self.layout).is_none()
         {
             self.remove.chosen = false;
             self.remove_reads.painting = None;
@@ -372,7 +373,7 @@ impl Editor {
     pub(crate) fn remove_active(&self) -> bool {
         self.remove.chosen
             && self.corrections_active()
-            && fill_module(&self.modules, self.settings.flags.as_ref()).is_some()
+            && fill_module(&self.modules, self.settings.flags.as_ref(), &self.layout).is_some()
     }
 
     /// Why the photograph on screen cannot be edited: a generation this desktop started is running
@@ -525,7 +526,7 @@ impl Editor {
     /// Replace's add-on while a prompt asks for it.
     fn remove_setup_action(&self) -> Option<crate::state::fill_setup::SetupAction> {
         let flags = self.settings.flags.as_ref();
-        let module = fill_module(&self.modules, flags)?;
+        let module = fill_module(&self.modules, flags, &self.layout)?;
         let setup =
             crate::state::fill_setup::derive(module, self.capabilities.module(&module.id), flags)?;
         let line = if setup.main.installed {
@@ -571,7 +572,7 @@ impl Editor {
 
     /// Read the fill module's status, for its tiers, unless a read is already out.
     pub(crate) fn remove_refresh_tiers(&mut self) -> Task<Message> {
-        let Some(module) = fill_module(&self.modules, self.settings.flags.as_ref())
+        let Some(module) = fill_module(&self.modules, self.settings.flags.as_ref(), &self.layout)
             .map(|module| module.id.clone())
         else {
             return Task::none();
@@ -587,7 +588,8 @@ impl Editor {
         match message {
             RemoveMessage::Choose | RemoveMessage::ChooseObject => {
                 // No fill task is offered, so there is no Remove to choose.
-                if fill_module(&self.modules, self.settings.flags.as_ref()).is_none() {
+                if fill_module(&self.modules, self.settings.flags.as_ref(), &self.layout).is_none()
+                {
                     return Task::none();
                 }
                 self.view_state.menu = None;
@@ -1370,7 +1372,7 @@ impl Editor {
         // The fill module's status read, which lists the tiers and the setups the Corrections
         // band marks, is Remove's too.
         let reading_tiers = self.corrections_active()
-            && fill_module(&self.modules, self.settings.flags.as_ref())
+            && fill_module(&self.modules, self.settings.flags.as_ref(), &self.layout)
                 .is_some_and(|module| self.capabilities.module(&module.id).pending > 0);
         if self.remove.pending > 0
             || self.remove.starting.is_some()
@@ -1451,9 +1453,13 @@ impl Editor {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let mut tasks = vec![editor.follow_object_tool()];
     let active = editor.remove_active();
-    let fill = fill_module(&editor.modules, editor.settings.flags.as_ref())
-        .map(|module| module.id.clone())
-        .filter(|_| editor.corrections_active());
+    let fill = fill_module(
+        &editor.modules,
+        editor.settings.flags.as_ref(),
+        &editor.layout,
+    )
+    .map(|module| module.id.clone())
+    .filter(|_| editor.corrections_active());
     if let Some(fill) = &fill
         && !editor.remove_reads.asked_setups
     {

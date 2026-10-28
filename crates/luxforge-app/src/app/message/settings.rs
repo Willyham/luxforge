@@ -14,9 +14,8 @@ pub(crate) enum SettingsMessage {
     /// Open the sheet at a tab and read the preferences and the flags.
     Open(SettingsTab),
     /// Open the sheet at Modules, at one module's home row or one group's first row when given:
-    /// the one route in for Customize panel…, Customize tools… and the off-modules footer. Until
-    /// the workspace's Customize items are wired to it, only tests send it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// the one route in for Customize panel…, Customize tools…, the off-modules footer and the
+    /// palette's Customize entries.
     OpenModules(Option<ModulesFocus>),
     Close,
     /// Cmd+, or Ctrl+,: open the sheet, or close it when it is open.

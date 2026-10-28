@@ -1155,7 +1155,9 @@ fn every_generated_action_control_matches_its_declared_schema() {
     let (mut editor, catalog) = opened_with_modules(modules.clone(), 1);
 
     let mut checked = 0usize;
-    for (_, _, action) in tools::palette_entries(&modules, editor.developer, None, None) {
+    for (_, _, action) in
+        tools::palette_entries(&modules, editor.developer, None, None, &editor.layout)
+    {
         let PaletteAction::Run { action, preset } = action else {
             continue;
         };

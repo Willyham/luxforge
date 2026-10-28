@@ -172,7 +172,6 @@ pub(crate) struct RowKey {
 /// Where Settings opens Modules: at one module's home row, from a band's Customize panel… or a
 /// palette entry, or at one group, from the strip's Customize tools….
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum ModulesFocus {
     Module(String),
     Toolset(Toolset),

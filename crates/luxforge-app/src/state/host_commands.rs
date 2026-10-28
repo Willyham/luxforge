@@ -5,7 +5,7 @@
 //! second list of them exists. A module's own chords are its actions' declared `shortcut`s, which
 //! [`action_shortcuts`] collects; the chords the host keeps are `luxforge_core::HOST_CHORDS`, which
 //! registration holds every module to.
-use crate::state::copy_settings::CopyModel;
+use crate::state::{copy_settings::CopyModel, module_layout::EffectiveLayout};
 use luxforge_core::{Chord, ModuleDescriptor};
 
 /// One host command a chord and the palette both reach.
@@ -128,12 +128,17 @@ pub(crate) fn glyphs(chord: Chord) -> String {
     written
 }
 
-/// Every chord a registered module declares for one of its actions, with the action it runs. The
-/// action answers for itself when it cannot run, as its control does, so a module that does not
-/// apply or is unavailable keeps its chord and the chord shows that action's refusal.
-pub(crate) fn action_shortcuts(modules: &[ModuleDescriptor]) -> Vec<(Chord, String)> {
+/// Every chord a registered module the person has on declares for one of its actions, with the
+/// action it runs. The action answers for itself when it cannot run, as its control does, so a
+/// module that does not apply or is unavailable keeps its chord and the chord shows that action's
+/// refusal; a module that is off offers none ([`EffectiveLayout`]).
+pub(crate) fn action_shortcuts(
+    modules: &[ModuleDescriptor],
+    layout: &EffectiveLayout,
+) -> Vec<(Chord, String)> {
     modules
         .iter()
+        .filter(|module| layout.enabled(&module.id))
         .flat_map(|module| &module.actions)
         .filter_map(|action| Some((action.shortcut?, action.id.clone())))
         .collect()
@@ -180,7 +185,10 @@ mod tests {
     #[test]
     fn module_actions_declare_their_chords() {
         assert_eq!(
-            action_shortcuts(&crate::state::testing::descriptors()),
+            action_shortcuts(
+                &crate::state::testing::descriptors(),
+                &EffectiveLayout::default()
+            ),
             [(Chord::command('U'), "auto-tone".to_owned())]
         );
     }

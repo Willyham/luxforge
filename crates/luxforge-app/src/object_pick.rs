@@ -86,11 +86,13 @@ pub(crate) fn pick_offered(modules: &[ModuleDescriptor], flags: Option<&FlagList
 pub(crate) fn select_module<'a>(
     modules: &'a [ModuleDescriptor],
     flags: Option<&FlagList>,
+    layout: &crate::state::module_layout::EffectiveLayout,
 ) -> Option<&'a ModuleDescriptor> {
     if !pick_offered(modules, flags) {
         return None;
     }
-    modules.iter().filter(|m| m.is_available()).find(|module| {
+    let offered = |module: &&ModuleDescriptor| module.is_available() && layout.enabled(&module.id);
+    modules.iter().filter(offered).find(|module| {
         module
             .task(SELECT_TASK)
             .is_some_and(|task| crate::state::settings::task_offered(flags, task))

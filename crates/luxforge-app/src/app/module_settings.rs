@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 impl Editor {
     /// One Modules tab message.
-    pub(super) fn modules_update(&mut self, message: ModulesMessage) -> Task<Message> {
+    pub(super) fn modules_tab_update(&mut self, message: ModulesMessage) -> Task<Message> {
         let tab = &mut self.settings.modules;
         match message {
             ModulesMessage::Read(result) => {
@@ -231,10 +231,12 @@ impl Editor {
         let read = match result {
             Ok((layout, request)) => {
                 if let Some(read) = &mut self.settings.modules.read {
-                    read.layout = layout;
+                    read.layout = layout.clone();
                 }
+                // The event sync skips this request's event, so the workspace adopts the answer
+                // here: the panel, the strip and the palette follow the tab's change.
                 self.read_back(request);
-                Task::none()
+                self.adopt_layout(layout, "written")
             }
             Err(reason) => {
                 // The write may have landed before its answer was lost: the poll reads its event
@@ -265,13 +267,25 @@ impl Editor {
         Task::batch([read, self.write_layout()])
     }
 
-    /// Another client changed the module layout: an open Modules tab reads it again. A closed one
-    /// reads it as it opens.
+    /// Another client changed the module layout, or events were missed: the workspace reads it
+    /// again, and so does an open Modules tab. A closed one reads it as it opens.
     pub(crate) fn module_layout_changed_elsewhere(&mut self, changed: bool) -> Task<Message> {
-        if changed && self.settings.open == Some(SettingsTab::Modules) {
+        if !changed {
+            return Task::none();
+        }
+        let tab = if self.settings.open == Some(SettingsTab::Modules) {
             self.read_modules_tab()
         } else {
             Task::none()
+        };
+        Task::batch([self.read_layout(), tab])
+    }
+
+    /// The workspace's own layout write answered: the tab's last read adopts it, as the event
+    /// sync skips the write's event.
+    pub(crate) fn modules_tab_follow(&mut self, layout: &LayoutView) {
+        if let Some(read) = &mut self.settings.modules.read {
+            read.layout = layout.clone();
         }
     }
 
