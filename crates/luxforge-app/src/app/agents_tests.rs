@@ -72,6 +72,7 @@ fn agents_the_tab_sits_after_models_and_the_palette_opens_it() {
         [
             SettingsTab::General,
             SettingsTab::Appearance,
+            SettingsTab::Modules,
             SettingsTab::Models,
             SettingsTab::Agents,
             SettingsTab::Experiments,

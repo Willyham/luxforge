@@ -19,6 +19,7 @@ pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod masks;
 pub(crate) mod models;
+pub(crate) mod module_settings;
 pub(crate) mod move_to_applications;
 pub(crate) mod number;
 pub(crate) mod palette;

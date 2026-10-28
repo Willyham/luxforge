@@ -364,6 +364,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         usage: false,
         updates: false,
         sessions: false,
+        module_layout: false,
         own: Vec::new(),
         moved: Default::default(),
     };
