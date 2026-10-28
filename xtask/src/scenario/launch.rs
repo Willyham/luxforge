@@ -210,6 +210,8 @@ pub struct Launch {
     usage_receiver: Option<String>,
     /// An earlier evidence run's configuration directory, carried into this one.
     evidence_config: Option<PathBuf>,
+    /// An earlier evidence run's data directory, carried into this one.
+    evidence_data: Option<PathBuf>,
     /// A catalog the evidence run opens as its remembered one, and the unsupported-catalog
     /// sheet's choice.
     evidence_catalog: Option<(PathBuf, String)>,
@@ -252,6 +254,7 @@ impl Launch {
             endpoint: None,
             usage_receiver: None,
             evidence_config: None,
+            evidence_data: None,
             evidence_catalog: None,
             move_question: false,
             introduction: false,
@@ -365,6 +368,13 @@ impl Launch {
     /// one's, so what it stored is what this launch reads. Passed beside `--evidence-dir`.
     pub fn evidence_config(mut self, dir: &Path) -> Self {
         self.evidence_config = Some(dir.into());
+        self
+    }
+
+    /// Keep an earlier evidence launch's data directory (`<its evidence>/host/data`) as this one's,
+    /// so the modules it installed are the ones this launch loads. Passed beside `--evidence-dir`.
+    pub fn evidence_data(mut self, dir: &Path) -> Self {
+        self.evidence_data = Some(dir.into());
         self
     }
 
@@ -539,6 +549,9 @@ impl Launch {
                     }
                     if let Some(dir) = &self.evidence_config {
                         args.extend(["--evidence-config".into(), dir.into()]);
+                    }
+                    if let Some(dir) = &self.evidence_data {
+                        args.extend(["--evidence-data".into(), dir.into()]);
                     }
                     if let Some((catalog, choice)) = &self.evidence_catalog {
                         args.extend([

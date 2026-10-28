@@ -473,7 +473,7 @@ pub(crate) fn step_begun(evidence: &Path, number: u64) -> bool {
 }
 
 /// The open photograph's asset, from the newest frame state the launch has written.
-fn open_asset(evidence: &Path) -> Result<String> {
+pub(crate) fn open_asset(evidence: &Path) -> Result<String> {
     let newest = fs::read_dir(evidence)?
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().to_string_lossy().into_owned();

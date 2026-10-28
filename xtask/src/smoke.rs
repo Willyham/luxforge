@@ -8,9 +8,10 @@ use crate::{
     controls_smoke as controls, corrections_raw_smoke as raw_corrections,
     corrections_smoke as corrections, crop_smoke as crop, curve_smoke as curve,
     detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
-    filmstrip_smoke as filmstrip, gallery_smoke as gallery, generative_smoke as generative,
-    gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
-    grading_smoke as grading, hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
+    external_module_smoke as external_module, filmstrip_smoke as filmstrip,
+    gallery_smoke as gallery, generative_smoke as generative, gpu_preview_smoke as gpu_preview,
+    gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
+    hdr_merge_smoke as hdr_merge, hdr_merge_view_smoke as hdr_merge_view,
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
@@ -1196,6 +1197,18 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: None,
         own: None,
+    },
+    Scenario {
+        name: external_module::SCENARIO,
+        about: "The Split toning example built by module-package and installed from an empty data root through Install module… and its review sheet, then over relaunches: listed by module.list and schema.list, edited by its slider, edit.set-split-toning and an MCP client's typed tool, carried by a preset and a copy-settings paste, its GPU program probed and enabled with the GPU export within the colour class of the reference export, turned off with the export unchanged, uninstalled (the layer kept, the band Not installed, export refused) and reinstalled with both exports byte for byte the same; each modules step's frame correlated with the owner's module.package.list",
+        // Its four launches share a data root, a configuration and a catalog, and an MCP client
+        // runs in this process beside the second.
+        launches: &[],
+        verify: external_module::verify,
+        source: Source::Fixtures(&[external_module::PHOTO, external_module::OTHER]),
+        window: Some(PANELLED),
+        note: Some(external_module::NOTE),
+        own: Some(external_module::run),
     },
     Scenario {
         name: mcp::SCENARIO,

@@ -235,7 +235,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
 
 /// Which MCP revision a client speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Era {
+pub(crate) enum Era {
     Modern,
     Legacy,
 }
@@ -265,7 +265,7 @@ fn keep(transcript: &Transcript, started: Instant, direction: &str, line: &str) 
 
 /// One `luxforge-mcp` as this process runs it, as an MCP client starts a stdio server: killed if
 /// the run ends before it is finished.
-struct Agent {
+pub(crate) struct Agent {
     era: Era,
     child: Child,
     stdin: Option<ChildStdin>,
@@ -290,7 +290,13 @@ impl Drop for Agent {
 }
 
 impl Agent {
-    fn start(mcp: &Path, catalog: &Path, era: Era, args: &[&str], out: &Path) -> Result<Self> {
+    pub(crate) fn start(
+        mcp: &Path,
+        catalog: &Path,
+        era: Era,
+        args: &[&str],
+        out: &Path,
+    ) -> Result<Self> {
         let name = era.name();
         let mut child = launching::mcp_command(mcp, catalog)
             .args(args)
@@ -362,7 +368,7 @@ impl Agent {
         Ok(id)
     }
 
-    fn notify(&mut self, method: &str) -> Result {
+    pub(crate) fn notify(&mut self, method: &str) -> Result {
         self.write(&json!({"jsonrpc": "2.0", "method": method, "params": {}}))
     }
 
@@ -396,7 +402,7 @@ impl Agent {
     }
 
     /// Send a request and read its result, which must be one.
-    fn ask(&mut self, name: &str, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn ask(&mut self, name: &str, method: &str, params: Value) -> Result<Value> {
         let id = self.send(name, method, params)?;
         let answer = self.answer(&id)?;
         answer.get("result").cloned().ok_or_else(|| {
@@ -409,7 +415,7 @@ impl Agent {
     }
 
     /// Call `tool` and answer its successful result's structured content.
-    fn call(&mut self, name: &str, tool: &str, arguments: Value) -> Result<Value> {
+    pub(crate) fn call(&mut self, name: &str, tool: &str, arguments: Value) -> Result<Value> {
         let result = self.ask(
             name,
             "tools/call",
@@ -427,7 +433,7 @@ impl Agent {
 
     /// Call `method` through this client's profile: `luxforge_call` in the compact one, the
     /// method's own tool in the typed one.
-    fn method(&mut self, name: &str, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn method(&mut self, name: &str, method: &str, params: Value) -> Result<Value> {
         match self.era {
             Era::Modern => self.call(
                 name,
@@ -475,7 +481,7 @@ impl Agent {
     }
 
     /// Close its input, as a client that quits does, and wait for it to exit: its record.
-    fn finish(mut self, out: &Path) -> Result<Value> {
+    pub(crate) fn finish(mut self, out: &Path) -> Result<Value> {
         drop(self.stdin.take());
         let started = Instant::now();
         let status = loop {

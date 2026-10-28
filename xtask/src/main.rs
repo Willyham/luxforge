@@ -26,6 +26,7 @@ mod editor_acceptance;
 mod editor_latency;
 mod editor_performance;
 mod export_smoke;
+mod external_module_smoke;
 mod filmstrip_smoke;
 mod fixtures;
 mod gallery_smoke;
