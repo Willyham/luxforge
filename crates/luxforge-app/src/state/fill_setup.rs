@@ -550,7 +550,11 @@ pub(crate) fn derive(
     state: &ModuleCapabilities,
     flags: Option<&FlagList>,
 ) -> Option<SetupModel> {
-    fill_module(std::slice::from_ref(module), flags)?;
+    fill_module(
+        std::slice::from_ref(module),
+        flags,
+        &crate::state::module_layout::EffectiveLayout::default(),
+    )?;
     let main = group(module, state, REMOVE).unwrap_or_else(|| {
         let checking = format!("Checking {}\u{2026}", module.title);
         said(REMOVE, None, checking.clone(), checking)

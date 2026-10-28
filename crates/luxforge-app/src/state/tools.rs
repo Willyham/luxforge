@@ -7,6 +7,7 @@ use crate::{
         capabilities::{self, CapabilityModel, TaskControl},
         control_tree::{Walk, walk},
         fields::{action_params, channel_text, field_id, labelled, parse_field, undeclared_label},
+        module_layout::{self, EffectiveLayout},
         number::NumberSpec,
         palette::PaletteAction,
         presets::{PresetsModel, presets_model},
@@ -16,7 +17,7 @@ use luxforge_core::{
     ActionDescriptor, ActionStyle, AssetId, CanvasInteraction, ChoiceStyle, ColorStyle, Control,
     CropPayload, CropStage, CurveBackground, EditorState, EffectStage, EntryId, LayerDescription,
     MaskId, ModuleDescriptor, NumberStyle, ParameterDescriptor, ParameterKind, RailDecoration,
-    RecipeDescription, ResetAction, SourceTag,
+    RecipeDescription, ResetAction, SourceTag, Toolset,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -235,6 +236,10 @@ pub(crate) struct ToolsModel {
     /// The notice pinned to the panel's bottom, under whatever scrolls: a generation in flight
     /// ([`crate::state::remove::RemovePanel::in_flight_notice`]).
     pub(crate) notice: Option<String>,
+    /// The line after the last section naming the modules the person turned off, with its
+    /// Customize…; `None` when every module is on or each that is off draws its kept band
+    /// ([`module_layout::off_footer`]).
+    pub(crate) off_footer: Option<String>,
 }
 
 /// A declared action with fixed parameters, as a header or group reset button raises it.
@@ -306,6 +311,12 @@ pub(crate) struct SectionModel {
     pub(crate) disabled_reason: Option<String>,
     /// What the palette's last reveal marks here, on the revealed section only.
     pub(crate) mark: Option<SectionMark>,
+    /// The person turned this module off, but the displayed photo has a non-neutral layer of it:
+    /// the band is drawn at its place, marked Off · edit kept, and lists these values read-only
+    /// with Enable *Title* when expanded. `None` for every module that is on.
+    pub(crate) kept: Option<Vec<(String, String)>>,
+    /// The band's own menu, while it is the one open.
+    pub(crate) menu: Option<module_layout::BandMenu>,
 }
 
 impl SectionModel {
@@ -927,13 +938,17 @@ pub(crate) struct CropSectionModel {
     pub(crate) enabled: bool,
 }
 
-/// The tools panel for these inputs: one section per registered module that applies and draws one.
+/// The tools panel for these inputs: one section per registered module that applies and draws one,
+/// in the person's order ([`EffectiveLayout`]). A module the person turned off draws nothing unless
+/// the displayed photo has a non-neutral layer of it, which it draws as its kept band; the footer
+/// names the rest.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
     let status = match (inputs.modules.is_empty(), inputs.modules_ready) {
         (true, false) => ToolsStatus::Loading,
         (true, true) => ToolsStatus::Empty,
         (false, _) => ToolsStatus::Ready,
     };
+    let layout = inputs.layout;
     let mut sections = Vec::new();
     let mut developer = Vec::new();
     // Mask mode replaces the module sections with the Masks panel and the adjustments that can
@@ -954,7 +969,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if !applies(module, inputs.document.state.as_ref()) {
             continue;
         }
-        if !draws_section(module, inputs.settings.flags.as_ref()) {
+        if !draws_section(module, inputs.settings.flags.as_ref(), layout) {
             continue;
         }
         if module.developer && !inputs.developer {
@@ -964,19 +979,91 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if crate::state::corrections::is_brush_mode(inputs.modules, &module.id) {
             continue;
         }
+        // An off module's edit is never hidden: a non-neutral layer of it brings its band back,
+        // read-only. An unavailable one keeps the delivered red band, which says more.
+        let drawn = if layout.enabled(&module.id) || !module.is_available() {
+            section(module, inputs)
+        } else {
+            let rows = edited_rows(module, inputs);
+            if rows.is_empty() {
+                continue;
+            }
+            kept_section(module, module_layout::kept_values(module, &rows), inputs)
+        };
         let target = if module.developer {
             &mut developer
         } else {
             &mut sections
         };
-        target.push(section(module, inputs));
+        target.push(drawn);
     }
+    layout.sort(Toolset::Adjustments, &mut sections, |section| {
+        &section.module_id
+    });
+    layout.sort(Toolset::Adjustments, &mut developer, |section| {
+        &section.module_id
+    });
+    if let Some(MenuTarget::Band(open)) = &inputs.view_state.menu {
+        for group in [&mut sections, &mut developer] {
+            let shown: Vec<String> = group
+                .iter()
+                .map(|section| section.module_id.clone())
+                .collect();
+            let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+            if let Some(section) = group.iter_mut().find(|section| &section.module_id == open)
+                && let Some(module) = module_of(inputs.modules, open)
+            {
+                section.menu = Some(module_layout::band_menu(layout, module, &shown));
+            }
+        }
+    }
+    // The footer names every module that is off and draws no band, whatever its home, so turning
+    // something off never makes it vanish without a trace.
+    let off_footer = (!correcting && !masking)
+        .then(|| {
+            let kept: Vec<&str> = sections
+                .iter()
+                .chain(&developer)
+                .filter(|section| section.kept.is_some())
+                .map(|section| section.module_id.as_str())
+                .collect();
+            let titles: Vec<&str> = layout
+                .off(inputs.modules)
+                .filter(|module| !module.developer || inputs.developer)
+                .filter(|module| !kept.contains(&module.id.as_str()))
+                .map(|module| module.title.as_str())
+                .collect();
+            module_layout::off_footer(&titles)
+        })
+        .flatten();
     ToolsModel {
         sections,
         developer,
         status,
         menu: inputs.view_state.menu.clone(),
         notice: inputs.remove.in_flight_notice(),
+        off_footer,
+    }
+}
+
+/// The band of a module the person turned off whose layer the displayed photo keeps: at its place,
+/// collapsed until expanded, its title in the secondary text with the accent dot and Off · edit
+/// kept, and expanded, its `values` read-only and Enable *Title*. It has no controls, reset or
+/// capability block.
+fn kept_section(
+    module: &ModuleDescriptor,
+    values: Vec<(String, String)>,
+    inputs: &Inputs<'_>,
+) -> SectionModel {
+    SectionModel {
+        module_id: module.id.clone(),
+        title: module.title.clone(),
+        hint: Some(module_layout::KEPT_HINT.to_owned()),
+        expanded: inputs.expanded.get(&module.id).copied().unwrap_or(false),
+        active: true,
+        enabled: true,
+        kept: Some(values),
+        ..SectionModel::default()
     }
 }
 
@@ -1080,6 +1167,8 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                 Some((_, key)) => SectionMark::Control(key.clone()),
                 None => SectionMark::Section,
             }),
+        kept: None,
+        menu: None,
     }
 }
 
@@ -1165,26 +1254,22 @@ pub(crate) fn controls_of<'a>(
     }
 }
 
-/// Whether a module has anything of its own to draw: controls, a capability block, or the host's
-/// crop-frame editor its canvas declares. A module with none — the RAW development, whose controls
-/// are Basic's variants, Corrections, whose band is its own mode's, or AI editing — has no
-/// section. A fill module's models and their setup belong to the Corrections band's Remove group,
-/// where they are used, so they draw no capability block here, flag on or off; its settings would.
+/// Whether a module draws a tools-panel section: it has an `adjustments` placement, as
+/// `module.list` answers ([`EffectiveLayout::placed`]), and something under that placement is
+/// offered in this run. A module whose only content is a capability block of resources and tasks
+/// behind experiment flags that are off draws none. A module with no such placement — the RAW
+/// development, whose controls are Basic's variants, Corrections, whose band is its own mode's, or
+/// AI editing, whose models belong to the Corrections band — has no section.
 pub(crate) fn draws_section(
     module: &ModuleDescriptor,
     flags: Option<&luxforge_core::flags::FlagList>,
+    layout: &EffectiveLayout,
 ) -> bool {
-    let fill = module
-        .tasks
-        .iter()
-        .any(|task| task.id.starts_with(crate::state::remove::FILL_TASK_PREFIX));
-    !module.controls.is_empty()
-        || (if fill {
-            module.settings.is_some()
-        } else {
-            capabilities::declares_offered(module, flags)
-        })
-        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+    layout.placed(module, Toolset::Adjustments)
+        && (!module.controls.is_empty()
+            || module.settings.is_some()
+            || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+            || capabilities::declares_offered(module, flags))
 }
 
 /// The controls of the one group a stacked module's controls consist of, when that is their whole
@@ -1333,17 +1418,24 @@ fn active(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
 
 /// The current recipe holds a non-neutral layer of one of `module`'s effects for the bound target.
 fn edits(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
+    !edited_rows(module, inputs).is_empty()
+}
+
+/// The current recipe's non-neutral layers of `module`'s effects for the bound target, in stack
+/// order: what its dot and an off module's kept band read.
+fn edited_rows<'a>(module: &ModuleDescriptor, inputs: &Inputs<'a>) -> Vec<&'a LayerDescription> {
     let (Some(_), Some(recipe)) = (
         inputs.document.state.as_ref(),
         inputs.document.current_recipe.as_ref(),
     ) else {
-        return false;
+        return Vec::new();
     };
     recipe
         .layers
         .iter()
         .filter(|row| row.mask.as_ref() == inputs.target)
-        .any(|row| module.effects.iter().any(|effect| effect.id == row.effect) && !row.neutral)
+        .filter(|row| module.effects.iter().any(|effect| effect.id == row.effect) && !row.neutral)
+        .collect()
 }
 
 /// The name of the mask the generated sections are bound to, as the displayed entry's listing
@@ -2824,21 +2916,25 @@ pub(crate) fn pick_reachable(
     }
 }
 
-/// The mode shortcut letters the keyboard answers: one per available module that declares a canvas
-/// shortcut and applies to the photo `state` holds, with the mode it enters. A module whose picker
-/// resolves to another module's pick on this photo and target enters that one, so Basic's `W` is
-/// the RAW development's sensor pick on a RAW photo's global target and Basic's own elsewhere.
+/// The mode shortcut letters the keyboard answers: one per available module the person has on that
+/// declares a canvas shortcut it holds ([`module_layout::LetterClaim`]) and applies to the photo
+/// `state` holds, with the mode it enters. A module whose picker resolves to another module's pick
+/// on this photo and target enters that one, so Basic's `W` is the RAW development's sensor pick on
+/// a RAW photo's global target and Basic's own elsewhere. A module that is off gives its letter up,
+/// and nothing else takes it meanwhile.
 pub(crate) fn mode_shortcuts(
     modules: &[ModuleDescriptor],
     state: Option<&EditorState>,
     target: Option<&MaskId>,
+    layout: &EffectiveLayout,
 ) -> Vec<(char, String)> {
     let kind = source_kind(state);
     modules
         .iter()
         .filter(|module| module.is_available() && applies(module, state))
+        .filter(|module| layout.enabled(&module.id))
         .filter_map(|module| {
-            let letter = module.canvas.as_ref()?.shortcut()?.chars().next()?;
+            let letter = layout.letter(&module.id)?.held()?;
             let mode = picker_mode(modules, module, kind, target).unwrap_or(&module.id);
             Some((letter, mode.to_owned()))
         })
@@ -3060,7 +3156,7 @@ pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> 
 
 /// Every module-declared palette entry the registry offers: each generated control action
 /// ("`<module title> · <control label>`"), each module's own reset and each available canvas mode
-/// ("`Mode · <title>`"). Unfiltered and in registry order; `state::palette` combines these with the
+/// ("`Mode · <title>`"), of each module the person has on. In registry order; `state::palette` combines these with the
 /// host commands and applies the query once, over the whole list. A developer module (the pixel
 /// proof) is listed only when the run asked for it, exactly as its section is.
 ///
@@ -3072,6 +3168,7 @@ pub(crate) fn palette_entries(
     developer: bool,
     state: Option<&EditorState>,
     target: Option<&MaskId>,
+    layout: &EffectiveLayout,
 ) -> Vec<(String, String, PaletteAction)> {
     let kind = source_kind(state);
     let picks = pick_modes(modules, state, target);
@@ -3080,6 +3177,7 @@ pub(crate) fn palette_entries(
         .iter()
         .filter(|module| module.is_available())
         .filter(|module| !module.developer || developer)
+        .filter(|module| layout.enabled(&module.id))
     {
         collect_actions(modules, module, kind, target, &mut entries);
         if let Some(reset) = &module.reset {
@@ -3132,7 +3230,11 @@ pub(crate) fn reveal_entries(
     use crate::state::palette::RevealTarget;
     let kind = source_kind(state);
     let mut entries = Vec::new();
-    for section in tools.all().filter(|section| section.unavailable.is_none()) {
+    // A kept band is read-only: it has nothing to reveal but its values.
+    for section in tools
+        .all()
+        .filter(|section| section.unavailable.is_none() && section.kept.is_none())
+    {
         let Some(module) = module_of(modules, &section.module_id) else {
             continue;
         };

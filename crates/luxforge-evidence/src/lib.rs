@@ -21,6 +21,7 @@ mod corrections;
 mod develop;
 mod minimap;
 mod missing;
+mod modules;
 
 pub use catalog::{CatalogStep, FacetColumn};
 pub use corrections::{
@@ -30,6 +31,10 @@ pub use corrections::{
 pub use develop::{DevelopStep, StripStep};
 pub use minimap::{MinimapPoint, MinimapStep};
 pub use missing::{MissingFilterStep, MissingStep};
+pub use modules::{
+    MODULE_MOVES, MODULE_TOOLSETS, ModuleCustomize, ModuleMove, ModuleSwitch, ModuleTabMove,
+    ModulesStep,
+};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
@@ -65,9 +70,10 @@ pub const NAMED_KEYS: [&str; 11] = [
 
 /// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
 /// order.
-pub const SETTINGS_TABS: [&str; 6] = [
+pub const SETTINGS_TABS: [&str; 7] = [
     "general",
     "appearance",
+    "modules",
     "models",
     "agents",
     "experiments",
@@ -340,6 +346,8 @@ pub enum Step {
     Correction(CorrectionStep),
     /// One gesture on the high-zoom minimap ([`MinimapStep`]).
     Minimap(MinimapStep),
+    /// One gesture on the person's module layout ([`ModulesStep`]).
+    Modules(ModulesStep),
 }
 
 impl Step {
@@ -546,6 +554,7 @@ impl Step {
                 }
             }
             Self::Minimap(step) => step.validate(),
+            Self::Modules(step) => step.validate(),
             Self::Pan { x, y } => {
                 unit(f64::from(*x), "pan x")?;
                 unit(f64::from(*y), "pan y")

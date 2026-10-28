@@ -66,6 +66,7 @@ mod minify_smoke;
 mod minimap_smoke;
 mod mixer_smoke;
 mod module_check;
+mod module_layout_smoke;
 mod module_package;
 mod move_to_applications_smoke;
 mod no_gpu_render_smoke;

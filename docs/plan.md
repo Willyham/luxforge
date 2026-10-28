@@ -34,7 +34,6 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
 | [Grain](../tasks/editing/grain.json) ([design](design/grain.md)) | TASK-001 the grain study: frozen field, application, reduced-stage rule and f64 reference | Owner decision taken while planning (Size in output pixels); the other choices are recorded defaults. Only the final alignment task needs the owner's Lightroom export | High tier |
-| [Module manager](../tasks/programmability/modules.json) ([design](design/module-manager.md)) | TASK-001 the core module layout; TASK-005 the external module contract | Owner decisions taken while planning (phase 1 arranges the panel and the mode strip; WASM plus WGSL; an adjustment section first; no index yet). The phases start independently | High tier |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [v0.1 release preparation](../tasks/project/release-v0-1.json) ([design](design/release-v0.1.md)) | TASK-002's distribution source/notice review; TASK-003 distribution advisory review | The source archive itself is built (TASK-002, in progress); the packaging tasks are listed under ready now. macOS and Linux ship together; both packaging lanes are executable after identity. Paid Apple membership is active; signing setup is reported complete with profile `luxforge-notarization`; credential validation and final native M4/Linux corpus/install evidence are late gates. `cargo xtask release TAG` checks clean synchronized main and pushes one annotated tag; owner invocation initiates automatic pre-release publication | High tier |
 
@@ -197,8 +196,8 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 - Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
 - `managed-storage` when a module first needs it; `local-runtime` is defined by the [AI editing](design/ai-editing.md) proposal as its first consumer
 
-**Module manager** ([design](design/module-manager.md), [plan](../tasks/programmability/modules.json)). Decided, not authorized.
-- Phase 1: turn built-in modules off and on, and reorder the tools panel and the mode strip, as a presentation-only preference with its API, the workspace's menus and Settings › Modules
+**Module manager** ([design](design/module-manager.md), [plan](../tasks/programmability/modules.json)). Authorized; phase 1 is delivered, with its M4 run outstanding.
+- Phase 1 on the M4: the `module-layout` scenario has run only on Linux under Xvfb
 - Phase 2: separately authored adjustment modules as sandboxed WebAssembly with a WGSL program qualified against their reference at first use, installed from a package file at the next launch, with the SDK, the Split toning example as the loader proof, the background journey and the activation, idle and reference-cost measurements
 - Later, not planned: a community library to browse and publish, external canvas tools, mask and correction kinds, capabilities for external modules and live loading
 

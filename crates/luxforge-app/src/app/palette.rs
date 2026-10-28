@@ -5,8 +5,8 @@ use super::{
     Editor,
     message::{
         Message, action::ActionMessage, export::ExportMessage, history::HistoryMessage,
-        palette::PaletteMessage, performance::PerformanceMessage, settings::SettingsMessage,
-        theme::ThemeMessage, view::ViewMessage,
+        modules::ModulesMessage, palette::PaletteMessage, performance::PerformanceMessage,
+        settings::SettingsMessage, theme::ThemeMessage, view::ViewMessage,
     },
 };
 use crate::state::palette::{PaletteAction, Panel, RevealTarget, Revealed};
@@ -108,6 +108,18 @@ impl Editor {
                     Some(PaletteAction::CheckForUpdates) => self.dispatch(Message::Update(
                         crate::app::message::update::UpdateMessage::Check,
                     )),
+                    Some(PaletteAction::Customize(toolset)) => {
+                        self.dispatch(Message::Modules(ModulesMessage::Customize {
+                            toolset,
+                            module: None,
+                        }))
+                    }
+                    Some(PaletteAction::SetEnabled { module, enabled }) => {
+                        self.dispatch(Message::Modules(ModulesMessage::SetEnabled {
+                            module,
+                            enabled,
+                        }))
+                    }
                     None => Task::none(),
                 };
             }

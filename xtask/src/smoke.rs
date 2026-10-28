@@ -16,7 +16,7 @@ use crate::{
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_object_smoke as mask_object, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, mcp_smoke as mcp, minify_smoke as minify,
-    minimap_smoke as minimap, mixer_smoke as mixer,
+    minimap_smoke as minimap, mixer_smoke as mixer, module_layout_smoke as module_layout,
     move_to_applications_smoke as move_to_applications, no_gpu_render_smoke as no_gpu_render,
     object_remove_smoke as object_remove, panorama_merge_smoke as panorama_merge,
     performance_smoke as performance, pick_smoke as pick, presence_smoke as presence,
@@ -1183,6 +1183,19 @@ pub static SCENARIOS: &[Scenario] = &[
         note: Some(settings_agents::NOTE),
         // The adapter runs in this process beside the first launch; the second runs alone.
         own: Some(settings_agents::run),
+    },
+    Scenario {
+        name: module_layout::SCENARIO,
+        about: "The module layout through the desktop's gestures: a band menu moves Vignette to the top and turns it off, the photograph with a Vignette layer reopened draws its Off · edit kept band, Customize panel… opens Settings › Modules at Vignette, the Tools group moves Crop ahead of Corrections, the strip's ⋯ menu lists them, and Reset all restores everything; each frame's layout correlated with module.layout.read and module.list, and each photograph's on-screen bytes unchanged by every layout",
+        launches: &[LaunchSpec {
+            plan: module_layout::plan,
+            ..APP
+        }],
+        verify: module_layout::verify,
+        source: Source::Fixtures(&[module_layout::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
     },
     Scenario {
         name: mcp::SCENARIO,

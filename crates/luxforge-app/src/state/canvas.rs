@@ -2,15 +2,16 @@
 use crate::{
     mask_draft::{MaskDraft, MaskDraftOp},
     state::{
-        Inputs,
+        Inputs, MenuTarget,
+        module_layout::{self, LetterClaim, StripMenu},
         number::number_text,
         tools::{PresetChip, applies, canvas_pick, crop_frame, pick_reachable, preset_chips},
     },
 };
 use luxforge_core::{
     Availability, CanvasInteraction, ComponentMode, ErrorKind, MASK_MODE, ModuleDescriptor,
-    POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Zoom, mask::commands::MaskListing,
-    preferences::CanvasBackground,
+    POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Toolset, Zoom,
+    mask::commands::MaskListing, preferences::CanvasBackground,
 };
 use std::time::{Duration, Instant};
 
@@ -139,6 +140,9 @@ pub(crate) struct ModeEntry {
     /// module's declared one for a module's mode. An entry without one shows its label.
     pub(crate) icon: Option<String>,
     pub(crate) shortcut: Option<String>,
+    /// Whose the letter the module declares is, when a host entry or an earlier module holds it:
+    /// `R is Mask's`. The tool gets no letter rather than a substitute, and its tooltip says this.
+    pub(crate) letter_note: Option<String>,
     pub(crate) selected: bool,
     pub(crate) enabled: bool,
 }
@@ -306,6 +310,8 @@ pub(crate) struct CanvasModel {
     pub(crate) background: CanvasFill,
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) modes: Vec<ModeEntry>,
+    /// The ⋯ menu at the strip's end: every strip tool, on or off, and Customize tools….
+    pub(crate) strip_menu: StripMenu,
     pub(crate) thirds: bool,
     pub(crate) information: Option<super::information::Information>,
     pub(crate) draft_bar: Option<DraftBar>,
@@ -361,6 +367,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             label: "Pointer".into(),
             icon: Some("pointer".into()),
             shortcut: Some("V".into()),
+            letter_note: None,
             selected: inputs.session.workspace.mode == POINTER_MODE,
             enabled: true,
         },
@@ -372,45 +379,45 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             label: "Mask".into(),
             icon: Some("mask".into()),
             shortcut: Some("M".into()),
+            letter_note: None,
             selected: inputs.session.workspace.mode == MASK_MODE,
             enabled: editable,
         },
     ];
-    // A declared brush workspace follows Mask, as the Corrections design places it, then the crop
-    // frames in registry order.
+    // The module tools follow Mask in the person's `tools` order: by default a declared brush
+    // workspace first, as the Corrections design places it, then the crop frames in registry order.
+    // A module the person turned off offers no entry.
+    let layout = inputs.layout;
     let shown = |module: &&ModuleDescriptor| {
         module.is_available()
             && applies(module, inputs.document.state.as_ref())
             && (!module.developer || inputs.developer)
+            && layout.enabled(&module.id)
     };
-    modes.extend(
-        inputs
-            .modules
-            .iter()
-            .filter(shown)
-            .filter(|module| super::corrections::is_brush_mode(inputs.modules, &module.id))
-            .filter_map(|module| {
-                let canvas = module.canvas.as_ref()?;
-                Some(ModeEntry {
-                    id: module.id.clone(),
-                    label: canvas.title().to_owned(),
-                    icon: canvas.icon().map(str::to_owned),
-                    shortcut: canvas.shortcut().map(str::to_owned),
-                    selected: inputs.session.workspace.mode == module.id,
-                    enabled: editable,
-                })
-            }),
-    );
-    modes.extend(inputs.modules.iter().filter(shown).filter_map(|module| {
+    let entry = |module: &ModuleDescriptor, canvas: &CanvasInteraction| {
+        let claim = layout.letter(&module.id);
+        ModeEntry {
+            id: module.id.clone(),
+            label: canvas.title().to_owned(),
+            icon: canvas.icon().map(str::to_owned),
+            shortcut: claim
+                .and_then(LetterClaim::held)
+                .map(|letter| letter.to_string()),
+            letter_note: claim.and_then(LetterClaim::note),
+            selected: inputs.session.workspace.mode == module.id,
+            enabled: editable,
+        }
+    };
+    let mut tools: Vec<ModeEntry> = inputs
+        .modules
+        .iter()
+        .filter(shown)
+        .filter(|module| super::corrections::is_brush_mode(inputs.modules, &module.id))
+        .filter_map(|module| Some(entry(module, module.canvas.as_ref()?)))
+        .collect();
+    tools.extend(inputs.modules.iter().filter(shown).filter_map(|module| {
         match module.canvas.as_ref() {
-            Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
-                id: module.id.clone(),
-                label: canvas.title().to_owned(),
-                icon: canvas.icon().map(str::to_owned),
-                shortcut: canvas.shortcut().map(str::to_owned),
-                selected: inputs.session.workspace.mode == module.id,
-                enabled: editable,
-            }),
+            Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(entry(module, canvas)),
             // A declared brush is listed above, after Mask.
             Some(CanvasInteraction::PointPick { .. })
             | Some(CanvasInteraction::SampleApply { .. })
@@ -419,6 +426,14 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             | None => None,
         }
     }));
+    layout.sort(Toolset::Tools, &mut tools, |tool| &tool.id);
+    modes.extend(tools);
+    let strip_menu = module_layout::strip_menu(
+        layout,
+        inputs.modules,
+        inputs.developer,
+        inputs.view_state.menu == Some(MenuTarget::Strip),
+    );
     let photo = photo_view(inputs, drafting);
     CanvasModel {
         photo: photo.clone(),
@@ -430,6 +445,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         background: inputs.view_state.canvas_background.into(),
         dimensions: inputs.dimensions,
         modes,
+        strip_menu,
         thirds: inputs.session.workspace.thirds,
         information: super::information::derive(inputs),
         draft_bar: draft_bar(inputs),

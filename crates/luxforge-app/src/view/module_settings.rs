@@ -294,10 +294,12 @@ fn row_view(module: &ModuleRow) -> Element<'_, Message> {
 fn detail_view(detail: &ModuleDetail) -> Element<'_, Message> {
     let mut pane = column![
         row![
+            // The title takes what the badge leaves, so a long title wraps rather than the badge.
             text(detail.title.clone())
                 .size(theme::SIZE_CONTROL)
                 .font(theme::FONT_SEMIBOLD)
-                .style(theme::ink(Token::Text)),
+                .style(theme::ink(Token::Text))
+                .width(Length::Fill),
             badge(&BadgeModel {
                 label: detail.origin.into(),
                 tooltip: None,

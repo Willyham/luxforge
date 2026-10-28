@@ -79,7 +79,7 @@ impl Editor {
                 ]);
             }
             SettingsMessage::OpenModules(focus) => return self.open_modules(focus),
-            SettingsMessage::Modules(message) => return self.modules_update(message),
+            SettingsMessage::Modules(message) => return self.modules_tab_update(message),
             SettingsMessage::Close => {
                 self.settings.open = None;
                 self.settings.number_text.clear();
