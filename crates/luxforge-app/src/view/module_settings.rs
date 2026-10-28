@@ -16,7 +16,7 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Length, Rectangle, Task, Vector,
+    Alignment, Length, Padding, Rectangle, Task, Vector,
     advanced::widget::{
         Id, Operation,
         operation::{Outcome, Scrollable, scrollable::scroll_to},
@@ -39,6 +39,8 @@ const DETAIL_WIDTH: f32 = 216.0;
 const DIALOG_WIDTH: f32 = 460.0;
 const DIALOG_HEIGHT: f32 = 440.0;
 const FACT_WIDTH: f32 = 72.0;
+/// The footer's share of the dialog's height: its buttons and the padding around them.
+const FOOTER_HEIGHT: f32 = theme::BUTTON_HEIGHT + theme::SPACING * 3.0;
 
 /// The list's scrollable, which a selection by keyboard or by Customize scrolls.
 fn list_id() -> Id {
@@ -555,13 +557,32 @@ pub(crate) fn dialog(model: &ModulesModel) -> Option<Element<'_, Message>> {
     )
 }
 
-/// A dialog's card: its surface, width and padding.
-fn card<'a>(body: iced::widget::Column<'a, Message, luxforge_ui::Theme>) -> Element<'a, Message> {
-    container(scrollable(body.padding(theme::SPACING * 2.0)))
-        .width(Length::Fixed(DIALOG_WIDTH))
-        .max_height(DIALOG_HEIGHT)
-        .style(theme::sheet_surface)
-        .into()
+/// A dialog's card: its surface, width and padding, its body scrolling when it is taller than the
+/// card allows and its footer always below it, so the buttons are on screen whatever the body
+/// holds.
+fn card<'a>(
+    body: iced::widget::Column<'a, Message, luxforge_ui::Theme>,
+    footer: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let padding = theme::SPACING * 2.0;
+    container(column![
+        container(scrollable(body.padding(Padding {
+            top: padding,
+            right: padding,
+            bottom: theme::SPACING,
+            left: padding,
+        })))
+        .max_height(DIALOG_HEIGHT - FOOTER_HEIGHT),
+        container(footer).padding(Padding {
+            top: theme::SPACING,
+            right: padding,
+            bottom: padding,
+            left: padding,
+        }),
+    ])
+    .width(Length::Fixed(DIALOG_WIDTH))
+    .style(theme::sheet_surface)
+    .into()
 }
 
 /// The dialog's footer: the dismissing button, then the confirming one.
@@ -647,7 +668,7 @@ fn review_card(review: &ReviewModel) -> Element<'_, Message> {
                 .then_some(modules(ModulesMessage::ReviewInstall)),
         )
     });
-    card(body.push(footer(review.dismiss, confirm)))
+    card(body, footer(review.dismiss, confirm))
 }
 
 /// Uninstall…'s confirmation: what happens to the photos that use the module, and Uninstall in
@@ -669,14 +690,17 @@ fn uninstall_card(uninstall: &UninstallModel) -> Element<'_, Message> {
     if uninstall.busy {
         body = body.push(caption("Uninstalling\u{2026}"));
     }
-    card(body.push(footer(
-        "Cancel",
-        Some((
-            "Uninstall",
-            true,
-            (!uninstall.busy).then_some(modules(ModulesMessage::UninstallConfirm)),
-        )),
-    )))
+    card(
+        body,
+        footer(
+            "Cancel",
+            Some((
+                "Uninstall",
+                true,
+                (!uninstall.busy).then_some(modules(ModulesMessage::UninstallConfirm)),
+            )),
+        ),
+    )
 }
 
 /// One labelled fact of the detail pane.
