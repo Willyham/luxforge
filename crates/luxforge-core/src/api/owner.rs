@@ -7538,9 +7538,16 @@ mod tests {
                 "http://127.0.0.1:9",
             )))
             .unwrap();
+        // The grain experiment is forced on, so its gated action reaches its parser too.
+        let host = HostConfig {
+            launch_flags: crate::flags::LaunchFlags::resolve(
+                None,
+                &[(crate::flags::GRAIN, json!(true), "test")],
+            ),
+            ..HostConfig::unconfigured()
+        };
         let (owner, join) =
-            OwnerHandle::start_with_host(&catalog, Arc::new(registry), HostConfig::unconfigured())
-                .unwrap();
+            OwnerHandle::start_with_host(&catalog, Arc::new(registry), host).unwrap();
         // Exercise the parsers of permission-only methods too; authorization has separate tests.
         let client = owner.register_with(ClientAuthority::Permissions);
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));
