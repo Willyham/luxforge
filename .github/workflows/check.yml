@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Pinned toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
       # Fail cheap checks before dependency installation, cache transfer or compilation.
       - name: Formatting gate
         run: cargo fmt --all -- --check
@@ -164,7 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Pinned toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Native compiler cache identity
         id: native-compiler
         run: |
@@ -179,7 +179,7 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: .tools/cargo-deny
-          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-rust-1.94.0-v0.20.2
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-rust-1.96.0-v0.20.2
       - name: Pinned audit tool
         if: steps.deny-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --version 0.20.2 --root .tools/cargo-deny cargo-deny

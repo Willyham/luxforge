@@ -496,11 +496,7 @@ impl FitSamples {
     }
 
     pub fn len(&self) -> usize {
-        if self.inputs == 0 {
-            0
-        } else {
-            self.luminance.len() / self.inputs
-        }
+        self.luminance.len().checked_div(self.inputs).unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {

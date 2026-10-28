@@ -26,7 +26,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Build the feed tool
         run: cargo build --locked -p xtask-cli
       # GitHub's release list sometimes answers with no releases at all, which would publish empty

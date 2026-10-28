@@ -1072,8 +1072,8 @@ fn work(shared: &Arc<Shared>) {
                     state.active = Some((call.client(), call.cancel().clone()));
                     break Job::Call(call);
                 }
-                if state.streams.front().is_some_and(|stream| stream.ready()) {
-                    break Job::Step(state.streams.pop_front().expect("a stream ready"));
+                if let Some(stream) = state.streams.pop_front_if(|stream| stream.ready()) {
+                    break Job::Step(stream);
                 }
                 state = shared
                     .wake

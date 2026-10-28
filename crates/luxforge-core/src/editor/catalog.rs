@@ -2547,11 +2547,10 @@ mod tests {
         let mut table = crate::path::StrokeTable::new("the measured session");
         let mut drawn: Vec<Vec<crate::mask::Stroke>> = Vec::new();
         let mut previous = state.current_entry.clone();
-        let mut revision = state.revision;
         // What an entry embedding its strokes would have cost, accumulated beside what the
         // content-addressed entries actually cost.
         let mut embedded = 0_usize;
-        for index in 0..count {
+        for (revision, index) in (state.revision..).zip(0..count) {
             let one = stroke(index);
             if index.is_multiple_of(STROKES_PER_MASK) {
                 drawn.push(Vec::new());
@@ -2588,7 +2587,6 @@ mod tests {
                 },
                 ..previous.clone()
             };
-            revision += 1;
             registry.validate_recipe(&entry.snapshot.recipe).unwrap();
             insert_entry(&tx, &default_artifact_root(catalog), &entry).unwrap();
             previous = entry;

@@ -2626,7 +2626,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
     let partial =
         |held: u32| (held < count).then(|| format!("{} of {}", thousands(held), thousands(count)));
     let mut folders: Vec<(&CatalogFolderId, u32)> = in_folders.into_iter().collect();
-    folders.sort_by(|a, b| b.1.cmp(&a.1));
+    folders.sort_by_key(|folder| std::cmp::Reverse(folder.1));
     info.folders = folders
         .iter()
         .map(|(folder, held)| OrganizeChip {
@@ -2644,7 +2644,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         .iter()
         .map(|(id, held)| (*id, *held))
         .collect();
-    members.sort_by(|a, b| b.1.cmp(&a.1));
+    members.sort_by_key(|member| std::cmp::Reverse(member.1));
     info.collections = members
         .iter()
         .map(|(id, held)| {

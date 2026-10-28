@@ -2,7 +2,7 @@
 name = "luxforge-module-sdk"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 rust-version.workspace = true
 publish.workspace = true
 
@@ -12,24 +12,26 @@ publish.workspace = true
 # built for `wasm32-unknown-unknown`; with no features the SDK has no dependency at all, so a
 # module's lockfile holds the SDK and the module.
 #
+# Unlike the host crates, the SDK is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), so a
+# module built on it chooses its own licence (docs/decisions.md#module-manager).
+#
 # The `host` feature is the authoring tooling, for a native build only: building a module crate
 # for wasm32 with the pinned toolchain and making its core module a component (`wit-component`),
-# running a component through Wasmtime with the module engine's configuration, and the harness that
-# holds a module's native `apply_row` to its component's. `cargo xtask module-package` and
-# `module-check` use it, and this crate's own tests turn it on.
+# running a component on the module engine (`luxforge-wasm`, which owns Wasmtime), and the harness
+# that holds a module's native `apply_row` to its component's. `cargo xtask module-package` and
+# `module-check` use it, and this crate's own tests turn it on. It links the host crates
+# `luxforge-wasm` and `luxforge-core`; a module's own build, with no features, links neither.
 [features]
-host = ["dep:wasmtime", "dep:wit-component", "dep:wit-parser", "dep:serde_json"]
+host = ["dep:luxforge-wasm", "dep:luxforge-core", "dep:wit-component", "dep:wit-parser", "dep:serde_json"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Wasmtime as the module engine configures it: the component model through Cranelift, no WASI, no
-# threads, no parallel compilation, no cache and no text format. TASK-006's `luxforge-wasm` owns the
-# engine the host runs modules on; this pin matches it, and the harness and `module-check` move to
-# that crate's engine once it lands.
-wasmtime = { version = "=47.0.4", default-features = false, features = ["std", "runtime", "cranelift", "component-model"], optional = true }
-# The core module to component step, from the wasm-tools release Wasmtime 47 reads (0.252), so the
+# The engine the host renders with, so the harness and `module-check` run exactly what it runs.
+luxforge-wasm = { path = "../luxforge-wasm", optional = true }
+luxforge-core = { path = "../luxforge-core", optional = true }
+# The core module to component step, from the wasm-tools release Wasmtime 49 reads (0.258), so the
 # parser and encoder are the ones Wasmtime already builds.
-wit-component = { version = "=0.252.0", optional = true }
-wit-parser = { version = "=0.252.0", optional = true }
+wit-component = { version = "=0.258.3", optional = true }
+wit-parser = { version = "=0.258.3", optional = true }
 # Cargo's JSON build messages, to find the module's `.wasm` artifact.
 serde_json = { workspace = true, optional = true }
 

@@ -2,8 +2,8 @@
 name = "split-toning"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
-license = "GPL-3.0-or-later"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
 publish = false
 description = "Split toning: an example Luxforge adjustment module"
 

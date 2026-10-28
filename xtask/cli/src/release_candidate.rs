@@ -562,7 +562,7 @@ pub(crate) fn fixture_record(
         "working_tree_dirty": false,
         "rehearsal": false,
         "lock_sha256": "b".repeat(64),
-        "toolchain": {"pinned": "1.94.0", "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)", "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)"},
+        "toolchain": {"pinned": "1.96.0", "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)", "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)"},
         "build_environment": if macos {
             json!({"os": "macOS 14.7.6 (23H626)", "native_compiler": "Apple clang version 15.0.0 (clang-1500.3.9.4)", "sdk": "14.5", "libc": NOT_APPLICABLE})
         } else {
@@ -796,8 +796,8 @@ mod tests {
             assert!(refused(&swapped, &tag, target).contains("does not match"));
         }
         assert_eq!(
-            pinned_channel("[toolchain]\nchannel = \"1.94.0\"\nprofile = \"minimal\"\n").unwrap(),
-            "1.94.0"
+            pinned_channel("[toolchain]\nchannel = \"1.96.0\"\nprofile = \"minimal\"\n").unwrap(),
+            "1.96.0"
         );
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let pinned =

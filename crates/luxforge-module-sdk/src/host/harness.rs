@@ -1,6 +1,6 @@
-//! The identity harness: a module's [`Adjustment`] run natively and its component run through
-//! Wasmtime ([`super::Runner`]) over the same values and the [fixed patches](super::fixtures), held
-//! to identical words, labels and buffers.
+//! The identity harness: a module's [`Adjustment`] run natively and its component run on the
+//! module engine ([`super::Runner`]) over the same values and the [fixed patches](super::fixtures),
+//! held to identical words, labels and buffers.
 //!
 //! The component is what the host runs; the native build is what a module's own unit tests run.
 //! Identity between them is what lets those tests speak for the component. Two values are
@@ -34,14 +34,18 @@ pub fn first_difference(native: &[f32], wasm: &[f32]) -> Option<usize> {
         .or_else(|| (native.len() != wasm.len()).then(|| native.len().min(wasm.len())))
 }
 
-/// Run `A` natively and `component` through Wasmtime for every named value set over every fixed
-/// patch, each row as two runs split at [`SPLIT`], and answer what was compared, or the first
+/// Run `A` natively and `component` on the module engine for every named value set over every
+/// fixed patch, each row as two runs split at [`SPLIT`], and answer what was compared, or the first
 /// difference: the value set, the patch, the pixel and channel, and both values with their bits.
 pub fn compare<A: Adjustment>(
     component: &[u8],
     value_sets: &[(&str, Values)],
 ) -> Result<Report, Error> {
-    let runner = Runner::new(component)?;
+    let id = std::any::type_name::<A>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("module");
+    let runner = Runner::new(id, component)?;
     let mut instance = runner.instance()?;
     let mut report = Report::default();
     for (set, values) in value_sets {

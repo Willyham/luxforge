@@ -1,6 +1,6 @@
 //! The split-toning example (`examples/modules/split-toning`) held to its own component: its
 //! source compiled here natively, and the same crate built for WebAssembly with the pinned toolchain
-//! and run through Wasmtime, over every fixed patch for each value set. The example's own unit
+//! and run on the module engine, over every fixed patch for each value set. The example's own unit
 //! tests run here too, as this module's.
 #[path = "../../../examples/modules/split-toning/src/lib.rs"]
 mod split_toning;
@@ -56,11 +56,11 @@ fn a_core_module_that_imports_is_not_made_a_component() {
 
 #[test]
 fn a_core_module_is_not_a_component() {
-    let refusal = Runner::new(b"\0asm\x01\0\0\0")
+    let refusal = Runner::new("org.example.core", b"\0asm\x01\0\0\0")
         .err()
         .expect("a core module is refused");
     assert!(
-        refusal.starts_with("module.wasm is not a component"),
+        refusal.starts_with("module org.example.core did not load: its component does not compile"),
         "{refusal}"
     );
 }

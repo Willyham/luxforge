@@ -1,6 +1,6 @@
 # Dependency policy
 
-Project code is GPL-3.0-or-later. Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64, Linux x64 and Linux arm64 graphs. Those graphs include packages that only a development dependency reaches, so their advisories and sources are checked; the licence check skips them, as cargo-deny does by default and `deny.toml` leaves unchanged. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
+Project code is GPL-3.0-or-later, except `luxforge-module-sdk` and the example module, which are MIT OR Apache-2.0 with their licence texts beside their manifests ([decisions](../decisions.md#module-manager)). Dependencies are pinned in `Cargo.lock`. `deny.toml` requires an explicit license allowlist, rejects unknown registries and git sources and checks the macOS arm64, Windows x64, Linux x64 and Linux arm64 graphs. Those graphs include packages that only a development dependency reaches, so their advisories and sources are checked; the licence check skips them, as cargo-deny does by default and `deny.toml` leaves unchanged. `cargo xtask audit` runs pinned cargo-deny 0.20.2:
 
 ```sh
 cargo install --locked --version 0.20.2 --root .tools/cargo-deny cargo-deny
@@ -123,11 +123,11 @@ Every one is under a licence `deny.toml` allows, though as development-only pack
 
 As with every other dependency, passing the automated checks is not the deferred manual review.
 
-## Module authoring dependencies
+## Module engine and authoring dependencies
 
-The [module authoring](module-authoring.md) tooling, `luxforge-module-sdk`'s `host` feature, runs a module's component through Wasmtime 47.0.4 (Apache-2.0 with the LLVM exception, which `deny.toml` allows), pinned exactly with only `std`, `runtime`, `cranelift` and `component-model`, and makes a core module a component with `wit-component` 0.252.0 (Apache-2.0 with the LLVM exception, Apache-2.0 or MIT) and `wit-parser` 0.252.0 (Apache-2.0 with the LLVM exception), the wasm-tools release Wasmtime 47 reads, so the parser and encoder are the ones Wasmtime builds. Only the SDK's own tests and `xtask` (`module-package`, `module-check`) turn the feature on; no shipped binary links any of it, and with no features the SDK, which a module crate builds for WebAssembly, depends on no crate. Together they add 57 packages to the lockfile, among them Cranelift 0.134.4, `regalloc2`, `gimli`, `object` and the wasm-tools crates.
+The [module engine](../design/module-manager.md#engine), `luxforge-wasm`, the only crate that may name Wasmtime *(enforced)*, runs a module's component through Wasmtime 49.0.4 (Apache-2.0 with the LLVM exception, which `deny.toml` allows), pinned exactly in the workspace with only `std`, `runtime`, `cranelift` and `component-model`. 49.0.4 carries the fixes for the advisories against earlier releases, among them an aarch64 Cranelift `br_table` miscompilation (RUSTSEC-2026-0379), and needs Rust 1.96, which is why the workspace pins 1.96.0; `cargo xtask audit` reports no advisory against it. Its tests build their components from WAT with `wat` 1.258.3 and `wit-component` and `wit-parser` 0.258.3.
 
-`cargo xtask audit` fails on Wasmtime 47.0.4: the advisory database lists advisories against it (RUSTSEC-2026-0315 to 0316, 0325 to 0327, 0353 to 0359, 0361 to 0364, 0378 and 0379) fixed in 48.0.7 and 49.0.4, which need Rust 1.95 and 1.96, and for some of them in 36.0.19. The pin is the module engine's; moving it, raising the toolchain or recording reviewed exceptions is the owner's decision, and it applies to the engine crate as well.
+The [module authoring](module-authoring.md) tooling, `luxforge-module-sdk`'s `host` feature, runs a module's component on that engine, and makes a core module a component with `wit-component` 0.258.3 (Apache-2.0 with the LLVM exception, Apache-2.0 or MIT) and `wit-parser` 0.258.3 (Apache-2.0 with the LLVM exception), the wasm-tools release Wasmtime 49 reads, so the lockfile holds one wasm-tools family and the parser and encoder are the ones Wasmtime builds. Only the SDK's own tests and `xtask` (`module-package`, `module-check`) turn the feature on, and with no features the SDK, which a module crate builds for WebAssembly, depends on no crate. Wasmtime brings Cranelift 0.136.4, `regalloc2`, `gimli`, `object`, Pulley and the wasm-tools crates into the lockfile.
 
 ## Usage statistics dependencies
 

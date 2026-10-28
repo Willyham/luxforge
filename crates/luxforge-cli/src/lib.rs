@@ -15,6 +15,18 @@ pub use paths::Paths;
 /// otherwise the workspace version.
 pub const VERSION: &str = luxforge_core::APPLICATION_VERSION;
 
+/// The external modules a launch hands its registry assembly
+/// ([`luxforge_core::RegistryOptions::external`]), for the desktop and `luxforge-json` alike: each
+/// package's module, loaded by the WebAssembly engine with its compiled code cached under
+/// [`Paths::module_code_cache`] (with no data root, compiled every launch), or unavailable with
+/// the reason it did not load. Loading compiles or reads code and creates no instance.
+pub fn external_modules(
+    paths: Option<&Paths>,
+    packages: &[luxforge_core::module_package::ModulePackage],
+) -> Vec<luxforge_core::module_package::ExternalModule> {
+    luxforge_wasm::WasmHost::new(paths.map(Paths::module_code_cache)).externals(packages)
+}
+
 /// A standalone version request has no catalog, network, Keychain or desktop side effects.
 pub fn version_requested(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
     args.next().as_deref() == Some(std::ffi::OsStr::new("--version")) && args.next().is_none()

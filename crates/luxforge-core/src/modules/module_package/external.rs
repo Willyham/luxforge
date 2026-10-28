@@ -1,7 +1,7 @@
 //! The seam between an external module's field-patch table, which the core owns, and its colour
 //! arithmetic, which a WebAssembly engine outside the core runs: [`AdjustmentUnits`].
 use crate::modules::field_patch::{FieldPatch, Spec, Values};
-use crate::modules::{ColorOperation, ParameterDescriptor, ParameterKind, Processing};
+use crate::modules::{ColorOperation, ParameterDescriptor, ParameterKind, Processing, ToolModule};
 use crate::{CompileStage, Error};
 use serde_json::Value;
 use std::sync::Arc;
@@ -34,6 +34,81 @@ pub trait AdjustmentUnits: Send + Sync + 'static {
     /// The colour operation these values compile to at the layer's input stage: every field of the
     /// table in the manifest's order. An error refuses the layer and names the module.
     fn compile(&self, values: &[FieldEntry], at: CompileStage) -> Result<ColorOperation, Error>;
+}
+
+/// One installed package's module as an engine hands it to the registry assembly
+/// ([`crate::RegistryOptions::external`]): the field-patch module of its manifest, loaded with the
+/// engine's units, or registered unavailable with the loader's reason when its component did not
+/// load. Either way it is a manifest's module, so the assembly registers nothing a package could
+/// not describe; the registry registers externals after every linked module.
+#[derive(Clone)]
+pub struct ExternalModule {
+    module: Arc<dyn ToolModule>,
+    unavailable: Option<String>,
+}
+
+impl ExternalModule {
+    /// `manifest`'s module, its colour arithmetic run by `units`.
+    pub fn loaded(
+        manifest: &super::ModuleManifest,
+        units: Arc<dyn AdjustmentUnits>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            module: manifest.module(units)?,
+            unavailable: None,
+        })
+    }
+
+    /// `manifest`'s module, registered unavailable for `reason`: its descriptor, actions and effect
+    /// are listed, a photo that uses it keeps every layer, and rendering it refuses with the
+    /// unavailable effect, as for any missing provider.
+    pub fn unavailable(
+        manifest: &super::ModuleManifest,
+        reason: impl Into<String>,
+    ) -> Result<Self, Error> {
+        let reason = reason.into();
+        Ok(Self {
+            module: manifest.module(Arc::new(Unloaded(reason.clone())))?,
+            unavailable: Some(reason),
+        })
+    }
+
+    /// The module's identity, the manifest's `id`.
+    pub fn id(&self) -> &str {
+        &self.module.descriptor().id
+    }
+
+    /// Why the module is registered unavailable, or `None` when it loaded.
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable.as_deref()
+    }
+
+    pub(crate) fn module(&self) -> &Arc<dyn ToolModule> {
+        &self.module
+    }
+}
+
+impl std::fmt::Debug for ExternalModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalModule")
+            .field("id", &self.id())
+            .field("unavailable", &self.unavailable)
+            .finish()
+    }
+}
+
+/// The units of a module whose component did not load. The registry checks availability before it
+/// compiles through a module, so nothing asks these; if something did, it is refused with the
+/// loader's reason.
+struct Unloaded(String);
+
+impl AdjustmentUnits for Unloaded {
+    fn compile(&self, _: &[FieldEntry], _: CompileStage) -> Result<ColorOperation, Error> {
+        Err(Error::internal(format!(
+            "an unloaded module was compiled: {}",
+            self.0
+        )))
+    }
 }
 
 /// The field-patch module of an external manifest: the table's shared behaviour from the core, and

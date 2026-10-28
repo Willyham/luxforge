@@ -23,6 +23,8 @@ luxforge-core = { path = "../luxforge-core" }
 luxforge-net = { path = "../luxforge-net" }
 luxforge-onnx = { path = "../luxforge-onnx" }
 luxforge-diffusion = { path = "../luxforge-diffusion" }
+# The WebAssembly engine external modules run in, for the desktop and `luxforge-json` alike.
+luxforge-wasm = { path = "../luxforge-wasm" }
 # The MCP adapter's attached pictures, base64-encoded in image content.
 base64.workspace = true
 serde.workspace = true

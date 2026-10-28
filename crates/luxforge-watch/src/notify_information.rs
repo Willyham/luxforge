@@ -27,10 +27,7 @@ pub(crate) struct Record {
 pub(crate) fn parse(buffer: &[u8]) -> Vec<Record> {
     let mut records = Vec::new();
     let mut at = 0;
-    loop {
-        let Some(header) = buffer.get(at..at + HEADER) else {
-            break;
-        };
+    while let Some(header) = buffer.get(at..at + HEADER) {
         let word = |from: usize| {
             u32::from_le_bytes([
                 header[from],

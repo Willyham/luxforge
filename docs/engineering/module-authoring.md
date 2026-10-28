@@ -14,6 +14,8 @@ A module is a directory holding three things:
 
 A crate outside the Luxforge workspace needs its own empty `[workspace]` table, as the example's has. Inside this repository the example is also listed in the root manifest's `exclude`.
 
+**Licence.** The SDK and the example are MIT OR Apache-2.0, unlike the GPL-3.0-or-later host, so a module built on the SDK, or copied from the example, takes whatever licence its author chooses, named in the manifest's `license`. The SDK's `host` feature links the GPL host crates (`luxforge-core`, `luxforge-wasm`) into native tooling and tests; a module's own WebAssembly build links none of them.
+
 ## The Rust side
 
 `Adjustment` has three functions, each pure:
@@ -37,11 +39,11 @@ Keep the program the reference's arithmetic, step for step, so the GPU stays wit
 Write ordinary unit tests in the module crate against `Adjustment` natively. The SDK's `host` feature adds the tooling a native test can use:
 
 - `host::build_component(dir, target_dir)` builds the crate at `dir` for `wasm32-unknown-unknown` with the repository's pinned toolchain and makes it a component.
-- `host::harness::assert_identical::<Module>(&component, &value_sets)` runs `coefficients`, `label` and `apply_row` natively and through Wasmtime, configured as the module engine is, over the SDK's fixed patches for each named value set, each row as two runs, and panics with the first difference: the value set, the patch, the pixel and channel, and both values with their bits. Two NaNs count as identical, since the engine canonicalizes NaN payloads.
+- `host::harness::assert_identical::<Module>(&component, &value_sets)` runs `coefficients`, `label` and `apply_row` natively and on the module engine itself, `luxforge-wasm`, with the host's configuration, memory limit and deadline, over the SDK's fixed patches for each named value set, each row as two runs, and panics with the first difference: the value set, the patch, the pixel and channel, and both values with their bits. Two NaNs count as identical, since the engine canonicalizes NaN payloads.
 
 `tools/cargo-cached test -p luxforge-module-sdk` holds the example this way: its source is compiled into the SDK's test natively and its crate built and run as a component.
 
-The pinned toolchain needs the WebAssembly target: `rustup target add wasm32-unknown-unknown --toolchain 1.94.0`.
+The pinned toolchain needs the WebAssembly target: `rustup target add wasm32-unknown-unknown --toolchain 1.96.0`.
 
 ## Packaging and checking
 
@@ -55,7 +57,7 @@ tools/cargo-cached xtask module-check target/evidence/split-toning.lfmodule [--j
 `module-check FILE` reports what installing and first use will find, each step naming what it refuses:
 
 1. **Package**: the core's reader, with the refusal's code (`content`, `manifest`, `reserved-identity` and the rest).
-2. **Component**: compiled by Wasmtime, refused if it imports anything, and instantiated.
+2. **Component**: loaded by the module engine as the host loads it, refused if it imports anything or does not export the `adjust` interface. The engine instantiates it on the reference's first call.
 3. **Reference**: `coefficients` for value sets the table gives (the defaults; every field at its least, middle and greatest; each field at each end with the rest at their defaults; three mixed sets), and `apply_row` over the fixed patches for each: every answer accepted, the right length and finite, and the same from a second instance. A failure names the value set and the patch, such as ``value set `defaults`: coefficients refused: the values hold no field `highlight-hue` ``.
 4. **Program**: validated by `naga` under the prelude with a harness that calls `lf_module`, and refused for any name or declaration the contract does not allow.
 5. **GPU**: the program alone, in a compute harness on the local adapter (the first hardware adapter of Vulkan, Metal or DirectX 12), over the same patches and value sets, against the reference by the pointwise class's limits. It is reported, not gated: outside the limits, the command names the cells and says that the host would render through the reference. Without an adapter it says it did not measure.
@@ -64,4 +66,4 @@ tools/cargo-cached xtask module-check target/evidence/split-toning.lfmodule [--j
 
 ## Outstanding
 
-The harness and `module-check` run components through their own Wasmtime runner, configured as the module engine is (relaxed SIMD and threads off, NaN canonicalization on, a memory limit, and a fuel budget per call where the engine uses an epoch deadline). When the host's engine crate, `luxforge-wasm`, lands, they move to it, so they run exactly what the host runs. `module-check`'s GPU step runs the program alone; the host's probe runs it in the renderer once runtime programs are loaded.
+`module-check`'s GPU step runs the program alone; the host's probe runs it in the renderer once runtime programs are loaded.

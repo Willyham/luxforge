@@ -40,7 +40,7 @@ jobs:
           /tmp/luxforge-awscli/aws/install --install-dir "$GITHUB_WORKSPACE/.tools/aws-cli" --bin-dir "$GITHUB_WORKSPACE/.tools/bin"
           echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Native compiler cache identity
         id: native-compiler
         run: |
@@ -54,7 +54,7 @@ jobs:
           shared-key: corpus-ubuntu-24.04-${{ steps.native-compiler.outputs.key }}
           cache-on-failure: true
       - name: Build headless authentic qualifier
-        run: cargo +1.94.0 build --release --locked -p luxforge-raw --example qualify_profiles
+        run: cargo +1.96.0 build --release --locked -p luxforge-raw --example qualify_profiles
       - name: Test R2 corpus in bounded chunks
         env:
           R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}

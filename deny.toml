@@ -10,8 +10,8 @@ targets = [
 # IJG: the Independent JPEG Group's licence of libjpeg-turbo, which `mozjpeg-sys` bundles for the
 # JPEG decoder and encoder (with its Zlib and BSD-3-Clause parts); GPL-compatible, with an
 # attribution notice. MIT-0: MIT without its attribution condition. Apache-2.0 WITH LLVM-exception:
-# Wasmtime and Cranelift, the external modules' engine, under Apache-2.0 with the LLVM exception,
-# which only relaxes it.
+# Wasmtime and Cranelift (the external modules' engine, in `luxforge-wasm`), Apache-2.0 with an exception that only relaxes
+# its attribution terms for compiled output.
 allow = [
     "GPL-3.0-or-later", "MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSL-1.0",
     "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "0BSD", "CC0-1.0", "Unlicense", "Unicode-3.0",

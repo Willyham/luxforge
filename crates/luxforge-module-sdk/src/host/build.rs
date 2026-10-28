@@ -16,7 +16,7 @@ pub const TOOLCHAIN: &str = include_str!("../../../../rust-toolchain.toml");
 const WIT: &str = include_str!("../../../../wit/adjustment.wit");
 const WORLD: &str = "adjustment";
 
-/// The pinned channel, `1.94.0`, from [`TOOLCHAIN`].
+/// The pinned channel, `1.96.0`, from [`TOOLCHAIN`].
 pub fn toolchain_channel() -> &'static str {
     TOOLCHAIN
         .lines()
@@ -225,7 +225,7 @@ pub fn componentize(core: &[u8]) -> Result<Vec<u8>, Error> {
     wit_component::ComponentEncoder::default()
         .validate(true)
         .module(&module)
-        .and_then(|mut encoder| encoder.encode())
+        .and_then(|encoder| encoder.encode())
         .map_err(|error| format!("the core module is not an {WORLD} module: {error:#}"))
 }
 

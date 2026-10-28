@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-webp", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "crates/luxforge-module-sdk", "xtask", "xtask/cli"]
+members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-webp", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-onnx", "crates/luxforge-diffusion", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "crates/luxforge-test-macros", "crates/luxforge-update", "crates/luxforge-install", "crates/luxforge-sparkle", "crates/luxforge-module-sdk", "crates/luxforge-wasm", "xtask", "xtask/cli"]
 # Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
 # The example module is built for WebAssembly by `cargo xtask module-package`.
 exclude = ["services/usage-ingest", "examples/modules/split-toning"]
@@ -9,7 +9,7 @@ resolver = "3"
 version = "0.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-rust-version = "1.94"
+rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
@@ -153,6 +153,13 @@ iced_wgpu = { version = "=0.14.0", default-features = false }
 # f16 tensors. No `ndarray`, `tracing` or `copy-dylibs`. Each platform's provider (`coreml`,
 # `directml`) is a feature `luxforge-onnx` adds under its own target.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24", "half"] }
+# The WebAssembly engine external adjustment modules run in, named only by `luxforge-wasm`: 49.0.4,
+# whose MSRV is the workspace's 1.96 and which carries the fixes for every advisory against earlier
+# releases. Only what the host uses: Cranelift, the
+# runtime and the component model with its bindings macro. No async, fibers, GC, threads, pooling
+# allocator, profiling, debug information, WAT text, parallel compilation or Wasmtime's own code
+# cache: `luxforge-wasm` caches compiled code itself.
+wasmtime = { version = "=49.0.4", default-features = false, features = ["cranelift", "runtime", "component-model", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
