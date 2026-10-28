@@ -29,6 +29,9 @@ moxcms.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true
 rusqlite.workspace = true
+# An external module's manifest version (`modules/module_package`), the version `luxforge-update`
+# already builds, so it adds no package.
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -40,6 +43,11 @@ url.workspace = true
 uuid.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
+# Reads an external module's `.lfmodule` package (`modules/module_package`): the version and the
+# one feature xtask already builds, stored and Deflate entries through the `flate2` above, so it
+# adds no package to the lockfile. No encryption or other compression method is asked for, and the
+# reader bounds the archive's entries and sizes itself before the crate parses them.
+zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 
 [features]
 # Skips the drive-cache flush of every durable write (`atomic_file::flush`) and the catalog's
