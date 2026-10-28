@@ -1208,6 +1208,8 @@ pub(crate) struct GpuPreviews {
     pub(crate) rest_compiling_since: Option<(u64, std::time::Instant)>,
     /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
     pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
+    /// The probes of external GPU programs the view asked for ([`super::gpu_probe`]).
+    pub(crate) probes: super::gpu_probe::ViewProbes,
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
@@ -2278,11 +2280,16 @@ impl Editor {
         if self.gpu_preview_allowed().is_err() {
             return;
         }
+        let view = rest.map(|rest| rest.view);
+        // The view's first use of an external program waiting for its probe asks for it.
+        if let Some(view) = &view {
+            self.gpu_view_fell_back(&view.answer);
+        }
         let Some(GpuPreview {
             answer: GpuAnswer::Plan(plan),
             boundary: Some(request),
             ..
-        }) = rest.map(|rest| rest.view)
+        }) = view
         else {
             return;
         };
@@ -3517,7 +3524,8 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     editor.gpu_mark_at_rest();
     editor.gpu_follow_rest_drawn();
     editor.gpu_follow_warm_up();
-    editor.gpu_compute_grids()
+    let probe = editor.gpu_view_probe();
+    iced::Task::batch([editor.gpu_compute_grids(), probe])
 }
 
 /// A draft that ended keeps its drawn plan until the frame that replaces it is presented, or

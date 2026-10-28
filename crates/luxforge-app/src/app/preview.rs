@@ -1079,6 +1079,7 @@ impl Editor {
             }
             PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
             PreviewMessage::WindowRead(answer) => self.gpu_window_read(*answer),
+            PreviewMessage::ProgramProbed(probed) => return self.gpu_view_probed(*probed),
             PreviewMessage::OverviewReduced(reduced) => self.overview_reduced(*reduced),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
