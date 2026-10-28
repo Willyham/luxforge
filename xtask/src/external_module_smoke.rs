@@ -510,14 +510,7 @@ fn linear(path: &Path) -> Result<(Vec<[f32; 3]>, usize, usize)> {
     let image = image::open(path)
         .map_err(|error| format!("{}: {error}", path.display()))?
         .to_rgb8();
-    let decode = |code: u8| {
-        let v = f32::from(code) / 255.0;
-        if v <= 0.040_45 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
+    let decode = |code: u8| luxforge_reference::srgb::decode(code) as f32;
     let pixels = image.pixels().map(|pixel| pixel.0.map(decode)).collect();
     Ok((pixels, image.width() as usize, image.height() as usize))
 }
@@ -590,7 +583,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ensure(
             recorded["evidence"] == true
                 && recorded["command"]["program"].is_string()
-                && !args.contains(&"--open")
+                // Relaunch drops each opened photograph, so the remembered catalog reopens it.
+                && !args.iter().any(|arg| arg.ends_with(".jpg"))
                 && args.contains(&"--evidence-data"),
             format!("{name}: Relaunch recorded {recorded}"),
         )?;
