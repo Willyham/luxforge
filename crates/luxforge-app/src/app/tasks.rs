@@ -192,6 +192,9 @@ pub(crate) struct SyncResult {
     /// A client connected, named itself or disconnected (`session.*`), which an open Agents tab
     /// reads the connected clients again for.
     pub(crate) sessions: bool,
+    /// Another client changed the person's module layout (`module.layout`), which an open
+    /// Settings › Modules tab reads again.
+    pub(crate) module_layout: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -225,6 +228,7 @@ impl SyncResult {
             usage: false,
             updates: false,
             sessions: false,
+            module_layout: false,
             own: Vec::new(),
             moved: MovedPhotos::default(),
         }
@@ -2248,6 +2252,13 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("session."));
+    // A module layout change touches no asset: it alone reads the layout again, while Settings ›
+    // Modules is open.
+    let module_layout = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method == luxforge_core::module_layout::LAYOUT_EVENT);
     // An event that leaves an asset at a new revision moved its history; a version moves none.
     let mut moved = MovedPhotos {
         assets: Vec::new(),
@@ -2294,6 +2305,7 @@ pub(crate) fn sync_now(
         usage,
         updates,
         sessions,
+        module_layout,
         own: read.into_iter().map(|event| event.request_id).collect(),
         moved,
     })
@@ -3043,6 +3055,7 @@ mod tests {
             usage: false,
             updates: false,
             sessions: false,
+            module_layout: false,
             own: Vec::new(),
             moved: Default::default(),
         };

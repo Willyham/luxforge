@@ -146,6 +146,9 @@ pub(crate) struct KeyContext {
     /// The Settings sheet is open: it is modal, so the workspace behind it takes no key but the
     /// ones that close the sheet.
     pub(crate) settings_open: bool,
+    /// The sheet is open at Modules, which takes its own keys: the arrows, Space, Cmd+Z while its
+    /// Undo toast shows and Escape while a row is dragged.
+    pub(crate) settings_modules: Option<ModulesKeys>,
     /// A download's setup sheet is open, with whether it can be allowed: it is modal, so Return
     /// answers its primary action, Escape answers Not now and no other key reaches the workspace.
     pub(crate) setup_sheet: Option<bool>,
@@ -207,6 +210,52 @@ pub(crate) struct KeyContext {
     /// The Corrections mode is active, by its module: its keys act on the selection and the next
     /// press, and its letter leaves it.
     pub(crate) corrections: Option<String>,
+}
+
+/// What the Settings sheet's Modules tab has that its keys act on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModulesKeys {
+    /// A row is held by its grip, so Escape lets it go with nothing written.
+    pub(crate) dragging: bool,
+    /// The Undo toast shows, so Cmd+Z undoes the last change.
+    pub(crate) undo: bool,
+}
+
+/// A key the Modules tab takes ([`KeyContext::settings_modules`]): ↑ ↓ select, ⌥↑ ⌥↓ move the
+/// selected row one place, ⌥⇧↑ ⌥⇧↓ to its group's ends, Space turns it on or off, Cmd+Z undoes
+/// while the toast shows and Escape lets go of a dragged row. Every other key falls through to the
+/// sheet's own.
+fn modules_key(keyboard: &Keys, status: Status, keys: ModulesKeys) -> Option<Message> {
+    use crate::app::message::settings::{ModuleDragEdit, ModulesKey, ModulesMessage};
+    use crate::state::module_settings::Move;
+    let modules = |message| Some(Message::Settings(SettingsMessage::Modules(message)));
+    let Keys::KeyPressed { key, modifiers, .. } = keyboard else {
+        return None;
+    };
+    match key {
+        Key::Named(Named::Escape) if keys.dragging => {
+            modules(ModulesMessage::Drag(ModuleDragEdit::Cancel))
+        }
+        Key::Named(direction @ (Named::ArrowUp | Named::ArrowDown))
+            if !modifiers.command() && !modifiers.control() =>
+        {
+            let up = *direction == Named::ArrowUp;
+            modules(ModulesMessage::Key(
+                match (modifiers.alt(), modifiers.shift()) {
+                    (true, true) => ModulesKey::Move(if up { Move::Top } else { Move::Bottom }),
+                    (true, false) => ModulesKey::Move(if up { Move::Up } else { Move::Down }),
+                    (false, _) => ModulesKey::Step(if up { -1 } else { 1 }),
+                },
+            ))
+        }
+        Key::Named(Named::Space) if status == Status::Ignored && plain(modifiers) => {
+            modules(ModulesMessage::Key(ModulesKey::Toggle))
+        }
+        _ if keys.undo && modifiers.command() && !modifiers.shift() && character(key, "z") => {
+            modules(ModulesMessage::Undo)
+        }
+        _ => None,
+    }
 }
 
 /// What of Copy settings is open over the workspace. Escape cancels any of them; Return answers
@@ -366,6 +415,12 @@ fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message>
     // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
     // the workspace behind it, Select's included. Its fields still receive their own typing.
     if context.settings_open {
+        if let Some(message) = context
+            .settings_modules
+            .and_then(|keys| modules_key(keyboard, status, keys))
+        {
+            return Some(message);
+        }
         return match keyboard {
             Keys::KeyPressed {
                 key: Key::Named(Named::Escape),
@@ -1506,6 +1561,7 @@ mod tests {
             mask_brush: false,
             palette_open: false,
             settings_open: false,
+            settings_modules: None,
             setup_sheet: None,
             export_menu_open: false,
             export_sheet_open: false,

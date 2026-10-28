@@ -295,7 +295,9 @@ impl Editor {
                             Task::none()
                         };
                         let agents = self.agents_followed(sync.sessions);
-                        let flags = Task::batch([flags, updates, agents]);
+                        // Settings › Modules follows another client's layout change.
+                        let layout = self.module_layout_changed_elsewhere(sync.module_layout);
+                        let flags = Task::batch([flags, updates, agents, layout]);
                         self.develop_photos_moved(&sync.moved);
                         let strip = match sync.library {
                             Some(sequence) => self.develop_library_changed(sequence),

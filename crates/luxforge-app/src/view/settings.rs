@@ -103,6 +103,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
     let content = match open {
         SettingsTab::General => general(model),
         SettingsTab::Appearance => appearance(model),
+        SettingsTab::Modules => super::module_settings::modules_tab(model.modules.as_ref()),
         SettingsTab::Models => models_tab(model.models.as_ref()),
         SettingsTab::Agents => agents_tab(model.agents.as_ref()),
         SettingsTab::Experiments => experiments(model),
@@ -114,7 +115,18 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
             .height(Length::Fill)
             .padding(theme::SPACING),
         vertical_rule(),
-        scrollable(container(content).padding(theme::SPACING * 2.0)).height(Length::Fill),
+        // Modules scrolls its own list, so its detail pane and toast stay in view.
+        if open == SettingsTab::Modules {
+            Element::from(
+                container(content)
+                    .padding(theme::SPACING * 2.0)
+                    .height(Length::Fill),
+            )
+        } else {
+            scrollable(container(content).padding(theme::SPACING * 2.0))
+                .height(Length::Fill)
+                .into()
+        },
     ];
     // At its size where the window has room for it, and shrunk to fit one that has not, as a large
     // interface size leaves a small window: the content scrolls.
@@ -155,6 +167,8 @@ fn tab_icon(tab: SettingsTab) -> Icon {
         SettingsTab::General => Icon::Settings,
         // The colour drop the Masks panel's colour range draws: the interface's colours.
         SettingsTab::Appearance => Icon::Colour,
+        // The four squares the board draws: the modules a workspace is assembled from.
+        SettingsTab::Modules => Icon::Grid,
         SettingsTab::Models => Icon::Spark,
         SettingsTab::Agents => Icon::Terminal,
         SettingsTab::Experiments => Icon::Beaker,

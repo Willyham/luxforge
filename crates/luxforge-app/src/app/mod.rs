@@ -208,6 +208,9 @@ mod residency_tests;
 // Consumed by the usage statistics supervisor, which a later task adds.
 #[cfg(test)]
 mod models_tests;
+mod module_settings;
+#[cfg(test)]
+mod module_settings_tests;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -687,11 +690,12 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 19] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 20] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
     mask_panel::subscription,
+    module_settings::subscription,
     preview::subscription,
     sync::subscription,
     performance::subscription,
@@ -1586,6 +1590,11 @@ impl Editor {
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette.open,
             settings_open: self.settings.open.is_some(),
+            settings_modules: (self.settings.open == Some(state::settings::SettingsTab::Modules))
+                .then(|| keymap::ModulesKeys {
+                    dragging: self.settings.modules.drag.is_some(),
+                    undo: self.settings.modules.toast.is_some(),
+                }),
             setup_sheet: self
                 .workspace
                 .setup_sheet

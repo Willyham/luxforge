@@ -59,18 +59,31 @@ impl Editor {
                 } else {
                     Task::none()
                 };
+                // The Modules tab reads the modules and the layout again, which another process
+                // may have changed by no event this desktop reads; its toast and a held row
+                // belong to the tab and go with it.
+                let modules = if tab == SettingsTab::Modules {
+                    self.read_modules_tab()
+                } else {
+                    self.settings.modules.leave();
+                    Task::none()
+                };
                 return Task::batch([
                     self.read_flags(),
                     self.list_themes(),
                     self.read_usage(),
                     statuses,
                     agents,
+                    modules,
                     self.read_updates(),
                 ]);
             }
+            SettingsMessage::OpenModules(focus) => return self.open_modules(focus),
+            SettingsMessage::Modules(message) => return self.modules_update(message),
             SettingsMessage::Close => {
                 self.settings.open = None;
                 self.settings.number_text.clear();
+                self.settings.modules.leave();
                 // A theme row's and a model row's menus belong to the sheet.
                 if matches!(
                     self.view_state.menu,
@@ -338,6 +351,7 @@ impl Editor {
         json!({
             "models": self.models_summary(),
             "agents": self.agents_summary(),
+            "modules": self.modules_summary(),
             "open": self.settings.open.map(SettingsTab::name),
             "tabs": self.workspace.settings.tabs.iter().map(|tab| tab.name()).collect::<Vec<_>>(),
             "general": {"rows": general, "error": self.workspace.settings.preferences_error},

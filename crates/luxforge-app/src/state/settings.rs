@@ -1,6 +1,7 @@
 //! The Settings sheet: which tab is open, the flags as `flags.list` last answered them, the flag
 //! writes waiting and the number fields' text, and the model its tabs, General, Appearance,
-//! Models when a registered module holds a model, Agents ([`super::agents`]), Experiments and, in
+//! Modules ([`super::module_settings`]), Models when a registered module holds a model, Agents
+//! ([`super::agents`]), Experiments and, in
 //! a launch eligible for usage statistics, Privacy, are drawn from. The sheet is this desktop's
 //! own view state, like the gallery page; the preferences
 //! and flags are the host's, read and written through `preferences.read`, `preferences.set`,
@@ -13,6 +14,7 @@ use super::{
     agents::{Agents, AgentsModel},
     capabilities::CapabilityStore,
     models::{self, ModelsModel},
+    module_settings::{ModulesModel, ModulesTab},
     preferences::{GeneralRow, PreferenceWriter, general_rows},
     themes::{AppearanceModel, Themes, appearance},
     update::{Switches, Updates, UpdatesGroup, group},
@@ -57,6 +59,9 @@ pub(crate) fn resource_offered(flags: Option<&FlagList>, resource: &ResourceDesc
 pub(crate) enum SettingsTab {
     General,
     Appearance,
+    /// The registered modules grouped by home, with their switches and order
+    /// ([`super::module_settings`]).
+    Modules,
     /// The models registered modules hold, only when one does.
     Models,
     /// Connecting agents through `luxforge-mcp`, and the live clients connected now.
@@ -67,9 +72,10 @@ pub(crate) enum SettingsTab {
 }
 
 impl SettingsTab {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::General,
         Self::Appearance,
+        Self::Modules,
         Self::Models,
         Self::Agents,
         Self::Experiments,
@@ -92,6 +98,7 @@ impl SettingsTab {
         match self {
             Self::General => "general",
             Self::Appearance => "appearance",
+            Self::Modules => "modules",
             Self::Models => "models",
             Self::Agents => "agents",
             Self::Experiments => "experiments",
@@ -108,6 +115,7 @@ impl SettingsTab {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
+            Self::Modules => "Modules",
             Self::Models => "Models",
             Self::Agents => "Agents",
             Self::Experiments => "Experiments",
@@ -143,12 +151,14 @@ pub(crate) struct Settings {
     pub(crate) closing: bool,
     /// The Agents tab: the server beside this build, the client chosen and the connected clients.
     pub(crate) agents: Agents,
+    /// The Modules tab: the modules and layout it read, its writes, selection, drag and toast.
+    pub(crate) modules: ModulesTab,
 }
 
 impl Settings {
-    /// No flag write is in flight or waiting.
+    /// No flag or module layout write is in flight or waiting.
     pub(crate) fn idle(&self) -> bool {
-        self.writing.is_none() && self.waiting.is_empty()
+        self.writing.is_none() && self.waiting.is_empty() && self.modules.idle()
     }
 
     /// The newest write made for `flag` that has not been answered yet.
@@ -218,6 +228,8 @@ pub(crate) struct SettingsModel {
     pub(crate) models: Option<ModelsModel>,
     /// The Agents tab, while it is open.
     pub(crate) agents: Option<AgentsModel>,
+    /// The Modules tab, while it is open.
+    pub(crate) modules: Option<ModulesModel>,
     /// General's Updates group.
     pub(crate) updates: UpdatesGroup,
 }
@@ -286,6 +298,8 @@ pub(crate) fn derive(
         }),
         agents: (open == SettingsTab::Agents)
             .then(|| super::agents::derive(&settings.agents, now_ms())),
+        modules: (open == SettingsTab::Modules)
+            .then(|| super::module_settings::derive(&settings.modules)),
         updates: group(updates, update_switches(preferences), now_ms()),
     }
 }
@@ -634,6 +648,7 @@ mod tests {
             [
                 SettingsTab::General,
                 SettingsTab::Appearance,
+                SettingsTab::Modules,
                 SettingsTab::Agents,
                 SettingsTab::Experiments
             ]
