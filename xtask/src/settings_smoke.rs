@@ -512,6 +512,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 == [
                     json!("developer"),
                     json!("ai.analysis"),
+                    json!("modules.manager"),
                     json!("proof.choice"),
                     json!("proof.number"),
                 ],
@@ -898,7 +899,14 @@ fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
     ensure(
         settings(privacy)["open"] == "privacy"
             && settings(privacy)["tabs"]
-                == json!(["general", "appearance", "models", "experiments", "privacy"])
+                == json!([
+                    "general",
+                    "appearance",
+                    "models",
+                    "agents",
+                    "experiments",
+                    "privacy"
+                ])
             && usage(privacy)["privacy"]["switch"] == true
             && usage(privacy)["privacy"]["error"].is_null()
             && usage(privacy)["privacy"]["details_open"] == false,

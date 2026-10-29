@@ -436,6 +436,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         inputs.modules,
         inputs.developer,
         inputs.view_state.menu == Some(MenuTarget::Strip),
+        crate::state::settings::manager_on(inputs.settings.flags.as_ref()),
     );
     let photo = photo_view(inputs, drafting);
     CanvasModel {
@@ -723,12 +724,24 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         });
     }
     if let Some(error) = inputs.render_error {
-        notices.extend(render_notice(
-            inputs.modules,
-            inputs.layout,
-            error,
-            inputs.document.state.is_some(),
-        ));
+        let manager = crate::state::settings::manager_on(inputs.settings.flags.as_ref());
+        notices.extend(
+            render_notice(
+                inputs.modules,
+                inputs.layout,
+                error,
+                inputs.document.state.is_some(),
+            )
+            .map(|mut notice| {
+                // Install module… is the module manager's: off, the notice still names the module.
+                if !manager {
+                    notice
+                        .actions
+                        .retain(|(_, action)| *action != NoticeAction::InstallModule);
+                }
+                notice
+            }),
+        );
     }
     notices
 }

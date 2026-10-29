@@ -903,6 +903,21 @@ mod tests {
             }
         }
 
+        /// The `modules.manager` experiment on, as the host lists it.
+        fn with_manager(mut self) -> Self {
+            self.settings.flags = Some(
+                serde_json::from_value(json!({
+                    "flags": [{"id": "modules.manager", "title": "Module manager",
+                               "description": "Shows Settings › Modules.", "kind": "toggle",
+                               "applies": "live", "default": false, "value": true,
+                               "stored": true}],
+                    "unrecognized": []
+                }))
+                .expect("a flag listing"),
+            );
+            self
+        }
+
         /// One asset open at that revision with those layers, and one history entry for it.
         fn opened(mut self, layers: Vec<luxforge_core::Layer>) -> Self {
             let asset = AssetId::new();
@@ -4728,7 +4743,7 @@ mod tests {
 
     #[test]
     fn module_layout_sections_follow_the_persons_order_and_an_off_module_draws_none() {
-        let mut scene = Scene::new(descriptors());
+        let mut scene = Scene::new(descriptors()).with_manager();
         let order = panel_order(&scene, &["luxforge.vignette", "luxforge.basic"]);
         let order: Vec<&str> = order.iter().map(String::as_str).collect();
         scene.layout.adopt_view(
@@ -4776,6 +4791,76 @@ mod tests {
                 .all(|label| !label.starts_with("Perspective \u{b7}")),
             "{labels:?}"
         );
+    }
+
+    /// With `modules.manager` off the stored layout still orders the panel and turns modules off,
+    /// and the footer still names them, but nothing offers a layout gesture: no Customize…, no
+    /// palette entry, no strip ⋯ menu and no menu on an ordinary band. On, each is offered.
+    #[test]
+    fn module_layout_the_manager_flag_gates_every_gesture_and_never_the_layout() {
+        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let order = panel_order(&scene, &["luxforge.vignette", "luxforge.basic"]);
+        let order: Vec<&str> = order.iter().map(String::as_str).collect();
+        scene.layout.adopt_view(
+            layout_view(&order, &[], &["luxforge.perspective"]),
+            &scene.modules,
+        );
+        scene.palette.open = true;
+        let gestures = |workspace: &Workspace| -> Vec<String> {
+            workspace
+                .palette
+                .entries
+                .iter()
+                .map(|entry| entry.label.clone())
+                .filter(|label| {
+                    label.starts_with("Customize")
+                        || label.starts_with("Turn off")
+                        || label.starts_with("Enable")
+                        || label == "Settings \u{b7} Modules"
+                })
+                .collect()
+        };
+        let menus = |scene: &mut Scene| {
+            scene.view_state.menu = Some(MenuTarget::Band("luxforge.vignette".into()));
+            let band = section(&scene.derive(), "luxforge.vignette").menu.clone();
+            scene.view_state.menu = Some(MenuTarget::Strip);
+            let strip = scene.derive().canvas.strip_menu;
+            scene.view_state.menu = None;
+            (band, strip)
+        };
+
+        let off = scene.derive();
+        let drawn: Vec<&str> = off
+            .tools
+            .sections
+            .iter()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        assert_eq!(drawn[..2], ["luxforge.vignette", "luxforge.basic"]);
+        assert!(!drawn.contains(&"luxforge.perspective"));
+        assert_eq!(
+            off.tools.off_footer.as_deref(),
+            Some("1 module off: Perspective")
+        );
+        assert!(!off.tools.customize);
+        assert_eq!(gestures(&off), Vec::<String>::new());
+        let (band, strip) = menus(&mut scene);
+        assert_eq!(band, None, "an ordinary band has no menu");
+        assert!(!strip.available && !strip.open);
+
+        let mut scene = scene.with_manager();
+        let on = scene.derive();
+        assert!(on.tools.customize);
+        let offered = gestures(&on);
+        assert!(
+            offered.contains(&"Settings \u{b7} Modules".to_owned())
+                && offered.contains(&"Customize panel\u{2026}".to_owned()),
+            "{offered:?}"
+        );
+        let (band, strip) = menus(&mut scene);
+        let band = band.expect("Vignette's menu");
+        assert!(band.manager && band.turn_off.is_some() && !band.moves.is_empty());
+        assert!(strip.available && strip.open);
     }
 
     #[test]
@@ -4868,7 +4953,7 @@ mod tests {
 
     #[test]
     fn module_layout_the_strip_follows_the_persons_order_and_drops_an_off_tool() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).opened(Vec::new()).with_manager();
         let strip = |workspace: &Workspace| -> Vec<String> {
             workspace
                 .canvas
@@ -5003,7 +5088,7 @@ fields = ["amount"]
     #[test]
     fn external_module_not_installed_and_didnt_load_bands_and_their_notice() {
         let layer = luxforge_core::Layer::new("org.example.glow.adjust", json!({ "amount": 30 }));
-        let mut scene = Scene::new(descriptors()).opened(vec![layer]);
+        let mut scene = Scene::new(descriptors()).opened(vec![layer]).with_manager();
         scene.expanded.insert("org.example.glow".into(), true);
         let workspace = scene.derive();
         let band = section(&workspace, "org.example.glow");
@@ -5035,6 +5120,10 @@ fields = ["amount"]
                 canvas::NoticeAction::InstallModule
             )]
         );
+        // With the module manager off the notice still names the module, with no Install.
+        let flags = scene.settings.flags.take();
+        assert!(scene.derive().canvas.notices[0].actions.is_empty());
+        scene.settings.flags = flags;
 
         let packages = external_modules::PackageList::parse(json!({
             "modules": [{

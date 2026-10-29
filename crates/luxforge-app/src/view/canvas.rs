@@ -43,7 +43,7 @@ use iced::{
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
     MenuEntry, MenuItem, ModeEntry, NoticeCardModel, Tone, chip, draft_bar_with_controls,
-    focus_control, menu_list, mode_strip_with_menu, notice_card, popover_above, theme,
+    focus_control, menu_list, mode_strip, mode_strip_with_menu, notice_card, popover_above, theme,
 };
 use luxforge_ui::{Element, Theme, Token};
 use std::time::{Duration, Instant};
@@ -168,8 +168,8 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
 }
 
 /// The mode strip: the pointer and every declared canvas mode the person has on, in their order,
-/// then the ⋯ that opens the strip's menu upward. A secondary click anywhere on the strip opens the
-/// same menu. The view overlays' toggles are in the title bar, beside Clipping.
+/// then, while the module manager is on, the ⋯ that opens the strip's menu upward. A secondary
+/// click anywhere on the strip opens the same menu. The view overlays' toggles are in the title bar, beside Clipping.
 fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     let modes: Vec<ModeEntry> = model
         .modes
@@ -191,19 +191,22 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
     } else {
         Message::View(ViewMessage::OpenMenu(MenuTarget::Strip))
     };
-    let bar = mode_strip_with_menu(
-        &modes,
-        move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
-        toggle_menu,
-        open,
-    );
-    let bar =
-        mouse_area(bar).on_right_press(Message::View(ViewMessage::OpenMenu(MenuTarget::Strip)));
-    let bar = popover_above(
-        bar,
-        open.then(|| strip_menu(&model.strip_menu)),
-        Message::View(ViewMessage::CloseMenu),
-    );
+    let select = move |index: usize| Message::View(ViewMessage::SetMode(ids[index].clone()));
+    // The ⋯ and its menu are the module manager's: off, the strip is the modes alone.
+    let bar: Element<'a, Message> = if model.strip_menu.available {
+        let bar = mode_strip_with_menu(&modes, select, toggle_menu, open);
+        let bar =
+            mouse_area(bar).on_right_press(Message::View(ViewMessage::OpenMenu(MenuTarget::Strip)));
+        popover_above(
+            bar,
+            open.then(|| strip_menu(&model.strip_menu)),
+            Message::View(ViewMessage::CloseMenu),
+        )
+    } else {
+        mode_strip(&modes, select, &[], |_| {
+            Message::View(ViewMessage::CloseMenu)
+        })
+    };
     container(bar)
         .width(Length::Fill)
         .height(Length::Fill)

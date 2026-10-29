@@ -240,6 +240,9 @@ pub(crate) struct ToolsModel {
     /// Customize…; `None` when every module is on or each that is off draws its kept band
     /// ([`module_layout::off_footer`]).
     pub(crate) off_footer: Option<String>,
+    /// The footer offers Customize…: the module manager is on. Off, the footer still names what
+    /// the stored layout turned off.
+    pub(crate) customize: bool,
 }
 
 /// A declared action with fixed parameters, as a header or group reset button raises it.
@@ -1011,6 +1014,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
     layout.sort(Toolset::Adjustments, &mut developer, |section| {
         &section.module_id
     });
+    let manager = crate::state::settings::manager_on(inputs.settings.flags.as_ref());
     if let Some(MenuTarget::Band(open)) = &inputs.view_state.menu {
         for group in [&mut sections, &mut developer] {
             let shown: Vec<String> = group
@@ -1021,7 +1025,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
             if let Some(section) = group.iter_mut().find(|section| &section.module_id == open)
                 && let Some(module) = module_of(inputs.modules, open)
             {
-                section.menu = Some(module_layout::band_menu(layout, module, &shown));
+                section.menu = Some(module_layout::band_menu(layout, module, &shown, manager))
+                    .filter(module_layout::BandMenu::offers);
             }
         }
     }
@@ -1051,6 +1056,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         menu: inputs.view_state.menu.clone(),
         notice: inputs.remove.in_flight_notice(),
         off_footer,
+        customize: manager,
     }
 }
 

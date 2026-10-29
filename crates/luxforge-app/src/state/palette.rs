@@ -323,17 +323,20 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::Appearance),
         ),
         (
-            "Settings \u{b7} Modules".to_owned(),
-            "module.layout.read \u{b7} module.enable \u{b7} module.disable \u{b7} module.order.set"
-                .to_owned(),
-            PaletteAction::Settings(crate::state::settings::SettingsTab::Modules),
-        ),
-        (
             "Settings \u{b7} Experiments".to_owned(),
             "flags.list \u{b7} flags.set".to_owned(),
             PaletteAction::Settings(crate::state::settings::SettingsTab::Experiments),
         ),
     ]);
+    // Modules only where the sheet lists it: the module manager is on.
+    if crate::state::settings::manager_on(inputs.settings.flags.as_ref()) {
+        entries.push((
+            "Settings \u{b7} Modules".to_owned(),
+            "module.layout.read \u{b7} module.enable \u{b7} module.disable \u{b7} module.order.set"
+                .to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Modules),
+        ));
+    }
     // Models only where the sheet lists it: a registered module holds a model.
     if crate::state::models::model_modules(inputs.modules, inputs.settings.flags.as_ref())
         .next()

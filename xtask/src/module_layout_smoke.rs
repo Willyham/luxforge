@@ -1,7 +1,8 @@
 //! The `module-layout` smoke scenario: the person's module layout arranged through the desktop's
 //! own gestures, on the real editor in the background.
 //!
-//! The photograph with a Vignette layer (`orientation-1.jpg`, Amount -60) is opened, then another
+//! The module manager experiment (`modules.manager`) is turned on first, as another client turns it
+//! on. The photograph with a Vignette layer (`orientation-1.jpg`, Amount -60) is opened, then another
 //! photograph (`orientation-6.jpg`), on which a band's menu moves Vignette to the top of the panel
 //! and turns it off. Reopening the first photograph draws its Off · edit kept band at Vignette's
 //! place. Customize panel… opens Settings › Modules at Vignette, the Tools group moves Crop ahead of
@@ -41,23 +42,33 @@ fn modules(name: &str, step: ModulesStep) -> Step {
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("opened").no_layer(VIGNETTE_EFFECT),
-        // 1: the first photograph's Vignette layer, through the API, with every module on.
+        // 1: the module manager experiment on, as another client turns it on: its gestures are
+        // offered only then.
+        Step::new(
+            "manager-on",
+            script::Step::agent(
+                "flags.set",
+                json!({"flag": "modules.manager", "value": true}),
+            ),
+        )
+        .commits(0),
+        // 2: the first photograph's Vignette layer, through the API, with every module on.
         Step::new(
             "vignette-layer",
             script::Step::call("edit.set-vignette", json!({"amount": AMOUNT})),
         )
         .commits(1)
         .payload(VIGNETTE_EFFECT, json!({"amount": AMOUNT})),
-        // 2: the other photograph, without one. An open's history is the photograph's, so it
+        // 3: the other photograph, without one. An open's history is the photograph's, so it
         // expects no count of commits against the frame before.
         Step::new("other-photo", script::Step::Open { path: OTHER.into() }),
-        // 3: Basic collapsed, so every band and the footer are on screen.
+        // 4: Basic collapsed, so every band and the footer are on screen.
         Step::new("basic-collapsed", script::Step::section(BASIC, false))
             .commits(0)
             .collapsed(BASIC),
-        // 4: Vignette's band menu, opened by a secondary click.
+        // 5: Vignette's band menu, opened by a secondary click.
         modules("band-menu", ModulesStep::BandMenu(VIGNETTE.into())),
-        // 5: its Move to top.
+        // 6: its Move to top.
         modules(
             "panel-moved",
             ModulesStep::Move(ModuleMove {
@@ -65,7 +76,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 to: "top".into(),
             }),
         ),
-        // 6: its Turn off Vignette.
+        // 7: its Turn off Vignette.
         modules(
             "vignette-off",
             ModulesStep::Enabled(ModuleSwitch {
@@ -73,7 +84,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 on: false,
             }),
         ),
-        // 7: the photograph with the Vignette layer, opened again while Vignette is off.
+        // 8: the photograph with the Vignette layer, opened again while Vignette is off.
         Step::new(
             "kept-band",
             script::Step::Open {
@@ -81,11 +92,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         )
         .payload(VIGNETTE_EFFECT, json!({"amount": AMOUNT})),
-        // 8: its kept band expanded: the values, read-only, and Enable Vignette.
+        // 9: its kept band expanded: the values, read-only, and Enable Vignette.
         Step::new("kept-expanded", script::Step::section(VIGNETTE, true))
             .commits(0)
             .expanded(VIGNETTE),
-        // 9: the band menu's Customize panel… opens Settings › Modules at Vignette.
+        // 10: the band menu's Customize panel… opens Settings › Modules at Vignette.
         modules(
             "customize",
             ModulesStep::Customize(ModuleCustomize {
@@ -93,7 +104,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 module: Some(VIGNETTE.into()),
             }),
         ),
-        // 10: the Tools group's Crop row, moved up with ⌥↑, ahead of Corrections.
+        // 11: the Tools group's Crop row, moved up with ⌥↑, ahead of Corrections.
         modules(
             "strip-moved",
             ModulesStep::TabMove(ModuleTabMove {
@@ -102,11 +113,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 to: "up".into(),
             }),
         ),
-        // 11: the sheet closed: the strip in its new order, the kept band at the top.
+        // 12: the sheet closed: the strip in its new order, the kept band at the top.
         Step::new("settings-closed", script::Step::settings(false)).commits(0),
-        // 12: the strip's ⋯ menu: Mask, then Crop ahead of Corrections.
+        // 13: the strip's ⋯ menu: Mask, then Crop ahead of Corrections.
         modules("strip-menu", ModulesStep::StripMenu),
-        // 13: its Customize tools… opens Settings › Modules at the Tools group.
+        // 14: its Customize tools… opens Settings › Modules at the Tools group.
         modules(
             "customize-tools",
             ModulesStep::Customize(ModuleCustomize {
@@ -114,9 +125,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 module: None,
             }),
         ),
-        // 14: Reset all: every module on, every order the default.
+        // 15: Reset all: every module on, every order the default.
         modules("reset", ModulesStep::ResetAll),
-        // 15: the sheet closed: the default panel and strip, Vignette's own band with its layer.
+        // 16: the sheet closed: the default panel and strip, Vignette's own band with its layer.
         Step::new("after-reset", script::Step::settings(false)).commits(0),
     ])
 }
@@ -428,10 +439,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "Vignette's band is still kept after Reset all",
     )?;
 
-    // The render: each photograph's on-screen bytes in every frame that shows it unobstructed.
+    // The render: each photograph's on-screen bytes in every frame that shows it unobstructed,
+    // after its Vignette layer: the frames before it show its Original.
     let mut renders: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (name, frame) in launch.names().iter().zip(&launch.frames) {
-        if name == "opened" || !unobstructed(frame) {
+        if ["opened", "manager-on"].contains(&name.as_str()) || !unobstructed(frame) {
             continue;
         }
         let Some(asset) = photo(frame) else {

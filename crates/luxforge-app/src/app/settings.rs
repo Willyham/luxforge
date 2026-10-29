@@ -14,7 +14,7 @@ use crate::state::{
     fill_setup::SetupAction,
     models::{self, ModelRequest},
     preferences::{self, GeneralControl},
-    settings::{FlagControl, SettingsTab, parse_number},
+    settings::{FlagControl, SettingsTab, manager_on, parse_number},
 };
 use iced::Task;
 use luxforge_core::flags::FlagList;
@@ -25,17 +25,18 @@ impl Editor {
     pub(super) fn settings_update(&mut self, message: SettingsMessage) -> Task<Message> {
         match message {
             SettingsMessage::Open(tab) => {
-                // A launch that is not eligible for usage statistics has no Privacy tab to open, and
-                // one whose modules hold no model no Models tab.
-                let models = models::model_modules(&self.modules, self.settings.flags.as_ref())
-                    .next()
-                    .is_some();
-                let tab =
-                    if SettingsTab::shown(self.usage.eligible, models).any(|shown| shown == tab) {
-                        tab
-                    } else {
-                        SettingsTab::General
-                    };
+                // A launch that is not eligible for usage statistics has no Privacy tab to open, one
+                // whose modules hold no model no Models tab, and one with the module manager off no
+                // Modules tab.
+                let flags = self.settings.flags.as_ref();
+                let models = models::model_modules(&self.modules, flags).next().is_some();
+                let tab = if SettingsTab::shown(self.usage.eligible, models, manager_on(flags))
+                    .any(|shown| shown == tab)
+                {
+                    tab
+                } else {
+                    SettingsTab::General
+                };
                 // The sheet is modal: nothing behind it stays open over it.
                 self.palette.open = false;
                 self.view_state.menu = None;
@@ -248,7 +249,8 @@ impl Editor {
 
     /// The flags as the host answered them changed: what a live flag gates follows. Remove leaves
     /// with its fill task's flag off and reads its tiers again when its status predates the change,
-    /// and an open Models tab with no model left to list gives way to General.
+    /// an open Models tab with no model left to list gives way to General, and so does an open
+    /// Modules tab once the module manager is off, which also puts away the strip's ⋯ menu.
     fn flags_followed(&mut self) -> Task<Message> {
         if self.settings.open == Some(SettingsTab::Models)
             && models::model_modules(&self.modules, self.settings.flags.as_ref())
@@ -256,6 +258,15 @@ impl Editor {
                 .is_none()
         {
             self.settings.open = Some(SettingsTab::General);
+        }
+        if !manager_on(self.settings.flags.as_ref()) {
+            if self.settings.open == Some(SettingsTab::Modules) {
+                self.settings.open = Some(SettingsTab::General);
+                self.settings.modules.leave();
+            }
+            if self.view_state.menu == Some(MenuTarget::Strip) {
+                self.view_state.menu = None;
+            }
         }
         self.remove_follow_flags();
         Task::none()

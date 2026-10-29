@@ -266,7 +266,7 @@ fn panel_body<'a>(
         }
     }
     if let Some(footer) = &model.off_footer {
-        panel = panel.push(off_footer(footer));
+        panel = panel.push(off_footer(footer, model.customize));
     }
     // A body that shrinks while the panel is scrolled near its end (a tab with fewer rows, a
     // section closing) would otherwise clamp the scroll and slide everything above it down.
@@ -478,7 +478,8 @@ fn section_view<'a>(
 }
 
 /// A band's menu: the moves, Turn off *Title* (Enable *Title* on a kept band), Customize panel… and
-/// Copy as JSON request ([`BandMenu`]).
+/// Copy as JSON request; with the module manager off, only a kept band's Enable *Title*
+/// ([`BandMenu`]).
 fn band_menu<'a>(section: &SectionModel, menu: &BandMenu) -> Element<'a, Message> {
     let module = &section.module_id;
     let item = |label: String, trailing: Option<&str>, on_press: Option<Message>| {
@@ -507,7 +508,9 @@ fn band_menu<'a>(section: &SectionModel, menu: &BandMenu) -> Element<'a, Message
             )
         })
         .collect();
-    entries.push(MenuEntry::Separator);
+    if !entries.is_empty() {
+        entries.push(MenuEntry::Separator);
+    }
     for (label, enabled) in [(&menu.turn_off, false), (&menu.enable, true)] {
         if let Some(label) = label {
             entries.push(item(
@@ -522,19 +525,22 @@ fn band_menu<'a>(section: &SectionModel, menu: &BandMenu) -> Element<'a, Message
             ));
         }
     }
-    entries.push(item(
-        "Customize panel\u{2026}".to_owned(),
-        None,
-        Some(Message::Modules(ModulesMessage::Customize {
-            toolset: Toolset::Adjustments,
-            module: Some(module.clone()),
-        })),
-    ));
-    entries.push(item(
-        "Copy as JSON request".to_owned(),
-        None,
-        Some(Message::Modules(ModulesMessage::CopyBand(module.clone()))),
-    ));
+    // Customize panel… and Copy as JSON request are the module manager's.
+    if menu.manager {
+        entries.push(item(
+            "Customize panel\u{2026}".to_owned(),
+            None,
+            Some(Message::Modules(ModulesMessage::Customize {
+                toolset: Toolset::Adjustments,
+                module: Some(module.clone()),
+            })),
+        ));
+        entries.push(item(
+            "Copy as JSON request".to_owned(),
+            None,
+            Some(Message::Modules(ModulesMessage::CopyBand(module.clone()))),
+        ));
+    }
     menu_list(entries)
 }
 
@@ -576,27 +582,27 @@ fn kept_rows<'a>(
     rows
 }
 
-/// The quiet line after the last section naming the modules that are off, with Customize….
-fn off_footer(footer: &str) -> Element<'_, Message> {
-    container(
-        row![
-            container(caption(footer.to_owned())).width(Length::Fill),
-            text_button(
-                "Customize\u{2026}",
-                ButtonTone::Quiet,
-                ButtonSize::Compact,
-                Some(Message::Modules(ModulesMessage::Customize {
-                    toolset: Toolset::Adjustments,
-                    module: None,
-                })),
-            ),
-        ]
+/// The quiet line after the last section naming the modules that are off, with Customize… while
+/// the module manager is on.
+fn off_footer(footer: &str, customize: bool) -> Element<'_, Message> {
+    let mut line = row![container(caption(footer.to_owned())).width(Length::Fill)]
         .align_y(Alignment::Center)
-        .spacing(theme::SPACING),
-    )
-    .width(Length::Fill)
-    .padding([theme::SPACING, theme::SECTION_PADDING.left])
-    .into()
+        .spacing(theme::SPACING);
+    if customize {
+        line = line.push(text_button(
+            "Customize\u{2026}",
+            ButtonTone::Quiet,
+            ButtonSize::Compact,
+            Some(Message::Modules(ModulesMessage::Customize {
+                toolset: Toolset::Adjustments,
+                module: None,
+            })),
+        ));
+    }
+    container(line)
+        .width(Length::Fill)
+        .padding([theme::SPACING, theme::SECTION_PADDING.left])
+        .into()
 }
 
 /// The rows of a section or group that declares `layout: tabs`, over its `controls`: a segmented

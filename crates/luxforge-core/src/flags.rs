@@ -20,6 +20,12 @@ pub const DEVELOPER: &str = "developer";
 /// selection renders.
 pub const AI_ANALYSIS: &str = "ai.analysis";
 
+/// The module manager (`docs/design/module-manager.md`): whether the desktop offers Settings ›
+/// Modules and the gestures that turn tool modules on or off, reorder them and install external
+/// modules. It gates the desktop's interface only: the layout and module methods answer, the stored
+/// layout applies and installed modules load whatever its value.
+pub const MODULES_MANAGER: &str = "modules.manager";
+
 /// When a flag's consumer reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -123,6 +129,13 @@ const FLAGS: &[FlagSpec] = &[
         id: AI_ANALYSIS,
         title: "AI object picking",
         description: "Offers the Object tool in Corrections and Object in New mask, which pick objects with the installed object finder; nothing renders differently either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+    FlagSpec {
+        id: MODULES_MANAGER,
+        title: "Module manager",
+        description: "Shows Settings › Modules and the commands that turn tool modules on or off, reorder them and install external modules; nothing renders differently either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
     },
@@ -575,10 +588,16 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer", AI_ANALYSIS]);
+        assert_eq!(ids(false), ["developer", AI_ANALYSIS, MODULES_MANAGER]);
         assert_eq!(
             ids(true),
-            ["developer", AI_ANALYSIS, "proof.choice", "proof.number"]
+            [
+                "developer",
+                AI_ANALYSIS,
+                MODULES_MANAGER,
+                "proof.choice",
+                "proof.number"
+            ]
         );
     }
 
@@ -588,7 +607,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][2]["options"][1],
+            text["flags"][3]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -627,7 +646,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][2]["id"], "proof.choice",
+            listed["flags"][3]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -635,7 +654,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][2]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][3]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

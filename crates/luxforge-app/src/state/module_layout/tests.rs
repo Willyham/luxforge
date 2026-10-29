@@ -206,7 +206,7 @@ fn module_layout_band_menus_offer_turn_off_only_for_an_unlocked_module_that_is_o
     layout.adopt_view(view(&order, &[], &[]), &modules);
     let find = |id: &str| modules.iter().find(|module| module.id == id).unwrap();
 
-    let basic = band_menu(&layout, find(BASIC), &order);
+    let basic = band_menu(&layout, find(BASIC), &order, true);
     assert_eq!(basic.turn_off, None, "Basic is locked");
     assert_eq!(basic.enable, None);
     assert_eq!(
@@ -216,7 +216,7 @@ fn module_layout_band_menus_offer_turn_off_only_for_an_unlocked_module_that_is_o
             .map(|to| (to, true))
             .collect::<Vec<_>>()
     );
-    let vignette = band_menu(&layout, find(VIGNETTE), &order);
+    let vignette = band_menu(&layout, find(VIGNETTE), &order, true);
     assert_eq!(vignette.turn_off.as_deref(), Some("Turn off Vignette"));
     assert_eq!(
         vignette.moves,
@@ -245,11 +245,11 @@ fn module_layout_band_menus_offer_turn_off_only_for_an_unlocked_module_that_is_o
     );
 
     layout.adopt_view(view(&order, &[], &[VIGNETTE]), &modules);
-    let kept = band_menu(&layout, find(VIGNETTE), &order);
+    let kept = band_menu(&layout, find(VIGNETTE), &order, true);
     assert_eq!(kept.turn_off, None);
     assert_eq!(kept.enable.as_deref(), Some("Enable Vignette"));
     layout.pending = true;
-    assert!(!band_menu(&layout, find(VIGNETTE), &order).enabled);
+    assert!(!band_menu(&layout, find(VIGNETTE), &order, true).enabled);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn module_layout_the_strip_menu_lists_every_tool_with_its_check_or_lock() {
     let modules = descriptors();
     let mut layout = EffectiveLayout::default();
     layout.adopt_view(view(&[], &[CROP, CORRECTIONS], &[CORRECTIONS]), &modules);
-    let menu = strip_menu(&layout, &modules, false, true);
+    let menu = strip_menu(&layout, &modules, false, true, true);
     let rows: Vec<(Option<&str>, Option<char>, bool, bool)> = menu
         .tools
         .iter()
@@ -272,7 +272,31 @@ fn module_layout_the_strip_menu_lists_every_tool_with_its_check_or_lock() {
             (Some(CORRECTIONS), Some('Q'), false, false),
         ]
     );
-    assert!(menu.open && menu.enabled);
+    assert!(menu.available && menu.open && menu.enabled);
+}
+
+/// With `modules.manager` off a band's menu offers nothing but a kept band's Enable, and the strip
+/// draws no ⋯ menu, open or not.
+#[test]
+fn module_layout_the_menus_offer_no_layout_gesture_while_the_manager_is_off() {
+    let modules = descriptors();
+    let mut layout = EffectiveLayout::default();
+    let order = [CROP, BASIC, VIGNETTE];
+    layout.adopt_view(view(&order, &[], &[]), &modules);
+    let find = |id: &str| modules.iter().find(|module| module.id == id).unwrap();
+    let on = band_menu(&layout, find(VIGNETTE), &order, false);
+    assert!(on.moves.is_empty() && on.turn_off.is_none() && !on.manager);
+    assert!(!on.offers(), "an ordinary band has no menu");
+
+    layout.adopt_view(view(&order, &[], &[VIGNETTE]), &modules);
+    let kept = band_menu(&layout, find(VIGNETTE), &order, false);
+    assert_eq!(kept.enable.as_deref(), Some("Enable Vignette"));
+    assert!(kept.offers() && kept.moves.is_empty());
+
+    assert_eq!(
+        strip_menu(&layout, &modules, false, true, false),
+        StripMenu::default()
+    );
 }
 
 #[test]

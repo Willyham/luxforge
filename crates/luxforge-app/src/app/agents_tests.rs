@@ -66,7 +66,7 @@ fn open_agents(editor: &mut Editor) {
 
 #[test]
 fn agents_the_tab_sits_after_models_and_the_palette_opens_it() {
-    let shown: Vec<SettingsTab> = SettingsTab::shown(false, true).collect();
+    let shown: Vec<SettingsTab> = SettingsTab::shown(false, true, true).collect();
     assert_eq!(
         shown,
         [

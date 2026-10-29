@@ -60,6 +60,16 @@ impl Editor {
                 self.view_state.menu = None;
                 return self.set_module_enabled(&module, enabled);
             }
+            // Moves, Copy as JSON request and Customize are the module manager's: with it off
+            // nothing offers them, and one sent anyway only puts the menu away.
+            ModulesMessage::Move { .. }
+            | ModulesMessage::MoveOpenBand(_)
+            | ModulesMessage::CopyBand(_)
+            | ModulesMessage::Customize { .. }
+                if !self.module_manager() =>
+            {
+                self.view_state.menu = None;
+            }
             ModulesMessage::Move {
                 toolset,
                 module,
@@ -117,6 +127,12 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    /// The `modules.manager` experiment is on, as the host last answered: the desktop offers the
+    /// layout and install gestures only then.
+    pub(crate) fn module_manager(&self) -> bool {
+        crate::state::settings::manager_on(self.settings.flags.as_ref())
     }
 
     /// Read the layout again, after another client changed it.

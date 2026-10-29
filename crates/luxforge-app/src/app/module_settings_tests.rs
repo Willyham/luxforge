@@ -10,7 +10,7 @@ use super::{
         settings::{ModuleDragEdit, ModulesKey, ModulesMessage, SettingsMessage},
         sync::SyncMessage,
     },
-    settings_tests::{finish, launch},
+    settings_tests::{finish, launch, module_manager},
     tasks::{call, call_own},
 };
 use crate::state::{
@@ -104,6 +104,7 @@ fn row(toolset: Toolset, module: &str) -> RowKey {
 #[test]
 fn settings_modules_switch_writes_once_and_undo_writes_it_back() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     open(&mut editor);
     let tab = editor.workspace.settings.modules.as_ref().unwrap();
     assert!(!tab.loading && tab.groups.len() >= 4);
@@ -206,6 +207,7 @@ fn settings_modules_switch_writes_once_and_undo_writes_it_back() {
 #[test]
 fn settings_modules_keyboard_drag_and_resets_each_write_once() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     open(&mut editor);
     let context = editor.key_context();
     let key = |key: Named, modifiers: Modifiers| {
@@ -341,6 +343,7 @@ fn settings_modules_keyboard_drag_and_resets_each_write_once() {
 #[test]
 fn settings_modules_a_refused_write_says_why_and_reads_back() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     open(&mut editor);
     editor
         .settings
@@ -392,6 +395,7 @@ fn settings_modules_a_refused_write_says_why_and_reads_back() {
 #[test]
 fn settings_modules_follows_another_clients_change_and_changes_no_recipe() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     let start = editor.sync.sequence;
     open(&mut editor);
     modules(
@@ -452,11 +456,56 @@ fn settings_modules_follows_another_clients_change_and_changes_no_recipe() {
     finish(editor, root);
 }
 
+/// With `modules.manager` off there is no Modules tab: opening it, Customize and Install module…
+/// open nothing of it and the rail does not list it. Turned on, it opens; turned off while open, it
+/// gives way to General.
+#[test]
+fn settings_modules_the_tab_is_offered_only_while_the_manager_is_on() {
+    let (mut editor, root) = launch();
+    module_manager(&mut editor, false);
+    let _ = editor.update(Message::Modules(
+        crate::app::message::modules::ModulesMessage::Customize {
+            toolset: Toolset::Adjustments,
+            module: Some("luxforge.vignette".into()),
+        },
+    ));
+    modules(&mut editor, ModulesMessage::Install);
+    assert_eq!(editor.settings.open, None, "nothing opens the sheet");
+    let _ = editor.update(Message::Settings(SettingsMessage::Open(
+        SettingsTab::Modules,
+    )));
+    assert_eq!(editor.settings.open, Some(SettingsTab::General));
+    assert!(!editor.settings.modules.reading, "nothing is read for it");
+    assert!(
+        !editor
+            .workspace
+            .settings
+            .tabs
+            .contains(&SettingsTab::Modules)
+    );
+
+    module_manager(&mut editor, true);
+    assert!(
+        editor
+            .workspace
+            .settings
+            .tabs
+            .contains(&SettingsTab::Modules)
+    );
+    open(&mut editor);
+    assert_eq!(editor.settings.open, Some(SettingsTab::Modules));
+    module_manager(&mut editor, false);
+    assert_eq!(editor.settings.open, Some(SettingsTab::General));
+    assert!(editor.workspace.settings.modules.is_none());
+    finish(editor, root);
+}
+
 /// Customize opens Settings at Modules with the module it came from selected, or a group's first
 /// row; the palette lists Settings · Modules.
 #[test]
 fn settings_modules_opens_at_the_module_customize_came_from() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     let _ = editor.update(Message::Settings(SettingsMessage::OpenModules(Some(
         ModulesFocus::Module("luxforge.vignette".into()),
     ))));

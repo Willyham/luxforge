@@ -38,6 +38,14 @@ pub(crate) fn toggle_on(flags: Option<&FlagList>, id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The `modules.manager` experiment is on: the desktop offers Settings › Modules and the gestures
+/// that turn modules on or off, reorder them and install external ones. Off, the stored layout still
+/// applies, an off module's kept band still offers Enable, and every layout and package method
+/// still answers any client.
+pub(crate) fn manager_on(flags: Option<&FlagList>) -> bool {
+    toggle_on(flags, luxforge_core::flags::MODULES_MANAGER)
+}
+
 /// Every experiment flag `task` declares is on, as the host last answered: the desktop offers the
 /// task only then. Off before the first `flags.list` answers, so nothing behind a flag shows at
 /// launch; the host refuses the task by name either way.
@@ -82,13 +90,19 @@ impl SettingsTab {
         Self::Privacy,
     ];
 
-    /// The tabs the rail lists, in its order: Models only when a registered module holds a model,
-    /// and Privacy only in a launch eligible for usage statistics, since otherwise neither has
-    /// anything to show or change.
-    pub(crate) fn shown(usage_eligible: bool, models: bool) -> impl Iterator<Item = Self> {
+    /// The tabs the rail lists, in its order: Modules only while the module manager experiment is
+    /// on ([`manager_on`]), Models only when a registered module holds a model, and Privacy only in
+    /// a launch eligible for usage statistics, since otherwise neither has anything to show or
+    /// change.
+    pub(crate) fn shown(
+        usage_eligible: bool,
+        models: bool,
+        manager: bool,
+    ) -> impl Iterator<Item = Self> {
         Self::ALL.into_iter().filter(move |tab| match tab {
             Self::Privacy => usage_eligible,
             Self::Models => models,
+            Self::Modules => manager,
             _ => true,
         })
     }
@@ -285,6 +299,7 @@ pub(crate) fn derive(
             models::model_modules(models.modules, settings.flags.as_ref())
                 .next()
                 .is_some(),
+            manager_on(settings.flags.as_ref()),
         )
         .collect(),
         privacy: usage.eligible.then(|| privacy(usage)),
@@ -648,7 +663,6 @@ mod tests {
             [
                 SettingsTab::General,
                 SettingsTab::Appearance,
-                SettingsTab::Modules,
                 SettingsTab::Agents,
                 SettingsTab::Experiments
             ]
@@ -669,5 +683,37 @@ mod tests {
         assert_eq!(eligible.tabs.last(), Some(&SettingsTab::Privacy));
         assert!(eligible.privacy.is_some_and(|privacy| privacy.loading));
         assert_eq!(SettingsTab::parse("privacy"), Some(SettingsTab::Privacy));
+    }
+
+    /// Settings › Modules is listed only while `modules.manager` is on, after Appearance.
+    #[test]
+    fn settings_the_modules_tab_is_listed_only_while_the_module_manager_is_on() {
+        let tabs = |manager: bool| {
+            let flags: FlagList = serde_json::from_value(json!({
+                "flags": [{"id": "modules.manager", "title": "Module manager",
+                           "description": "Shows Settings › Modules.", "kind": "toggle",
+                           "applies": "live", "default": false, "value": manager,
+                           "stored": manager}],
+                "unrecognized": []
+            }))
+            .unwrap();
+            let settings = Settings {
+                open: Some(SettingsTab::General),
+                flags: Some(flags),
+                ..Settings::default()
+            };
+            derive(
+                &settings,
+                &PreferenceWriter::default(),
+                &Themes::default(),
+                &view(),
+                &Usage::default(),
+                no_models(),
+                &Updates::default(),
+            )
+            .tabs
+        };
+        assert!(!tabs(false).contains(&SettingsTab::Modules));
+        assert_eq!(tabs(true)[2], SettingsTab::Modules);
     }
 }

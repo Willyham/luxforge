@@ -9,6 +9,7 @@ use super::{
         Message,
         settings::{ModulesMessage, SettingsMessage},
     },
+    settings_tests::module_manager,
     tasks::{call, call_detailed, call_own_detailed},
 };
 use crate::state::{
@@ -50,7 +51,7 @@ fn launch() -> (Editor, PathBuf) {
         host,
     )
     .unwrap();
-    let (editor, _) = Editor::new(Boot {
+    let (mut editor, _) = Editor::new(Boot {
         owner,
         join,
         live_server: None,
@@ -59,6 +60,7 @@ fn launch() -> (Editor, PathBuf) {
         initial_import: None,
         window: (1440.0, 900.0),
     });
+    module_manager(&mut editor, true);
     (editor, root)
 }
 

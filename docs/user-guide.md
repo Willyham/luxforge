@@ -225,6 +225,8 @@ A hue and saturation wheel, as the Colour mixer's Grading tab draws it, sets two
 
 You choose which modules the workspace offers and in what order. This changes only what the workspace shows: no photo, history entry, render or export changes, and the status bar says so (`Turned off Vignette · rendering unchanged`).
 
+Arranging modules is an experiment: turn on **Module manager** in Settings › Experiments to see what follows, which appears at once. While it is off there is no Settings › Modules, no band menu (except Enable on an Off · edit kept band), no strip **⋯**, no Customize… and no palette entry for turning modules on or off, but a layout you already chose still applies and the footer still names what is off. Agents and scripts can read and change the layout either way.
+
 - **A band's menu.** Right-click a section's band for Move up (⌥↑), Move down (⌥↓), Move to top, Move to bottom, Turn off *Title*, Customize panel… and Copy as JSON request, which copies the requests the menu sends. While the menu is open, ⌥↑ and ⌥↓ move the band again. A move steps past the band drawn next to it. Locked modules, such as Basic and Crop, can be moved but have no Turn off.
 - **What Off means.** An off module has no section, strip tool, palette entry, letter or shortcut. It stays installed, so photos that use it render and export exactly as before, and presets, copy and paste settings and agents still work with it. When the photo on screen has an edit from an off module, its band stays at its place, marked **Off · edit kept**: open it to see the values, read-only, and **Enable *Title*** to turn the module back on. A neutral layer brings no band back.
 - **The footer.** After the last section, a line names the modules that are off (`2 modules off: Perspective, Vignette`) with **Customize…**. It is absent when every module is on.
@@ -236,7 +238,7 @@ The layout is yours, stored with your preferences outside every catalog, and onl
 
 ### Installing a module
 
-Modules that other people write add an adjustment section to the tools panel. Each comes as a `.lfmodule` package file that you choose: there is no library to browse. Luxforge hasn't reviewed community modules. Each runs sandboxed, with no network or file access, and can only compute colours.
+Modules that other people write add an adjustment section to the tools panel. Each comes as a `.lfmodule` package file that you choose: there is no library to browse. Luxforge hasn't reviewed community modules. Each runs sandboxed, with no network or file access, and can only compute colours. Installing in the workspace needs the **Module manager** experiment on in Settings › Experiments; modules already installed load and show their sections whether or not it is on.
 
 - **Install module…** in Settings › Modules opens a file picker for `.lfmodule` files. The stale-preview notice of a photo whose module is missing offers it too.
 - **The review sheet** asks `Install Split toning 0.1.0?` and shows what the package adds (a section in Adjustments, last), where it renders, its GPU program, Network and Files (None), author, licence, source, version, the API methods it adds and the package hash. **Install** (or Return) stores it; Cancel or Escape closes the sheet. A package Luxforge can't install says why, word for word. A newer or older version of an installed module offers **Replace**, and a red **Replace anyway** when its edits are stored differently.
@@ -253,7 +255,7 @@ Agents and scripts use `module.package.inspect {path}`, `module.install {path}`,
 
 A storage error after publication can leave a preference, module setting, theme, resource or export preset visibly changed. The editor refreshes the stored state and keeps the error visible; it does not claim that the change is durable.
 
-The gear at the end of the title bar or Cmd+, (Ctrl+, elsewhere) opens Settings over the workspace at its **General** tab; the palette's Settings · General, Settings · Appearance, Settings · Modules, Settings · Models (when it is shown), Settings · Agents and Settings · Experiments open it at any tab. **Modules** is described in [arranging your modules](#arranging-your-modules). General holds your preferences, each saved as you change it, outside any catalog:
+The gear at the end of the title bar or Cmd+, (Ctrl+, elsewhere) opens Settings over the workspace at its **General** tab; the palette's Settings · General, Settings · Appearance, Settings · Modules and Settings · Models (when they are shown), Settings · Agents and Settings · Experiments open it at any tab. **Modules**, shown while the Module manager experiment is on, is described in [arranging your modules](#arranging-your-modules). General holds your preferences, each saved as you change it, outside any catalog:
 
 - **Auto collapse history**, on by default, keeps one history entry for a run of edits of the same control ([History](#history)).
 - **Starting look for new RAW photos**, Standard by default, is the [look](#look) a RAW photo starts from when you bring it in: Standard, Luxforge's own, or Neutral, the bare development. It is part of the photo's Original, so the catalog's previews, a batch export and Before all show it. It affects photos brought in from then on, never one already in the catalog.

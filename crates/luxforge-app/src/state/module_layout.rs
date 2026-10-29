@@ -469,25 +469,38 @@ fn plain_value(value: &Value) -> String {
 
 /// One band's menu: Move up, Move down, Move to top and Move to bottom, each offered where it
 /// changes the order; Turn off *Title*, absent for a locked module; Customize panel… and Copy as
-/// JSON request.
+/// JSON request. With the module manager off it offers only a kept band's Enable *Title*, which
+/// repairs what is stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BandMenu {
     pub(crate) module_id: String,
-    /// Each move and whether it changes anything.
+    /// Each move and whether it changes anything; none while the module manager is off.
     pub(crate) moves: Vec<(Move, bool)>,
-    /// `Turn off Vignette`, or `None` for a locked module or one whose band is kept while off.
+    /// `Turn off Vignette`, or `None` for a locked module, one whose band is kept while off, or
+    /// while the module manager is off.
     pub(crate) turn_off: Option<String>,
     /// `Enable Vignette` for a kept band, which is off.
     pub(crate) enable: Option<String>,
+    /// Customize panel… and Copy as JSON request: the module manager is on.
+    pub(crate) manager: bool,
     /// A layout write is in flight, so every item waits.
     pub(crate) enabled: bool,
 }
 
-/// The menu of the band of `module`, drawn now among `shown` in drawn order.
+impl BandMenu {
+    /// It has an item to draw.
+    pub(crate) fn offers(&self) -> bool {
+        self.manager || self.enable.is_some()
+    }
+}
+
+/// The menu of the band of `module`, drawn now among `shown` in drawn order, with the module
+/// manager on or off.
 pub(crate) fn band_menu(
     layout: &EffectiveLayout,
     module: &ModuleDescriptor,
     shown: &[&str],
+    manager: bool,
 ) -> BandMenu {
     let order = layout.order(Toolset::Adjustments).unwrap_or_default();
     let on = layout.enabled(&module.id);
@@ -495,11 +508,13 @@ pub(crate) fn band_menu(
         module_id: module.id.clone(),
         moves: Move::ALL
             .into_iter()
+            .filter(|_| manager)
             .map(|to| (to, moved(order, shown, &module.id, to).is_some()))
             .collect(),
-        turn_off: (on && layout.lock(&module.id).is_none())
+        turn_off: (manager && on && layout.lock(&module.id).is_none())
             .then(|| format!("Turn off {}", module.title)),
         enable: (!on).then(|| format!("Enable {}", module.title)),
+        manager,
         enabled: !layout.pending && layout.view().is_some(),
     }
 }
@@ -549,6 +564,8 @@ pub(crate) struct StripTool {
 /// unchecked, then Customize tools….
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StripMenu {
+    /// The strip draws its ⋯: the module manager is on.
+    pub(crate) available: bool,
     pub(crate) open: bool,
     pub(crate) tools: Vec<StripTool>,
     /// A layout write is in flight, so no check can be pressed.
@@ -556,13 +573,18 @@ pub(crate) struct StripMenu {
 }
 
 /// The ⋯ menu's rows for `modules` under `layout`. Developer tools are listed only when the run
-/// shows them, as the strip does.
+/// shows them, as the strip does. The menu is the module manager's: with it off the strip draws no
+/// ⋯ and the menu is never open.
 pub(crate) fn strip_menu(
     layout: &EffectiveLayout,
     modules: &[ModuleDescriptor],
     developer: bool,
     open: bool,
+    manager: bool,
 ) -> StripMenu {
+    if !manager {
+        return StripMenu::default();
+    }
     let mut tools = vec![StripTool {
         module_id: None,
         title: "Mask".to_owned(),
@@ -597,6 +619,7 @@ pub(crate) fn strip_menu(
         }
     }));
     StripMenu {
+        available: true,
         open,
         tools,
         enabled: !layout.pending,
@@ -604,8 +627,12 @@ pub(crate) fn strip_menu(
 }
 
 /// The palette's layout entries: Customize panel…, and Turn off *Title* or Enable *Title* for every
-/// module that is not locked, developer ones only when the run shows them.
+/// module that is not locked, developer ones only when the run shows them. None while the module
+/// manager is off.
 pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
+    if !crate::state::settings::manager_on(inputs.settings.flags.as_ref()) {
+        return Vec::new();
+    }
     let layout = inputs.layout;
     let mut entries = vec![(
         "Customize panel\u{2026}".to_owned(),

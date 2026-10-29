@@ -138,9 +138,13 @@ impl Editor {
     }
 
     /// Install module…: open the sheet at Modules when it is not, then the system file picker
-    /// for a `.lfmodule` file. Nothing opens while a picker, a dialog or a write is up, or when the
-    /// tab has read a store that takes no writes.
+    /// for a `.lfmodule` file. Nothing opens while a picker, a dialog or a write is up, when the
+    /// tab has read a store that takes no writes, or while the module manager is off.
     fn install_module(&mut self) -> Task<Message> {
+        // The module manager off, nothing offers Install module…, which has no tab to open.
+        if !self.module_manager() {
+            return Task::none();
+        }
         let opened = if self.settings.open == Some(SettingsTab::Modules) {
             Task::none()
         } else {

@@ -12,7 +12,7 @@ use super::{
         sync::SyncMessage,
         view::ViewMessage,
     },
-    settings_tests::{finish, launch},
+    settings_tests::{finish, launch, module_manager},
     tasks::{SyncResult, call, call_own, sync_now},
 };
 use crate::state::{
@@ -103,6 +103,7 @@ fn drawn(editor: &Editor) -> Vec<String> {
 #[test]
 fn module_layout_a_band_menu_turns_a_module_off_and_the_palette_enables_it() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     discover(&mut editor);
     assert_eq!(editor.layout.view(), Some(&read_layout(&editor)));
     assert!(drawn(&editor).contains(&VIGNETTE.to_owned()));
@@ -184,6 +185,7 @@ fn module_layout_a_band_menu_turns_a_module_off_and_the_palette_enables_it() {
 #[test]
 fn module_layout_a_band_moves_through_the_order_set() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     discover(&mut editor);
     let before = drawn(&editor);
     let first = before[0].clone();
@@ -222,6 +224,7 @@ fn module_layout_a_band_moves_through_the_order_set() {
 #[test]
 fn module_layout_another_clients_change_is_followed_through_its_event() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     discover(&mut editor);
     let agent = editor.owner.register();
     call(
@@ -264,6 +267,7 @@ fn module_layout_another_clients_change_is_followed_through_its_event() {
 #[test]
 fn module_layout_the_settings_tab_and_the_workspace_follow_each_others_writes() {
     let (mut editor, root) = launch();
+    module_manager(&mut editor, true);
     discover(&mut editor);
     let _ = editor.update(Message::Modules(ModulesMessage::Customize {
         toolset: luxforge_core::Toolset::Adjustments,

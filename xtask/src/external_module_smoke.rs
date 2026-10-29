@@ -6,7 +6,9 @@
 //! Four launches share one data root and configuration (`shared/host/data`, `shared/host/config`,
 //! empty before the first) and the first launch's catalog:
 //!
-//! - **install**: `schema.list` without the module, Install module… with the package picked
+//! - **install**: the module manager experiment (`modules.manager`) turned on by another client,
+//!   which the shared configuration keeps for the later launches, `schema.list` without the
+//!   module, Install module… with the package picked
 //!   (`module.package.inspect` behind its review sheet), Install, and Relaunch, which an evidence
 //!   run records and does not perform.
 //! - **installed**: the module in `module.list` and `schema.list` and its band in the panel, an
@@ -87,7 +89,7 @@ const MCP_SHADOW_HUE: f64 = 160.0;
 /// The installed launch's process deadline: the editor's own five-minute script deadline.
 const DEADLINE: Duration = Duration::from_secs(300);
 
-pub const NOTE: &str = "Four launches, `install`, `installed`, `uninstalled` and `reinstalled`, each started with `--evidence-data shared/host/data` and `--evidence-config shared/host/config` (both empty before `install`), and the last three with `--evidence-catalog install/catalog.sqlite`, so they are one person's data, configuration and catalog across relaunches. Before the first launch this process builds the example `examples/modules/split-toning` with `cargo xtask module-package` into `package/split-toning.lfmodule`, which `install` and `uninstalled` install through Install module…. Each launch's Relaunch is recorded, not performed; the next launch is this process's. During `installed`, once its `mcp-edit` step has begun, this process runs `luxforge-mcp --catalog install/catalog.sqlite --tools asset,edit,history` against the live session as a client of the 2025-11-25 revision, lists its tools and calls `edit_set-split-toning` on the open photograph; `mcp-legacy.jsonl` holds every line, `mcp.json` its exit and answers.";
+pub const NOTE: &str = "Four launches, `install`, `installed`, `uninstalled` and `reinstalled`, each started with `--evidence-data shared/host/data` and `--evidence-config shared/host/config` (both empty before `install`, whose first step turns the `modules.manager` flag on through a second client), and the last three with `--evidence-catalog install/catalog.sqlite`, so they are one person's data, configuration and catalog across relaunches. Before the first launch this process builds the example `examples/modules/split-toning` with `cargo xtask module-package` into `package/split-toning.lfmodule`, which `install` and `uninstalled` install through Install module…. Each launch's Relaunch is recorded, not performed; the next launch is this process's. During `installed`, once its `mcp-edit` step has begun, this process runs `luxforge-mcp --catalog install/catalog.sqlite --tools asset,edit,history` against the live session as a client of the 2025-11-25 revision, lists its tools and calls `edit_set-split-toning` on the open photograph; `mcp-legacy.jsonl` holds every line, `mcp.json` its exit and answers.";
 
 fn modules(name: &str, step: ModulesStep) -> Step {
     Step::new(name, script::Step::Modules(step)).commits(0)
@@ -102,11 +104,21 @@ fn awaited() -> UsageStep {
     })
 }
 
-/// `install`: the module unknown to `schema.list`, Install module… and its review sheet, Install,
-/// and Relaunch.
+/// `install`: the module manager turned on, the module unknown to `schema.list`, Install module…
+/// and its review sheet, Install, and Relaunch.
 pub fn install_plan(package: &str) -> Plan {
     Plan::new(vec![
         Step::opened("opened").no_layer(EFFECT),
+        // Settings › Modules and Install module… are offered only with the module manager on; the
+        // shared configuration keeps it on for the later launches.
+        Step::new(
+            "manager-on",
+            script::Step::agent(
+                "flags.set",
+                json!({"flag": "modules.manager", "value": true}),
+            ),
+        )
+        .commits(0),
         Step::new("schema-before", script::Step::api("schema.list")).commits(0),
         modules("inspected", ModulesStep::Install(package.into())),
         modules("installed", ModulesStep::ReviewInstall),

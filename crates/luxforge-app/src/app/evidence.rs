@@ -5406,6 +5406,10 @@ impl Editor {
             return self.update(Message::Settings(SettingsMessage::Open(tab)));
         }
         if tab == SettingsTab::Modules {
+            if !self.module_manager() {
+                return self
+                    .fail_step("this launch has no Modules tab: the modules.manager flag is off");
+            }
             // The tab lists what opening it reads: the frame waits for that read, and records the
             // owner's beside it.
             let opened = self.update(Message::Settings(SettingsMessage::Open(tab)));

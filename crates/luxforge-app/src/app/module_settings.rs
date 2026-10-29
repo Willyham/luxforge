@@ -119,9 +119,11 @@ impl Editor {
     }
 
     /// Open the sheet at Modules, at the row `focus` names once the tab has read what it lists.
+    /// With the module manager off there is no Modules tab: the sheet opens as the rail would
+    /// open it, at General, and nothing is focused.
     pub(super) fn open_modules(&mut self, focus: Option<ModulesFocus>) -> Task<Message> {
         let opened = self.settings_update(SettingsMessage::Open(SettingsTab::Modules));
-        let Some(focus) = focus else {
+        let Some(focus) = focus.filter(|_| self.module_manager()) else {
             return opened;
         };
         // What the tab read last lists the row already: select it now. Otherwise the read the

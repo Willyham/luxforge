@@ -71,8 +71,22 @@ fn tab_move(to: &str) -> Option<module_settings::Move> {
 
 impl Editor {
     /// Send one module layout gesture. A gesture that should write and sends nothing — a move that
-    /// changes nothing, a locked module turned off — fails the step with the status bar's words.
+    /// changes nothing, a locked module turned off — fails the step with the status bar's words, and
+    /// a gesture only the module manager offers fails while `modules.manager` is off.
     pub(super) fn modules_step(&mut self, step: ModulesStep) -> Task<Message> {
+        // These gestures are the module manager's: a run that drives them turns it on first.
+        let manager = matches!(
+            step,
+            ModulesStep::StripMenu
+                | ModulesStep::Move(_)
+                | ModulesStep::Customize(_)
+                | ModulesStep::Install(_)
+        );
+        if manager && !self.module_manager() {
+            return self.fail_step(
+                "the module manager is off: turn the modules.manager flag on before this step",
+            );
+        }
         let writes = matches!(
             step,
             ModulesStep::Move(_)

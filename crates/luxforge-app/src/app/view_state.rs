@@ -146,7 +146,19 @@ impl Editor {
                 let set = self.set_mode(mode);
                 return Task::batch([cancelled, set]);
             }
-            ViewMessage::OpenMenu(target) => self.view_state.menu = Some(target),
+            ViewMessage::OpenMenu(target) => {
+                // With the module manager off the strip has no ⋯ menu, and a band only a kept
+                // band's Enable: an ordinary band's secondary click opens nothing.
+                let unoffered = !self.module_manager()
+                    && match &target {
+                        crate::state::MenuTarget::Strip => true,
+                        crate::state::MenuTarget::Band(module) => self.layout.enabled(module),
+                        _ => false,
+                    };
+                if !unoffered {
+                    self.view_state.menu = Some(target);
+                }
+            }
             ViewMessage::OpenControlMenu {
                 action,
                 parameter,
