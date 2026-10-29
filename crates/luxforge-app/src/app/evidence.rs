@@ -5622,7 +5622,7 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         // The script names groups by the labels the form shows, and steps by identity.
-        let offered = settings_groups(&self.modules, self.developer);
+        let offered = settings_groups(&self.modules, self.developer, self.settings.flags.as_ref());
         let groups: Vec<(String, String)> = offered
             .groups
             .into_iter()
@@ -7076,6 +7076,9 @@ mod tests {
         ("vignette", "set-vignette", "amount", &[-20.0, -40.0, -60.0]),
         ("vignette", "set-vignette", "roundness", &[-100.0, 100.0]),
         ("vignette", "set-vignette", "feather", &[0.0, 100.0]),
+        ("grain", "set-grain", "amount", &[20.0, 40.0, 60.0]),
+        ("grain", "set-grain", "size", &[80.0]),
+        ("grain", "set-grain", "roughness", &[90.0]),
         // Two Temperature drags in kelvin, then the double-clicks' first presses.
         (
             "raw-panel",

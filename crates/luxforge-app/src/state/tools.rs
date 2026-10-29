@@ -981,6 +981,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if module.developer && !inputs.developer {
             continue;
         }
+        if !super::settings::module_offered(inputs.settings.flags.as_ref(), module) {
+            continue;
+        }
         // A brush workspace has no section: its band is shown in its mode and nowhere else.
         if crate::state::corrections::is_brush_mode(inputs.modules, &module.id) {
             continue;

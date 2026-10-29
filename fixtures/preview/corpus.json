@@ -231,6 +231,112 @@
       ]
     },
     {
+      "id": "grain-size-0-roughness-0",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 0 (the finest grain) and Roughness 0 (the fine noise alone, even).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 0, "roughness": 0}}}
+      ]
+    },
+    {
+      "id": "grain-size-0-roughness-100",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 0 (the finest grain) and Roughness 100 (the coarse octave and the clumping at their strongest).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 0, "roughness": 100}}}
+      ]
+    },
+    {
+      "id": "grain-size-25-roughness-0",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 25 (the default size) and Roughness 0 (the fine noise alone, even).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 25, "roughness": 0}}}
+      ]
+    },
+    {
+      "id": "grain-size-25-roughness-100",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 25 (the default size) and Roughness 100 (the coarse octave and the clumping at their strongest).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 25, "roughness": 100}}}
+      ]
+    },
+    {
+      "id": "grain-size-100-roughness-0",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 100 (the coarsest grain) and Roughness 0 (the fine noise alone, even).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 100, "roughness": 0}}}
+      ]
+    },
+    {
+      "id": "grain-size-100-roughness-100",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at a corner of its response: Amount 100, the strongest, at Size 100 (the coarsest grain) and Roughness 100 (the coarse octave and the clumping at their strongest).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 100, "roughness": 100}}}
+      ]
+    },
+    {
+      "id": "grain-default",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at Amount 50 with Size and Roughness at their defaults, 25 and 50, as a person who only moves Amount sees it.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-grain", "params": {"amount": 50}}}
+      ]
+    },
+    {
+      "id": "grain-dark-vignette",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain over the darkest vignette, Amount -100 at Midpoint 0, so the darkened corners carry grain weighted by their own tone.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -100, "midpoint": 0}}},
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 25, "roughness": 50}}}
+      ]
+    },
+    {
+      "id": "grain-straightened-crop",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain under a straightened 16:9 crop and a Basic edit: the field addressed in the output stage after the crop's resample, its origin the crop's top-left.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s", "derived-merge", "derived-paged"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}},
+        {"api": {"method": "edit.set-grain", "params": {"amount": 80, "size": 40, "roughness": 70}}}
+      ]
+    },
+    {
+      "id": "grain-raw",
+      "family": "grain",
+      "class": "pointwise",
+      "description": "Grain at the end of a RAW stack: a full Basic layer without Temperature and Tint, the colour mixer and the vignette, on the linear path whose values past white the grain leaves unchanged.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0}}},
+        {"api": {"method": "edit.set-mixer", "params": {"red-hue": 30, "orange-saturation": -40, "green-saturation": 40, "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25}}},
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -60, "midpoint": 40, "roundness": 20, "feather": 60}}},
+        {"api": {"method": "edit.set-grain", "params": {"amount": 100, "size": 25, "roughness": 50}}}
+      ]
+    },
+    {
       "id": "mask-linear",
       "family": "mask-linear",
       "class": "pointwise",

@@ -8,7 +8,7 @@ Most photographers who would try Luxforge have years of work in Lightroom Classi
 
 ## What already exists
 
-- **The settings mapping.** [Preset import](presets.md#import) parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette and RAW white balance, with Detail sharpening/noise reduction and manual perspective unsupported though their modules are delivered, and every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
+- **The settings mapping.** [Preset import](presets.md#import) parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette, grain and RAW white balance, with Detail sharpening/noise reduction and manual perspective unsupported though their modules are delivered, and every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
 - **Places for what is imported.** The [catalog](catalog.md): developed photographs with fingerprints, catalog folders, collections and collection groups, library changes with undo, missing originals and Locate. [Versions](versions-and-lineage.md): named references to retained history entries. Crop and orientation, [lens and perspective](lens-and-perspective.md), [masks](masking.md) (linear, radial, brush, luminance and colour range) and the [RAW looks](raw-looks.md).
 - **The research.** Lightroom's [storage and sidecars](../research/lightroom/storage-and-history.md) and the [levels of XMP interoperability](../research/lightroom/sdk-and-interoperability.md#xmp-interoperability-has-several-levels).
 
@@ -69,14 +69,14 @@ Each photograph's Lightroom settings become **one history entry**, `Imported fro
 
 | Lightroom | Luxforge | Notes |
 | --- | --- | --- |
-| Global settings presets carry | The [preset mapping](presets.md#mapping), unchanged | Basic, Tone curve, Presence, mixer, colour grading and split toning, vignette, RAW white balance |
+| Global settings presets carry | The [preset mapping](presets.md#mapping), unchanged | Basic, Tone curve, Presence, mixer, colour grading and split toning, vignette, grain, RAW white balance. Grain's seed is reported as not carried: Luxforge's grain pattern is fixed by the output position |
 | `CropTop`, `CropLeft`, `CropBottom`, `CropRight`, `CropAngle`, `HasCrop` | Crop's normalized rotated box | Per-photo, so presets exclude it; the conversion is frozen by a study against Lightroom exports of known crops |
 | User orientation (`Adobe_images.orientation`) relative to EXIF | The orientation layer | Quarter-turns and reflections |
 | `LensProfileEnable` | Lens correction on, resolved through Lensfun's own profile | Lightroom's profile name is reported; a lens Lensfun lacks is reported |
 | `PerspectiveVertical`, `PerspectiveHorizontal` | Perspective, after [alignment](lightroom-alignment.md) measures the two models | Unsupported until then ("different perspective model"); Upright is unsupported |
 | `CameraProfile` Adobe Color, Adobe Standard | The Standard look | |
 | `CameraProfile` Camera Matching profiles (Camera Standard, Provia, Velvia…) | The Match camera look once [phase 2](raw-looks.md#phase-2-match-camera) exists; Standard until then | The intent, a camera-like rendering, carries; reported as approximate |
-| Other profiles, monochrome, grain, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
+| Other profiles, monochrome, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
 | Local corrections | [Masks](#masks) | Phase 2 |
 
 The importer applies the alignment's calibrated value conversions where they exist and the preset table's existing rules where they do not, including the uncalibrated RAW white-coordinate conversion; each row of the report says which. Calibrated RAW Kelvin/tint preset import is included in the alignment's RAW white-balance round. An imported head has moved beyond Original, so first preparation does not append an automatic lens entry; the importer explicitly maps the Lightroom lens switch.

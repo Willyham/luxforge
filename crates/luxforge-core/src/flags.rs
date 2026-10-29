@@ -20,6 +20,11 @@ pub const DEVELOPER: &str = "developer";
 /// selection renders.
 pub const AI_ANALYSIS: &str = "ai.analysis";
 
+/// The grain experiment (`docs/design/grain.md`): whether the Grain section is offered and the
+/// commands that add grain run, `edit.set-grain` and a settings set carrying it. It gates what is
+/// offered and what writes new grain, never how a stored grain layer renders.
+pub const GRAIN: &str = "grain";
+
 /// The module manager (`docs/design/module-manager.md`): whether the desktop offers Settings ›
 /// Modules and the gestures that turn tool modules on or off, reorder them and install external
 /// modules. It gates the desktop's interface only: the layout and module methods answer, the stored
@@ -129,6 +134,13 @@ const FLAGS: &[FlagSpec] = &[
         id: AI_ANALYSIS,
         title: "AI object picking",
         description: "Offers the Object tool in Corrections and Object in New mask, which pick objects with the installed object finder; nothing renders differently either way.",
+        kind: FlagKind::Toggle { default: false },
+        applies: Applies::Live,
+    },
+    FlagSpec {
+        id: GRAIN,
+        title: "Grain",
+        description: "Offers the Grain section and the commands that add grain; grain already in a recipe renders either way.",
         kind: FlagKind::Toggle { default: false },
         applies: Applies::Live,
     },
@@ -588,12 +600,16 @@ mod tests {
                 .map(|flag| flag.id)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(false), ["developer", AI_ANALYSIS, MODULES_MANAGER]);
+        assert_eq!(
+            ids(false),
+            ["developer", AI_ANALYSIS, GRAIN, MODULES_MANAGER]
+        );
         assert_eq!(
             ids(true),
             [
                 "developer",
                 AI_ANALYSIS,
+                GRAIN,
                 MODULES_MANAGER,
                 "proof.choice",
                 "proof.number"
@@ -607,7 +623,7 @@ mod tests {
         let listed = list(&store, &LaunchFlags::default(), true).unwrap();
         let text = serde_json::to_value(&listed).unwrap();
         assert_eq!(
-            text["flags"][3]["options"][1],
+            text["flags"][4]["options"][1],
             json!({"value":"second","label":"Second"})
         );
         assert_eq!(serde_json::from_value::<FlagList>(text).unwrap(), listed);
@@ -646,7 +662,7 @@ mod tests {
 
         let listed = call("list", "flags.list", json!({})).result.unwrap();
         assert_eq!(
-            listed["flags"][3]["id"], "proof.choice",
+            listed["flags"][4]["id"], "proof.choice",
             "a developer host lists proofs"
         );
         let set = call(
@@ -654,7 +670,7 @@ mod tests {
             "flags.set",
             json!({"flag": "proof.choice", "value": "third"}),
         );
-        assert_eq!(set.result.unwrap()["flags"][3]["value"], "third");
+        assert_eq!(set.result.unwrap()["flags"][4]["value"], "third");
         let refused = call(
             "bad",
             "flags.set",

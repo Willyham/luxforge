@@ -3,17 +3,21 @@
 //! scale, a reversed control and a range shortfall recovered by the fit; a known gain, chroma
 //! scale, hue rotation and locality by the pointwise measures; a known blur's radius, a known
 //! sharpening's overshoot and halo, a known band gain and noise deviation by the spatial measures;
-//! known crossings by the profiles; known positions and shifts by the dot measures; and a joint
-//! fit over two subject classes and a slope floor on known tables.
+//! known crossings by the profiles; known positions and shifts by the dot measures; a joint fit
+//! over two subject classes and a slope floor on known tables; and grain's statistics, a known
+//! deviation, mean and kurtosis, a known clumping, and a known spectrum's peak and half-power
+//! frequency.
 
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::lr_align::{
     self, Band, Direction, DistanceTable, Lab, Target, axis_profile, band_energy, band_gains,
-    blur_from_gains, box_blur, carried, crossing, deviation, dots, edge, floored_joint_knots,
-    grid_angle, joint_fit, keystone, linear_gain, locality, match_points, orientation,
-    radial_profile, sectors, tone_locality,
+    blur_from_gains, box_blur, carried, clumping, crossing, deviation, dots, edge,
+    floored_joint_knots, grain, grid_angle, half_power, joint_fit, keystone, linear_gain, locality,
+    match_points, moments, orientation, radial_power, radial_profile, sectors, spectrum_peak,
+    tile_variances, tone_locality,
 };
 use luxforge_reference::{SplitMix64, srgb};
+use luxforge_test_macros::slow;
 
 /// A grey wedge and three rings of hues: the patches a synthetic round measures.
 fn patches() -> Vec<[f64; 3]> {
@@ -687,4 +691,186 @@ fn a_floored_fit_continues_the_slope_within_ties_and_weighs_tables_equally() {
     let knots =
         floored_joint_knots(&[targets, photographs], (0.0, 0.0), 0.2, (-100.0, 100.0)).unwrap();
     assert_eq!(knots, vec![[0.0, 0.0], [50.0, 20.0]]);
+}
+
+// ---- Grain --------------------------------------------------------------------------------------
+
+/// A standard normal value by the Box–Muller transform.
+fn normal(rng: &mut SplitMix64) -> f64 {
+    let u = 1.0 - rng.next_range(0.0, 1.0);
+    let v = rng.next_range(0.0, 1.0);
+    (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+}
+
+/// Grain's moments: a two-level field of ±1 has deviation 1 and kurtosis 1 exactly, offset by a
+/// mean shift it keeps; a uniform field has kurtosis 1.8 and a Gaussian 3, each at its known
+/// deviation.
+#[test]
+fn grain_moments_recover_a_known_mean_deviation_and_kurtosis() {
+    let two: Vec<f64> = (0..1000)
+        .map(|i| if i % 2 == 0 { 0.7 + 1.0 } else { 0.7 - 1.0 })
+        .collect();
+    let m = moments(&two);
+    assert!((m.mean - 0.7).abs() < 1e-12);
+    assert!((m.deviation - 1.0).abs() < 1e-12);
+    assert!((m.kurtosis - 1.0).abs() < 1e-12);
+    let mut rng = SplitMix64(21);
+    let uniform: Vec<f64> = (0..200_000).map(|_| rng.next_range(-3.0, 3.0)).collect();
+    let m = moments(&uniform);
+    assert!((m.deviation - 3.0 / 3f64.sqrt()).abs() < 0.01, "{m:?}");
+    assert!((m.kurtosis - 1.8).abs() < 0.01, "{m:?}");
+    let gaussian: Vec<f64> = (0..200_000).map(|_| 2.5 * normal(&mut rng)).collect();
+    let m = moments(&gaussian);
+    assert!((m.deviation - 2.5).abs() < 0.02, "{m:?}");
+    assert!((m.kurtosis - 3.0).abs() < 0.05, "{m:?}");
+}
+
+/// Clumping: tiles of a ±σ checker whose σ alternates between 1 and 2 by tile have variances 1
+/// and 4 exactly, a spread of (4 − 1)/(4 + 1) = 0.6; with one σ throughout, none; and independent
+/// Gaussian pixels spread only by sampling, √(2/(n − 1)) for n pixels a tile.
+#[test]
+fn grain_clumping_recovers_a_known_spread_of_local_variance() {
+    let (side, tile) = (64usize, 8usize);
+    let checker = |sigma: &dyn Fn(usize, usize) -> f64| -> Vec<f64> {
+        (0..side * side)
+            .map(|i| {
+                let (x, y) = (i % side, i / side);
+                let sign = if (x + y) % 2 == 0 { 1.0 } else { -1.0 };
+                sign * sigma(x / tile, y / tile)
+            })
+            .collect()
+    };
+    let alternating = checker(&|tx, ty| if (tx + ty) % 2 == 0 { 1.0 } else { 2.0 });
+    let variances = tile_variances(&alternating, side, tile);
+    assert_eq!(variances.len(), 64);
+    assert!((clumping(&variances) - 0.6).abs() < 1e-12);
+    let even = checker(&|_, _| 1.5);
+    assert!(clumping(&tile_variances(&even, side, tile)).abs() < 1e-12);
+    let mut rng = SplitMix64(5);
+    let side = 512;
+    let gaussian: Vec<f64> = (0..side * side).map(|_| normal(&mut rng)).collect();
+    let expected = (2.0 / 63.0f64).sqrt();
+    let measured = clumping(&tile_variances(&gaussian, side, tile));
+    assert!(
+        (measured / expected - 1.0).abs() < 0.05,
+        "{measured} {expected}"
+    );
+}
+
+/// The spectrum: a cosine whose frequency lies on ring 20 of a 256-pixel window puts all its power
+/// there, so its peak and half-power frequency are that ring's centre, 20.5 / 256 cycles a pixel,
+/// at any amplitude; white noise spreads its power evenly over the disc to 0.5 cycles a pixel, half
+/// of it below 0.5 / √2.
+#[test]
+fn grain_spectrum_finds_a_known_frequency_and_white_noise() {
+    let side = 256usize;
+    let cosine = |amplitude: f64| -> Vec<f64> {
+        (0..side * side)
+            .map(|i| {
+                let (x, y) = ((i % side) as f64, (i / side) as f64);
+                amplitude * (std::f64::consts::TAU * (12.0 * x + 16.0 * y) / side as f64).cos()
+            })
+            .collect()
+    };
+    let rings = radial_power(&cosine(1.0), side);
+    assert_eq!(rings.len(), side / 2);
+    assert!((rings[20] - 1.0).abs() < 1e-9);
+    assert!((spectrum_peak(&rings) - 20.5 / 256.0).abs() < 1e-9);
+    assert!((half_power(&rings) - 20.5 / 256.0).abs() < 1e-9);
+    let scaled = radial_power(&cosine(7.0), side);
+    assert!(
+        rings
+            .iter()
+            .zip(&scaled)
+            .all(|(a, b)| (a - b).abs() < 1e-12)
+    );
+    let mut rng = SplitMix64(9);
+    let white: Vec<f64> = (0..side * side).map(|_| normal(&mut rng)).collect();
+    let measured = half_power(&radial_power(&white, side));
+    assert!((measured - 0.5 / 2f64.sqrt()).abs() < 0.005, "{measured}");
+}
+
+/// Noise blurred by a Gaussian of σ pixels has the power spectrum `exp(−4π²σ²f²)`, so its radial
+/// power follows a Rayleigh density of scale `s = 1 / (2√2 π σ)`: its peak at `s` and its
+/// half-power frequency at `s √(2 ln 2)`. Blurring by a wider Gaussian, coarser grain, lowers both.
+#[test]
+#[slow]
+fn grain_spectrum_recovers_a_known_blur_scale() {
+    let side = 256usize;
+    let blurred = |sigma: f64, seed: u64| -> Vec<f64> {
+        let mut rng = SplitMix64(seed);
+        let white: Vec<f64> = (0..side * side).map(|_| normal(&mut rng)).collect();
+        let reach = (4.0 * sigma).ceil() as isize;
+        let kernel: Vec<f64> = (-reach..=reach)
+            .map(|k| (-(k * k) as f64 / (2.0 * sigma * sigma)).exp())
+            .collect();
+        let total: f64 = kernel.iter().sum();
+        // Circular, separable convolution: the window stays stationary to its edges.
+        let pass = |plane: &[f64], horizontal: bool| -> Vec<f64> {
+            (0..side * side)
+                .map(|i| {
+                    let (x, y) = (i % side, i / side);
+                    kernel
+                        .iter()
+                        .enumerate()
+                        .map(|(j, w)| {
+                            let offset = j as isize - reach;
+                            let at =
+                                |c: usize| (c as isize + offset).rem_euclid(side as isize) as usize;
+                            let index = if horizontal {
+                                y * side + at(x)
+                            } else {
+                                at(y) * side + x
+                            };
+                            w / total * plane[index]
+                        })
+                        .sum()
+                })
+                .collect()
+        };
+        pass(&pass(&white, true), false)
+    };
+    for sigma in [1.5, 3.0] {
+        let windows: Vec<Vec<f64>> = (0..4).map(|seed| blurred(sigma, 40 + seed)).collect();
+        let refs: Vec<&[f64]> = windows.iter().map(Vec::as_slice).collect();
+        let g = grain(&refs, side, 8);
+        let s = 1.0 / (2.0 * 2f64.sqrt() * std::f64::consts::PI * sigma);
+        let half = s * (2.0 * 2f64.ln()).sqrt();
+        assert!(
+            (g.half_power / half - 1.0).abs() < 0.04,
+            "σ {sigma}: {} against {half}",
+            g.half_power
+        );
+        assert!(
+            (g.peak / s - 1.0).abs() < 0.1,
+            "σ {sigma}: {} against {s}",
+            g.peak
+        );
+    }
+}
+
+/// Windows pooled into one tone's grain: the mean shift is the mean over every pixel, while the
+/// deviation and kurtosis are about each window's own mean, so two windows of the same ±1 grain at
+/// different offsets read deviation 1 and kurtosis 1, with no spread of local variance.
+#[test]
+fn grain_pools_windows_about_their_own_means() {
+    let side = 16usize;
+    let window = |offset: f64| -> Vec<f64> {
+        (0..side * side)
+            .map(|i| {
+                offset
+                    + if (i % side + i / side).is_multiple_of(2) {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+            })
+            .collect()
+    };
+    let (a, b) = (window(5.0), window(-1.0));
+    let g = grain(&[&a, &b], side, 8);
+    assert!((g.mean - 2.0).abs() < 1e-12);
+    assert!((g.deviation - 1.0).abs() < 1e-12);
+    assert!((g.kurtosis - 1.0).abs() < 1e-12);
+    assert!(g.clumping.abs() < 1e-12);
 }

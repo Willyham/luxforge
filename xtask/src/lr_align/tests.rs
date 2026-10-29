@@ -128,10 +128,10 @@ fn every_variant_of_every_round_reads_back() {
             }
         }
     }
-    assert_eq!(count, 1095);
+    assert_eq!(count, 1112);
 }
 
-/// The rounds' sizes, which the owner's import and export are planned around: round 1 writes 706
+/// The rounds' sizes, which the owner's import and export are planned around: round 1 writes 758
 /// variants of the targets and 49 of each photograph, round 2 292 and 21, round 3 553 and 29.
 #[test]
 fn the_rounds_have_their_sizes() {
@@ -154,7 +154,7 @@ fn the_rounds_have_their_sizes() {
         assert_eq!(
             sizes,
             match round {
-                1 => (706, 49),
+                1 => (758, 49),
                 2 => (292, 21),
                 _ => (553, 29),
             },
@@ -214,6 +214,7 @@ fn families_and_variants_have_unique_names() {
                     "basic",
                     "detail",
                     "geometry",
+                    "grain",
                     "masks",
                     "mixer",
                     "presence",
@@ -323,7 +324,7 @@ fn numbers_and_labels_are_written_as_lightroom_writes_them() {
 
 /// Each target's pixels, frozen by their SHA-256: the generator is exact, and a change to a target
 /// is a reviewed change to this table.
-const PIXELS: [(&str, &str); 6] = [
+const PIXELS: [(&str, &str); 7] = [
     (
         "wedge",
         "754922630da409b1629600ca68de7bedbd0bbe4d6af17da0c67d1b7d04c803e8",
@@ -343,6 +344,10 @@ const PIXELS: [(&str, &str); 6] = [
     (
         "flat",
         "02e0bb952db885a842c37fa008d02149bf6fdba5b8325a0227640da45252cfdd",
+    ),
+    (
+        "greys",
+        "50b0be0097bc1c0a72f1a40c0d6e240da46a84412f14b1bae071e687cfce5528",
     ),
     (
         "grid",
@@ -392,7 +397,7 @@ fn targets_hold_their_layouts() {
         let at = ((y * target.width + x) * 3) as usize;
         [target.rgb[at], target.rgb[at + 1], target.rgb[at + 2]]
     };
-    for id in ["wedge", "patches", "surround"] {
+    for id in ["wedge", "patches", "surround", "greys"] {
         let target = targets::target(id).unwrap();
         let patch = target.layout["patch"].as_u64().unwrap() as u32;
         let patches = target.layout["patches"].as_array().unwrap();
@@ -694,6 +699,79 @@ fn a_round_is_deterministic_and_reads_back_from_its_files() {
     let failed = directory.path().join("failed");
     assert!(generate(&changed, &failed).is_err());
     assert!(!failed.exists());
+}
+
+/// `--families grain` selects round 1's three grain families by their area, and an unknown name
+/// is refused. Their variants, written on the greys target, carry XMP that reads back through the
+/// preset reader with Amount, Size and Roughness transferred at the same numbers onto `set-grain`,
+/// nothing unsupported, and the size and roughness families holding Amount 50.
+#[test]
+#[slow]
+fn grain_families_generate_and_read_back_as_mapped() {
+    let families = select(1, Some(&["grain".to_owned()])).unwrap();
+    let ids: Vec<&str> = families.iter().map(|family| family.id.as_str()).collect();
+    assert_eq!(ids, ["grain-amount", "grain-size", "grain-roughness"]);
+    let error = select(1, Some(&["grains".to_owned()]))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no families or areas"), "{error}");
+    let directory = tempfile::tempdir().unwrap();
+    let round = directory.path().join("round");
+    let families: Vec<Family> = families
+        .into_iter()
+        .map(|mut family| {
+            family.subjects = vec![Subject::Target("greys")];
+            family
+        })
+        .collect();
+    generate(
+        &Plan {
+            round: 1,
+            families,
+            photos: Vec::new(),
+            excluded: Vec::new(),
+        },
+        &round,
+    )
+    .unwrap();
+    let manifest = read_json(&round.join("manifest.json")).unwrap();
+    let variants = manifest["variants"].as_array().unwrap();
+    assert_eq!(variants.len(), 1 + 5 + 6 + 6);
+    let registry = ModuleRegistry::builtin();
+    for variant in variants {
+        let jpeg = fs::read(round.join(variant["file"].as_str().unwrap())).unwrap();
+        let read =
+            luxforge_core::inspect_preset(&embedded_xmp(&jpeg).unwrap(), None, &registry).unwrap();
+        assert!(read.report.unsupported.is_empty(), "{}", variant["id"]);
+        assert_eq!(variant["unsupported"], json!([]), "{}", variant["id"]);
+        let expected = match variant["family"].as_str().unwrap() {
+            NEUTRAL => json!({}),
+            family => {
+                // Whole numbers, as the reader reads the written integer texts.
+                let value = number_of_label(variant["label"].as_str().unwrap());
+                let (amount, size, roughness) = match family {
+                    "grain-amount" => (value, 25, 50),
+                    "grain-size" => (50, value, 50),
+                    _ => (50, 25, value),
+                };
+                json!({"set-grain": {"amount": amount, "size": size, "roughness": roughness}})
+            }
+        };
+        assert_eq!(variant["luxforge"], expected, "{}", variant["id"]);
+        assert_eq!(
+            Value::Object(readback::changes(
+                &read.settings,
+                manifest["reader_baseline"]["jpeg"].as_object().unwrap()
+            )),
+            expected,
+            "{}",
+            variant["id"]
+        );
+    }
+}
+
+fn number_of_label(label: &str) -> i64 {
+    label.trim_start_matches('+').parse().unwrap()
 }
 
 /// `--round` names a round the rig defines.

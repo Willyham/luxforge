@@ -39,6 +39,7 @@ mod gpu_qualification;
 mod grade_align;
 mod grade_performance;
 mod grading_smoke;
+mod grain_smoke;
 mod hdr_merge_measure;
 mod hdr_merge_smoke;
 mod hdr_merge_view_smoke;
@@ -293,8 +294,9 @@ fn main_result() -> Result {
         }
         "check" => {
             let quick = a.flag("--quick");
+            let lint = !a.flag("--no-lint");
             a.done()?;
-            check::check(&root, quick)?;
+            check::check(&root, quick, lint)?;
             println!("Headless checks passed. GUI and platform acceptance remain separate.");
         }
         "check-repository" => {

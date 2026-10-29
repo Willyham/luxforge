@@ -54,7 +54,9 @@ zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate
 # `synchronous=FULL`, for test builds only: on macOS each flush is an `F_FULLFSYNC` the whole host
 # queues for, and it dominates the core's unit-test time. Only `[dev-dependencies]` tables turn it
 # on (`cargo xtask check-repository`'s `disk-flush-only-in-tests` rule), so a `cargo build` of any
-# binary never has it. See docs/engineering/development.md#tests-skip-the-disk-flush.
+# binary never has it. The core's own unit tests skip the flush as a test build (`cfg(test)`), not
+# through a dev-dependency on the core itself, which would hold their compile until the library's
+# was done. See docs/engineering/development.md#tests-skip-the-disk-flush.
 test-skip-disk-flush = []
 # Lets a test outside the core hold the index lane's listings at a `luxforge_testbase::Gate`
 # (`OwnerHandle::hold_listings`), as the core's own tests do, so a desktop test acts while a listing
@@ -90,8 +92,6 @@ luxforge-testbase = { path = "../luxforge-testbase" }
 # Parses and validates the WGSL of every GPU program the core ships, with the surface's calling
 # convention prepended. A dev-dependency only: the core's normal dependencies hold no GPU crate.
 naga = { workspace = true, features = ["wgsl-in"] }
-# The core's own tests with the disk flush skipped (the feature above).
-luxforge-core = { path = ".", features = ["test-skip-disk-flush"] }
 # The counting allocator the `draft_tick` binary installs to hold a brush tick to its copies.
 luxforge-process = { path = "../luxforge-process", features = ["allocation-counter"] }
 

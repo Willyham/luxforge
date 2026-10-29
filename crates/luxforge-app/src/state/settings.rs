@@ -53,6 +53,15 @@ pub(crate) fn task_offered(flags: Option<&FlagList>, task: &TaskDescriptor) -> b
     task.flags.iter().all(|flag| toggle_on(flags, flag))
 }
 
+/// Every experiment flag `module` declares is on, as the host last answered: the desktop draws its
+/// section, lists its palette entries and offers its settings groups only then. Off before the
+/// first `flags.list` answers, so nothing behind a flag shows at launch; the host refuses what
+/// would add to the module's layers by name either way, and every stored layer of it renders as
+/// ever.
+pub(crate) fn module_offered(flags: Option<&FlagList>, module: &ModuleDescriptor) -> bool {
+    module.flags.iter().all(|flag| toggle_on(flags, flag))
+}
+
 /// The experiment flag `resource` declares, if any, is on: the desktop lists the resource only
 /// then. The host still lists, installs and removes it for any client.
 pub(crate) fn resource_offered(flags: Option<&FlagList>, resource: &ResourceDescriptor) -> bool {

@@ -634,12 +634,12 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
             "set-curve": {
                 "luminance": unit(&[[0.0, 28.0], [64.0, 70.0], [192.0, 188.0], [255.0, 240.0]])
             },
+            "set-grain": {"amount": 12, "roughness": 50, "size": 25},
             "set-presence": {"clarity": -10},
             "set-raw": {"white-balance": "as-shot"},
             "set-vignette": {"amount": -12, "feather": 50, "midpoint": 50, "roundness": 0}
         }))
     );
-    let grain = "Luxforge has no grain";
     let disabled = "disabled in the preset";
     assert_eq!(
         preset.report,
@@ -651,6 +651,9 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 mapped("Clarity2012", "-10", "set-presence", "clarity", json!(-10)),
                 mapped("Contrast2012", "-15", "set-basic", "contrast", json!(-15)),
                 mapped("Exposure2012", "0.25", "set-basic", "exposure", json!(0.25)),
+                mapped("GrainAmount", "12", "set-grain", "amount", json!(12)),
+                mapped("GrainFrequency", "50", "set-grain", "roughness", json!(50)),
+                mapped("GrainSize", "25", "set-grain", "size", json!(25)),
                 mapped(
                     "IncrementalTemperature",
                     "5",
@@ -709,9 +712,6 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
             ],
             unsupported: vec![
                 because("CameraProfile", "Camera [Faded]", PROFILES),
-                because("GrainAmount", "12", grain),
-                because("GrainFrequency", "50", grain),
-                because("GrainSize", "25", grain),
                 because(
                     "Look",
                     "Amount=0.5, Name=Synthetic Chrome, Parameters=(1 fields)",
@@ -984,13 +984,19 @@ fn panel_switches_gate_their_panels_and_unknown_switches_are_reported() {
             unsupported: vec![
                 because("EnableEffects", "maybe", "panel switch is not a boolean"),
                 because("EnableFuture", "false", "panel switch not recognised"),
-                because("GrainAmount", "5", "Luxforge has no grain"),
             ],
-            refused: vec![because(
-                "PostCropVignetteAmount",
-                "10",
-                "panel switch EnableEffects is not a boolean"
-            )],
+            refused: vec![
+                because(
+                    "GrainAmount",
+                    "5",
+                    "panel switch EnableEffects is not a boolean"
+                ),
+                because(
+                    "PostCropVignetteAmount",
+                    "10",
+                    "panel switch EnableEffects is not a boolean"
+                ),
+            ],
             derived: Vec::new(),
         }
     );
@@ -1061,6 +1067,83 @@ fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
             ),
         ]
     );
+}
+
+/// Grain transfers as the same numbers onto the grain layer, Lightroom's `GrainFrequency` onto
+/// Roughness, and its seed is not carried. A `GrainAmount` of 0 is neutral and imports no grain,
+/// with the settings that only qualify it, even when the Effects panel is switched off.
+#[test]
+fn grain_transfers_as_the_same_numbers_and_is_neutral_at_amount_zero() {
+    let seed = "Luxforge's grain has one fixed pattern, a property of the output position";
+    let grain = inspect_preset(
+        &settings_template(
+            "GrainAmount = 40, GrainSize = 60, GrainFrequency = 30, GrainSeed = 1234",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        grain.settings,
+        plain(json!({"set-grain": {"amount": 40, "roughness": 30, "size": 60}}))
+    );
+    assert_eq!(
+        grain.report.mapped,
+        vec![
+            mapped("GrainAmount", "40", "set-grain", "amount", json!(40)),
+            mapped("GrainFrequency", "30", "set-grain", "roughness", json!(30)),
+            mapped("GrainSize", "60", "set-grain", "size", json!(60)),
+        ]
+    );
+    assert_eq!(grain.report.neutral, vec![]);
+    assert_eq!(
+        grain.report.unsupported,
+        vec![because("GrainSeed", "1234", seed)]
+    );
+    assert_eq!(grain.report.refused, vec![]);
+
+    let none = inspect_preset(
+        &settings_template(
+            "Exposure2012 = 0.5, GrainAmount = 0, GrainSize = 60, GrainFrequency = 30, \
+             GrainSeed = 1234",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        none.settings,
+        object(json!({"set-basic": {"exposure": 0.5}}))
+    );
+    assert_eq!(
+        none.report.neutral,
+        vec![
+            neutral("GrainAmount", "0"),
+            neutral("GrainFrequency", "30"),
+            neutral("GrainSeed", "1234"),
+            neutral("GrainSize", "60"),
+        ]
+    );
+    assert_eq!(none.report.unsupported, vec![]);
+    assert_eq!(none.report.refused, vec![]);
+
+    let disabled = inspect_preset(
+        &settings_template(
+            "Exposure2012 = 0.5, EnableEffects = false, GrainAmount = 0, GrainSize = 60",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        disabled.settings,
+        object(json!({"set-basic": {"exposure": 0.5}}))
+    );
+    assert_eq!(
+        disabled.report.neutral,
+        vec![neutral("GrainAmount", "0"), neutral("GrainSize", "60")]
+    );
+    assert_eq!(disabled.report.refused, vec![]);
 }
 
 /// `ToneCurvePV2012` transfers onto `set-curve.luminance` as its points over 255, in order, beside

@@ -535,7 +535,7 @@ Masking phases A–D are delivered. Brush strokes are content-addressed by a has
 - Which measured workloads and responsiveness budgets become acceptance requirements? Accepted renderer budgets do not establish a bound on total native GPU memory.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? Current RAW preset white-balance conversion has no calibration; calibrated conversion belongs to the planned Lightroom alignment work, as decided below.
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a single-click add that snaps to the drawn curve, endpoints the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
-- Is [grain](design/grain.md) authorized for implementation, and do its recorded defaults stand: its own section, a fixed seed, luminance-only grain, its order after the vignette and statistically matched reduced-stage frames?
+- Do [grain's](design/grain.md) recorded defaults stand: its own section, a fixed seed, luminance-only grain, its order after the vignette and statistically matched reduced-stage frames? The module is implemented on them.
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) stand: section names, stage order, mixer layout and vignette style? Implementation is delivered on the recorded defaults. GPU-first settles the renderer paths for spatial gestures and samples.
 - What does the separate review of the existing RAW importer's DNG SDK isotemperature table require? The alignment work's prohibition below does not silently decide its disposition.
 
@@ -570,7 +570,7 @@ For [grain](design/grain.md) ([implementation plan](../tasks/editing/grain.json)
 
 - **Size is in pixels of the full-resolution output stage**, so the same settings look the same at 100% on every camera and a crop does not change the grain; not relative to the frame.
 
-The section, the fixed seed, luminance-only grain, the order after the vignette and the reduced-stage frames are recorded defaults in the design. Implementation is not authorized; the Lightroom round needs the owner's export.
+The section, the fixed seed, luminance-only grain, the order after the vignette and the reduced-stage frames are recorded defaults in the design. The Lightroom round needs the owner's export.
 
 ## Optional usage statistics planning
 

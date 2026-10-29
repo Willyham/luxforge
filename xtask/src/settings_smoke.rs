@@ -512,6 +512,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 == [
                     json!("developer"),
                     json!("ai.analysis"),
+                    json!("grain"),
                     json!("modules.manager"),
                     json!("proof.choice"),
                     json!("proof.number"),

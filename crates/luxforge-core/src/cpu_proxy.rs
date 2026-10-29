@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// A proxy frame is normally the exact recipe at proxy size: every layer a gesture can draft is
 /// resolution independent and a mask's geometry is normalized, so the same equations produce the
-/// same picture at display size. Two things break that, and both are reported rather than assumed.
-/// Neither one is a reason to decline the proxy: the frame is still what a drag presents, and the
+/// same picture at display size. A few things break that, and each is reported rather than assumed.
+/// None is a reason to decline the proxy: the frame is still what a drag presents, and the
 /// exact phase still produces every number, the overlays and the 100% view.
 ///
 /// One word, `approximate`, reaches the client; this is what it means in each case, so a person can
@@ -59,6 +59,11 @@ pub struct ProxyApproximation {
     /// ([masking](../../../docs/design/masking.md#point-queries-and-proxies), proposal P5). Without
     /// that rule a hard edge would alias differently on every frame of a drag.
     pub mask: bool,
+    /// A colour unit compiled for the proxy stage draws a stand-in for its full-resolution output
+    /// there: grain's reduced-stage field, which matches the full-resolution grain reduced to the
+    /// proxy in its statistics, not pixel for pixel ([grain](../../../docs/design/grain.md)).
+    #[serde(default)]
+    pub stand_in: bool,
 }
 
 impl ProxyApproximation {
@@ -66,7 +71,7 @@ impl ProxyApproximation {
     /// the exact recipe at proxy size, byte for byte with the exact recipe over the exact
     /// downscale of the source.
     pub fn is_approximate(self) -> bool {
-        self.restoration || self.spatial || self.mask
+        self.restoration || self.spatial || self.mask || self.stand_in
     }
 
     /// Why, in one sentence, or `None` when the frame is not approximate. Both reasons are named
@@ -86,6 +91,12 @@ impl ProxyApproximation {
         }
         if self.mask {
             reasons.push(MASK);
+        }
+        if self.stand_in {
+            reasons.push(
+                "grain at a reduced stage is a field matched to the full-resolution grain's \
+                 statistics, not that grain reduced",
+            );
         }
         (!reasons.is_empty()).then(|| reasons.join("; "))
     }

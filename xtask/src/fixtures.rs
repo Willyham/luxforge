@@ -425,6 +425,61 @@ fn encode_tone_ramp(path: &Path) -> Result {
     Ok(())
 }
 
+/// The `grain` smoke scenario's own fixture: what grain is read against at 100%, which a
+/// photograph shown whole cannot give.
+///
+/// - The frame is larger than the canvas at 100%, so the view's window edges cut it and the picture
+///   at rest is drawn in more than one tile.
+/// - Everything but one band is a flat mid-grey, [`GRAIN_GREY`], where grain shows plainly and its
+///   strength can be compared across the view.
+/// - Rows [`GRAIN_BAND`] repeat a row of flat patches, [`GRAIN_PATCH`] pixels wide, across the
+///   whole width: black and white, which grain leaves untouched, and the four quadrant colours of
+///   `fixtures/s0/orientation-1.jpg` ([`COLORS`]), whose hue it must keep. The band sits in the
+///   frame's upper third, so the view 100% first shows, the frame's top-left corner, holds every
+///   patch once it is one period wide.
+///
+/// Every boundary falls on a multiple of 16, so a JPEG's ringing stays at the edges and a probe 16
+/// px inside reads what was drawn.
+pub const GRAIN_FIXTURE: (u32, u32) = (2400, 1600);
+/// The flat field's code.
+pub const GRAIN_GREY: u8 = 128;
+/// The patch band's rows, top inclusive and bottom exclusive.
+pub const GRAIN_BAND: (u32, u32) = (320, 448);
+/// The width of each patch.
+pub const GRAIN_PATCH: u32 = 96;
+/// The patches in column order, repeated every `GRAIN_PATCHES.len() * GRAIN_PATCH` pixels.
+pub const GRAIN_PATCHES: [(&str, [u8; 3]); 6] = [
+    ("black", [0; 3]),
+    ("white", [255; 3]),
+    ("red", COLORS[0]),
+    ("green", COLORS[1]),
+    ("blue", COLORS[2]),
+    ("yellow", COLORS[3]),
+];
+
+/// The patch drawn in column `x` of the band.
+pub fn grain_patch(x: u32) -> usize {
+    (x / GRAIN_PATCH) as usize % GRAIN_PATCHES.len()
+}
+
+fn grain_fixture(w: u32, h: u32) -> RgbImage {
+    RgbImage::from_fn(w, h, |x, y| {
+        if (GRAIN_BAND.0..GRAIN_BAND.1).contains(&y) {
+            Rgb(GRAIN_PATCHES[grain_patch(x)].1)
+        } else {
+            Rgb([GRAIN_GREY; 3])
+        }
+    })
+}
+
+fn encode_grain(path: &Path) -> Result {
+    let (w, h) = GRAIN_FIXTURE;
+    let img = grain_fixture(w, h);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 /// The `compare-zone-plate` smoke scenario's own fixture: a 24 MP zone plate, a radial chirp whose
 /// spatial frequency grows linearly with the distance from the centre and reaches 0.5 cycles per
 /// pixel (the Nyquist limit) in the corners. Every code is a full-contrast sinusoid of the encoded
@@ -471,7 +526,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 11] = [
+pub const TABLE: [Fixture; 12] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -562,6 +617,18 @@ pub const TABLE: [Fixture; 11] = [
                 "width":w,"height":h,
                 "ramp":{"rows":[0,TONE_RAMP_BAND],"code":"round(x * 255 / (width - 1))"},
                 "patches":TONE_RAMP_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes,"width":TONE_RAMP_PATCH})),
+            })
+        },
+    },
+    Fixture {
+        file: "grain.jpg",
+        write: encode_grain,
+        manifest: || {
+            let (w, h) = GRAIN_FIXTURE;
+            json!({
+                "width":w,"height":h,"grey":GRAIN_GREY,
+                "band":{"rows":[GRAIN_BAND.0,GRAIN_BAND.1]},
+                "patches":GRAIN_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes,"width":GRAIN_PATCH})),
             })
         },
     },
@@ -854,6 +921,34 @@ mod tests {
         );
         fs::write(t.path().join("tone-ramp.jpg"), b"stub").unwrap();
         assert!(present(t.path()));
+    }
+
+    /// The grain fixture is the flat grey outside its band, and the band repeats every patch in
+    /// order across the width.
+    #[test]
+    #[slow]
+    fn the_grain_fixture_is_flat_grey_around_a_band_of_every_patch() {
+        let (w, h) = GRAIN_FIXTURE;
+        let img = grain_fixture(w, h);
+        for (x, y) in [
+            (0, 0),
+            (w - 1, h - 1),
+            (w / 2, GRAIN_BAND.0 - 1),
+            (w / 2, GRAIN_BAND.1),
+        ] {
+            assert_eq!(img.get_pixel(x, y).0, [GRAIN_GREY; 3], "({x}, {y})");
+        }
+        let period = GRAIN_PATCH * GRAIN_PATCHES.len() as u32;
+        let row = (GRAIN_BAND.0 + GRAIN_BAND.1) / 2;
+        for first in [0, w / 2 / period * period] {
+            for (index, (_, colour)) in GRAIN_PATCHES.iter().enumerate() {
+                let x = first + index as u32 * GRAIN_PATCH + GRAIN_PATCH / 2;
+                assert_eq!(grain_patch(x), index);
+                assert_eq!(img.get_pixel(x, row).0, *colour);
+            }
+        }
+        assert!(GRAIN_BAND.0.is_multiple_of(16) && GRAIN_BAND.1.is_multiple_of(16));
+        assert!(GRAIN_PATCH.is_multiple_of(16));
     }
 
     /// The ramp runs from black in the first column to white in the last through every code, and

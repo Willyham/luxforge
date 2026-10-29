@@ -118,6 +118,7 @@ fn settings_modules_groups_every_module_at_home_in_the_persons_order() {
             "luxforge.lens",
             "luxforge.perspective",
             "luxforge.vignette",
+            "luxforge.grain",
         ]
     );
     assert!(panel.reorderable && !panel.can_reset);
@@ -190,7 +191,11 @@ fn settings_modules_draws_an_off_module_dimmed_in_place_and_a_changed_order_with
     let panel = group(&model, Toolset::Adjustments);
     assert_eq!(ids(panel)[4..6], ["luxforge.curve", "luxforge.presence"]);
     assert!(panel.can_reset && model.can_reset_all);
-    let vignette = panel.rows.last().unwrap();
+    let vignette = panel
+        .rows
+        .iter()
+        .find(|row| row.key.module == "luxforge.vignette")
+        .unwrap();
     assert!(vignette.off);
     assert_eq!(vignette.control, RowControl::Switch(false));
     assert!(!group(&model, Toolset::Tools).can_reset);
@@ -213,7 +218,10 @@ fn settings_modules_switch_writes_once_shows_at_once_and_undo_writes_back() {
     tab.writing = Some(write);
     let model = derive(&tab);
     assert!(
-        group(&model, Toolset::Adjustments).rows.last().unwrap().off,
+        group(&model, Toolset::Adjustments)
+            .rows
+            .iter()
+            .any(|row| row.key.module == "luxforge.vignette" && row.off),
         "the change shows before its answer lands"
     );
     assert!(!tab.idle());
@@ -368,7 +376,7 @@ fn settings_modules_detail_says_where_it_lives_renders_and_its_api() {
         ("Vignette", "Built in")
     );
     assert!(detail.hint.is_some() && detail.shown.is_none());
-    assert_eq!(detail.lives, ["Adjustments \u{b7} tools panel, last"]);
+    assert_eq!(detail.lives, ["Adjustments \u{b7} tools panel, 11th"]);
     assert_eq!(
         detail
             .stages
@@ -428,14 +436,14 @@ fn settings_modules_selection_steps_through_every_row_and_focus_finds_home() {
         tab.step_selection(1),
         Some(row(Toolset::Adjustments, "luxforge.crop"))
     );
-    tab.selected = Some(row(Toolset::Adjustments, "luxforge.vignette"));
+    tab.selected = Some(row(Toolset::Adjustments, "luxforge.grain"));
     assert_eq!(
         tab.step_selection(1),
         Some(row(Toolset::Corrections, "luxforge.ai"))
     );
     assert_eq!(
         tab.step_selection(-1),
-        Some(row(Toolset::Adjustments, "luxforge.perspective"))
+        Some(row(Toolset::Adjustments, "luxforge.vignette"))
     );
     tab.selected = Some(row(Toolset::Processing, "luxforge.raw"));
     assert_eq!(

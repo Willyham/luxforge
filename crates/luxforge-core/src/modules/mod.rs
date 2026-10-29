@@ -15,6 +15,7 @@ mod curve;
 mod descriptor;
 mod detail;
 mod field_patch;
+mod grain;
 pub(crate) mod lens;
 mod look;
 mod mixer;
@@ -48,6 +49,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
+    &grain::GRAIN_PROGRAM,
     &presence::PRESENCE_PROGRAM,
     &crate::repair::REPAIR_PROGRAM,
 ];
@@ -59,6 +61,7 @@ const BUILTIN_FORMATS: &[(&str, u32)] = &[
     (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
     (PRESENCE_EFFECT, presence::PRESENCE_EFFECT_FORMAT),
     (VIGNETTE_EFFECT, vignette::VIGNETTE_EFFECT_FORMAT),
+    (GRAIN_EFFECT, grain::GRAIN_EFFECT_FORMAT),
 ];
 
 /// The current payload format marker of a built-in effect ([`BUILTIN_FORMATS`]). What
@@ -80,13 +83,14 @@ pub use basic::auto as auto_tone;
 pub use basic::response::{Response as BasicResponse, response as basic_response};
 
 /// The frozen response of the slider `field` that `action` patches, if it is realigned
-/// ([`response`]): Basic's, Presence's, the colour mixer's or the vignette's.
+/// ([`response`]): Basic's, Presence's, the colour mixer's, the vignette's or grain's.
 pub fn slider_response(action: &str, field: &str) -> Option<&'static BasicResponse> {
     match action {
         "set-basic" => basic::response::response(field),
         "set-presence" => presence::response(field),
         "set-mixer" => mixer::response(field),
         "set-vignette" => vignette::response(field),
+        "set-grain" => grain::response(field),
         _ => None,
     }
 }
@@ -164,6 +168,8 @@ use detail::DetailModule;
 pub(crate) use detail::gpu_functions as detail_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use detail::qualification as detail_qualification;
+pub use grain::GRAIN_EFFECT;
+pub(crate) use grain::GrainModule;
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use look::LOOK_EFFECT;

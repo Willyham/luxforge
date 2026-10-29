@@ -63,11 +63,11 @@ pub(crate) fn read(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, Error
     Ok(Some(bytes))
 }
 
-/// Whether durable writes reach the drive: false only in a test build with the
-/// `test-skip-disk-flush` feature, which only `[dev-dependencies]` tables turn on. Every other step
-/// of a durable write still runs there, and no test can observe a flush. The catalog reads it for
-/// its flush settings (`editor::catalog::configure`).
-pub(crate) const FLUSHES: bool = !cfg!(feature = "test-skip-disk-flush");
+/// Whether durable writes reach the drive: false only in the core's own unit tests and in a test
+/// build with the `test-skip-disk-flush` feature, which only `[dev-dependencies]` tables turn on.
+/// Every other step of a durable write still runs there, and no test can observe a flush. The
+/// catalog reads it for its flush settings (`editor::catalog::configure`).
+pub(crate) const FLUSHES: bool = !cfg!(any(test, feature = "test-skip-disk-flush"));
 
 /// Make what has been written to `file`, a file or a directory, durable: `sync_all`, which on macOS
 /// is `F_FULLFSYNC`, a flush of the drive's own cache that the whole host queues for. Nothing when

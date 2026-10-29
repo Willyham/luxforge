@@ -16,6 +16,7 @@ mod exposure;
 mod geometry;
 mod grade;
 mod grade_response;
+mod grain;
 mod hdr;
 mod look;
 mod lr_align;

@@ -113,7 +113,7 @@ impl Drop for Harness {
     }
 }
 
-const ADJUSTMENTS: [&str; 12] = [
+const ADJUSTMENTS: [&str; 13] = [
     "luxforge.crop",
     "luxforge.presets",
     "luxforge.look",
@@ -125,6 +125,7 @@ const ADJUSTMENTS: [&str; 12] = [
     "luxforge.lens",
     "luxforge.perspective",
     "luxforge.vignette",
+    "luxforge.grain",
     "luxforge.ai",
 ];
 

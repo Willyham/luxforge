@@ -44,7 +44,7 @@ For newly placed layers the regions are:
 
 ```text
 prepared source → pixel edits → restoration (Detail) → colour (Basic, Tone curve, mixer)
-                → spatial (Presence) → geometry (orientation, Lens, Perspective, crop) → finish (vignette)
+                → spatial (Presence) → geometry (orientation, Lens, Perspective, crop) → finish (vignette, grain)
 ```
 
 `placement_index` treats restoration in two places:

@@ -65,7 +65,9 @@ impl ModuleRegistry {
     /// Every layer a gesture drafts is resolution independent: colour layers are pointwise, crop
     /// payloads are normalized to their own input stage and a finish unit's mask is normalized to
     /// the output stage, so the same recipe compiles unchanged against a smaller content stage and
-    /// produces the same picture at display size. A spatial-stage effect is eligible too, but its
+    /// produces the same picture at display size; grain, a finish unit whose reduced stage draws a
+    /// field matched to the full-resolution grain in its statistics, is the exception, and
+    /// [`Render::approximation`] says so. A spatial-stage effect is eligible too, but its
     /// neighbourhoods scale with the stage, so its proxy frame is an approximation of the exact
     /// render at display size rather than the same picture; [`Render::approximation`] says when a
     /// stack renders that way, and the exact phase still produces every number. A pixel-stage
@@ -109,13 +111,15 @@ impl ModuleRegistry {
 
 impl Compiled {
     /// Why a frame of this compilation is an approximation of the exact render at its size: a
-    /// spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
-    /// supersampled. `O(layers + components)`, no pixel read.
+    /// spatial operation, whose neighbourhoods scale with the stage, a mask the proxy phase
+    /// supersampled, and a colour unit drawing a reduced-stage stand-in (grain).
+    /// `O(layers + units + components)`, no pixel read.
     pub(crate) fn approximation(&self) -> ProxyApproximation {
         ProxyApproximation {
             spatial: self.runs_spatial(EffectStage::Spatial),
             restoration: self.runs_spatial(EffectStage::Restoration),
             mask: self.supersampled_masks(),
+            stand_in: self.reduced_stand_ins(),
         }
     }
 }

@@ -11,7 +11,7 @@
 use crate::state::{Inputs, control_tree::walk, palette::PaletteAction, tools::ValueEdit};
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
-    SettingsGroup, SettingsGroups, SettingsOrigin, USER_PRESET_GROUP,
+    SettingsGroup, SettingsGroups, SettingsOrigin, USER_PRESET_GROUP, flags::FlagList,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -170,12 +170,18 @@ impl PresetForm {
 
 /// The settings groups and analysis steps this desktop offers, from the core's one derivation over
 /// the listed modules, which `preset.groups` answers too. Developer modules count only when the run
-/// lists them, exactly as their sections are listed.
-pub(crate) fn settings_groups(modules: &[ModuleDescriptor], developer: bool) -> SettingsGroups {
+/// lists them, and a module behind an experiment flag only while the flag is on
+/// ([`super::settings::module_offered`]), exactly as their sections are listed.
+pub(crate) fn settings_groups(
+    modules: &[ModuleDescriptor],
+    developer: bool,
+    flags: Option<&FlagList>,
+) -> SettingsGroups {
     luxforge_core::settings_groups(
         modules
             .iter()
-            .filter(|module| developer || !module.developer),
+            .filter(|module| developer || !module.developer)
+            .filter(|module| super::settings::module_offered(flags, module)),
     )
 }
 
@@ -453,7 +459,11 @@ pub(crate) fn presets_model(
     let form = inputs.preset_form;
     // A preset carries only what this registry can capture, so an unavailable module's groups and
     // steps are not offered.
-    let offered = settings_groups(inputs.modules, inputs.developer);
+    let offered = settings_groups(
+        inputs.modules,
+        inputs.developer,
+        inputs.settings.flags.as_ref(),
+    );
     let checks: Vec<PresetCheck> = offered
         .groups
         .iter()
@@ -571,14 +581,16 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::testing::{descriptors, listed};
+    use crate::state::testing::{descriptors, flags_on, listed};
 
     /// The form offers exactly the core's groups for the modules this run lists, under their
-    /// titles, with the core's defaults: a developer module's groups only in a developer run.
+    /// titles, with the core's defaults: a developer module's groups only in a developer run, and
+    /// Grain's only while its experiment flag is on.
     #[test]
     fn the_form_offers_the_cores_groups_for_the_listed_modules() {
         let modules = descriptors();
-        let ordinary = settings_groups(&modules, false);
+        let grain = flags_on(&[luxforge_core::flags::GRAIN]);
+        let ordinary = settings_groups(&modules, false, Some(&grain));
         let builtin =
             luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors());
         assert_eq!(
@@ -603,15 +615,23 @@ mod tests {
                 "Colour mixer \u{00b7} HSL",
                 "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
+                "Grain \u{00b7} Grain",
             ],
             "RAW, transforms and crop declare no field patch; Perspective's patch is not presettable"
         );
         assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
+        let off = settings_groups(&modules, false, None);
+        assert_eq!(
+            off.groups.last().map(|group| group.title.as_str()),
+            Some("Vignette \u{00b7} Vignette"),
+            "with the grain flag off the form offers no Grain group"
+        );
+        assert_eq!(off.groups.len(), ordinary.groups.len() - 1);
     }
 
     #[test]
     fn the_checked_groups_and_steps_become_exactly_the_capture_ids() {
-        let groups = settings_groups(&descriptors(), false);
+        let groups = settings_groups(&descriptors(), false, None);
         let mut form = PresetForm::default();
         // By default everything but white balance, and no analysis step.
         let ids = form.capture_ids(&groups);

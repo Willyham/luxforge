@@ -14,7 +14,7 @@ use iced::{
     event::Status,
     keyboard::{self, Key, Modifiers, key::Named},
 };
-use luxforge_core::flags::{AI_ANALYSIS, FlagList, MODULES_MANAGER};
+use luxforge_core::flags::{AI_ANALYSIS, FlagList, GRAIN, MODULES_MANAGER};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -163,6 +163,7 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
         [
             "developer",
             AI_ANALYSIS,
+            GRAIN,
             MODULES_MANAGER,
             "proof.choice",
             "proof.number"
@@ -177,7 +178,7 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
     );
     assert_eq!(editor.settings.waiting.len(), 1, "one write at a time");
     let rows = &editor.workspace.settings.rows;
-    assert!(rows[3].saving && rows[4].saving, "both show at once");
+    assert!(rows[4].saving && rows[5].saving, "both show at once");
     answer_write(&mut editor);
     assert_eq!(
         editor.settings.writing,
@@ -199,8 +200,8 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
     answer_write(&mut editor);
     let summary = editor.settings_summary();
     assert_eq!(summary["open"], "experiments");
-    assert_eq!(summary["rows"][3]["control"], json!({"choice": "first"}));
-    assert_eq!(summary["rows"][2]["can_reset"], false);
+    assert_eq!(summary["rows"][4]["control"], json!({"choice": "first"}));
+    assert_eq!(summary["rows"][4]["can_reset"], false);
     assert_eq!(summary["writes_outstanding"], 0);
     assert!(
         editor.document.state.is_none(),
@@ -227,7 +228,7 @@ fn a_number_field_sends_only_a_value_its_flag_takes() {
         assert_eq!(editor.settings.writing.is_some(), sent, "{text}");
         if !sent {
             assert!(matches!(
-                &editor.workspace.settings.rows[4].control,
+                &editor.workspace.settings.rows[5].control,
                 FlagControl::Number { invalid: true, .. }
             ));
             assert_eq!(
@@ -267,7 +268,7 @@ fn a_refused_write_reports_why_and_reads_back_what_is_stored() {
     assert!(editor.settings.reading, "the truth is read back");
     answer_read(&mut editor);
     assert!(matches!(
-        &editor.workspace.settings.rows[3].control,
+        &editor.workspace.settings.rows[4].control,
         FlagControl::Choice {
             selected: Some(0),
             ..
@@ -383,7 +384,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
     );
     answer_read(&mut editor);
     assert!(matches!(
-        &editor.workspace.settings.rows[3].control,
+        &editor.workspace.settings.rows[4].control,
         FlagControl::Choice {
             selected: Some(1),
             ..

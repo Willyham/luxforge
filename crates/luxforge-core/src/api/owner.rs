@@ -75,6 +75,8 @@ pub(super) mod candidates;
 pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
+#[cfg(test)]
+mod grain_flag_tests;
 pub(super) mod library;
 pub(super) mod merge;
 #[cfg(any(test, feature = "test-holds"))]
@@ -2403,6 +2405,79 @@ impl Owner {
         }
     }
 
+    /// Why `request` may not run now: it would run an action of a module offered only under an
+    /// experiment flag ([`crate::ModuleDescriptor::flags`]) that is off — called directly, as the
+    /// action a draft begins or commits, or as a step of a settings set an action or a draft
+    /// carries ([`crate::ModuleRegistry::needed_flags`]). A draft's own action is checked when it
+    /// begins and commits, never on each `draft.set`, so a gesture's ticks read no flag.
+    fn flag_refusal(
+        &self,
+        client: ClientId,
+        request: &ApiRequest,
+        method: &methods::Method,
+    ) -> Result<(), Error> {
+        let registry = self.service.registry();
+        let draft = || {
+            self.sessions
+                .get(&client)
+                .and_then(|session| session.draft.as_ref())
+        };
+        let needed = match (method, request.method.as_str()) {
+            (methods::Method::Action(action), _) => {
+                registry.needed_flags(action, request.params.as_object())
+            }
+            (_, "draft.begin") => match request.params["action"].as_str() {
+                Some(action) => registry.needed_flags(action, None),
+                None => return Ok(()),
+            },
+            (_, "draft.set") => match draft() {
+                Some(draft) => {
+                    let own = registry.needed_flags(&draft.action, None);
+                    let mut needed =
+                        registry.needed_flags(&draft.action, request.params["fields"].as_object());
+                    needed.retain(|(flag, _)| !own.iter().any(|(checked, _)| checked == flag));
+                    needed
+                }
+                None => return Ok(()),
+            },
+            (_, "draft.commit") => match draft() {
+                Some(draft) => registry.needed_flags(&draft.action, Some(&draft.fields)),
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        self.flags_on(&needed)
+    }
+
+    /// Refuse what needs one of `needed`'s experiment flags while it is off, read live from the
+    /// person's preferences or as this host forced it: `not-ready` whose `data.flag` names the
+    /// flag, so a client can say which switch turns it on. Reads the preferences once, and not at
+    /// all when nothing is needed.
+    pub(super) fn flags_on(
+        &self,
+        needed: &[(&str, &crate::ModuleDescriptor)],
+    ) -> Result<(), Error> {
+        if needed.is_empty() {
+            return Ok(());
+        }
+        let stored = self
+            .host
+            .preferences
+            .read()
+            .ok()
+            .map(|preferences| preferences.flags);
+        match needed.iter().find(|(flag, _)| {
+            !crate::flags::live_toggle_in(stored.as_ref(), self.host.launch_flags(), flag)
+        }) {
+            Some((flag, module)) => Err(Error::not_ready(format!(
+                "{} is an experiment that is off: turn on the flag {flag} to use it",
+                module.title
+            ))
+            .with_data(json!({ "flag": flag }))),
+            None => Ok(()),
+        }
+    }
+
     /// Answer `call` with `error` now, with the owner's sequence.
     fn refuse(&self, call: OwnerCall, error: Error) {
         let _ = call.response.send(ApiResponse::failure(
@@ -2479,6 +2554,10 @@ impl Owner {
         if request.params["targets"]["kind"] == "selection" {
             views::freshen_selection(self, client)?;
         }
+        // An action of a module offered only under an experiment flag that is off, asked for
+        // directly, as a draft's action or as a step of a settings set, is refused naming the
+        // flag; its reset, and everything already stored, is not.
+        self.flag_refusal(client, request, &method)?;
         // A later change of a client's draft supersedes its set still waiting for a candidate's
         // patch; a candidate draft's set prepares the candidate it names, and its commit is the
         // accept ([`candidate_draft`]).
@@ -7466,9 +7545,16 @@ mod tests {
                 "http://127.0.0.1:9",
             )))
             .unwrap();
+        // The grain experiment is forced on, so its gated action reaches its parser too.
+        let host = HostConfig {
+            launch_flags: crate::flags::LaunchFlags::resolve(
+                None,
+                &[(crate::flags::GRAIN, json!(true), "test")],
+            ),
+            ..HostConfig::unconfigured()
+        };
         let (owner, join) =
-            OwnerHandle::start_with_host(&catalog, Arc::new(registry), HostConfig::unconfigured())
-                .unwrap();
+            OwnerHandle::start_with_host(&catalog, Arc::new(registry), host).unwrap();
         // Exercise the parsers of permission-only methods too; authorization has separate tests.
         let client = owner.register_with(ClientAuthority::Permissions);
         let schema = ok(&owner, client, "schema", "schema.list", json!({}));

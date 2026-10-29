@@ -141,6 +141,7 @@ mod tests {
                 action,
                 field,
                 lightroom,
+                ..
             } = row.rule
             else {
                 panic!("{} is not a value transfer", map.setting);

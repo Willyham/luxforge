@@ -324,6 +324,13 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             false,
             "plan",
         ),
+        // Grain's program runs in output space after the tail and the vignette.
+        (
+            "grain after a vignette and a straightened crop's resample",
+            2,
+            false,
+            "plan",
+        ),
         ("a positional unit over the whole tail", 0, false, "plan"),
         ("a positional unit over the whole tail", 3, false, "plan"),
     ];

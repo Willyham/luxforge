@@ -585,6 +585,59 @@ fn finish_layers_are_exact_and_spatial_layers_are_approximate_at_proxy_scale() {
     );
 }
 
+/// Grain compiled for a stage reduced from full resolution draws the study's reduced-stage field,
+/// matched to the full-resolution grain in its statistics, not pixel for pixel, so a proxy frame
+/// of it is labelled approximate with its own reason; at full resolution, or at Amount 0, it is
+/// exact, and a vignette at the same reduced stage stays exact.
+#[test]
+fn reduced_stage_grain_is_approximate_and_a_vignette_is_not() {
+    let registry = ModuleRegistry::builtin();
+    let finish = |effect_id: &str, payload: serde_json::Value| {
+        recipe(vec![
+            basic_layer(json!({ "exposure": 0.5 })),
+            Layer {
+                id: LayerId::new(),
+                effect_id: effect_id.into(),
+                effect_format: crate::current_effect_format(effect_id),
+                payload,
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        ])
+    };
+    let at = |recipe: &Recipe, (width, height): (u32, u32)| {
+        registry
+            .compile_sampled(
+                width,
+                height,
+                960,
+                640,
+                recipe,
+                crate::mask_field::MaskSampling::ThinFeature,
+            )
+            .expect("the stack compiles")
+            .approximation()
+    };
+    let grain = finish(crate::GRAIN_EFFECT, json!({ "amount": 40 }));
+    registry
+        .proxy_eligible(&grain)
+        .expect("grain is a finish-stage layer");
+    let reduced = at(&grain, (96, 64));
+    assert!(reduced.stand_in && reduced.is_approximate());
+    assert!(!reduced.spatial && !reduced.restoration && !reduced.mask);
+    assert!(
+        reduced
+            .reason()
+            .is_some_and(|reason| reason.contains("grain")),
+        "{reduced:?}"
+    );
+    assert_eq!(at(&grain, (960, 640)), ProxyApproximation::default());
+    let neutral = finish(crate::GRAIN_EFFECT, json!({ "amount": 0, "size": 60 }));
+    assert_eq!(at(&neutral, (96, 64)), ProxyApproximation::default());
+    let vignette = finish(crate::VIGNETTE_EFFECT, json!({ "amount": -40 }));
+    assert_eq!(at(&vignette, (96, 64)), ProxyApproximation::default());
+}
+
 /// A reset Presence layer is still a spatial-stage layer, but its neutral payload compiles to
 /// no operation at all: the proxy frame is the exact recipe at proxy size, byte for byte with
 /// the exact recipe over the exact downscale, and is not labelled approximate.

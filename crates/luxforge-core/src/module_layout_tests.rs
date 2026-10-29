@@ -68,6 +68,7 @@ fn module_layout_built_ins_declare_their_home_and_derive_their_placements() {
             ("luxforge.lens", A, false, vec![A]),
             ("luxforge.perspective", A, false, vec![A]),
             ("luxforge.vignette", A, false, vec![A]),
+            ("luxforge.grain", A, false, vec![A]),
             ("luxforge.ai", C, false, vec![C, M]),
         ]
     );

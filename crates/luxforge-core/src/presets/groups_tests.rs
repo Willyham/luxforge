@@ -42,6 +42,7 @@ fn the_builtin_groups_have_stable_ids_in_registry_order_and_white_balance_is_per
             "luxforge.mixer/hsl",
             "luxforge.mixer/grading",
             "luxforge.vignette/vignette",
+            "luxforge.grain/grain",
         ]
     );
     let titles: Vec<&str> = groups.groups.iter().map(|g| g.title.as_str()).collect();

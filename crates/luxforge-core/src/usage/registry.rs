@@ -83,6 +83,8 @@ wire_enum! {
         /// Any external module, installed from a package or loaded from a folder, never named:
         /// its identity is a community author's, which statistics do not carry.
         External => "external",
+        /// Film grain.
+        Grain => "grain",
         /// Lens correction.
         Lens => "lens",
         /// A RAW photo's Look.
@@ -110,6 +112,7 @@ impl Tool {
             "luxforge.crop" => Self::Crop,
             "luxforge.curve" => Self::Curve,
             "luxforge.detail" => Self::Detail,
+            "luxforge.grain" => Self::Grain,
             "luxforge.lens" => Self::Lens,
             "luxforge.look" => Self::Look,
             "luxforge.mixer" => Self::Mixer,

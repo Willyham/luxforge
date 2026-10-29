@@ -69,6 +69,8 @@ mod gpu_dehaze_tests;
 mod gpu_detail_tests;
 #[cfg(test)]
 mod gpu_drag_bench;
+#[cfg(test)]
+mod gpu_grain_tests;
 pub(crate) mod gpu_identity;
 #[cfg(test)]
 mod gpu_light_tests;
@@ -125,6 +127,8 @@ pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
 #[cfg(test)]
 mod gpu_settle_tests;
+#[cfg(test)]
+mod grain_section_tests;
 #[cfg(test)]
 mod hdr_merge_tests;
 mod history;

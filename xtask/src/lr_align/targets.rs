@@ -11,13 +11,14 @@ use luxforge_reference::{colour, srgb};
 use serde_json::{Value, json};
 
 /// The targets, in manifest order.
-pub const TARGETS: [&str; 7] = [
+pub const TARGETS: [&str; 8] = [
     "wedge",
     "patches",
     "surround",
     "edges",
     "edges-24mp",
     "flat",
+    "greys",
     "grid",
 ];
 
@@ -66,6 +67,7 @@ pub fn target(id: &str) -> Option<Target> {
         // follows the picture's size or stays a fixed number of pixels.
         "edges-24mp" => edges("edges-24mp", 5),
         "flat" => flat(),
+        "greys" => greys(),
         "grid" => grid(),
         _ => return None,
     })
@@ -356,6 +358,42 @@ fn flat() -> Target {
     target.layout = json!({
         "kind": "flat", "code": ([MID; 3]),
         "describes": "one grey code over the whole frame",
+    });
+    target
+}
+
+/// The flat greys' codes: encoded tones of about 0.1, 0.25, 0.4, 0.5, 0.7 and 0.9.
+const GREYS: [u8; 6] = [26, 64, 102, 128, 179, 230];
+const GREY_CELL: u32 = 640;
+const GREY_INSET: u32 = 64;
+/// The side of the square windows grain is read in, a power of two for its spectrum: 2 × 2 of them
+/// fill each grey's cell inside its inset.
+pub const GREY_WINDOW: u32 = 256;
+
+/// Six flat greys in a 3 × 2 grid of 640-pixel cells, for grain: its strength per tone, the size
+/// of its features and how unevenly it gathers, each read in windows inset from a cell's edges. A
+/// patch layout, so a colour measure reads each grey's interior too.
+fn greys() -> Target {
+    let columns = 3;
+    let mut target = Target::new(
+        "greys",
+        GREY_CELL * columns,
+        GREY_CELL * GREYS.len() as u32 / columns,
+        0,
+    );
+    let mut patches = Vec::new();
+    for (index, code) in GREYS.iter().enumerate() {
+        let (x, y) = (
+            index as u32 % columns * GREY_CELL,
+            index as u32 / columns * GREY_CELL,
+        );
+        target.fill((x, y, GREY_CELL, GREY_CELL), [*code; 3]);
+        patches.push(json!({"x": x, "y": y, "code": ([code; 3])}));
+    }
+    target.layout = json!({
+        "kind": "patches", "patch": GREY_CELL, "inset": GREY_INSET, "window": GREY_WINDOW,
+        "patches": patches,
+        "describes": "six flat greys, codes 26 to 230, in 640-pixel cells; grain is read in 2 x 2 windows of 256 pixels inside each cell's 64-pixel inset",
     });
     target
 }

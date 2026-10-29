@@ -1402,7 +1402,7 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
     settle(&mut editor);
     press(&mut editor, 0, false);
     let source = editor.copy_source().unwrap();
-    let groups = settings_groups(&editor.modules, false);
+    let groups = settings_groups(&editor.modules, false, editor.settings.flags.as_ref());
     let captured = crate::app::copy_settings::capture_now(
         &editor.owner,
         editor.client,

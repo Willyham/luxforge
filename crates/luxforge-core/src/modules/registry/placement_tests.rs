@@ -62,6 +62,7 @@ fn a_modules_own_layer_is_found_for_its_target_only() {
         crate::MIXER_EFFECT,
         crate::PRESENCE_EFFECT,
         crate::VIGNETTE_EFFECT,
+        crate::GRAIN_EFFECT,
         CROP_EFFECT,
     ] {
         assert!(registry.effect_single(effect), "{effect}");
@@ -475,5 +476,36 @@ fn every_stage_joins_the_region_the_placement_table_names() {
     assert_eq!(
         effect_of("test.finish"),
         json!({"id": FINISH_EFFECT, "format": EFFECT_FORMAT, "stage": "finish", "order": 0})
+    );
+}
+
+/// Grain's declared order follows the vignette's within the finish stage: a new grain layer joins
+/// after a stored vignette, a new vignette joins before a stored grain layer, both after the
+/// geometry tail, and a crop committed later joins the tail before both.
+#[test]
+fn grain_follows_the_vignette_whichever_is_placed_first() {
+    let registry = ModuleRegistry::builtin();
+    let crop = Layer::crop(CropPayload::NEUTRAL);
+    let vignette = Layer::new(crate::VIGNETTE_EFFECT, json!({"amount": -30.0}));
+    let grain = Layer::new(crate::GRAIN_EFFECT, json!({"amount": 40.0}));
+    let (_, declared) = registry
+        .effect(crate::GRAIN_EFFECT)
+        .expect("grain's effect");
+    assert_eq!((declared.stage, declared.order), (EffectStage::Finish, 10));
+    let with_vignette = [basic_layer(), crop.clone(), vignette.clone()];
+    assert_eq!(
+        registry.insertion_index_for(&with_vignette, crate::GRAIN_EFFECT),
+        3
+    );
+    let with_grain = [basic_layer(), crop.clone(), grain.clone()];
+    assert_eq!(
+        registry.insertion_index_for(&with_grain, crate::VIGNETTE_EFFECT),
+        2
+    );
+    let finished = [basic_layer(), vignette, grain];
+    assert_eq!(registry.insertion_index_for(&finished, CROP_EFFECT), 1);
+    assert_eq!(
+        registry.insertion_index_for(&finished, ORIENTATION_EFFECT),
+        1
     );
 }

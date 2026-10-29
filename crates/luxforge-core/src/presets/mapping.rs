@@ -117,11 +117,15 @@ pub(super) enum Unless {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Rule {
     /// A value transfer onto a presettable Luxforge field. `lightroom` is the range Lightroom
-    /// writes, which the target's hard range must cover.
+    /// writes, which the target's hard range must cover. The setting is neutral instead, and
+    /// writes nothing, when its own value is `neutral` or `unless` holds: a grain amount of 0,
+    /// which adds no grain, and the settings that only qualify it.
     Transfer {
         action: &'static str,
         field: &'static str,
         lightroom: (f64, f64),
+        neutral: Neutral,
+        unless: Unless,
     },
     /// A point curve transferred onto a presettable curve field: Lightroom's `"x, y"` points on
     /// its 0–255 scale, each coordinate divided by 255, in order ([`curve_transfer_value`]).
@@ -168,12 +172,36 @@ const fn transfer(
     lightroom: (f64, f64),
     panel: Option<Panel>,
 ) -> Row {
+    neutral_transfer(
+        name,
+        action,
+        field,
+        lightroom,
+        Never,
+        Unless::Nothing,
+        panel,
+    )
+}
+
+/// A value transfer that is neutral, writing nothing, when its own value is `neutral` or `unless`
+/// holds.
+const fn neutral_transfer(
+    name: &'static str,
+    action: &'static str,
+    field: &'static str,
+    lightroom: (f64, f64),
+    neutral: Neutral,
+    unless: Unless,
+    panel: Option<Panel>,
+) -> Row {
     Row {
         name,
         rule: Rule::Transfer {
             action,
             field,
             lightroom,
+            neutral,
+            unless,
         },
         panel,
     }
@@ -215,6 +243,7 @@ const RAW: &str = "set-raw";
 const PRESENCE: &str = "set-presence";
 const MIXER: &str = "set-mixer";
 const VIGNETTE: &str = "set-vignette";
+const GRAIN: &str = "set-grain";
 const TONE_CURVE: &str = "set-curve";
 const HSL: Option<Panel> = Some(Panel::ColorAdjustments);
 const EFFECTS: Option<Panel> = Some(Panel::Effects);
@@ -227,7 +256,8 @@ const CALIBRATION: Option<Panel> = Some(Panel::Calibration);
 
 const NO_SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
 const NO_NOISE_REDUCTION: &str = "Lightroom noise reduction is not mapped to Luxforge Detail";
-const NO_GRAIN: &str = "Luxforge has no grain";
+const GRAIN_PATTERN: &str =
+    "Luxforge's grain has one fixed pattern, a property of the output position";
 const NO_CHANNEL_CURVES: &str = "Luxforge's tone curve has no per-channel curves";
 const NO_PARAMETRIC: &str = "Luxforge has no parametric curve";
 const NO_CURVE_SATURATION: &str = "Luxforge's tone curve changes no saturation";
@@ -762,25 +792,38 @@ pub(super) const ROWS: &[Row] = &[
         Unless::Zero("ColorNoiseReduction"),
         DETAIL,
     ),
-    // Effects: grain and the post-crop vignette's other controls.
-    unsupported_row("GrainAmount", NO_GRAIN, Zero, Unless::Nothing, EFFECTS),
-    unsupported_row(
+    // Effects: grain, neutral at a GrainAmount of 0 with the settings that only qualify it, and
+    // the post-crop vignette's other controls. Lightroom writes Roughness as `GrainFrequency`.
+    neutral_transfer(
+        "GrainAmount",
+        GRAIN,
+        "amount",
+        UNSIGNED,
+        Zero,
+        Unless::Nothing,
+        EFFECTS,
+    ),
+    neutral_transfer(
         "GrainSize",
-        NO_GRAIN,
+        GRAIN,
+        "size",
+        UNSIGNED,
         Never,
         Unless::Zero("GrainAmount"),
         EFFECTS,
     ),
-    unsupported_row(
+    neutral_transfer(
         "GrainFrequency",
-        NO_GRAIN,
+        GRAIN,
+        "roughness",
+        UNSIGNED,
         Never,
         Unless::Zero("GrainAmount"),
         EFFECTS,
     ),
     unsupported_row(
         "GrainSeed",
-        NO_GRAIN,
+        GRAIN_PATTERN,
         Never,
         Unless::Zero("GrainAmount"),
         EFFECTS,
@@ -1591,6 +1634,16 @@ pub(super) fn map(
         value: report_text(&setting.value),
         reason: reason.map(str::to_owned),
     };
+    // A value transfer at a value that changes nothing, such as a grain amount of 0, writes
+    // nothing, whether or not its panel is in effect.
+    let transfer_is_neutral = |rule: Rule, value: &RawValue| match rule {
+        Rule::Transfer {
+            neutral: own,
+            unless: condition,
+            ..
+        } => own_neutral(own, value) || unless(condition, &by_name),
+        _ => false,
+    };
     for setting in settings {
         let name = setting.name.as_str();
         let value = &setting.value;
@@ -1610,6 +1663,10 @@ pub(super) fn map(
             unsupported_list.push(reported(setting, Some(NOT_RECOGNISED)));
             continue;
         };
+        if transfer_is_neutral(row.rule, value) {
+            neutral.push(reported(setting, None));
+            continue;
+        }
         let switch = row.panel.map_or(Switch::On, |panel| switches[&panel]);
         if switch == Switch::Off {
             match row.rule {
@@ -1910,6 +1967,7 @@ mod tests {
                 action,
                 field,
                 lightroom: (low, high),
+                ..
             } = row.rule
             else {
                 continue;
@@ -1934,9 +1992,9 @@ mod tests {
                 row.name
             );
         }
-        // Basic 10, Presence 3, mixer HSL 24 and grading 14, vignette 4; and the Tone curve's
-        // luminance.
-        assert_eq!(transfers, 55);
+        // Basic 10, Presence 3, mixer HSL 24 and grading 14, vignette 4, grain 3; and the Tone
+        // curve's luminance.
+        assert_eq!(transfers, 58);
         assert_eq!(curves, 1);
     }
 

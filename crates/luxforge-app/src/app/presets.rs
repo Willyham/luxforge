@@ -140,7 +140,10 @@ impl Editor {
                 if checked {
                     // The groups the step overwrites are cleared, so clearing the step again does
                     // not bring them back checked.
-                    for group in settings_groups(&self.modules, self.developer).groups {
+                    for group in
+                        settings_groups(&self.modules, self.developer, self.settings.flags.as_ref())
+                            .groups
+                    {
                         if group.overwritten_by.contains(&id) {
                             self.presets.form.checked.insert(group.id, false);
                         }
@@ -322,7 +325,11 @@ impl Editor {
         if form.group.trim().is_empty() {
             return Err("Name the preset's group before creating it".into());
         }
-        let groups = form.capture_ids(&settings_groups(&self.modules, self.developer));
+        let groups = form.capture_ids(&settings_groups(
+            &self.modules,
+            self.developer,
+            self.settings.flags.as_ref(),
+        ));
         if groups.is_empty() {
             return Err("Choose at least one group of settings to keep".into());
         }

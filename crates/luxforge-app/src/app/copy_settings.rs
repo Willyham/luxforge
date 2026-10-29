@@ -553,7 +553,7 @@ impl Editor {
         if self.view_state.copy_settings.pending {
             return Task::none();
         }
-        let groups = settings_groups(&self.modules, self.developer);
+        let groups = settings_groups(&self.modules, self.developer, self.settings.flags.as_ref());
         let form = form.unwrap_or_else(|| self.view_state.copy_settings.form());
         self.view_state.copy_settings.serial += 1;
         self.view_state.copy_settings.pending = true;
@@ -814,13 +814,21 @@ mod tests {
                 .custom
         );
         // Parity: the desktop's groups over its module listing are what `preset.groups` answers,
-        // and the chooser's rows are exactly an independent client's answer for that entry.
+        // with every experiment the listing declares on, and the chooser's rows are exactly an
+        // independent client's answer for that entry.
         let (listed, _) = call(&owner, client, "module.list", json!({})).unwrap();
         let listed: Vec<luxforge_core::ModuleDescriptor> =
             luxforge_core::module_layout::listed_descriptors(listed["modules"].clone()).unwrap();
         let (answer, _) = call(&owner, client, "preset.groups", json!({})).unwrap();
         assert_eq!(
-            serde_json::to_value(settings_groups(&listed, false)).unwrap(),
+            serde_json::to_value(settings_groups(
+                &listed,
+                false,
+                Some(&crate::state::testing::flags_on(&[
+                    luxforge_core::flags::GRAIN
+                ]))
+            ))
+            .unwrap(),
             answer
         );
         let (described, _) = call(

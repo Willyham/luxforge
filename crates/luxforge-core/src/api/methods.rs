@@ -2416,6 +2416,24 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
                 ),
                 None => action.notes.clone(),
             };
+            // An action its module offers only under an experiment flag says so, beside the
+            // refusal it meets while the flag is off.
+            let flags: Vec<&str> = registry
+                .needed_flags(&action.id, None)
+                .into_iter()
+                .map(|(flag, _)| flag)
+                .collect();
+            let notes = if flags.is_empty() {
+                notes
+            } else {
+                format!(
+                    "{notes} Offered only while the experiment flag {} is on: while it is off \
+                     this action is refused as not-ready with data.flag naming the flag, called \
+                     directly, as a draft's action or as a step of a settings set; the stack's \
+                     stored layers render the same either way.",
+                    flags.join(" and ")
+                )
+            };
             let mut schema = method_schema(
                 registry,
                 &Method::Action(action.id.clone()),
@@ -2430,6 +2448,9 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             }
             if let Some(sources) = &sources {
                 schema["sources"] = sources.clone();
+            }
+            if !flags.is_empty() {
+                schema["flags"] = json!(flags);
             }
             mark_superseded(&mut schema, &action.id, &superseded);
             methods.insert(resolved.method(), schema);

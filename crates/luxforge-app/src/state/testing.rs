@@ -533,6 +533,19 @@ pub(crate) fn descriptors() -> Vec<ModuleDescriptor> {
     modules
 }
 
+/// `flags.list`'s answer with each of `on` a live toggle the person turned on, as the host lists
+/// an experiment: what a view-model test hands the desktop for a flagged module to be offered.
+pub(crate) fn flags_on(on: &[&str]) -> luxforge_core::flags::FlagList {
+    serde_json::from_value(json!({
+        "flags": on.iter().map(|id| json!({
+            "id": id, "title": id, "description": "A test experiment.", "kind": "toggle",
+            "applies": "live", "default": false, "value": true, "stored": true,
+        })).collect::<Vec<_>>(),
+        "unrecognized": [],
+    }))
+    .expect("a flag listing")
+}
+
 /// One `preset.list` row: a Luxforge preset when `report` is `None`, an imported one otherwise,
 /// holding one Basic exposure field.
 pub(crate) fn listed(

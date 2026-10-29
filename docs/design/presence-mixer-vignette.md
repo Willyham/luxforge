@@ -18,7 +18,7 @@ Three further Lightroom-familiar editing sections over the delivered editor, eac
 
 Lightroom is the familiarity reference for names, ranges and panel placement, not a rendering target: no value is claimed as Lightroom-equivalent, and the equations are selected and frozen by numerical studies against independent references before a control ships, exactly as the [tone](basic-tone.md), [white balance](basic-white-balance.md) and [colour](basic-colour.md) studies did for Basic.
 
-In scope: the supported JPEG subset and the implemented RAW sources through the same modules, with each module's stage joining both evaluation paths. Out of scope, with no placeholders: Lightroom's per-colour mixer view and targeted adjustment drag, Point Color, B&W mix, vignette styles beyond the one selected below, grain, sharpening and noise reduction (the Detail module keeps its own later design), masks, and any approximate preview processing.
+In scope: the supported JPEG subset and the implemented RAW sources through the same modules, with each module's stage joining both evaluation paths. Out of scope, with no placeholders: Lightroom's per-colour mixer view and targeted adjustment drag, Point Color, B&W mix, vignette styles beyond the one selected below, grain (its own [design](grain.md)), sharpening and noise reduction (the Detail module keeps its own later design), masks, and any approximate preview processing.
 
 ## Module boundaries
 
@@ -44,9 +44,9 @@ Stages (`EffectStage`):
 | `pixel`, `color` | As in the [module contract](modules-and-api.md) | Before the first spatial or geometry layer |
 | `geometry` | As in the [module contract](modules-and-api.md) | Before the first finish layer |
 
-Order within a stage: `EffectDescriptor` declares `order: u16` (default `0`). A new layer is placed after the last existing layer of its stage whose order is at most its own and before the first whose order is greater. Basic keeps order `0`; the mixer declares `10`, so a mixer layer always follows the Basic layer in the colour run. The transform, crop and RAW modules keep the default order. Existing layers never move; a stack stored in another order renders in its stored order, and the one order the host cannot evaluate, a finish layer followed by a geometry layer, fails compilation with `validation: finish layer precedes geometry` instead of being rearranged.
+Order within a stage: `EffectDescriptor` declares `order: u16` (default `0`). A new layer is placed after the last existing layer of its stage whose order is at most its own and before the first whose order is greater. Basic keeps order `0`; the mixer declares `10`, so a mixer layer always follows the Basic layer in the colour run. In the finish stage the vignette keeps `0` and [grain](grain.md) declares `10`, so grain always follows the vignette. The transform, crop and RAW modules keep the default order. Existing layers never move; a stack stored in another order renders in its stored order, and the one order the host cannot evaluate, a finish layer followed by a geometry layer, fails compilation with `validation: finish layer precedes geometry` instead of being rearranged.
 
-Resulting canonical stack for a fully edited photograph: source (RAW only) → Basic → mixer → presence → orientation → crop → vignette.
+Resulting canonical stack for a fully edited photograph: source (RAW only) → Basic → mixer → presence → orientation → crop → vignette → grain.
 
 ## Processing contracts
 

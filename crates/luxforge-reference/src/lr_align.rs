@@ -11,7 +11,10 @@
 //! The measures read flat patches (transfer curves, linear gain, Oklab chroma ratio and hue shift
 //! per hue sector, locality across surrounds), edges and the zone plate (overshoot, halo width,
 //! rise and the blur it implies, band gain per spatial frequency, noise deviation), positions
-//! (radial and axial profiles and their crossings) and geometry (dot centroids and their matching).
+//! (radial and axial profiles and their crossings), geometry (dot centroids and their matching)
+//! and grain, which is random and so is compared by its statistics alone (its strength and mean
+//! shift per tone, its radially averaged spectrum's peak and half-power frequency, its kurtosis and
+//! the spread of its local variance).
 //! The fit ([`fit`], [`fit_by`]) is the level A translation: for each Lightroom value the Luxforge
 //! value whose response is closest, then made monotone in the direction that fits better, with its
 //! residual, range shortfall and a frozen table of knots.
@@ -503,6 +506,276 @@ pub fn deviation(values: &[f64]) -> f64 {
     }
     let mean = values.iter().sum::<f64>() / values.len() as f64;
     (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
+}
+
+// -------------------------------------------------------------------------------------------
+// Grain statistics
+// -------------------------------------------------------------------------------------------
+
+/// The central moments of one set of values: its mean, standard deviation (population form) and
+/// kurtosis, the fourth central moment over the variance squared (3 for a Gaussian, 1.8 for a
+/// uniform distribution). `NaN` for none, and the kurtosis `NaN` for a constant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Moments {
+    pub mean: f64,
+    pub deviation: f64,
+    pub kurtosis: f64,
+}
+
+/// The [`Moments`] of `values`.
+pub fn moments(values: &[f64]) -> Moments {
+    if values.is_empty() {
+        return Moments {
+            mean: f64::NAN,
+            deviation: f64::NAN,
+            kurtosis: f64::NAN,
+        };
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let (mut m2, mut m4) = (0.0, 0.0);
+    for v in values {
+        let d = (v - mean).powi(2);
+        m2 += d;
+        m4 += d * d;
+    }
+    let (m2, m4) = (m2 / n, m4 / n);
+    Moments {
+        mean,
+        deviation: m2.sqrt(),
+        kurtosis: if m2 > 0.0 { m4 / (m2 * m2) } else { f64::NAN },
+    }
+}
+
+/// The variances of a row-major plane's whole `tile` × `tile` tiles, each about its own mean, in
+/// row-major tile order; a partial tile at the right or bottom edge is left out.
+pub fn tile_variances(plane: &[f64], width: usize, tile: usize) -> Vec<f64> {
+    let height = plane.len() / width.max(1);
+    let mut out = Vec::new();
+    if tile == 0 {
+        return out;
+    }
+    for ty in 0..height / tile {
+        for tx in 0..width / tile {
+            let mut values = Vec::with_capacity(tile * tile);
+            for y in ty * tile..(ty + 1) * tile {
+                values
+                    .extend_from_slice(&plane[y * width + tx * tile..y * width + (tx + 1) * tile]);
+            }
+            out.push(moments(&values).deviation.powi(2));
+        }
+    }
+    out
+}
+
+/// Clumping: the spread of a field's local variance, the coefficient of variation (standard
+/// deviation over mean) of `variances`, [`tile_variances`] of one or more planes. A stationary
+/// field's tiles vary only by sampling, `sqrt(2 / (n - 1))` for `n` independent Gaussian pixels a
+/// tile; a field whose strength gathers in patches larger than a tile spreads further.
+pub fn clumping(variances: &[f64]) -> f64 {
+    let m = moments(variances);
+    m.deviation / m.mean
+}
+
+/// An in-place radix-2 discrete Fourier transform of one complex row, `re.len()` a power of two.
+fn fft(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let angle = -std::f64::consts::TAU / len as f64;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (s, c) = (angle * k as f64).sin_cos();
+                let (a, b) = (start + k, start + k + len / 2);
+                let tr = re[b] * c - im[b] * s;
+                let ti = re[b] * s + im[b] * c;
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
+}
+
+/// The radially averaged power spectrum of a square `side` × `side` row-major window, `side` a
+/// power of two: its periodogram (mean removed, no taper) summed over rings of width `1 / side`
+/// cycles a pixel from 0 to 0.5, ring `k` holding the frequencies `[k, k + 1) / side`, each as its
+/// share of the variance those rings hold. The constant term and the corners past 0.5 cycles a
+/// pixel are left out. A field's features of size `d` pixels put their power near `1 / (2 d)`.
+pub fn radial_power(window: &[f64], side: usize) -> Vec<f64> {
+    assert!(side.is_power_of_two() && window.len() == side * side);
+    let mean = window.iter().sum::<f64>() / window.len() as f64;
+    let mut re: Vec<f64> = window.iter().map(|v| v - mean).collect();
+    let mut im = vec![0.0; side * side];
+    for row in 0..side {
+        let span = row * side..(row + 1) * side;
+        fft(&mut re[span.clone()], &mut im[span]);
+    }
+    let (mut column_re, mut column_im) = (vec![0.0; side], vec![0.0; side]);
+    for column in 0..side {
+        for row in 0..side {
+            column_re[row] = re[row * side + column];
+            column_im[row] = im[row * side + column];
+        }
+        fft(&mut column_re, &mut column_im);
+        for row in 0..side {
+            re[row * side + column] = column_re[row];
+            im[row * side + column] = column_im[row];
+        }
+    }
+    let signed = |k: usize| {
+        if k > side / 2 {
+            k as f64 - side as f64
+        } else {
+            k as f64
+        }
+    };
+    let mut rings = vec![0.0; side / 2];
+    for ky in 0..side {
+        for kx in 0..side {
+            let ring = signed(kx).hypot(signed(ky));
+            if (kx == 0 && ky == 0) || ring >= (side / 2) as f64 {
+                continue;
+            }
+            rings[ring as usize] += re[ky * side + kx].powi(2) + im[ky * side + kx].powi(2);
+        }
+    }
+    let total: f64 = rings.iter().sum();
+    if total > 0.0 {
+        for ring in &mut rings {
+            *ring /= total;
+        }
+    }
+    rings
+}
+
+/// The frequency, cycles a pixel, of the strongest ring of a [`radial_power`] spectrum: the
+/// spectrum smoothed over five rings (weights 1, 2, 3, 2, 1), its largest ring refined by a parabola
+/// through it and its neighbours. `NaN` for an empty spectrum.
+pub fn spectrum_peak(rings: &[f64]) -> f64 {
+    let n = rings.len();
+    if n == 0 {
+        return f64::NAN;
+    }
+    let smooth: Vec<f64> = (0..n)
+        .map(|k| {
+            let mut sum = 0.0;
+            let mut weight = 0.0;
+            for (offset, w) in [(-2isize, 1.0), (-1, 2.0), (0, 3.0), (1, 2.0), (2, 1.0)] {
+                let at = k as isize + offset;
+                if at >= 0 && (at as usize) < n {
+                    sum += w * rings[at as usize];
+                    weight += w;
+                }
+            }
+            sum / weight
+        })
+        .collect();
+    let best = (0..n)
+        .max_by(|a, b| smooth[*a].total_cmp(&smooth[*b]))
+        .unwrap_or(0);
+    let mut ring = best as f64;
+    if best > 0 && best + 1 < n {
+        let (a, b, c) = (smooth[best - 1], smooth[best], smooth[best + 1]);
+        let curvature = a - 2.0 * b + c;
+        if curvature < 0.0 {
+            ring += 0.5 * (a - c) / curvature;
+        }
+    }
+    // Ring k's frequencies are [k, k + 1) / side, centred at (k + 0.5) / side.
+    (ring + 0.5) / (2 * n) as f64
+}
+
+/// The half-power frequency, cycles a pixel, of a [`radial_power`] spectrum: the frequency below
+/// which half its power lies, by linear interpolation within the ring that crosses it.
+pub fn half_power(rings: &[f64]) -> f64 {
+    let n = rings.len();
+    let total: f64 = rings.iter().sum();
+    if n == 0 || total <= 0.0 {
+        return f64::NAN;
+    }
+    let mut below = 0.0;
+    for (k, share) in rings.iter().enumerate() {
+        let share = share / total;
+        if below + share >= 0.5 {
+            let t = if share > 0.0 {
+                (0.5 - below) / share
+            } else {
+                0.0
+            };
+            return (k as f64 + t) / (2 * n) as f64;
+        }
+        below += share;
+    }
+    0.5
+}
+
+/// One tone's grain, pooled over its windows of a difference field (a grain variant less its
+/// neutral, in `L*`): the mean shift, the deviation and kurtosis about each window's own mean,
+/// the [`clumping`] of its tiles and the mean [`radial_power`] spectrum with its peak and
+/// half-power frequencies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grain {
+    /// The mean of the difference: how far the grain moves the tone.
+    pub mean: f64,
+    /// The root of the windows' mean variance: the grain's strength.
+    pub deviation: f64,
+    /// The pooled fourth central moment over the pooled variance squared.
+    pub kurtosis: f64,
+    pub clumping: f64,
+    pub rings: Vec<f64>,
+    pub peak: f64,
+    pub half_power: f64,
+}
+
+/// The [`Grain`] of square `side` × `side` row-major windows of one tone's difference field,
+/// `side` a power of two, clumping read over `tile`-pixel tiles. Every statistic but the mean is
+/// about each window's own mean, so a window offset by a smooth residue elsewhere does not read as
+/// grain; the spectrum is each window's share spectrum averaged, so it is independent of strength.
+pub fn grain(windows: &[&[f64]], side: usize, tile: usize) -> Grain {
+    let (mut sum, mut m2, mut m4, mut count) = (0.0, 0.0, 0.0, 0usize);
+    let mut variances = Vec::new();
+    let mut rings = vec![0.0; side / 2];
+    for window in windows {
+        let m = moments(window);
+        sum += m.mean * window.len() as f64;
+        count += window.len();
+        for v in window.iter() {
+            let d = (v - m.mean).powi(2);
+            m2 += d;
+            m4 += d * d;
+        }
+        variances.extend(tile_variances(window, side, tile));
+        for (ring, share) in rings.iter_mut().zip(radial_power(window, side)) {
+            *ring += share / windows.len() as f64;
+        }
+    }
+    let n = count.max(1) as f64;
+    let (m2, m4) = (m2 / n, m4 / n);
+    Grain {
+        mean: if count == 0 { f64::NAN } else { sum / n },
+        deviation: if count == 0 { f64::NAN } else { m2.sqrt() },
+        kurtosis: if m2 > 0.0 { m4 / (m2 * m2) } else { f64::NAN },
+        clumping: clumping(&variances),
+        peak: spectrum_peak(&rings),
+        half_power: half_power(&rings),
+        rings,
+    }
 }
 
 // -------------------------------------------------------------------------------------------

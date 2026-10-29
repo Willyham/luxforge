@@ -649,6 +649,8 @@ pub(crate) struct Spec {
     /// Always on, with the reason ([`crate::ModuleLock`]). A field patch's home is always the
     /// tools panel's adjustments, since it always draws a section.
     locked: Option<crate::ModuleLock>,
+    /// The experiment flags the module is offered under ([`ModuleDescriptor::flags`]).
+    flags: Vec<&'static str>,
 }
 
 impl Spec {
@@ -720,6 +722,7 @@ impl Spec {
             developer: false,
             presettable: true,
             locked: None,
+            flags: Vec::new(),
         }
     }
 
@@ -786,6 +789,14 @@ impl Spec {
 
     pub(crate) fn canvas(mut self, canvas: CanvasInteraction) -> Self {
         self.canvas = Some(canvas);
+        self
+    }
+
+    /// The module is offered only while the experiment flag `flag` is on
+    /// ([`ModuleDescriptor::flags`]): its field patch is refused while it is off, and its reset
+    /// still runs.
+    pub(crate) fn flag(mut self, flag: &'static str) -> Self {
+        self.flags.push(flag);
         self
     }
 
@@ -1113,6 +1124,7 @@ impl Spec {
             developer: self.developer,
             collapsed: self.collapsed,
             layout: self.layout,
+            flags: self.flags.iter().map(|flag| (*flag).to_owned()).collect(),
             availability: Availability::Available,
             toolset: crate::Toolset::Adjustments,
             locked: self.locked.clone(),
