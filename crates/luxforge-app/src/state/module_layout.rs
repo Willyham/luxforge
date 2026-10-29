@@ -627,8 +627,8 @@ pub(crate) fn strip_menu(
 }
 
 /// The palette's layout entries: Customize panel…, and Turn off *Title* or Enable *Title* for every
-/// module that is not locked, developer ones only when the run shows them. None while the module
-/// manager is off.
+/// module that is not locked and whose experiment flags are on, developer ones only when the run
+/// shows them. None while the module manager is off.
 pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     if !crate::state::settings::manager_on(inputs.settings.flags.as_ref()) {
         return Vec::new();
@@ -644,6 +644,9 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
         .iter()
         .filter(|module| layout.lock(&module.id).is_none())
         .filter(|module| !module.developer || inputs.developer)
+        .filter(|module| {
+            crate::state::settings::module_offered(inputs.settings.flags.as_ref(), module)
+        })
     {
         let on = layout.enabled(&module.id);
         entries.push(if on {

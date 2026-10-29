@@ -4793,6 +4793,10 @@ mod tests {
         assert!(labels.contains(&"Customize panel\u{2026}"), "{labels:?}");
         assert!(!labels.contains(&"Turn off Basic"), "Basic is locked");
         assert!(
+            !labels.contains(&"Turn off Grain"),
+            "Grain's experiment is off"
+        );
+        assert!(
             labels
                 .iter()
                 .all(|label| !label.starts_with("Perspective \u{b7}")),
