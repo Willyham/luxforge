@@ -25,7 +25,7 @@ A persistent list of the work that can start now: each plan below has a validate
 | [Automatic updates](../tasks/project/auto-update.json) ([design](design/auto-update.md)) | TASK-010 qualification and documentation | The rest of the plan is implemented. Needs the owner's update key, the production API with its update store and publication credential, candidate tags and a clean-install session | High tier |
 | [Panorama merges and the merge preview](../tasks/library/panorama-merge.json) ([design](design/panorama-merge.md)) | TASK-012 the remaining rendered evidence, natural panoramas and photo-sized measurement | The rest of the plan is implemented, and the `panorama-merge` journey passes in the rendered tier on the M4. Runs the `hdr-merge` journey through the preview and closes or records the `derived-paged` GPU corpus entry's remaining cells and gaps first, then natural panoramas, the owner's where available, and the measurements behind the host lock | High tier |
 | [Grain](../tasks/editing/grain.json) ([design](design/grain.md)) | TASK-007 M4 qualification and measurement | The rest of the feature is implemented and verified on Linux, and the shared documents are current. Needs the M4 for the rendered tier (the `grain` scenario on the native GPU frame), the whole-corpus gate with the RAW manifest and the timing runs on a quiet host. TASK-008, the Lightroom fold, waits on the owner's grain export | High tier |
-| [Dependency advisories](../tasks/project/dependency-advisories.json) | TASK-001 ttf-parser exception, due 2026-10-29; TASK-002 paste exception, due 2026-12-18 | The audit fails once an exception expires | High tier |
+| [Dependency advisories](../tasks/project/dependency-advisories.json) | TASK-001 ttf-parser exception, due 2027-02-07; TASK-002 paste exception, due 2026-12-18 | The audit fails once an exception expires | High tier |
 | [v0.1 release preparation](../tasks/project/release-v0-1.json) ([design](design/release-v0.1.md)) | TASK-005 signing and notarization: the tag build's `release-sign` already signs, notarizes and staples the app and disk image, so re-review the task against it before starting | Identity and candidate records, the macOS bundle with its icon and deployment-target check, and `release-gate`/`release-verify` are implemented. In progress: TASK-002 (the source archive is built and rebuilt offline on macOS; the Linux rebuild and the distribution review remain), TASK-010 (the Linux tarball's desktop integration and ELF import check are built; a hosted Ubuntu tag build remains) and TASK-007 (candidate docs written; real download values wait for publication). A non-rehearsal `release-build` refuses a toolchain other than the pinned one | High tier |
 
 ### Validated, awaiting authorization
@@ -229,7 +229,7 @@ Initial [v0.1 distribution preparation](design/release-v0.1.md) has a validated 
 - Developer guide checked on Windows and Linux
 
 **Dependencies.**
-- Remove or re-review the ttf-parser (by 2026-10-29) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/project/dependency-advisories.json))
+- Remove or re-review the ttf-parser (by 2027-02-07) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/project/dependency-advisories.json))
 - Automated license, asset and advisory checks; the manual review stays deferred
 
 ## Not in scope

@@ -7,11 +7,11 @@
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Remove or re-review the temporary ttf-parser maintenance exception before 2026-10-29.",
+      "description": "Remove or re-review the temporary ttf-parser maintenance exception before 2027-02-07.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "RUSTSEC-2026-0192 on registry ttf-parser 0.25.1, through fontdb 0.23.0 in the Iced text stack and owned_ttf_parser 0.25.1/ab_glyph in winit's Linux Wayland decorations. The enforced review is 2026-09-29 and expires exclusively on 2026-10-29 UTC, as exceptions() in xtask/src/policy.rs records. fontdb 0.24.0 drops ttf-parser and cosmic-text main uses it, but released cosmic-text 0.19.0 still requires fontdb 0.23; pinned Iced 0.14.0 uses cosmic-text 0.15.0. The current RustSec advisory lists no patched version. No supported lockfile-only update removes both paths. The audit enforces the exact resolved version/registry source, a review window of at most 90 days and this task remaining open. Re-review sooner for published security details, compatible upstream adoption, distribution or font-input scope changes."
+        "RUSTSEC-2026-0192 on registry ttf-parser 0.25.1, through fontdb 0.23.0 in the Iced text stack and owned_ttf_parser 0.25.1/ab_glyph in winit's Linux Wayland decorations. The enforced review is 2026-11-09 (unchanged upstream: ttf-parser 0.25.1, cosmic-text 0.19.0 and Iced 0.14.0 are still the latest releases, and the advisory still lists no patched version) and expires exclusively on 2027-02-07 UTC, as exceptions() in xtask/src/policy.rs records. fontdb 0.24.0 drops ttf-parser and cosmic-text main uses it, but released cosmic-text 0.19.0 still requires fontdb 0.23; pinned Iced 0.14.0 uses cosmic-text 0.15.0. The current RustSec advisory lists no patched version. No supported lockfile-only update removes both paths. The audit enforces the exact resolved version/registry source, a review window of at most 90 days and this task remaining open. Re-review sooner for published security details, compatible upstream adoption, distribution or font-input scope changes."
       ],
       "context_links": [
         {

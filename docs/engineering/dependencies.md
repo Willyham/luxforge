@@ -14,7 +14,7 @@ cargo xtask audit
 | Advisory | Crate | Why it is tolerated | Expires (exclusive) | Task |
 | --- | --- | --- | --- | --- |
 | RUSTSEC-2024-0436 | paste 1.0.15 via metal and wgpu-hal | Build-time proc macro on dependency source, never on image data | 2026-12-18 | TASK-002 |
-| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via fontdb 0.23 in the Iced text stack, and on Linux via ab_glyph in winit's Wayland decorations | Parses installed system fonts and the bundled Inter files only; Luxforge has no font import. Upstream has an undisclosed, unfixed denial-of-service report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2026-10-29 | TASK-001 |
+| RUSTSEC-2026-0192 | ttf-parser 0.25.1 via fontdb 0.23 in the Iced text stack, and on Linux via ab_glyph in winit's Wayland decorations | Parses installed system fonts and the bundled Inter files only; Luxforge has no font import. Upstream has an undisclosed, unfixed denial-of-service report, so the window is short and must be re-reviewed before distribution or any font-input feature | 2027-02-07 | TASK-001 |
 
 No released Iced, wgpu, cosmic-text or metal line removes either crate, so bumping transitive versions alone is not a supported fix. Do not replace the GUI stack or carry a private fork to clear a maintenance advisory.
 
