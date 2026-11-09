@@ -2,6 +2,21 @@
 
 Each release's notes include its section here. A pre-release such as `v0.2.0-rc.1` uses the section of its version, `0.2.0`.
 
+## 0.2.1
+
+### Privacy
+
+- **Optional usage statistics.** Release builds now ask once, on the first launch after updating, whether to share usage and performance statistics with `api.luxforge.app`. Sharing stays off unless you choose **Share statistics**, and Settings › Privacy changes the choice at any time. Reports are timed usage events with approved app, OS, CPU, GPU and memory details; they never include your name, IP address, photos, filenames, metadata or editing values.
+
+### Export
+
+- Exporting the same photograph twice gives byte-identical files: the embedded sRGB profile no longer carries the moment it was written.
+
+### Experiments
+
+- **Grain** (the `grain` experiment, off by default) adds film grain after the vignette, with Amount, Size and Roughness. Lightroom presets carry their grain settings over.
+- **Module manager** (the `modules.manager` experiment, off by default) adds Settings › Modules, where you group, switch, reorder and lock the tools panel's modules, and installs, reviews and uninstalls external adjustment modules.
+
 ## 0.2.0
 
 ### Agents
