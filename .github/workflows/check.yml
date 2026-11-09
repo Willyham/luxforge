@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         # Windows CI is disabled for now; Windows support will come later.
-        os: [macos-14, ubuntu-24.04, ubuntu-24.04-arm]
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
         lane: [check, release]
     runs-on: ${{ matrix.os }}
     steps:

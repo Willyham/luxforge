@@ -47,7 +47,7 @@ tiff = { version = "=0.11.3", default-features = false, features = ["deflate"] }
 jsonschema = { version = "=0.60.1", default-features = false }
 # The official MCP Rust SDK as an independent client of `luxforge-mcp`, in one integration test
 # only: no server, macros or HTTP transports, only the client and its child-process transport.
-rmcp = { version = "=3.7.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["client", "transport-child-process"] }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
 # The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
 # rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite
@@ -58,7 +58,7 @@ rayon = "=1.12.0"
 # An independent EXIF reader and writer for the export metadata tests only. Already in the lockfile
 # through Iced, pinned to that version so the tests add no package.
 kamadak-exif = "=0.6.1"
-rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
 # Parses Lightroom XMP presets. Already in the lockfile through the Iced text stack, pinned to that
 # version so the importer adds no package.
 roxmltree = "=0.20.0"
@@ -153,13 +153,13 @@ iced_wgpu = { version = "=0.14.0", default-features = false }
 # f16 tensors. No `ndarray`, `tracing` or `copy-dylibs`. Each platform's provider (`coreml`,
 # `directml`) is a feature `luxforge-onnx` adds under its own target.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-24", "half"] }
-# The WebAssembly engine external adjustment modules run in, named only by `luxforge-wasm`: 49.0.4,
+# The WebAssembly engine external adjustment modules run in, named only by `luxforge-wasm`: 49.0.5,
 # whose MSRV is the workspace's 1.96 and which carries the fixes for every advisory against earlier
 # releases. Only what the host uses: Cranelift, the
 # runtime and the component model with its bindings macro. No async, fibers, GC, threads, pooling
 # allocator, profiling, debug information, WAT text, parallel compilation or Wasmtime's own code
 # cache: `luxforge-wasm` caches compiled code itself.
-wasmtime = { version = "=49.0.4", default-features = false, features = ["cranelift", "runtime", "component-model", "std"] }
+wasmtime = { version = "=49.0.5", default-features = false, features = ["cranelift", "runtime", "component-model", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

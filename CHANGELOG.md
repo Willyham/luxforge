@@ -2,7 +2,12 @@
 
 Each release's notes include its section here. A pre-release such as `v0.2.0-rc.1` uses the section of its version, `0.2.0`.
 
-## 0.2.1
+## 0.2.2
+
+### Security
+
+- SQLite is updated to fix a reported vulnerability (CVE-2026-119375, RUSTSEC-2026-0459) in the copy Luxforge builds in for its catalog.
+- The sandbox that runs external modules is updated for three reported issues (RUSTSEC-2026-0422, RUSTSEC-2026-0423 and RUSTSEC-2026-0424).
 
 ### Privacy
 
