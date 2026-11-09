@@ -10,9 +10,12 @@ The backend pins the app wire contract at `f8456a94`; its registry and usage fix
 of `23241d22`. Changes to the wire format, registry or fixtures require telling Will to bump that
 pin. Developer routing changes only the destination URL; batches have the same validated shape.
 
-`PRODUCTION_ACTIVE` in `crates/luxforge-core/src/usage/eligibility.rs` remains `false`. Enabling it
-is Will's separate decision after the checklist below. Visible developer builds can send
-consented test data; this does not activate production reporting.
+`PRODUCTION_ACTIVE` in `crates/luxforge-core/src/usage/eligibility.rs` is `true`: Will activated
+production reporting, so revisioned release builds send consented batches to the production URL.
+Visible developer builds still send only to the test tenant.
+
+Open against step 1 below: the backend's registry predates the app's `external` and `grain` tools,
+so a batch carrying either is refused with `400` and that launch stops sending.
 
 ## Destinations and checks
 
@@ -110,8 +113,8 @@ client addresses. Deployment existence is reported by Will; it is not proof that
 5. Confirm dashboards filter production/test correctly and use sampling weights; use R2 for exact
    histories. Confirm the WAF and per-installation limits and their plain-text refusals.
 6. Record checks still unrun, including natural retention expiry or native platform qualification.
-7. Will decides whether to activate production. Only then change `PRODUCTION_ACTIVE`, verify the
-   revisioned release desktop's consent/disclosure/routing and distribute the eligible build.
+7. Will decides whether to activate production (done). Verify the revisioned release desktop's
+   consent/disclosure/routing and distribute the eligible build.
 
 Never infer production activation from test traffic, deployment availability or a successful `202`.
 

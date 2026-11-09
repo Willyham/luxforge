@@ -301,8 +301,8 @@ photos, filenames, metadata and editing values. Sharing off stops collection, ca
 removes the installation ID; turning it on again creates new IDs. Unrevisioned developer builds
 report `0.0.0+000000e71de5`; builds with an embedded clean revision report their version and revision.
 
-Ordinary revisioned release builds remain disabled pending Will's production activation decision;
-they show no notice or Privacy tab and never send to the test tenant. Hidden, background, headless,
+Release builds ask the same question and, if you agree, send to
+`https://api.luxforge.app/v1/usage/batches`; they never send to the test tenant. Hidden, background, headless,
 test and evidence launches remain suppressed, except isolated evidence explicitly given a test receiver.
 
 The hosted backend keeps raw batches in R2 for 90 days and sampled Analytics Engine points for
@@ -310,7 +310,7 @@ Cloudflare's three months. Exact histories come from R2; weighted analytics are 
 store keeps IP addresses or request headers; the edge uses a transient IP-based WAF rate limit.
 Delivery is best effort and loses each session's last minutes. Session/installation counts are not
 counts of people or computers. The [deployment checklist](../services/usage-statistics/DEPLOYMENT.md)
-separates live test checks from production activation.
+separates live test checks from production checks.
 
 Agents and scripts can read the choice with `usage.read` and disable sharing with
 `usage.set {"enabled": false}`. Enabling it requires permission authority, available to the desktop

@@ -134,13 +134,21 @@ fn usage_an_ineligible_launch_collects_nothing_claims_nothing_and_cannot_enable(
     let state = usage.read(&dir.store());
     assert_eq!(state.enabled, Some(true));
     assert!(!state.effective);
-    assert_eq!(state.reason, Some(Reason::InactiveDestination));
+    // Production reporting is active; a headless launch of an unrevisioned test build is refused
+    // for its build first, and a revisioned one for its launch mode.
+    let expected = if super::super::BuildIdentity::current().release().is_none() {
+        Reason::Build
+    } else {
+        Reason::LaunchMode
+    };
+    assert_eq!(state.reason, Some(expected));
     assert_eq!(state.destination, super::super::DESTINATION);
     assert!(!usage.claim(&dir.store()).unwrap());
     let refused = enable(&usage, &dir, "again").unwrap_err();
     assert_eq!(refused.kind, ErrorKind::NotReady);
+    let spelling = serde_json::to_value(expected).unwrap();
     assert!(
-        refused.detail.contains("inactive-destination"),
+        refused.detail.contains(spelling.as_str().unwrap()),
         "{}",
         refused.detail
     );

@@ -318,12 +318,14 @@ fn usage_a_deduplicated_enable_answers_the_state_after_a_revocation() {
 }
 
 #[test]
-fn usage_a_headless_host_reports_the_inactive_destination_and_claims_nothing() {
+fn usage_a_headless_unrevisioned_host_reports_the_build_and_claims_nothing() {
     let dir = temp_dir("usage-owner-headless").canonicalize().unwrap();
     let harness = Harness::over(dir, None);
     let read = harness.ok(harness.client, "usage.read", json!({}));
     assert_eq!(read["effective"], json!(false));
-    assert_eq!(read["reason"], json!("inactive-destination"));
+    // Production reporting is active, so the next reason in order is the test build's missing
+    // revision.
+    assert_eq!(read["reason"], json!("build"));
     assert_eq!(read["destination"], json!(crate::usage::DESTINATION));
     assert_eq!(
         read["release"],

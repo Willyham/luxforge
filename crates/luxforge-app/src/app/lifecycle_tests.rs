@@ -331,8 +331,18 @@ fn usage_developer_launches_use_test_and_evidence_still_needs_a_receiver() {
             ..Config::default()
         },
     ] {
+        // Production reporting is active, so an unrevisioned build is refused for its build and
+        // a revisioned one for its launch mode.
+        let expected = if luxforge_core::usage::BuildIdentity::current()
+            .release()
+            .is_none()
+        {
+            Reason::Build
+        } else {
+            Reason::LaunchMode
+        };
         let eligibility = usage_eligibility(&config);
-        assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
+        assert_eq!(eligibility.reason(), Some(expected));
         assert!(!host_of(&config).usage_consent.eligibility().is_eligible());
     }
     for config in [
@@ -355,7 +365,8 @@ fn usage_developer_launches_use_test_and_evidence_still_needs_a_receiver() {
                 luxforge_core::usage::TEST_DESTINATION
             );
         } else {
-            assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
+            assert!(eligibility.is_eligible());
+            assert_eq!(eligibility.destination(), DESTINATION);
         }
     }
     let receiver = "http://127.0.0.1:9/v1/usage/batches";

@@ -10,10 +10,10 @@ use crate::Error;
 use serde::Serialize;
 use std::net::IpAddr;
 
-/// Production delivery's checked-in activation switch. Off until the real endpoint has passed the
-/// deployment checklist; while it is off every production launch is ineligible and reports
-/// [`Reason::InactiveDestination`]. Turning it on is a separate, authorized change.
-pub const PRODUCTION_ACTIVE: bool = false;
+/// Production delivery's checked-in activation switch, on since Will activated production
+/// reporting. While it is off every production launch is ineligible and reports
+/// [`Reason::InactiveDestination`].
+pub const PRODUCTION_ACTIVE: bool = true;
 
 /// The compile-time variable `cargo xtask package` sets to the clean tree's full source revision.
 /// Any other build (plain `cargo`, `cargo xtask develop`, a dirty tree) leaves it unset.
@@ -254,8 +254,8 @@ mod tests {
     const REVISION: &str = "9d4138ca1f2e5b7a0c3d4e5f60718293a4b5c6d7";
 
     #[test]
-    fn usage_production_activation_stays_off() {
-        const { assert!(!PRODUCTION_ACTIVE, "activation is a separate change") };
+    fn usage_production_activation_routes_revisioned_interactive_launches_to_production() {
+        const { assert!(PRODUCTION_ACTIVE, "production reporting is active") };
         let packaged = BuildIdentity::new("0.1.0", Some(REVISION));
         let off = Eligibility::decide(false, &packaged, LaunchMode::Interactive, false);
         assert_eq!(off, Eligibility::Ineligible(Reason::InactiveDestination));
